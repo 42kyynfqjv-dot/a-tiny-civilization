@@ -4,7 +4,7 @@
 //! not invent ecological values, persist refined state, or expose a canonical API.
 
 use thiserror::Error;
-use world_domain::{Digest, MAX_S2_LEVEL, S2CellId, S2CellIdError, WorldSeed};
+use world_domain::{Digest, S2CellId, S2CellIdError, WorldSeed};
 
 const PLANETARY_LEVEL: u8 = 10;
 const REGIONAL_LEVEL: u8 = 14;
@@ -323,34 +323,9 @@ fn validate_parent(parent: S2CellId) -> Result<(), RefinementError> {
 
 fn regional_children(parent: S2CellId) -> Result<Vec<S2CellId>, RefinementError> {
     validate_parent(parent)?;
-    let parent_shift = 2 * u32::from(MAX_S2_LEVEL - PLANETARY_LEVEL);
-    let child_shift = 2 * u32::from(MAX_S2_LEVEL - REGIONAL_LEVEL);
-    let parent_low_bit = 1_u64
-        .checked_shl(parent_shift)
-        .ok_or(RefinementError::ArithmeticOverflow)?;
-    let child_low_bit = 1_u64
-        .checked_shl(child_shift)
-        .ok_or(RefinementError::ArithmeticOverflow)?;
-    let first = parent
-        .get()
-        .checked_sub(parent_low_bit)
-        .and_then(|value| value.checked_add(child_low_bit))
-        .ok_or(RefinementError::ArithmeticOverflow)?;
-    let step = child_low_bit
-        .checked_mul(2)
-        .ok_or(RefinementError::ArithmeticOverflow)?;
-
-    (0..REGIONAL_CHILD_COUNT)
-        .map(|index| {
-            let offset = step
-                .checked_mul(u64::try_from(index).map_err(|_| RefinementError::ArithmeticOverflow)?)
-                .ok_or(RefinementError::ArithmeticOverflow)?;
-            let raw = first
-                .checked_add(offset)
-                .ok_or(RefinementError::ArithmeticOverflow)?;
-            S2CellId::new(raw).map_err(RefinementError::S2)
-        })
-        .collect()
+    parent
+        .descendants_at(REGIONAL_LEVEL)
+        .map_err(RefinementError::S2)
 }
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
@@ -396,6 +371,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     use super::*;
+    use world_domain::MAX_S2_LEVEL;
 
     const L10_CELL_COUNT_PER_FACE: u64 = 1 << (2 * PLANETARY_LEVEL);
 
