@@ -129,7 +129,10 @@ than area ownership. The remaining prerequisite is a source-grid aggregation ker
 deterministic interior quadrature target-support policy in
 [ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md), explicitly not exact
 spherical clipping. The concrete layer profile and global root still need to be
-constructed and verified.
+constructed and verified. Its storage is now fixed as verified L6 containers carrying
+all 256 L10 values, under
+[ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md); this avoids pretending
+millions of individual filesystem artifacts are an operationally sound release.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.

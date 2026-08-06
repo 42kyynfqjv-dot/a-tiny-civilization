@@ -10,9 +10,9 @@ use std::{
 use anyhow::{Context, Result, bail};
 use sha2::{Digest as _, Sha256};
 use world_data::{
-    BundleArtifact, BundleArtifactKind, DataLayerStorage, SourceSnapshotArtifact,
-    SourceSnapshotManifest, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, TileTreeReference,
-    WorldDataBundle,
+    BundleArtifact, BundleArtifactKind, DataLayerStorage, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+    PackedScalarTerrainTile, SourceSnapshotArtifact, SourceSnapshotManifest, TileTreeEntry,
+    TileTreeEntryKind, TileTreeIndex, TileTreeReference, WorldDataBundle,
 };
 use world_domain::{Digest, S2CellId};
 
@@ -307,6 +307,7 @@ where
 
         match entry.kind {
             TileTreeEntryKind::Tile => {
+                validate_known_tile_payload(layer_id, &entry, &artifact_bytes)?;
                 stats.tiles = stats
                     .tiles
                     .checked_add(1)
@@ -356,6 +357,39 @@ where
         );
     }
     Ok(stats)
+}
+
+fn validate_known_tile_payload(layer_id: &str, entry: &TileTreeEntry, bytes: &[u8]) -> Result<()> {
+    if entry.artifact.media_type != PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE {
+        return Ok(());
+    }
+    let tile = PackedScalarTerrainTile::from_canonical_slice(bytes).with_context(|| {
+        format!(
+            "packed scalar terrain tile {:?} is invalid",
+            entry.artifact.path
+        )
+    })?;
+    if tile.layer_id != layer_id {
+        bail!(
+            "packed scalar terrain tile {:?} declares layer {:?}, expected {:?}",
+            entry.artifact.path,
+            tile.layer_id,
+            layer_id
+        );
+    }
+    let declared_container = entry
+        .s2_cell_id
+        .parse::<S2CellId>()
+        .with_context(|| format!("invalid tile S2 CellId {}", entry.s2_cell_id))?;
+    if tile.container_s2_cell_id != declared_container {
+        bail!(
+            "packed scalar terrain tile {:?} declares container {}, expected {}",
+            entry.artifact.path,
+            tile.container_s2_cell_id,
+            declared_container
+        );
+    }
+    Ok(())
 }
 
 fn entry_contains(parent: &TileTreeEntry, descendant: &TileTreeEntry) -> Result<bool> {
@@ -567,6 +601,47 @@ mod tests {
 
         assert!(entry_contains(&parent, &descendant).expect("valid S2 fixture"));
         assert!(!entry_contains(&parent, &sibling).expect("valid S2 fixture"));
+    }
+
+    #[test]
+    fn packed_scalar_terrain_tile_binds_its_index_scope_and_layer() {
+        use world_data::{PackedScalarTerrainTile, ScalarTerrainCell};
+
+        let container: S2CellId = "1000010000000000".parse().expect("valid container");
+        let tile = PackedScalarTerrainTile {
+            tile_schema_version: 1,
+            layer_id: "elevation".to_owned(),
+            source_snapshot_digest: Digest::sha256(b"snapshot"),
+            source_artifact_digest: Digest::sha256(b"artifact"),
+            quadrature_points_per_axis: 4,
+            container_s2_cell_id: container,
+            target_s2_level: 11,
+            cells: container
+                .children()
+                .expect("children")
+                .into_iter()
+                .map(|s2_cell_id| ScalarTerrainCell {
+                    s2_cell_id,
+                    support_samples: 1,
+                    minimum_millimetres: 0,
+                    mean_millimetres: 0,
+                    maximum_millimetres: 0,
+                })
+                .collect(),
+        };
+        let bytes = tile.canonical_bytes().expect("canonical terrain tile");
+        let entry = TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: 10,
+            artifact: artifact(
+                "layers/elevation/l10/terrain.tile",
+                PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+                &bytes,
+            ),
+        };
+        validate_known_tile_payload("elevation", &entry, &bytes).expect("matching payload");
+        assert!(validate_known_tile_payload("bathymetry", &entry, &bytes).is_err());
     }
 
     #[test]

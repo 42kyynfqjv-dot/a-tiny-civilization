@@ -1,5 +1,12 @@
 //! Deterministic, provenance-complete scientific input bundles.
 
+mod terrain;
+
+pub use terrain::{
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_SCHEMA_VERSION,
+    PackedScalarTerrainTile, ScalarTerrainCell, TerrainTileError,
+};
+
 use std::collections::BTreeSet;
 
 use chrono::NaiveDate;

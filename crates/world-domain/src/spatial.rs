@@ -51,6 +51,23 @@ impl S2CellId {
         Self::new((self.0 & !(sentinel - 1)) | sentinel)
     }
 
+    /// Return the four immediately finer S2 children in canonical CellId order.
+    pub fn children(self) -> Result<[Self; 4], S2CellIdError> {
+        let level = self.level();
+        if level >= MAX_S2_LEVEL {
+            return Err(S2CellIdError::NoChildrenAtMaximumLevel);
+        }
+        let parent_lsb = 1_u64 << (2 * u32::from(MAX_S2_LEVEL - level));
+        let child_lsb = parent_lsb >> 2;
+        let base = self.0 - parent_lsb;
+        Ok([
+            Self::new(base + child_lsb)?,
+            Self::new(base + 3 * child_lsb)?,
+            Self::new(base + 5 * child_lsb)?,
+            Self::new(base + 7 * child_lsb)?,
+        ])
+    }
+
     #[must_use]
     pub fn contains(self, descendant: Self) -> bool {
         descendant.level() >= self.level()
@@ -114,6 +131,8 @@ pub enum S2CellIdError {
     InvalidEncoding(String),
     #[error("value {0:#018x} is not a structurally valid S2 CellId")]
     InvalidStructure(u64),
+    #[error("an S2 CellId at level 30 has no children")]
+    NoChildrenAtMaximumLevel,
     #[error("S2 ancestor level {requested} is finer than cell level {cell_level}")]
     FinerAncestor { requested: u8, cell_level: u8 },
 }
@@ -166,5 +185,20 @@ mod tests {
             assert!(face_root.contains(partition));
             assert!(!partition.contains(face_root));
         }
+    }
+
+    #[test]
+    fn children_are_ordered_and_round_trip_to_their_parent() {
+        let parent = "1000010000000000"
+            .parse::<S2CellId>()
+            .expect("valid level-10 parent");
+        let children = parent.children().expect("parent has children");
+        assert!(children.windows(2).all(|pair| pair[0] < pair[1]));
+        for child in children {
+            assert_eq!(child.level(), 11);
+            assert_eq!(child.ancestor(10).expect("parent level"), parent);
+        }
+        let leaf = S2CellId::new(0x1000_0000_0000_0001).expect("valid level-30 leaf");
+        assert!(leaf.children().is_err());
     }
 }
