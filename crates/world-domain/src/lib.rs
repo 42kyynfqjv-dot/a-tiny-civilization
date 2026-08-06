@@ -19,7 +19,10 @@ pub use event::{
     BirthCategory, CategoryError, DeathCause, DomainEvent, EVENT_SCHEMA_VERSION, EventBatch,
     EventBatchError, EventRecord, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
 };
-pub use geographic::{GeographicCoordinateE7, GeographicRoutingError, route_geographic_to_s2};
+pub use geographic::{
+    GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError,
+    route_geographic_to_s2, route_half_arcsecond_to_s2,
+};
 pub use hash::{CanonicalHashError, Digest};
 pub use identity::{EntityId, EventId, WorldId};
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};

@@ -12,6 +12,7 @@ const ANGLE_SCALE: i64 = 1_i64 << 62;
 const QUARTER_TURN: i64 = ANGLE_SCALE / 4;
 const HALF_TURN: i64 = ANGLE_SCALE / 2;
 const DEGREES_E7_PER_TURN: i64 = 3_600_000_000;
+const HALF_ARCSECONDS_PER_TURN: i64 = 2_592_000;
 const ECEF_SCALE_MM: i64 = 6_400_000_000;
 const WGS84_FLATTENING_DENOMINATOR: i128 = 298_257_223_563;
 const WGS84_FLATTENING_NUMERATOR: i128 = 1_000_000_000;
@@ -78,6 +79,48 @@ pub struct GeographicCoordinateE7 {
     longitude_e7: i32,
 }
 
+/// A WGS 84 coordinate in exact half-arcsecond units.
+///
+/// ETOPO 2022's 60-arc-second `Area` cells have centers on this lattice. Keeping this
+/// representation avoids silently rounding a source cell centre to decimal degrees.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct GeographicCoordinateHalfArcsecond {
+    latitude_half_arcseconds: i32,
+    longitude_half_arcseconds: i32,
+}
+
+impl GeographicCoordinateHalfArcsecond {
+    pub fn new(
+        latitude_half_arcseconds: i32,
+        longitude_half_arcseconds: i32,
+    ) -> Result<Self, GeographicRoutingError> {
+        if !(-648_000..=648_000).contains(&latitude_half_arcseconds) {
+            return Err(GeographicRoutingError::LatitudeHalfArcsecondsOutOfRange(
+                latitude_half_arcseconds,
+            ));
+        }
+        if !(-1_296_000..1_296_000).contains(&longitude_half_arcseconds) {
+            return Err(GeographicRoutingError::LongitudeHalfArcsecondsOutOfRange(
+                longitude_half_arcseconds,
+            ));
+        }
+        Ok(Self {
+            latitude_half_arcseconds,
+            longitude_half_arcseconds,
+        })
+    }
+
+    #[must_use]
+    pub const fn latitude_half_arcseconds(self) -> i32 {
+        self.latitude_half_arcseconds
+    }
+
+    #[must_use]
+    pub const fn longitude_half_arcseconds(self) -> i32 {
+        self.longitude_half_arcseconds
+    }
+}
+
 impl GeographicCoordinateE7 {
     /// Longitude uses the half-open interval [-180°, 180°); latitude is closed.
     pub fn new(latitude_e7: i32, longitude_e7: i32) -> Result<Self, GeographicRoutingError> {
@@ -109,13 +152,35 @@ pub fn route_geographic_to_s2(
     coordinate: GeographicCoordinateE7,
     level: u8,
 ) -> Result<S2CellId, GeographicRoutingError> {
+    route_turns_to_s2(
+        degrees_e7_to_turns(coordinate.latitude_e7),
+        degrees_e7_to_turns(coordinate.longitude_e7),
+        level,
+    )
+}
+
+/// Route an exact half-arcsecond WGS 84 coordinate via its ECEF ray to an S2 CellId.
+pub fn route_half_arcsecond_to_s2(
+    coordinate: GeographicCoordinateHalfArcsecond,
+    level: u8,
+) -> Result<S2CellId, GeographicRoutingError> {
+    route_turns_to_s2(
+        half_arcseconds_to_turns(coordinate.latitude_half_arcseconds),
+        half_arcseconds_to_turns(coordinate.longitude_half_arcseconds),
+        level,
+    )
+}
+
+fn route_turns_to_s2(
+    latitude_turns: i64,
+    longitude_turns: i64,
+    level: u8,
+) -> Result<S2CellId, GeographicRoutingError> {
     if level > MAX_S2_LEVEL {
         return Err(GeographicRoutingError::InvalidLevel(level));
     }
-    let (sin_latitude, cos_latitude) =
-        sin_cos_turns_q62(degrees_e7_to_turns(coordinate.latitude_e7));
-    let (sin_longitude, cos_longitude) =
-        sin_cos_turns_q62(degrees_e7_to_turns(coordinate.longitude_e7));
+    let (sin_latitude, cos_latitude) = sin_cos_turns_q62(latitude_turns);
+    let (sin_longitude, cos_longitude) = sin_cos_turns_q62(longitude_turns);
     let x = scale_product(cos_latitude, cos_longitude)?;
     let y = scale_product(cos_latitude, sin_longitude)?;
     let unflattened_z = scale_single(sin_latitude)?;
@@ -146,6 +211,18 @@ fn degrees_e7_to_turns(value: i32) -> i64 {
         (numerator - half) / denominator
     };
     i64::try_from(rounded).expect("geographic coordinate domain fits Q62 turns")
+}
+
+fn half_arcseconds_to_turns(value: i32) -> i64 {
+    let numerator = i128::from(value) * i128::from(ANGLE_SCALE);
+    let denominator = i128::from(HALF_ARCSECONDS_PER_TURN);
+    let half = denominator / 2;
+    let rounded = if numerator >= 0 {
+        (numerator + half) / denominator
+    } else {
+        (numerator - half) / denominator
+    };
+    i64::try_from(rounded).expect("half-arcsecond coordinate domain fits Q62 turns")
 }
 
 fn scale_product(left: i64, right: i64) -> Result<i64, GeographicRoutingError> {
@@ -349,6 +426,10 @@ pub enum GeographicRoutingError {
     LatitudeOutOfRange(i32),
     #[error("longitude {0}e-7 degrees is outside [-180, 180)")]
     LongitudeOutOfRange(i32),
+    #[error("latitude {0} half-arcseconds is outside [-648000, 648000]")]
+    LatitudeHalfArcsecondsOutOfRange(i32),
+    #[error("longitude {0} half-arcseconds is outside [-1296000, 1296000)")]
+    LongitudeHalfArcsecondsOutOfRange(i32),
     #[error("S2 level {0} is outside 0..=30")]
     InvalidLevel(u8),
     #[error("geographic coordinate produced a zero ECEF ray")]
@@ -455,5 +536,19 @@ mod tests {
             route_geographic_to_s2(coordinate, 31),
             Err(GeographicRoutingError::InvalidLevel(31))
         ));
+    }
+
+    #[test]
+    fn half_arcsecond_coordinates_keep_exact_etopo_center_lattice() {
+        let first_etopo_center = GeographicCoordinateHalfArcsecond::new(-647_940, -1_295_940)
+            .expect("first ETOPO cell center is valid");
+        let last_etopo_center = GeographicCoordinateHalfArcsecond::new(647_940, 1_295_940)
+            .expect("last ETOPO cell center is valid");
+        assert_eq!(first_etopo_center.latitude_half_arcseconds(), -647_940);
+        assert_eq!(last_etopo_center.longitude_half_arcseconds(), 1_295_940);
+        assert!(route_half_arcsecond_to_s2(first_etopo_center, 10).is_ok());
+        assert!(route_half_arcsecond_to_s2(last_etopo_center, 10).is_ok());
+        assert!(GeographicCoordinateHalfArcsecond::new(648_001, 0).is_err());
+        assert!(GeographicCoordinateHalfArcsecond::new(0, 1_296_000).is_err());
     }
 }

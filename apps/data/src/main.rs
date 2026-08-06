@@ -15,7 +15,10 @@ use world_data::{SourceSnapshotArtifact, SourceSnapshotManifest, WorldDataBundle
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
-use world_domain::{Digest, GeographicCoordinateE7, WorldConfiguration, route_geographic_to_s2};
+use world_domain::{
+    Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, WorldConfiguration,
+    route_geographic_to_s2, route_half_arcsecond_to_s2,
+};
 
 #[derive(Debug, Parser)]
 #[command(name = "civilization-data")]
@@ -93,6 +96,17 @@ enum InspectCommand {
         #[arg(long, default_value_t = 10)]
         s2_level: u8,
     },
+    /// Route an exact ETOPO 2022 60-arc-second area-cell centre through shared S2 routing.
+    EtopoCellRoute {
+        /// Zero-based source row, south to north.
+        #[arg(long)]
+        row: u32,
+        /// Zero-based source column, west to east.
+        #[arg(long)]
+        column: u32,
+        #[arg(long, default_value_t = 10)]
+        s2_level: u8,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -147,6 +161,11 @@ async fn main() -> Result<()> {
                 longitude_e7,
                 s2_level,
             } => inspect_geographic_route(latitude_e7, longitude_e7, s2_level),
+            InspectCommand::EtopoCellRoute {
+                row,
+                column,
+                s2_level,
+            } => inspect_etopo_cell_route(row, column, s2_level),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -193,11 +212,70 @@ fn inspect_geographic_route(latitude_e7: i32, longitude_e7: i32, s2_level: u8) -
     Ok(())
 }
 
+#[derive(Serialize)]
+struct EtopoCellRouteInspection {
+    inspection_schema_version: u16,
+    source_grid: &'static str,
+    sample_support: &'static str,
+    row: u32,
+    column: u32,
+    latitude_half_arcseconds: i32,
+    longitude_half_arcseconds: i32,
+    s2_level: u8,
+    s2_cell_id: String,
+}
+
+fn inspect_etopo_cell_route(row: u32, column: u32, s2_level: u8) -> Result<()> {
+    let coordinate = etopo_cell_center(row, column)?;
+    let cell = route_half_arcsecond_to_s2(coordinate, s2_level)
+        .context("route ETOPO cell centre to S2")?;
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoCellRouteInspection {
+            inspection_schema_version: 1,
+            source_grid: "NOAA ETOPO 2022 v1 60-arc-second WGS 84 / EGM2008",
+            sample_support: "60-arc-second area cell center",
+            row,
+            column,
+            latitude_half_arcseconds: coordinate.latitude_half_arcseconds(),
+            longitude_half_arcseconds: coordinate.longitude_half_arcseconds(),
+            s2_level,
+            s2_cell_id: cell.to_string(),
+        })?
+    );
+    Ok(())
+}
+
 const ETOPO_GRID_MAGIC: &[u8; 8] = b"ATCETOP1";
 const ETOPO_GRID_SCHEMA_VERSION: u16 = 1;
 const ETOPO_LATITUDE_CELLS: u64 = 10_800;
 const ETOPO_LONGITUDE_CELLS: u64 = 21_600;
+const ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS: i32 = -647_940;
+const ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS: i32 = -1_295_940;
+const ETOPO_CELL_STEP_HALF_ARCSECONDS: i32 = 120;
 const ETOPO_GRID_HEADER_LENGTH: usize = 84;
+
+fn etopo_cell_center(row: u32, column: u32) -> Result<GeographicCoordinateHalfArcsecond> {
+    if u64::from(row) >= ETOPO_LATITUDE_CELLS || u64::from(column) >= ETOPO_LONGITUDE_CELLS {
+        bail!("ETOPO row and column must be within its pinned 10800 by 21600 grid");
+    }
+    let latitude_half_arcseconds = ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS
+        .checked_add(
+            i32::try_from(row)?
+                .checked_mul(ETOPO_CELL_STEP_HALF_ARCSECONDS)
+                .context("ETOPO row coordinate overflow")?,
+        )
+        .context("ETOPO latitude coordinate overflow")?;
+    let longitude_half_arcseconds = ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS
+        .checked_add(
+            i32::try_from(column)?
+                .checked_mul(ETOPO_CELL_STEP_HALF_ARCSECONDS)
+                .context("ETOPO column coordinate overflow")?,
+        )
+        .context("ETOPO longitude coordinate overflow")?;
+    GeographicCoordinateHalfArcsecond::new(latitude_half_arcseconds, longitude_half_arcseconds)
+        .context("derive exact ETOPO area-cell centre")
+}
 
 #[derive(Serialize)]
 struct EtopoGridDerivation {
@@ -1006,5 +1084,27 @@ mod tests {
             )
             .is_err()
         );
+    }
+
+    #[test]
+    fn etopo_cell_centres_keep_the_pinned_area_raster_lattice() {
+        let first = etopo_cell_center(0, 0).expect("first cell centre");
+        assert_eq!(
+            (
+                first.latitude_half_arcseconds(),
+                first.longitude_half_arcseconds()
+            ),
+            (-647_940, -1_295_940)
+        );
+        let last = etopo_cell_center(10_799, 21_599).expect("last cell centre");
+        assert_eq!(
+            (
+                last.latitude_half_arcseconds(),
+                last.longitude_half_arcseconds()
+            ),
+            (647_940, 1_295_940)
+        );
+        assert!(etopo_cell_center(10_800, 0).is_err());
+        assert!(etopo_cell_center(0, 21_600).is_err());
     }
 }

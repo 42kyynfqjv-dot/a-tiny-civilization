@@ -44,22 +44,23 @@ conversion is not yet an exported, verified deterministic boundary.
 
 ## Current implementation state
 
-`world-domain` now exposes the first fixed-point reference for exact E7-degree WGS 84
-coordinates: runtime CORDIC uses checked integer arithmetic and retained Q62 angle
-constants, derives a WGS 84 ellipsoidal ECEF ray from the exact flattening rational,
-and then uses the existing exact S2 bridge. The data CLI can inspect that route through
-`inspect geographic-route`. A checked-in geographic suite covers axes, poles,
-antimeridian ownership, two real locations, and causal-level ancestry; a
-standard-library Python implementation independently verifies it in the repository
-gate. This is intentionally still short of an elevation layer: the source-grid
-sampling/support geometry remains required before the route is eligible for canonical
-normalizer output.
+`world-domain` now exposes a fixed-point WGS 84 route for both exact E7-degree inputs
+and exact half-arcsecond inputs. The latter preserves ETOPO 2022's 60-arc-second area
+cell centres without decimal-degree rounding. Runtime CORDIC uses checked integer
+arithmetic and retained Q62 angle constants, derives a WGS 84 ellipsoidal ECEF ray
+from the exact flattening rational, and then uses the existing exact S2 bridge. The
+data CLI can inspect the general route through `inspect geographic-route` and an
+ETOPO source centre through `inspect etopo-cell-route`. A checked-in geographic suite
+covers axes, poles, antimeridian ownership, two real locations, and causal-level
+ancestry; a standard-library Python implementation independently verifies it in the
+repository gate. This is intentionally still short of an elevation layer: the
+source-grid sampling/support geometry remains required before the route is eligible
+for canonical normalizer output.
 
 ## Consequences
 
 The project does not gain a deceptively plausible elevation tile tree just because an
-upstream raster is available. The next data implementation task is a separately
-versioned geographic-to-ECEF reference with cross-language golden vectors, followed by
-a source-grid-to-S2 sampling ADR and normalizer. This preserves the central claim:
+upstream raster is available. The next data implementation task is a source-grid-to-S2
+sampling ADR and normalizer. This preserves the central claim:
 the public can reproduce an emitted layer root from stated evidence and rules, rather
 than trust a host-specific GIS pipeline.

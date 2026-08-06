@@ -196,6 +196,19 @@ cargo run --locked -p civilization-data -- inspect geographic-route \
 This is a route inspection, not an elevation tile. Its remaining normalizer
 requirements are recorded in [ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md).
 
+ETOPO itself is a 60-arc-second `Area` raster. Its first centre is exactly
+latitude `-647940` and longitude `-1295940` in half-arcseconds; each source row or
+column advances by 120 half-arcseconds. The source-centre route keeps that lattice
+exact rather than rounding it to E7 decimal degrees:
+
+```bash
+cargo run --locked -p civilization-data -- inspect etopo-cell-route \
+  --row 5399 --column 10800 --s2-level 10
+```
+
+This only proves the address of one declared source centre. A canonical elevation
+layer still requires versioned area-support and aggregation rules.
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index

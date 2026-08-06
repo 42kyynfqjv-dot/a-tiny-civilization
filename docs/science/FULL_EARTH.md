@@ -119,9 +119,10 @@ CC0 NOAA ETOPO 2022 v1 global bedrock relief. Full-Earth layer contracts now bin
 source-snapshot manifest digests before a normalizer can claim a root. A deterministic
 Natural Earth binary inspector now validates and parses the pinned polygon stream into
 an auditable raw framing summary; ETOPO can derive a hash-bound regular global
-elevation intermediate. Neither claims a normalized root. The remaining prerequisite
-is completed geographic-source-to-S2 verification and source-grid sampling/support
-geometry; see [ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md).
+elevation intermediate, and its exact area-cell centres route through the fixed-point
+geographic-to-S2 contract. Neither claims a normalized root. The remaining
+prerequisite is source-grid sampling/support geometry; see
+[ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md).
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
