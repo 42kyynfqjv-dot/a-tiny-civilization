@@ -54,6 +54,11 @@ ecology.
 - A source snapshot can be cited by a later normalization release only after that
   pipeline binds its outputs to the snapshot digest and verified artifacts. Live world
   execution and replay never download sources.
+- A source with explicit non-commercial terms is rejected before it can become a
+  canonical snapshot. The public project may accept observer-only supporter payments,
+  so an open repository alone is not enough to make a non-commercial data license
+  compatible. This deliberately narrow guard and the climate-source consequence are
+  specified in [ADR 0025](0025-public-world-data-license-admission.md).
 
 The cache is a trusted, single-operator workspace. Component-by-component symlink
 checks prevent accidental escape, but this implementation does not claim race-free

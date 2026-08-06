@@ -25,6 +25,13 @@ Every bundle contains:
 - content-addressed scientific layers whose fields declare units and whose release
   roots are present and hash correctly.
 
+The public observatory may accept observer-only supporter payments. Consequently,
+canonical evidence cannot use sources that expressly prohibit commercial use. The
+validator rejects explicit `-NC`, `noncommercial`, and `non-commercial` license
+expressions at source-snapshot, source-record, and bundle boundaries. This is a
+minimum admission guard rather than a substitute for license review; see
+[ADR 0025](../adr/0025-public-world-data-license-admission.md).
+
 Bounded schema v1 is retained for development fixtures and published compatibility.
 It requires one integer raster and climate, elevation, habitat, hydrography, and soil
 layers with matching dimensions.

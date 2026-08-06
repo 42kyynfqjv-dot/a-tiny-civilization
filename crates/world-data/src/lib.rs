@@ -435,6 +435,10 @@ impl SourceSnapshotManifest {
             &self.license_expression,
             "source_snapshot.license_expression",
         )?;
+        reject_noncommercial_license(
+            &self.license_expression,
+            "source_snapshot.license_expression",
+        )?;
         validate_https_url(&self.license_url, "source_snapshot.license_url")?;
         require_text(&self.scope, "source_snapshot.scope")?;
         require_nonempty(&self.limitations, "source_snapshot.limitations")?;
@@ -564,6 +568,7 @@ impl WorldDataBundle {
         validate_semver(&self.bundle_version)?;
         require_text(&self.title, "title")?;
         require_text(&self.license_expression, "license_expression")?;
+        reject_noncommercial_license(&self.license_expression, "license_expression")?;
         self.coverage.validate()?;
         let requires_snapshot_provenance =
             matches!(&self.coverage, WorldDataCoverage::FullEarth { .. });
@@ -916,6 +921,7 @@ impl SourceRecord {
         validate_https_url(&self.canonical_url, "source.canonical_url")?;
         require_text(&self.version, "source.version")?;
         require_text(&self.license_expression, "source.license_expression")?;
+        reject_noncommercial_license(&self.license_expression, "source.license_expression")?;
         validate_artifact_path(&self.artifact_path, "source.artifact_path")?;
         validate_media_type(&self.artifact_media_type)?;
         if self.artifact_hash == Digest::ZERO {
@@ -1496,6 +1502,24 @@ fn require_text(value: &str, field: &'static str) -> Result<(), BundleError> {
     Ok(())
 }
 
+/// The public observatory may accept donations or sell strictly observer-only
+/// participation. A scientific input that expressly forbids commercial use cannot
+/// therefore become a canonical public-world source, even if the repository itself
+/// remains open source.
+fn reject_noncommercial_license(value: &str, field: &'static str) -> Result<(), BundleError> {
+    let normalized = value.to_ascii_uppercase();
+    if normalized.contains("-NC")
+        || normalized.contains("NONCOMMERCIAL")
+        || normalized.contains("NON-COMMERCIAL")
+    {
+        return Err(BundleError::NonCommercialLicense {
+            field,
+            value: value.to_owned(),
+        });
+    }
+    Ok(())
+}
+
 fn require_nonempty<T>(values: &[T], field: &'static str) -> Result<(), BundleError> {
     if values.is_empty() {
         return Err(BundleError::EmptyCollection(field));
@@ -1559,6 +1583,8 @@ pub enum BundleError {
     MissingSnapshotProvenance,
     #[error("{0} must contain non-whitespace text")]
     MissingText(&'static str),
+    #[error("{field} declares non-commercial terms and cannot feed a public world: {value:?}")]
+    NonCommercialLicense { field: &'static str, value: String },
     #[error("{0} must not be empty")]
     EmptyCollection(&'static str),
     #[error("{field} contains duplicate identifier {value:?}")]
@@ -1861,6 +1887,15 @@ mod tests {
             duplicate_limitation.validate(),
             Err(SourceSnapshotError::DuplicateLimitation(_))
         ));
+
+        let mut noncommercial = source_snapshot();
+        noncommercial.license_expression = "CC-BY-NC-4.0".to_owned();
+        assert!(matches!(
+            noncommercial.validate(),
+            Err(SourceSnapshotError::SharedValidation(
+                BundleError::NonCommercialLicense { .. }
+            ))
+        ));
     }
 
     #[test]
@@ -1875,6 +1910,29 @@ mod tests {
         assert!(matches!(
             expected.verify_bytes(b"other"),
             Err(BundleError::ArtifactDigestMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn released_bundle_and_source_records_reject_noncommercial_licenses() {
+        let mut noncommercial_bundle = bundle();
+        noncommercial_bundle.license_expression = "CC-BY-NC-4.0".to_owned();
+        assert!(matches!(
+            noncommercial_bundle.validate(),
+            Err(BundleError::NonCommercialLicense {
+                field: "license_expression",
+                ..
+            })
+        ));
+
+        let mut noncommercial_source = bundle();
+        noncommercial_source.sources[0].license_expression = "LicenseRef-Non-Commercial".to_owned();
+        assert!(matches!(
+            noncommercial_source.validate(),
+            Err(BundleError::NonCommercialLicense {
+                field: "source.license_expression",
+                ..
+            })
         ));
     }
 
