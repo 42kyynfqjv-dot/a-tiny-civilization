@@ -1,5 +1,6 @@
 //! Deterministic, provenance-complete scientific input bundles.
 
+mod boolean_field;
 mod scalar_field;
 mod terrain;
 
@@ -2680,3 +2681,7 @@ mod tests {
         ));
     }
 }
+pub use boolean_field::{
+    BooleanFieldCell, BooleanFieldTileError, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_BOOLEAN_FIELD_TILE_SCHEMA_VERSION, PackedBooleanFieldTile,
+};
