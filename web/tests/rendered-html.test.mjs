@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-async function render() {
+async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("test", `${process.pid}-${Date.now()}`);
   const { default: worker } = await import(workerUrl.href);
 
   return worker.fetch(
-    new Request("http://localhost/", { headers: { accept: "text/html" } }),
+    new Request(`http://localhost${path}`, { headers: { accept: "text/html" } }),
     { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
     { waitUntil() {}, passThroughOnException() {} },
   );
@@ -25,6 +25,18 @@ test("server-renders the civilization observatory", async () => {
   assert.match(html, /Name the next naturally born life\./);
   assert.match(html, /Actual materials/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
+});
+
+test("server-renders the observer wiki as a separate read-only route", async () => {
+  const response = await render("/wiki");
+  assert.equal(response.status, 200);
+
+  const html = await response.text();
+  assert.match(html, /<title>Observer Wiki · A Tiny Civilization<\/title>/i);
+  assert.match(html, /Evidence first\. Interpretation stays visible\./);
+  assert.match(html, /Provenance model/);
+  assert.match(html, /Research papers and artifacts/);
+  assert.doesNotMatch(html, /create wiki claim|steering wheel/i);
 });
 
 test("proxies only observer API paths when configured", async () => {

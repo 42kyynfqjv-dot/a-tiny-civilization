@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { FoundationPulse } from "./components/FoundationPulse";
 import { LiveRecord } from "./components/LiveRecord";
 
@@ -18,7 +19,7 @@ const observeLinks = [
 ] as const;
 
 const archiveLinks = [
-  ["Observer wiki", "#wiki"],
+  ["Observer wiki", "/wiki"],
   ["Extinct worlds", "#archive"],
   ["Evidence ledger", "#evidence"],
 ] as const;
@@ -69,7 +70,7 @@ export default function Home() {
           <ul className="nav-list nav-list-plain">
             {archiveLinks.map(([label, href]) => (
               <li key={label}>
-                <a href={href}>{label}</a>
+                {href.startsWith("/") ? <Link href={href}>{label}</Link> : <a href={href}>{label}</a>}
               </li>
             ))}
           </ul>
@@ -191,7 +192,7 @@ export default function Home() {
           <article className="principle-card" id="evidence">
             <p className="eyebrow">Integrity rule 01</p>
             <blockquote>“We create the laws and initial conditions. We do not create the destination.”</blockquote>
-            <a href="#wiki">Read the evidence model <span aria-hidden="true">→</span></a>
+            <Link href="/wiki">Read the evidence model <span aria-hidden="true">→</span></Link>
           </article>
         </section>
 
