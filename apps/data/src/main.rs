@@ -92,6 +92,19 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Read one exact raw sample from the pinned CHELSA January-temperature grid.
+    ChelsaJanuaryCell {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Zero-based source row in the retained latitude axis order.
+        #[arg(long)]
+        row: u64,
+        /// Zero-based source column in the retained longitude axis order.
+        #[arg(long)]
+        column: u64,
+    },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
         /// Latitude in exact 10^-7 degrees, within [-900000000, 900000000].
@@ -199,6 +212,12 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_chelsa_january_temperature(&source_snapshot, &artifact_root),
+            InspectCommand::ChelsaJanuaryCell {
+                source_snapshot,
+                artifact_root,
+                row,
+                column,
+            } => inspect_chelsa_january_cell(&source_snapshot, &artifact_root, row, column),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -1119,6 +1138,20 @@ struct ChelsaJanuaryTemperatureInspection {
     variables: Vec<EtopoVariableInspection>,
 }
 
+#[derive(Serialize)]
+struct ChelsaJanuaryCellInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    artifact_path: String,
+    artifact_hash: Digest,
+    row: u64,
+    column: u64,
+    latitude_ieee754_le_hex: String,
+    longitude_ieee754_le_hex: String,
+    raw_band1_ieee754_le_hex: String,
+}
+
 fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
     let snapshot = load_source_manifest(manifest_path)?;
     verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
@@ -1180,6 +1213,85 @@ fn validate_chelsa_january_temperature_schema(file: &NcFile) -> Result<()> {
         bail!("CHELSA variables do not have the pinned January-temperature grid shape");
     }
     Ok(())
+}
+
+fn inspect_chelsa_january_cell(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    row: u64,
+    column: u64,
+) -> Result<()> {
+    validate_chelsa_cell_address(row, column)?;
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .context("source snapshot has no CHELSA NetCDF data artifact")?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified CHELSA NetCDF through the pure-Rust reader")?;
+    validate_chelsa_january_temperature_schema(&file)?;
+    let latitude = read_chelsa_coordinate(&file, "lat", row, "latitude")?;
+    let longitude = read_chelsa_coordinate(&file, "lon", column, "longitude")?;
+    let selection = NcSliceInfo {
+        selections: vec![NcSliceInfoElem::Index(row), NcSliceInfoElem::Index(column)],
+    };
+    let values = file
+        .read_variable_slice::<f32>("Band1", &selection)
+        .context("read one raw CHELSA January-temperature sample")?;
+    let value = values
+        .as_slice()
+        .context("CHELSA sample selection is not contiguous")?
+        .first()
+        .copied()
+        .context("CHELSA sample selection is empty")?;
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaJanuaryCellInspection {
+            inspection_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_hash: artifact.content_hash,
+            row,
+            column,
+            latitude_ieee754_le_hex: format!("{:016x}", latitude.to_bits()),
+            longitude_ieee754_le_hex: format!("{:016x}", longitude.to_bits()),
+            raw_band1_ieee754_le_hex: format!("{:08x}", value.to_bits()),
+        })?
+    );
+    Ok(())
+}
+
+fn validate_chelsa_cell_address(row: u64, column: u64) -> Result<()> {
+    if row >= CHELSA_LATITUDE_CELLS || column >= CHELSA_LONGITUDE_CELLS {
+        bail!(
+            "CHELSA cell ({row}, {column}) is outside the pinned {} by {} source grid",
+            CHELSA_LATITUDE_CELLS,
+            CHELSA_LONGITUDE_CELLS
+        );
+    }
+    Ok(())
+}
+
+fn read_chelsa_coordinate(file: &NcFile, variable: &str, index: u64, axis: &str) -> Result<f64> {
+    let selection = NcSliceInfo {
+        selections: vec![NcSliceInfoElem::Index(index)],
+    };
+    let coordinates = file
+        .read_variable_slice::<f64>(variable, &selection)
+        .with_context(|| format!("read CHELSA {axis} coordinate"))?;
+    coordinates
+        .as_slice()
+        .with_context(|| format!("CHELSA {axis} coordinate selection is not contiguous"))?
+        .first()
+        .copied()
+        .with_context(|| format!("CHELSA {axis} coordinate selection is empty"))
 }
 
 fn inspect_etopo(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
@@ -2001,5 +2113,14 @@ mod tests {
         );
         assert!(f64_to_half_arcseconds(0.000_000_1).is_err());
         assert!(f64_to_half_arcseconds(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn chelsa_cell_addresses_are_zero_based_and_bounded_by_the_pinned_grid() {
+        validate_chelsa_cell_address(0, 0).expect("first CHELSA cell");
+        validate_chelsa_cell_address(CHELSA_LATITUDE_CELLS - 1, CHELSA_LONGITUDE_CELLS - 1)
+            .expect("last CHELSA cell");
+        assert!(validate_chelsa_cell_address(CHELSA_LATITUDE_CELLS, 0).is_err());
+        assert!(validate_chelsa_cell_address(0, CHELSA_LONGITUDE_CELLS).is_err());
     }
 }

@@ -186,6 +186,18 @@ cargo run --locked -p civilization-data -- inspect chelsa-january-temperature \
   --artifact-root data/source-cache
 ```
 
+One raw grid cell can be examined without a GIS dependency. The zero-based row and
+column refer only to the retained source-axis order; the result emits raw coordinate
+and `Band1` IEEE-754 bits, not a converted temperature or an S2 assignment. See
+[ADR 0027](../adr/0027-chelsa-raw-grid-access-before-normalization.md).
+
+```bash
+cargo run --locked -p civilization-data -- inspect chelsa-january-cell \
+  --source-snapshot data/source-snapshots/chelsa-bioclim-plus-v2.1-tas-january-1981-2010.json \
+  --artifact-root data/source-cache \
+  --row 10440 --column 21600
+```
+
 The first reproducible elevation intermediate is a regular sampling of the verified
 source's `z` values. It retains the source `f32` IEEE-754 bits in source row order,
 includes both source digests and the selected spacing in an 84-byte binary header, and
