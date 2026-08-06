@@ -286,6 +286,28 @@ digests. It is useful evidence while building the true normalizer, but does not 
 that source rectangles are contained by, or area-weighted over, the target S2 cells.
 See [ADR 0024](../adr/0024-etopo-source-centre-quadrature-summary.md).
 
+## Full ETOPO terrain-layer batch
+
+The v1 full-source terrain normalizer uses the approved fixed interior quadrature. It
+reads all 233,280,000 pinned ETOPO source cells, routes every interior sample to L10,
+aggregates in integer millimetres, and writes 24,576 packed L6 artifacts (each holding
+all 256 L10 descendants) plus a canonical root index:
+
+```bash
+cargo run --locked -p civilization-data -- derive etopo-terrain-layer \
+  --source-snapshot data/source-snapshots/etopo-2022-v1-60s-bed.json \
+  --artifact-root data/source-cache \
+  --output-directory data/derived-cache/etopo-2022-v1-l6-l10-q4
+```
+
+The default four-by-four sampling profile performs approximately 3.7 billion exact
+geographic-to-S2 routes, so it is a deliberate offline compute job with measured disk,
+memory, wall-time, and reproducibility records. The output is one sourced relief-layer
+root—not a complete global bundle, canonical seed, or launch authorization. It remains
+an explicit overlap approximation rather than exact spherical clipping under
+[ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md), and its payload/storage
+contract is [ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md).
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index

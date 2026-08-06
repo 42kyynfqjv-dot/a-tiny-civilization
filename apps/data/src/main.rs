@@ -11,7 +11,11 @@ use clap::{Parser, Subcommand};
 use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
-use world_data::{SourceSnapshotArtifact, SourceSnapshotManifest, WorldDataBundle};
+use world_data::{
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PackedScalarTerrainTile, ScalarTerrainCell,
+    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
+    TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
+};
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
@@ -193,6 +197,49 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Derive the exact weighted S2 contribution of one verified ETOPO source cell.
+    ///
+    /// This is a normalizer-kernel probe, not a complete global terrain layer.
+    EtopoQuadratureContribution {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Zero-based source row, south to north.
+        #[arg(long)]
+        row: u32,
+        /// Zero-based source column, west to east.
+        #[arg(long)]
+        column: u32,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        /// Equal-spaced interior points per source-cell axis. Must divide 60.
+        #[arg(long, default_value_t = 4)]
+        points_per_axis: u8,
+    },
+    /// Normalize the complete pinned ETOPO source into packed L6→L10 terrain tiles.
+    ///
+    /// This is deliberately a long offline batch. It emits only an ETOPO terrain-layer
+    /// root, not a complete world-data bundle or canonical world.
+    EtopoTerrainLayer {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Layer identifier, normally bedrock-relief.
+        #[arg(long, default_value = "bedrock-relief")]
+        layer_id: String,
+        /// New empty release directory. Existing paths are never reused.
+        #[arg(long)]
+        output_directory: PathBuf,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        /// Equal-spaced interior points per source-cell axis. Must divide 60.
+        #[arg(long, default_value_t = 4)]
+        points_per_axis: u8,
+    },
 }
 
 #[tokio::main]
@@ -279,6 +326,38 @@ async fn main() -> Result<()> {
                 s2_level,
                 output,
             } => derive_etopo_centre_summary(&input, s2_level, &output),
+            DeriveCommand::EtopoQuadratureContribution {
+                source_snapshot,
+                artifact_root,
+                row,
+                column,
+                target_s2_level,
+                points_per_axis,
+            } => derive_etopo_quadrature_contribution(
+                &source_snapshot,
+                &artifact_root,
+                row,
+                column,
+                target_s2_level,
+                points_per_axis,
+            ),
+            DeriveCommand::EtopoTerrainLayer {
+                source_snapshot,
+                artifact_root,
+                layer_id,
+                output_directory,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
+            } => derive_etopo_terrain_layer(
+                &source_snapshot,
+                &artifact_root,
+                &layer_id,
+                &output_directory,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
+            ),
         },
     }
 }
@@ -593,6 +672,48 @@ struct EtopoCentreSummaryDerivation {
     output_byte_length: u64,
 }
 
+#[derive(Serialize)]
+struct EtopoQuadratureContributionDerivation {
+    derivation_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_path: String,
+    source_artifact_hash: Digest,
+    row: u32,
+    column: u32,
+    raw_elevation_ieee754_le_hex: String,
+    target_s2_level: u8,
+    points_per_axis: u8,
+    target_cells: Vec<EtopoQuadratureContributionCell>,
+}
+
+#[derive(Serialize)]
+struct EtopoQuadratureContributionCell {
+    s2_cell_id: String,
+    support_samples: u64,
+    minimum_millimetres: i64,
+    mean_millimetres: i64,
+    maximum_millimetres: i64,
+}
+
+#[derive(Serialize)]
+struct EtopoTerrainLayerDerivation {
+    derivation_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_path: String,
+    source_artifact_hash: Digest,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    points_per_axis: u8,
+    target_cells: u64,
+    output_directory: String,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+}
+
 #[derive(Clone, Copy, Debug)]
 struct EtopoCentreIndexHeader {
     sample_arc_minutes: u16,
@@ -619,6 +740,13 @@ struct EtopoCentreSummaryStats {
 
 impl EtopoCentreSummaryStats {
     fn add(&mut self, millimetres: i64) -> Result<()> {
+        self.add_weighted(millimetres, 1)
+    }
+
+    fn add_weighted(&mut self, millimetres: i64, samples: u64) -> Result<()> {
+        if samples == 0 {
+            bail!("ETOPO summary cannot add zero support samples");
+        }
         if self.samples == 0 {
             self.minimum_millimetres = millimetres;
             self.maximum_millimetres = millimetres;
@@ -628,11 +756,14 @@ impl EtopoCentreSummaryStats {
         }
         self.samples = self
             .samples
-            .checked_add(1)
+            .checked_add(samples)
             .context("ETOPO summary sample overflow")?;
+        let weighted = millimetres
+            .checked_mul(i64::try_from(samples).context("ETOPO support sample count exceeds i64")?)
+            .context("ETOPO summary weighted total overflow")?;
         self.total_millimetres = self
             .total_millimetres
-            .checked_add(millimetres)
+            .checked_add(weighted)
             .context("ETOPO summary total overflow")?;
         Ok(())
     }
@@ -641,6 +772,333 @@ impl EtopoCentreSummaryStats {
         debug_assert!(self.samples > 0);
         round_divide_i64(self.total_millimetres, self.samples as i64)
     }
+}
+
+/// Add one raw ETOPO source cell to its target-level S2 quadrature summaries.
+///
+/// This is the common kernel for the eventual global streaming derivation. Values are
+/// converted to integer millimetres before aggregation, so the emitted tile does not
+/// depend on host floating-point accumulation order.
+fn accumulate_etopo_cell_quadrature(
+    summaries: &mut std::collections::BTreeMap<S2CellId, EtopoCentreSummaryStats>,
+    row: u32,
+    column: u32,
+    value_bits: u32,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    let millimetres = f32_bits_to_rounded_millimetres(value_bits)?;
+    for (cell, support_samples) in
+        etopo_cell_quadrature(row, column, target_s2_level, points_per_axis)?
+    {
+        summaries
+            .entry(cell)
+            .or_default()
+            .add_weighted(millimetres, u64::from(support_samples))?;
+    }
+    Ok(())
+}
+
+fn derive_etopo_quadrature_contribution(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    row: u32,
+    column: u32,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    etopo_cell_support(row, column)?;
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = etopo_data_artifact(&snapshot)?;
+    let source_snapshot_id = snapshot.snapshot_id.clone();
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
+    validate_etopo_schema(&file)?;
+    let selection = NcSliceInfo {
+        selections: vec![
+            NcSliceInfoElem::Index(u64::from(row)),
+            NcSliceInfoElem::Index(u64::from(column)),
+        ],
+    };
+    let values = file
+        .read_variable_slice::<f32>("z", &selection)
+        .context("read exact ETOPO source elevation cell")?;
+    let value = values
+        .as_slice()
+        .context("ETOPO source-cell selection is not contiguous")?
+        .first()
+        .copied()
+        .context("ETOPO source-cell selection is empty")?;
+    let mut summaries = std::collections::BTreeMap::new();
+    accumulate_etopo_cell_quadrature(
+        &mut summaries,
+        row,
+        column,
+        value.to_bits(),
+        target_s2_level,
+        points_per_axis,
+    )?;
+    let target_cells = summaries
+        .into_iter()
+        .map(|(s2_cell_id, stats)| EtopoQuadratureContributionCell {
+            s2_cell_id: s2_cell_id.to_string(),
+            support_samples: stats.samples,
+            minimum_millimetres: stats.minimum_millimetres,
+            mean_millimetres: stats.mean_millimetres(),
+            maximum_millimetres: stats.maximum_millimetres,
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoQuadratureContributionDerivation {
+            derivation_schema_version: 1,
+            source_snapshot_id,
+            source_snapshot_digest,
+            source_artifact_path: artifact.artifact_path.clone(),
+            source_artifact_hash: artifact.content_hash,
+            row,
+            column,
+            raw_elevation_ieee754_le_hex: format!("{:08x}", value.to_bits()),
+            target_s2_level,
+            points_per_axis,
+            target_cells,
+        })?
+    );
+    Ok(())
+}
+
+fn derive_etopo_terrain_layer(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    layer_id: &str,
+    output_directory: &Path,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    if container_s2_level != 6 || target_s2_level != 10 {
+        bail!(
+            "ETOPO terrain-layer v1 requires L6 containers and L10 target values; requested L{container_s2_level} to L{target_s2_level}"
+        );
+    }
+    if points_per_axis == 0 || 60 % points_per_axis != 0 {
+        bail!("points_per_axis must be a non-zero divisor of 60");
+    }
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!(
+            "ETOPO terrain output directory {} already exists",
+            output_directory.display()
+        );
+    }
+    let output_parent = output_directory
+        .parent()
+        .context("ETOPO terrain output directory has no parent")?;
+    if !output_parent.is_dir() {
+        bail!(
+            "ETOPO terrain output parent {} is not a directory",
+            output_parent.display()
+        );
+    }
+
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = etopo_data_artifact(&snapshot)?;
+    let source_snapshot_id = snapshot.snapshot_id.clone();
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
+    validate_etopo_schema(&file)?;
+
+    let mut summaries = std::collections::BTreeMap::new();
+    for row in 0..ETOPO_LATITUDE_CELLS {
+        let selection = NcSliceInfo {
+            selections: vec![
+                NcSliceInfoElem::Slice {
+                    start: row,
+                    end: row.checked_add(1).context("ETOPO row selection overflow")?,
+                    step: 1,
+                },
+                NcSliceInfoElem::Slice {
+                    start: 0,
+                    end: ETOPO_LONGITUDE_CELLS,
+                    step: 1,
+                },
+            ],
+        };
+        let values = file
+            .read_variable_slice::<f32>("z", &selection)
+            .with_context(|| format!("read ETOPO row {row}"))?;
+        let values = values
+            .as_slice()
+            .context("ETOPO row selection is not contiguous")?;
+        if values.len() != usize::try_from(ETOPO_LONGITUDE_CELLS)? {
+            bail!("ETOPO row {row} has an unexpected sample count");
+        }
+        for (column, value) in values.iter().copied().enumerate() {
+            accumulate_etopo_cell_quadrature(
+                &mut summaries,
+                u32::try_from(row)?,
+                u32::try_from(column)?,
+                value.to_bits(),
+                target_s2_level,
+                points_per_axis,
+            )?;
+        }
+    }
+
+    fs::create_dir(output_directory).with_context(|| {
+        format!(
+            "create ETOPO terrain output directory {}",
+            output_directory.display()
+        )
+    })?;
+    let layer_directory = output_directory.join("layers").join(layer_id);
+    let tile_directory = layer_directory.join("l6");
+    fs::create_dir_all(&tile_directory).with_context(|| {
+        format!(
+            "create ETOPO terrain tile directory {}",
+            tile_directory.display()
+        )
+    })?;
+
+    let mut entries = Vec::new();
+    for container in global_s2_cells_at_level(container_s2_level)? {
+        let tile = pack_etopo_terrain_tile(
+            layer_id,
+            source_snapshot_digest,
+            artifact.content_hash,
+            points_per_axis,
+            container,
+            target_s2_level,
+            &summaries,
+        )?;
+        let bytes = tile.canonical_bytes()?;
+        let relative_path = format!("layers/{layer_id}/l6/{container}.tile");
+        write_new_artifact(&output_directory.join(&relative_path), &bytes)?;
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    write_new_artifact(&output_directory.join(&root_relative_path), &root_bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoTerrainLayerDerivation {
+            derivation_schema_version: 1,
+            source_snapshot_id,
+            source_snapshot_digest,
+            source_artifact_path: artifact.artifact_path.clone(),
+            source_artifact_hash: artifact.content_hash,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            points_per_axis,
+            target_cells: u64::try_from(summaries.len())?,
+            output_directory: output_directory.display().to_string(),
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+fn global_s2_cells_at_level(target_s2_level: u8) -> Result<Vec<S2CellId>> {
+    if target_s2_level > MAX_S2_LEVEL {
+        bail!("global S2 level must be within 0 through {MAX_S2_LEVEL}");
+    }
+    let mut cells = Vec::new();
+    for face in 0_u64..6 {
+        let root = S2CellId::new((face << 61) | (1_u64 << 60))?;
+        if target_s2_level == 0 {
+            cells.push(root);
+        } else {
+            cells.extend(enumerate_s2_descendants(root, target_s2_level)?);
+        }
+    }
+    Ok(cells)
+}
+
+/// Pack all known target summaries in one coarse S2 container into a release tile.
+fn pack_etopo_terrain_tile(
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    quadrature_points_per_axis: u8,
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+    summaries: &std::collections::BTreeMap<S2CellId, EtopoCentreSummaryStats>,
+) -> Result<PackedScalarTerrainTile> {
+    let cells = enumerate_s2_descendants(container_s2_cell_id, target_s2_level)?
+        .into_iter()
+        .map(|s2_cell_id| {
+            let stats = summaries.get(&s2_cell_id).with_context(|| {
+                format!("ETOPO quadrature has no support for expected target S2 cell {s2_cell_id}")
+            })?;
+            Ok(ScalarTerrainCell {
+                s2_cell_id,
+                support_samples: stats.samples,
+                minimum_millimetres: stats.minimum_millimetres,
+                mean_millimetres: stats.mean_millimetres(),
+                maximum_millimetres: stats.maximum_millimetres,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tile = PackedScalarTerrainTile {
+        tile_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        source_snapshot_digest,
+        source_artifact_digest,
+        quadrature_points_per_axis,
+        container_s2_cell_id,
+        target_s2_level,
+        cells,
+    };
+    tile.validate()
+        .context("packed ETOPO terrain tile is invalid")?;
+    Ok(tile)
+}
+
+fn enumerate_s2_descendants(root: S2CellId, target_s2_level: u8) -> Result<Vec<S2CellId>> {
+    if target_s2_level <= root.level() || target_s2_level > MAX_S2_LEVEL {
+        bail!(
+            "target S2 level {target_s2_level} must be finer than container level {} and at most {MAX_S2_LEVEL}",
+            root.level()
+        );
+    }
+    let mut current = vec![root];
+    while current
+        .first()
+        .is_some_and(|cell| cell.level() < target_s2_level)
+    {
+        let mut next = Vec::with_capacity(
+            current
+                .len()
+                .checked_mul(4)
+                .context("S2 descendant count overflow")?,
+        );
+        for cell in current {
+            next.extend(cell.children().context("enumerate S2 children")?);
+        }
+        current = next;
+    }
+    Ok(current)
 }
 
 fn derive_etopo_grid(
@@ -2274,5 +2732,57 @@ mod tests {
         assert_eq!(quadrature.values().copied().sum::<u32>(), 16);
         assert!(quadrature.values().all(|count| *count > 0));
         assert!(etopo_cell_quadrature(5_400, 10_800, 10, 7).is_err());
+    }
+
+    #[test]
+    fn packs_complete_quadrature_summaries_into_a_canonical_terrain_tile() {
+        let container: S2CellId = "1000010000000000".parse().expect("valid L10 container");
+        let mut summaries = std::collections::BTreeMap::new();
+        for (index, child) in container
+            .children()
+            .expect("children")
+            .into_iter()
+            .enumerate()
+        {
+            let mut stats = EtopoCentreSummaryStats::default();
+            stats
+                .add_weighted(i64::try_from(index).expect("index fits") * 1_000, 16)
+                .expect("weighted support");
+            summaries.insert(child, stats);
+        }
+        let tile = pack_etopo_terrain_tile(
+            "bedrock-relief",
+            Digest::sha256(b"snapshot"),
+            Digest::sha256(b"artifact"),
+            4,
+            container,
+            11,
+            &summaries,
+        )
+        .expect("complete terrain tile");
+        assert_eq!(tile.cells.len(), 4);
+        assert!(tile.cells.iter().all(|cell| cell.support_samples == 16));
+        assert_eq!(tile.cells[3].mean_millimetres, 3_000);
+        summaries.pop_first();
+        assert!(
+            pack_etopo_terrain_tile(
+                "bedrock-relief",
+                Digest::sha256(b"snapshot"),
+                Digest::sha256(b"artifact"),
+                4,
+                container,
+                11,
+                &summaries,
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn global_s2_container_enumeration_is_complete_and_canonical() {
+        let cells = global_s2_cells_at_level(1).expect("global L1 cells");
+        assert_eq!(cells.len(), 24);
+        assert!(cells.windows(2).all(|pair| pair[0] < pair[1]));
+        assert_eq!(cells.iter().filter(|cell| cell.face() == 0).count(), 4);
     }
 }

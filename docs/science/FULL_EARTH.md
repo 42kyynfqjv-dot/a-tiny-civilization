@@ -133,6 +133,9 @@ constructed and verified. Its storage is now fixed as verified L6 containers car
 all 256 L10 values, under
 [ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md); this avoids pretending
 millions of individual filesystem artifacts are an operationally sound release.
+The full-source ETOPO batch and its deterministic integer accumulation path are now
+implemented, but the global output has not yet been generated, independently rebuilt,
+or admitted into a complete scientific bundle.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
