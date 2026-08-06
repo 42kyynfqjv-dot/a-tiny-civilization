@@ -10,6 +10,27 @@ dashboard step independently and provide only confirmation that it is done. When
 implemented service needs a value, its deployment runbook will name a secure secret
 destination and the value can be entered directly there.
 
+## Required before the full-Earth climate release
+
+### Copernicus Climate Data Store / ERA5
+
+CHELSA is a kilometre-scale land-surface climatology. It cannot supply the ocean
+component of a full-Earth climate baseline. The owner must create or use a Copernicus
+Climate Data Store account, accept the ERA5 monthly-single-level dataset terms, and
+create a personal CDS API key. The required retained request will be frozen in a
+versioned source manifest before download; it covers January–December 1981–2010 and
+includes at least the global near-surface air-temperature, sea-surface-temperature,
+and sea-ice-cover fields needed to distinguish land, open ocean, and ice evidence.
+
+Put the key directly in the host's protected scientific-acquisition environment (not
+the running observatory environment), then report only `CDS API access ready`. Do not
+paste the key into chat or Git. The acquisition code and exact request are not ready
+yet, so this is an account-preparation handoff rather than permission to download a
+moving dataset today. ERA5's monthly single-level product is globally complete at a
+declared 0.25-degree regridded resolution and is distributed under CC-BY; see the
+[ERA5 dataset record](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation)
+and [CDS API setup guidance](https://cds.climate.copernicus.eu/how-to-api).
+
 ## Required before a public deployment
 
 ### Server and backups
@@ -102,6 +123,8 @@ in the production secret store.
 
 For now, it is enough to report the completion state, not the secret:
 
+- `CDS API access ready` when the full-Earth climate normalizer is ready for its
+  pinned acquisition;
 - `Cloudflare tunnel created` (and hostname chosen),
 - `backup destination selected`,
 - `Stripe account ready` when supporter payments are ready to build,

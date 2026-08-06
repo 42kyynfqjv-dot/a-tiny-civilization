@@ -45,7 +45,7 @@ date, terms snapshot, byte length, and SHA-256 digest enter a validated bundle.
 | Land cover | [ESA WorldCover 2021](https://esa-worldcover.org/en/data-access) | Evidence for observed cover; built-up/cropland classes are anthropogenic unknowns, not ready-made wilderness. |
 | Surface water | [JRC Global Surface Water](https://global-surface-water.appspot.com/download) | Observed water history and seasonality; not an instruction to expose dams or modern labels. |
 | Watersheds | [HydroSHEDS products](https://www.hydrosheds.org/products) | Globally consistent routing/basins/rivers/lakes; exact product-specific redistribution and commercial terms must pass review. |
-| Climate | [ERA5-Land](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land) plus [CHELSA-BIOCLIM+](https://www.envidat.ch/metadata/bioclim_plus) | Freeze dated releases and derive a declared climate-normal period; never consume a moving upstream series during a world. The first CHELSA January normal is exact source evidence only, not a complete climate root. |
+| Climate | [ERA5 monthly single levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation) plus [CHELSA-BIOCLIM+](https://www.envidat.ch/metadata/bioclim_plus) | Freeze dated releases and derive a declared climate-normal period; never consume a moving upstream series during a world. ERA5 supplies the global atmosphere/ocean baseline; CHELSA supplies finer land-surface evidence. Neither source alone is a complete climate root. |
 | Soils | [SoilGrids](https://docs.isric.org/globaldata/soilgrids/index.html) | Global soil-property estimates and prediction intervals; not local ground truth. |
 | Taxonomy and occurrences | [GBIF](https://www.gbif.org/publishing-data) plus compatible taxonomic authorities | DOI-pinned downloads and stable identities; retain only records whose individual licenses permit the release. Occurrences are evidence, not species ranges. |
 
@@ -158,8 +158,13 @@ CHELSA temperature evidence now retains all twelve 1981–2010 monthly global no
 under one source snapshot. The annual inspector verifies every artifact hash, the
 January-through-December identity/order, the shared NetCDF grid shape, and exact
 latitude/longitude endpoint bits before a climate normalizer may join the months into
-one annual cycle. It is still land-only temperature evidence: precipitation, wind,
-ocean forcing, and weather dynamics remain separate required work.
+one annual cycle. It is still land-only temperature evidence. The complete climate
+release must pair it with a separately pinned global ERA5 request for the same normal
+period, preserving the source boundary rather than blending fields silently. This
+requires the owner-controlled CDS account handoff in
+[External handoffs](../operations/EXTERNAL_HANDOFFS.md#copernicus-climate-data-store--era5).
+Precipitation, wind, ocean forcing, and weather dynamics remain separate required
+work.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
