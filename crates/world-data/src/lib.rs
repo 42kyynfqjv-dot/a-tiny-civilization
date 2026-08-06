@@ -102,6 +102,19 @@ pub struct NormalizationRecord {
     pub pipeline_version: String,
     pub source_revision: String,
     pub executable_hash: Digest,
+    /// Exact pre-normalization manifests used by this release, in snapshot-ID order.
+    #[serde(default)]
+    pub source_snapshots: Vec<SourceSnapshotReference>,
+}
+
+/// A content-addressed pre-normalization evidence manifest consumed by a pipeline.
+///
+/// These references bind a scientific bundle to exact acquired input evidence without
+/// copying raw multi-gigabyte artifacts into the bundle itself.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceSnapshotReference {
+    pub snapshot_id: String,
+    pub manifest_digest: Digest,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -295,6 +308,9 @@ pub struct DataLayer {
     pub storage: DataLayerStorage,
     pub units: Vec<FieldUnit>,
     pub source_ids: Vec<String>,
+    /// Snapshot manifests that supplied this layer's source evidence.
+    #[serde(default)]
+    pub source_snapshot_ids: Vec<String>,
     pub transformation: String,
 }
 
@@ -549,7 +565,9 @@ impl WorldDataBundle {
         require_text(&self.title, "title")?;
         require_text(&self.license_expression, "license_expression")?;
         self.coverage.validate()?;
-        self.normalization.validate()?;
+        let requires_snapshot_provenance =
+            matches!(&self.coverage, WorldDataCoverage::FullEarth { .. });
+        self.normalization.validate(requires_snapshot_provenance)?;
 
         require_nonempty(&self.sources, "sources")?;
         require_nonempty(&self.entities, "entities")?;
@@ -585,6 +603,12 @@ impl WorldDataBundle {
             .sources
             .iter()
             .map(|source| source.source_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let source_snapshot_ids = self
+            .normalization
+            .source_snapshots
+            .iter()
+            .map(|snapshot| snapshot.snapshot_id.as_str())
             .collect::<BTreeSet<_>>();
         let assumption_ids = self
             .assumptions
@@ -665,7 +689,12 @@ impl WorldDataBundle {
 
         let mut layer_kinds = BTreeSet::new();
         for layer in &self.layers {
-            layer.validate(&source_ids, &self.coverage)?;
+            layer.validate(
+                &source_ids,
+                &source_snapshot_ids,
+                requires_snapshot_provenance,
+                &self.coverage,
+            )?;
             layer_kinds.insert(layer.kind);
         }
         let required_layers: &[DataLayerKind] = match &self.coverage {
@@ -839,7 +868,7 @@ impl BundleArtifact<'_> {
 }
 
 impl NormalizationRecord {
-    fn validate(&self) -> Result<(), BundleError> {
+    fn validate(&self, requires_snapshot_provenance: bool) -> Result<(), BundleError> {
         validate_slug(&self.pipeline_id, "normalization.pipeline_id")?;
         validate_semver(&self.pipeline_version)?;
         if self.source_revision.len() < 12
@@ -854,6 +883,26 @@ impl NormalizationRecord {
         }
         if self.executable_hash == Digest::ZERO {
             return Err(BundleError::ZeroDigest("normalization.executable_hash"));
+        }
+        if requires_snapshot_provenance && self.source_snapshots.is_empty() {
+            return Err(BundleError::MissingSnapshotProvenance);
+        }
+        validate_sorted_unique(
+            self.source_snapshots
+                .iter()
+                .map(|snapshot| snapshot.snapshot_id.as_str()),
+            "normalization.source_snapshots",
+        )?;
+        for snapshot in &self.source_snapshots {
+            validate_slug(
+                &snapshot.snapshot_id,
+                "normalization.source_snapshot.snapshot_id",
+            )?;
+            if snapshot.manifest_digest == Digest::ZERO {
+                return Err(BundleError::ZeroDigest(
+                    "normalization.source_snapshot.manifest_digest",
+                ));
+            }
         }
         Ok(())
     }
@@ -1016,6 +1065,8 @@ impl DataLayer {
     fn validate(
         &self,
         source_ids: &BTreeSet<&str>,
+        source_snapshot_ids: &BTreeSet<&str>,
+        requires_snapshot_provenance: bool,
         coverage: &WorldDataCoverage,
     ) -> Result<(), BundleError> {
         validate_slug(&self.layer_id, "layer_id")?;
@@ -1031,6 +1082,16 @@ impl DataLayer {
         }
         require_nonempty(&self.source_ids, "layer.source_ids")?;
         validate_references(&self.source_ids, source_ids, "layer.source_ids")?;
+        if requires_snapshot_provenance && self.source_snapshot_ids.is_empty() {
+            return Err(BundleError::LayerMissingSnapshotProvenance(
+                self.layer_id.clone(),
+            ));
+        }
+        validate_references(
+            &self.source_snapshot_ids,
+            source_snapshot_ids,
+            "layer.source_snapshot_ids",
+        )?;
         require_text(&self.transformation, "layer.transformation")
     }
 
@@ -1494,6 +1555,8 @@ pub enum BundleError {
         "normalization source revision must be at least 12 lowercase hexadecimal characters, found {0:?}"
     )]
     InvalidSourceRevision(String),
+    #[error("full-Earth normalization must pin at least one source snapshot manifest")]
+    MissingSnapshotProvenance,
     #[error("{0} must contain non-whitespace text")]
     MissingText(&'static str),
     #[error("{0} must not be empty")]
@@ -1539,6 +1602,8 @@ pub enum BundleError {
     LayerShapeMismatch(String),
     #[error("layer {0:?} storage does not match the bundle coverage")]
     LayerStorageCoverageMismatch(String),
+    #[error("full-Earth layer {0:?} must cite at least one source snapshot manifest")]
+    LayerMissingSnapshotProvenance(String),
     #[error("tile-tree index schema version {0} is unsupported")]
     UnsupportedTileIndexSchema(u16),
     #[error("tile-tree leaf count must be greater than zero")]
@@ -1923,6 +1988,7 @@ mod tests {
                 unit: "1".to_owned(),
             }],
             source_ids: vec!["usgs-water-reference".to_owned()],
+            source_snapshot_ids: Vec::new(),
             transformation: "Schema test normalization; not a scientific release.".to_owned(),
         }
     }
@@ -1948,6 +2014,7 @@ mod tests {
                 pipeline_version: "0.1.0".to_owned(),
                 source_revision: "037b2b73b523".to_owned(),
                 executable_hash: Digest::sha256(b"normalizer fixture"),
+                source_snapshots: Vec::new(),
             },
             sources: vec![source()],
             assumptions: Vec::new(),
@@ -2051,6 +2118,7 @@ mod tests {
                 unit: "1".to_owned(),
             }],
             source_ids: vec!["usgs-water-reference".to_owned()],
+            source_snapshot_ids: vec!["etopo-2022-v1-60s-bed".to_owned()],
             transformation: "Global tile-tree schema fixture; not a scientific release.".to_owned(),
         }
     }
@@ -2135,6 +2203,12 @@ mod tests {
                 sea_level_definition: "Pinned mean-sea-level surface fixture.".to_owned(),
             },
         };
+        bundle.normalization.source_snapshots = vec![SourceSnapshotReference {
+            snapshot_id: "etopo-2022-v1-60s-bed".to_owned(),
+            manifest_digest: "9f043ed3c6ffd9ca02890643cc54a37e404a5ebeb76dd09b7fca4b9fb609aa0b"
+                .parse()
+                .expect("valid pinned ETOPO snapshot digest"),
+        }];
         bundle.layers = vec![
             tiled_layer(DataLayerKind::Bathymetry, "bathymetry", 1),
             tiled_layer(DataLayerKind::Climate, "climate", 2),
@@ -2285,7 +2359,32 @@ mod tests {
         let encoded = std::str::from_utf8(&bytes).expect("UTF-8 bundle");
         assert!(encoded.contains("\"full_earth_grid\""));
         assert!(encoded.contains("\"tile_tree\""));
+        assert!(encoded.contains("\"source_snapshots\""));
         assert!(encoded.contains("\"exclude_direct_features_and_flag_inferences\""));
+
+        let mut missing_snapshots = full_earth_bundle();
+        missing_snapshots.normalization.source_snapshots.clear();
+        assert!(matches!(
+            missing_snapshots.validate(),
+            Err(BundleError::MissingSnapshotProvenance)
+        ));
+
+        let mut missing_layer_snapshot = full_earth_bundle();
+        missing_layer_snapshot.layers[0].source_snapshot_ids.clear();
+        assert!(matches!(
+            missing_layer_snapshot.validate(),
+            Err(BundleError::LayerMissingSnapshotProvenance(_))
+        ));
+
+        let mut dangling_layer_snapshot = full_earth_bundle();
+        dangling_layer_snapshot.layers[0].source_snapshot_ids = vec!["unknown-snapshot".to_owned()];
+        assert!(matches!(
+            dangling_layer_snapshot.validate(),
+            Err(BundleError::MissingReference {
+                field: "layer.source_snapshot_ids",
+                ..
+            })
+        ));
 
         let mut missing_coastline = bundle;
         missing_coastline

@@ -14,6 +14,8 @@ Every bundle contains:
 - a named and described reference domain with source links;
 - the exact coverage definition also committed in world configuration;
 - a versioned normalization pipeline, source revision, and executable/source digest;
+- exact pre-normalization source-snapshot IDs and manifest digests, with every
+  full-Earth layer linked to the snapshot(s) that supplied its evidence;
 - source records with publisher, HTTPS URL, version, retrieval date, license, byte
   length, safe relative path, media type, and SHA-256 digest of the retained artifact;
 - actual-world catalog entities with at least one external identity and citation;
@@ -84,6 +86,12 @@ SHA-256 digest therefore identifies one exact portable manifest. A schema-v1 man
 carries every retained source and normalized raster directly. A schema-v2 manifest
 carries retained source records plus normalized tile-tree roots; hashes are checked
 again as each branch or leaf is traversed.
+
+Full-Earth schema-v2 provenance is deliberately two-stage: source records retain the
+specific artifacts needed by the release, while normalization also pins the canonical
+source-snapshot manifests from which those artifacts were acquired. A layer cannot
+refer to an undeclared snapshot, and a full-Earth bundle cannot omit snapshot evidence.
+See [ADR 0016](../adr/0016-full-earth-bundles-bind-source-snapshots.md).
 
 Validate a release with:
 

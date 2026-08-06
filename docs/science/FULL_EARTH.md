@@ -115,7 +115,9 @@ Lower Buffalo participates under exactly the same rule as every other eligible c
    golden verification.~~ Complete.
 4. Freeze license-compatible global source artifacts and construct L10 layer roots.
    In progress: exact snapshots pin Natural Earth generalized global land polygons and
-   CC0 NOAA ETOPO 2022 v1 global bedrock relief. No normalized root is claimed.
+   CC0 NOAA ETOPO 2022 v1 global bedrock relief. Full-Earth layer contracts now bind
+   source-snapshot manifest digests before a normalizer can claim a root. No normalized
+   root is claimed.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
