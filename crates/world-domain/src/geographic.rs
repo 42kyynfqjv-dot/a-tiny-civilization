@@ -285,6 +285,126 @@ pub fn s2_face_uv_to_ray(uv: S2FaceUv) -> Result<S2FaceRay, GeographicRoutingErr
     Ok(S2FaceRay { x, y, z })
 }
 
+/// Convert a rational ray to the same exact-E7 geographic representation accepted
+/// by forward routing. Values are reduced before the WGS84 correction to keep all
+/// intermediate integer products bounded.
+pub fn s2_ray_to_geographic_e7(
+    ray: S2FaceRay,
+) -> Result<GeographicCoordinateE7, GeographicRoutingError> {
+    if ray.x == 0 && ray.y == 0 && ray.z == 0 {
+        return Err(GeographicRoutingError::ZeroRay);
+    }
+    let mut scale = ray.x.abs().max(ray.y.abs()).max(ray.z.abs());
+    let mut shift = 0_u32;
+    while scale > 1_000_000_000_000 {
+        scale >>= 1;
+        shift += 1;
+    }
+    let x = ray.x >> shift;
+    let y = ray.y >> shift;
+    let z = ray.z >> shift;
+    let longitude = atan2_turns_q62(y, x)?;
+    let horizontal = integer_hypot(x, y)?;
+    let latitude = atan2_turns_q62(
+        z.checked_mul(WGS84_FLATTENING_DENOMINATOR)
+            .and_then(|value| value.checked_mul(WGS84_FLATTENING_DENOMINATOR))
+            .ok_or(GeographicRoutingError::Overflow)?,
+        horizontal
+            .checked_mul(WGS84_FLATTENING_DENOMINATOR - WGS84_FLATTENING_NUMERATOR)
+            .and_then(|value| {
+                value.checked_mul(WGS84_FLATTENING_DENOMINATOR - WGS84_FLATTENING_NUMERATOR)
+            })
+            .ok_or(GeographicRoutingError::Overflow)?,
+    )?;
+    GeographicCoordinateE7::new(
+        turns_to_degrees_e7(latitude),
+        turns_to_degrees_e7(longitude),
+    )
+}
+
+fn atan2_turns_q62(y: i128, x: i128) -> Result<i64, GeographicRoutingError> {
+    if x == 0 && y == 0 {
+        return Err(GeographicRoutingError::ZeroRay);
+    }
+    // CORDIC's late iterations need fractional precision.  Rays may be tiny
+    // integer ratios (for example the cardinal axes), so normalize their scale
+    // before vectoring rather than letting right shifts erase the vector.
+    let magnitude = x
+        .checked_abs()
+        .and_then(|x| y.checked_abs().map(|y| x.max(y)))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    let bits = 128_u32 - magnitude.leading_zeros();
+    const VECTORING_BITS: u32 = 100;
+    let (mut x, mut y) = if bits < VECTORING_BITS {
+        let shift = VECTORING_BITS - bits;
+        (
+            x.checked_shl(shift)
+                .ok_or(GeographicRoutingError::Overflow)?,
+            y.checked_shl(shift)
+                .ok_or(GeographicRoutingError::Overflow)?,
+        )
+    } else {
+        let shift = bits - VECTORING_BITS;
+        (x >> shift, y >> shift)
+    };
+    let mut angle = 0_i128;
+    if x < 0 {
+        let original_y = y;
+        x = -x;
+        y = -y;
+        angle = if original_y >= 0 {
+            i128::from(HALF_TURN)
+        } else {
+            -i128::from(HALF_TURN)
+        };
+    }
+    if y == 0 {
+        return i64::try_from(angle).map_err(|_| GeographicRoutingError::Overflow);
+    }
+    for (index, atan) in CORDIC_ATAN_TURNS_Q62.iter().enumerate() {
+        let (shifted_x, shifted_y) = (x >> index, y >> index);
+        if y > 0 {
+            x += shifted_y;
+            y -= shifted_x;
+            angle += i128::from(*atan);
+        } else {
+            x -= shifted_y;
+            y += shifted_x;
+            angle -= i128::from(*atan);
+        }
+    }
+    i64::try_from(angle).map_err(|_| GeographicRoutingError::Overflow)
+}
+
+fn integer_hypot(x: i128, y: i128) -> Result<i128, GeographicRoutingError> {
+    let squared = x
+        .checked_mul(x)
+        .and_then(|value| value.checked_add(y.checked_mul(y)?))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    let mut lower = 0_i128;
+    let mut upper = squared.max(1);
+    while lower < upper {
+        let midpoint = lower + (upper - lower + 1) / 2;
+        if midpoint > squared / midpoint {
+            upper = midpoint - 1;
+        } else {
+            lower = midpoint;
+        }
+    }
+    Ok(lower)
+}
+
+fn turns_to_degrees_e7(turns: i64) -> i32 {
+    let numerator = i128::from(turns) * i128::from(DEGREES_E7_PER_TURN);
+    let half = i128::from(ANGLE_SCALE) / 2;
+    i32::try_from(if numerator >= 0 {
+        (numerator + half) / i128::from(ANGLE_SCALE)
+    } else {
+        (numerator - half) / i128::from(ANGLE_SCALE)
+    })
+    .expect("Q62 turn fits geographic E7 domain")
+}
+
 fn route_turns_to_s2(
     latitude_turns: i64,
     longitude_turns: i64,
@@ -670,6 +790,37 @@ mod tests {
                 z: -2
             })
         );
+    }
+
+    #[test]
+    fn cardinal_rays_convert_to_exact_geographic_axes() {
+        assert_eq!(
+            s2_ray_to_geographic_e7(S2FaceRay { x: 1, y: 0, z: 0 }),
+            Ok(GeographicCoordinateE7::new(0, 0).expect("origin"))
+        );
+        assert_eq!(
+            s2_ray_to_geographic_e7(S2FaceRay { x: 0, y: 1, z: 0 }),
+            Ok(GeographicCoordinateE7::new(0, 900_000_000).expect("east"))
+        );
+    }
+
+    #[test]
+    fn inverse_cell_centres_route_back_to_their_source_cells() {
+        for (latitude, longitude) in [
+            (0, 0),
+            (387_000_000, -903_000_000),
+            (-452_000_000, 1_702_000_000),
+            (521_000_000, 132_000_000),
+        ] {
+            let source = GeographicCoordinateE7::new(latitude, longitude).expect("coordinate");
+            let cell = route_geographic_to_s2(source, 14).expect("source routes");
+            let centre = s2_ray_to_geographic_e7(
+                s2_face_uv_to_ray(s2_face_ij_center_uv(decode_s2_face_ij(cell)).expect("centre"))
+                    .expect("ray"),
+            )
+            .expect("centre converts");
+            assert_eq!(route_geographic_to_s2(centre, 14), Ok(cell));
+        }
     }
 
     #[test]
