@@ -45,6 +45,17 @@ def output_path(root: Path, year: int) -> Path:
     return root / f"era5-monthly-single-levels-{NORMAL_START_YEAR}-{NORMAL_END_YEAR}-{year}.nc"
 
 
+def publish_without_replacement(partial: Path, target: Path) -> None:
+    """Publish a completed download without replacing a concurrently created file."""
+    os.link(partial, target)
+    partial.unlink()
+    directory = os.open(target.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
+
+
 def parser() -> argparse.ArgumentParser:
     command = argparse.ArgumentParser(description=__doc__)
     command.add_argument(
@@ -110,7 +121,7 @@ def main() -> int:
         client.retrieve(DATASET, record["request"], str(partial))
         with partial.open("rb") as downloaded:
             os.fsync(downloaded.fileno())
-        partial.replace(target)
+        publish_without_replacement(partial, target)
         print(target)
     return 0
 
