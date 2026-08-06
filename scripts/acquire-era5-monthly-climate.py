@@ -29,6 +29,10 @@ VARIABLES = (
     "sea_ice_cover",
 )
 MONTHS = tuple(f"{month:02d}" for month in range(1, 13))
+EXPECTED_ARCHIVE_MEMBERS = (
+    "data_stream-moda_stepType-avgua.nc",
+    "data_stream-moda_stepType-avgad.nc",
+)
 
 
 def request_for(year: int) -> dict[str, object]:
@@ -56,10 +60,13 @@ def validate_netcdf_archive(path: Path) -> None:
     try:
         with zipfile.ZipFile(path) as archive:
             members = archive.infolist()
-            if not members or any(
-                member.is_dir() or not member.filename.endswith(".nc") or member.file_size == 0
-                for member in members
-            ):
+            names = tuple(member.filename for member in members)
+            if names != EXPECTED_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    "archive members changed from the fixed ERA5 schema: "
+                    f"expected {EXPECTED_ARCHIVE_MEMBERS}, got {names}"
+                )
+            if any(member.file_size == 0 for member in members):
                 raise ValueError("archive must contain only nonempty NetCDF file members")
             invalid_member = archive.testzip()
             if invalid_member is not None:

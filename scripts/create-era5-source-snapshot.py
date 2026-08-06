@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import importlib.util
 import json
 import os
 import sys
@@ -29,6 +30,16 @@ SNAPSHOT_ID = "era5-single-levels-monthly-means-1981-2010"
 
 def data_name(year: int) -> str:
     return f"era5-monthly-single-levels-{NORMAL_START_YEAR}-{NORMAL_END_YEAR}-{year}.zip"
+
+
+def acquisition_module():
+    path = Path(__file__).with_name("acquire-era5-monthly-climate.py")
+    spec = importlib.util.spec_from_file_location("era5_acquisition", path)
+    if spec is None or spec.loader is None:
+        raise RuntimeError("could not load ERA5 acquisition contract")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
 
 
 def observed_artifact(root: Path, relative: str, role: str, url: str, media_type: str) -> dict[str, object]:
@@ -54,6 +65,11 @@ def observed_artifact(root: Path, relative: str, role: str, url: str, media_type
         "content_hash": digest.hexdigest(),
         "byte_length": str(byte_length),
     }
+
+
+def observed_data_artifact(root: Path, relative: str) -> dict[str, object]:
+    acquisition_module().validate_netcdf_archive(root / relative)
+    return observed_artifact(root, relative, "data", DATASET_URL, "application/zip")
 
 
 def parser() -> argparse.ArgumentParser:
@@ -98,13 +114,7 @@ def main() -> int:
 
     prefix = "era5-monthly-1981-2010"
     artifacts = [
-        observed_artifact(
-            root,
-            f"{prefix}/{data_name(year)}",
-            "data",
-            DATASET_URL,
-            "application/zip",
-        )
+        observed_data_artifact(root, f"{prefix}/{data_name(year)}")
         for year in range(NORMAL_START_YEAR, NORMAL_END_YEAR + 1)
     ]
     artifacts.extend(

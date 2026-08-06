@@ -49,7 +49,12 @@ def main() -> int:
             with zipfile.ZipFile(
                 evidence / f"era5-monthly-single-levels-1981-2010-{year}.nc", "w"
             ) as archive:
-                archive.writestr(f"data-{year}.nc", f"netcdf-{year}".encode("ascii"))
+                archive.writestr(
+                    "data_stream-moda_stepType-avgua.nc", f"instantaneous-{year}".encode("ascii")
+                )
+                archive.writestr(
+                    "data_stream-moda_stepType-avgad.nc", f"accumulated-{year}".encode("ascii")
+                )
         migrated = invoke(MIGRATION, "--output-directory", str(evidence))
         assert migrated.returncode == 0, migrated.stderr
         assert not list(evidence.glob("*.nc"))

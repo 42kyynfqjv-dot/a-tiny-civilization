@@ -25,9 +25,9 @@ copy of upstream evidence that is not independently hashed by the snapshot manif
 - The retained upstream artifact is the exact ZIP response, with media type
   `application/zip`. A member's NetCDF format is a property verified during
   normalization, not the source artifact's media type.
-- The acquisition helper publishes a `*.zip` target only after validating that it is
-  a nonempty ZIP whose members are nonempty `*.nc` files and pass ZIP CRC checks.
-  Existing paths and partial files always fail closed; no source artifact is replaced.
+- The acquisition helper publishes a `*.zip` target only after validating the exact
+  two-member schema above, nonempty members, and ZIP CRC checks. Existing paths and
+  partial files always fail closed; no source artifact is replaced.
 - A legacy initial acquisition used the `*.nc` filename for ZIP bytes. Once the full
   batch is complete, the migration tool hard-links each verified legacy file to its
   correct `*.zip` name before removing only the old directory entry. It never rewrites

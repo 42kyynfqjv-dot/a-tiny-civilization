@@ -44,6 +44,10 @@ def main() -> None:
     assert all(request["data_format"] == "netcdf" for request in requests)
     assert era5.output_path(Path("/tmp"), 1981).name.endswith("1981.zip")
     assert era5.legacy_output_path(Path("/tmp"), 1981).name.endswith("1981.nc")
+    assert era5.EXPECTED_ARCHIVE_MEMBERS == (
+        "data_stream-moda_stepType-avgua.nc",
+        "data_stream-moda_stepType-avgad.nc",
+    )
     assert canonical_digest({"dataset": era5.DATASET, "requests": requests}) == (
         "546a6f02091abf2ccd320523abdeefedc7e40c924ab7298672c22ef141241a6a"
     )
