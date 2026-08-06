@@ -82,6 +82,13 @@ ecological bundle. HTTPS acquisition streams into an ignored cache, never replac
 existing file, and finishes with complete offline verification. See
 [ADR 0015](docs/adr/0015-exact-upstream-source-snapshots.md).
 
+The pinned Natural Earth source has now produced an independently inspected,
+content-addressed L6→L10 `land-reference` release: 24,576 packed tiles and 6,291,456
+exact S2-cell-centre classifications, rooted at
+`d8ac669b89f2903987766a2f55763b415bd7234097307ff63fcb7771099580ac`. It is a
+generalized cartographic land cross-check, explicitly not a coastline or a complete
+ecological bundle.
+
 All twelve CHELSA-BIOCLIM+ v2.1 monthly 1981–2010 land-temperature normals are also
 pinned with exact hashes and a shared-grid inspection gate. They are annual climate
 evidence, not a weather model or a complete climate layer; ocean forcing,

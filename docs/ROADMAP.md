@@ -124,6 +124,12 @@ streaming acquisition with no replacement and complete offline verification. Thi
 proves the acquisition chain but does not create a canonical coastline, relief layer,
 or full-Earth root.
 
+The Natural Earth path has now generated and independently inspected its full global
+L6→L10 Boolean `land-reference` release: 24,576 tiles, 6,291,456 target cells, and
+root-index SHA-256 `d8ac669b89f2903987766a2f55763b415bd7234097307ff63fcb7771099580ac`.
+It is a generalized land cross-check only; it does not make a canonical coastline,
+scientific bundle, or startable full-Earth world.
+
 ### 3. Situated memory and bounded cognition
 
 - local deterministic working memory plus the asynchronous Hindsight adapter;

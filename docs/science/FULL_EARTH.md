@@ -148,8 +148,11 @@ IEEE-754 source conversion and an even-odd polygon test, then independently vali
 every root reference and packed tile. Its identifier is deliberately
 `land-reference`, not `coastline`: Natural Earth's generalized cartography supplies a
 global reference and coarse cross-check, not a scientific-resolution coastal boundary.
-The batch is offline evidence only; a stronger coastline source and every other
-required layer remain necessary before bundle or genesis claims.
+The first global release is complete and independently inspected: 24,576 L6 tiles,
+6,291,456 L10 centre classifications, and root-index SHA-256
+`d8ac669b89f2903987766a2f55763b415bd7234097307ff63fcb7771099580ac`. It remains
+offline evidence only; a stronger coastline source and every other required layer
+remain necessary before bundle or genesis claims.
 
 CHELSA temperature evidence now retains all twelve 1981–2010 monthly global normals
 under one source snapshot. The annual inspector verifies every artifact hash, the
