@@ -54,8 +54,10 @@ envelope, database schema, or current engine state.
   The first embodied process will establish the concrete scheduled-work state.
 - Its Rust module remains private to `sim-engine`; application and adapter crates cannot
   build canonical work until that embodied boundary is accepted.
-- `location_id: Option<EntityId>` is not treated as an Earth position. Fixed-point
-  embodied position and routing need their own ADR before real genesis.
+- `location_id: Option<EntityId>` is not treated as an Earth position. The private
+  fixed-point ECEF-to-S2 reference is now frozen by
+  [ADR 0013](0013-fixed-point-ecef-s2-routing.md), but durable embodied position and
+  movement still require an explicit schema decision before real genesis.
 - No `DomainEvent`, `EventBatch`, snapshot, PostgreSQL, or world-configuration field is
   added by this decision.
 - Whether production persists one atomic whole-tick batch or separately staged

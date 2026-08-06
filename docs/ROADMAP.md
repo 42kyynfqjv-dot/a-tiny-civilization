@@ -97,8 +97,12 @@ strict S2 identity type and the partition scheduler's pure single-worker referen
 kernel are also implemented. Its tests pin active-L10 ordering, deterministic barriers,
 deferred cross-partition work, per-partition capacity rejection, empty ticks, and
 synthetic dense-versus-queued equivalence without changing persistent event schemas.
-The next checkpoints are the first exact global source snapshots, embodied fixed-point
-position/routing, and conserved L10↔L14 refinement.
+A private fixed-point routing reference now maps bounded integer-millimetre EPSG:4978
+positions through an explicitly geocentric, integer-only S2 bridge. Shared Rust/Python
+goldens pin all faces, ties, exact boundaries, and causal-level ancestors without
+changing events, snapshots, configuration, or PostgreSQL. The next checkpoints are the
+first exact global source snapshots, conserved L10↔L14 refinement, and durable embodied
+position/movement integration.
 
 ### 3. Situated memory and bounded cognition
 

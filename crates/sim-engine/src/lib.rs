@@ -4,6 +4,8 @@
 // scheduling defines a stable crate API and persistent representation.
 #[allow(dead_code)]
 mod partition;
+#[allow(dead_code)]
+mod spatial;
 
 use std::collections::BTreeMap;
 

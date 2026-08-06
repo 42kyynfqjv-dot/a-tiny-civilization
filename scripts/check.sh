@@ -9,6 +9,7 @@ export DATABASE_URL="${TEST_DATABASE_URL:-${DATABASE_URL:-postgres://civilizatio
 cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
+python3 ./scripts/verify-s2-routing.py
 ./scripts/check-boundaries.sh
 ./scripts/verify-demo.sh
 

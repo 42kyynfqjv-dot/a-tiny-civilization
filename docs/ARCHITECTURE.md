@@ -137,6 +137,13 @@ parent totals, is stream-seeded and order-independent, and cannot be triggered b
 observer request. Fine simulation geometry is always marked as measured, transformed,
 or inferred; resolution is never presented as evidence quality.
 
+The private embodied-address reference uses signed integer-millimetre EPSG:4978
+coordinates and routes their geocentric ray through the exact quadratic S2 projection.
+It uses rational boundary comparisons and the standard Hilbert order, so platform math
+libraries cannot select a different partition. This is a proof boundary only: no
+position is yet stored in an event, snapshot, or engine state. See
+[ADR 0013](adr/0013-fixed-point-ecef-s2-routing.md).
+
 ## Deployment boundary
 
 Only the web origin is publicly reachable. It proxies `/api` and live observer
@@ -148,10 +155,11 @@ be included before production configuration is required.
 
 Do not introduce Redis, Kafka, Kubernetes, or independent microservices before
 measurement demonstrates a need. The single-process engine remains the deterministic
-reference implementation. Its pure L10 ordering/barrier kernel and a synthetic
-dense-equivalence proof are implemented, but canonical full-Earth genesis remains
-blocked until embodied positions, conserved refinement, durable scheduling state, and
-the persistence barrier are integrated. Every person remains an individual;
+reference implementation. Its pure L10 ordering/barrier kernel, synthetic
+dense-equivalence proof, and private exact ECEF-to-S2 address router are implemented,
+but canonical full-Earth genesis remains blocked until durable embodied positions,
+conserved refinement, durable scheduling state, and the persistence barrier are
+integrated. Every person remains an individual;
 infrastructure pressure may slow or pause wall-clock advancement at a committed hash
 boundary but cannot change causal rules or discard lives. See
 [ADR 0011](adr/0011-population-scale-and-capacity.md) and

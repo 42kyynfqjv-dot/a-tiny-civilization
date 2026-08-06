@@ -1,0 +1,306 @@
+{
+  "schema_version": 1,
+  "coordinate_frame": "EPSG:4978",
+  "coordinate_unit": "millimetre",
+  "address_bridge": "geocentric_ecef_ray",
+  "face_tie_precedence": ["z", "y", "x"],
+  "s2_reference_revision": "97d76747276147afb716b1c03863ae2b3e50ed65",
+  "vectors": [
+    {
+      "name": "positive_x_axis",
+      "ecef_mm": [6378137000, 0, 0],
+      "cells": {
+        "0": "1000000000000000",
+        "10": "1000010000000000"
+      }
+    },
+    {
+      "name": "positive_y_axis",
+      "ecef_mm": [0, 6378137000, 0],
+      "cells": {
+        "0": "3000000000000000",
+        "10": "3000010000000000"
+      }
+    },
+    {
+      "name": "positive_z_axis",
+      "ecef_mm": [0, 0, 6378137000],
+      "cells": {
+        "0": "5000000000000000",
+        "10": "5000010000000000"
+      }
+    },
+    {
+      "name": "negative_x_axis",
+      "ecef_mm": [-6378137000, 0, 0],
+      "cells": {
+        "0": "7000000000000000",
+        "10": "7000010000000000"
+      }
+    },
+    {
+      "name": "negative_y_axis",
+      "ecef_mm": [0, -6378137000, 0],
+      "cells": {
+        "0": "9000000000000000",
+        "10": "9000010000000000"
+      }
+    },
+    {
+      "name": "negative_z_axis",
+      "ecef_mm": [0, 0, -6378137000],
+      "cells": {
+        "0": "b000000000000000",
+        "10": "b000010000000000"
+      }
+    },
+    {
+      "name": "face_0_interior",
+      "ecef_mm": [6378137000, 1111111111, 222222222],
+      "cells": {
+        "10": "107ce30000000000",
+        "14": "107ce2b700000000",
+        "18": "107ce2b655000000",
+        "23": "107ce2b655264000",
+        "30": "107ce2b655266e4d"
+      }
+    },
+    {
+      "name": "face_1_interior",
+      "ecef_mm": [-1111111111, 6378137000, 222222222],
+      "cells": {
+        "10": "302da70000000000",
+        "14": "302da7e700000000",
+        "18": "302da7e701000000",
+        "23": "302da7e700634000",
+        "30": "302da7e700636f09"
+      }
+    },
+    {
+      "name": "face_2_interior",
+      "ecef_mm": [-1111111111, -222222222, 6378137000],
+      "cells": {
+        "10": "507ce30000000000",
+        "14": "507ce2b700000000",
+        "18": "507ce2b655000000",
+        "23": "507ce2b655264000",
+        "30": "507ce2b655266e4d"
+      }
+    },
+    {
+      "name": "face_3_interior",
+      "ecef_mm": [-6378137000, -1111111111, -222222222],
+      "cells": {
+        "10": "707ce30000000000",
+        "14": "707ce2b700000000",
+        "18": "707ce2b655000000",
+        "23": "707ce2b655264000",
+        "30": "707ce2b655266e4d"
+      }
+    },
+    {
+      "name": "face_4_interior",
+      "ecef_mm": [1111111111, -6378137000, -222222222],
+      "cells": {
+        "10": "902da70000000000",
+        "14": "902da7e700000000",
+        "18": "902da7e701000000",
+        "23": "902da7e700634000",
+        "30": "902da7e700636f09"
+      }
+    },
+    {
+      "name": "face_5_interior",
+      "ecef_mm": [1111111111, 222222222, -6378137000],
+      "cells": {
+        "10": "b07ce30000000000",
+        "14": "b07ce2b700000000",
+        "18": "b07ce2b655000000",
+        "23": "b07ce2b655264000",
+        "30": "b07ce2b655266e4d"
+      }
+    },
+    {
+      "name": "positive_l10_boundary_minus_one_mm",
+      "ecef_mm": [6291456000, 8199999, 1000000000],
+      "cells": {
+        "10": "1029fd0000000000"
+      }
+    },
+    {
+      "name": "positive_l10_boundary_exact",
+      "ecef_mm": [6291456000, 8200000, 1000000000],
+      "cells": {
+        "10": "1029fb0000000000"
+      }
+    },
+    {
+      "name": "positive_l10_boundary_plus_one_mm",
+      "ecef_mm": [6291456000, 8200001, 1000000000],
+      "cells": {
+        "10": "1029fb0000000000"
+      }
+    },
+    {
+      "name": "negative_l10_boundary_minus_one_mm",
+      "ecef_mm": [6291456000, -8200001, 1000000000],
+      "cells": {
+        "10": "0fd6050000000000"
+      }
+    },
+    {
+      "name": "negative_l10_boundary_exact",
+      "ecef_mm": [6291456000, -8200000, 1000000000],
+      "cells": {
+        "10": "0fd6030000000000"
+      }
+    },
+    {
+      "name": "negative_l10_boundary_plus_one_mm",
+      "ecef_mm": [6291456000, -8199999, 1000000000],
+      "cells": {
+        "10": "0fd6030000000000"
+      }
+    },
+    {
+      "name": "positive_x_positive_y_edge_prefers_y",
+      "ecef_mm": [7000000000, 7000000000, 1],
+      "cells": {
+        "10": "3d55550000000000"
+      }
+    },
+    {
+      "name": "positive_x_negative_y_edge_prefers_y",
+      "ecef_mm": [7000000000, -7000000000, 1],
+      "cells": {
+        "10": "8d55550000000000"
+      }
+    },
+    {
+      "name": "negative_x_positive_y_edge_prefers_y",
+      "ecef_mm": [-7000000000, 7000000000, 1],
+      "cells": {
+        "10": "32aaab0000000000"
+      }
+    },
+    {
+      "name": "negative_x_negative_y_edge_prefers_y",
+      "ecef_mm": [-7000000000, -7000000000, 1],
+      "cells": {
+        "10": "82aaab0000000000"
+      }
+    },
+    {
+      "name": "positive_x_positive_z_edge_prefers_z",
+      "ecef_mm": [7000000000, 1, 7000000000],
+      "cells": {
+        "10": "47ffff0000000000"
+      }
+    },
+    {
+      "name": "positive_x_negative_z_edge_prefers_z",
+      "ecef_mm": [7000000000, 1, -7000000000],
+      "cells": {
+        "10": "b7ffff0000000000"
+      }
+    },
+    {
+      "name": "negative_x_positive_z_edge_prefers_z",
+      "ecef_mm": [-7000000000, 1, 7000000000],
+      "cells": {
+        "10": "5800010000000000"
+      }
+    },
+    {
+      "name": "negative_x_negative_z_edge_prefers_z",
+      "ecef_mm": [-7000000000, 1, -7000000000],
+      "cells": {
+        "10": "a800010000000000"
+      }
+    },
+    {
+      "name": "positive_y_positive_z_edge_prefers_z",
+      "ecef_mm": [1, 7000000000, 7000000000],
+      "cells": {
+        "10": "42aaab0000000000"
+      }
+    },
+    {
+      "name": "positive_y_negative_z_edge_prefers_z",
+      "ecef_mm": [1, 7000000000, -7000000000],
+      "cells": {
+        "10": "b2aaab0000000000"
+      }
+    },
+    {
+      "name": "negative_y_positive_z_edge_prefers_z",
+      "ecef_mm": [1, -7000000000, 7000000000],
+      "cells": {
+        "10": "4d55550000000000"
+      }
+    },
+    {
+      "name": "negative_y_negative_z_edge_prefers_z",
+      "ecef_mm": [1, -7000000000, -7000000000],
+      "cells": {
+        "10": "bd55550000000000"
+      }
+    },
+    {
+      "name": "positive_x_positive_y_positive_z_corner_prefers_z",
+      "ecef_mm": [7000000000, 7000000000, 7000000000],
+      "cells": {
+        "10": "4000010000000000"
+      }
+    },
+    {
+      "name": "positive_x_positive_y_negative_z_corner_prefers_z",
+      "ecef_mm": [7000000000, 7000000000, -7000000000],
+      "cells": {
+        "10": "b555550000000000"
+      }
+    },
+    {
+      "name": "positive_x_negative_y_positive_z_corner_prefers_z",
+      "ecef_mm": [7000000000, -7000000000, 7000000000],
+      "cells": {
+        "10": "4aaaab0000000000"
+      }
+    },
+    {
+      "name": "positive_x_negative_y_negative_z_corner_prefers_z",
+      "ecef_mm": [7000000000, -7000000000, -7000000000],
+      "cells": {
+        "10": "bfffff0000000000"
+      }
+    },
+    {
+      "name": "negative_x_positive_y_positive_z_corner_prefers_z",
+      "ecef_mm": [-7000000000, 7000000000, 7000000000],
+      "cells": {
+        "10": "5fffff0000000000"
+      }
+    },
+    {
+      "name": "negative_x_positive_y_negative_z_corner_prefers_z",
+      "ecef_mm": [-7000000000, 7000000000, -7000000000],
+      "cells": {
+        "10": "aaaaab0000000000"
+      }
+    },
+    {
+      "name": "negative_x_negative_y_positive_z_corner_prefers_z",
+      "ecef_mm": [-7000000000, -7000000000, 7000000000],
+      "cells": {
+        "10": "5555550000000000"
+      }
+    },
+    {
+      "name": "negative_x_negative_y_negative_z_corner_prefers_z",
+      "ecef_mm": [-7000000000, -7000000000, -7000000000],
+      "cells": {
+        "10": "a000010000000000"
+      }
+    }
+  ]
+}

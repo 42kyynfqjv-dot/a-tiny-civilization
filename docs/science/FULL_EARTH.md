@@ -102,11 +102,13 @@ Lower Buffalo participates under exactly the same rule as every other eligible c
 1. ~~Implement canonical tile-tree index traversal and hash verification.~~ Complete.
 2. ~~Implement the pure L10 ordering/barrier kernel and synthetic dense-versus-queued
    equivalence proof.~~ Complete.
-3. Freeze license-compatible global source artifacts and construct L10 layer roots.
-4. Implement conserved L10↔L14 refinement and conservation equivalence tests.
-5. Normalize the Lower Buffalo L18/L23 reference window and verify local physics.
-6. Add global viability enumeration and the unpreviewed placement dry run.
-7. Run a multi-year disposable world twice to identical hashes before any public seed.
+3. ~~Implement the private fixed-point ECEF-to-S2 address reference and cross-language
+   golden verification.~~ Complete.
+4. Freeze license-compatible global source artifacts and construct L10 layer roots.
+5. Implement conserved L10↔L14 refinement and conservation equivalence tests.
+6. Normalize the Lower Buffalo L18/L23 reference window and verify local physics.
+7. Add global viability enumeration and the unpreviewed placement dry run.
+8. Run a multi-year disposable world twice to identical hashes before any public seed.
 
 No source bundle, start location, or canonical world currently exists; schema fixtures
 in tests are explicitly non-scientific.
