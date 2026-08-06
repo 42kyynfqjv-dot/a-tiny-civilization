@@ -17,6 +17,25 @@ Keep the host firewall closed to public inbound HTTP and database traffic. Use S
 key-based access for the host and Cloudflare Access for any administrative route that
 is later added. The observatory itself remains read-only.
 
+### Docker bridge prerequisite
+
+This deployment deliberately separates `edge`, `web-api`, and `backend` onto Docker
+bridges. On this host, bridge netfilter must not send that internal container-to-
+container traffic through host iptables: it prevents the web container from reaching
+the observer API even though both services and Docker network membership are healthy.
+
+Before deployment, ensure the dedicated host has this persistent sysctl setting:
+
+```ini
+# /etc/sysctl.d/60-atiny-docker-bridge.conf
+net.bridge.bridge-nf-call-iptables = 0
+```
+
+Apply and verify it with `sudo sysctl -p /etc/sysctl.d/60-atiny-docker-bridge.conf`
+and `sysctl net.bridge.bridge-nf-call-iptables`. This is a host-level networking
+choice: retain the loopback-only published ports and Compose network boundaries above;
+do not compensate by placing `cloudflared` or PostgreSQL on the web/API network.
+
 ## Owner-controlled setup
 
 On the Ubuntu server, clone a tagged repository revision and create a root-readable
