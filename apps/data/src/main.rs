@@ -1,4 +1,5 @@
 use std::{
+    collections::{BTreeMap, HashMap},
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::Write,
@@ -999,7 +1000,7 @@ struct EtopoCentreIndexRecord {
     value_bits: u32,
 }
 
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 struct EtopoCentreSummaryStats {
     samples: u64,
     total_millimetres: i64,
@@ -1049,7 +1050,30 @@ impl EtopoCentreSummaryStats {
 /// converted to integer millimetres before aggregation, so the emitted tile does not
 /// depend on host floating-point accumulation order.
 fn accumulate_etopo_cell_quadrature(
-    summaries: &mut std::collections::BTreeMap<S2CellId, EtopoCentreSummaryStats>,
+    summaries: &mut BTreeMap<S2CellId, EtopoCentreSummaryStats>,
+    row: u32,
+    column: u32,
+    value_bits: u32,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    let millimetres = f32_bits_to_rounded_millimetres(value_bits)?;
+    for (cell, support_samples) in
+        etopo_cell_quadrature(row, column, target_s2_level, points_per_axis)?
+    {
+        summaries
+            .entry(cell)
+            .or_default()
+            .add_weighted(millimetres, u64::from(support_samples))?;
+    }
+    Ok(())
+}
+
+/// Fast equivalent of [`accumulate_etopo_cell_quadrature`] for the long full-source
+/// pass. Hash-table iteration never reaches canonical bytes: the completed summaries
+/// are sorted into a `BTreeMap` before tile packing.
+fn accumulate_etopo_cell_quadrature_unordered(
+    summaries: &mut HashMap<S2CellId, EtopoCentreSummaryStats>,
     row: u32,
     column: u32,
     value_bits: u32,
@@ -1100,7 +1124,7 @@ fn derive_etopo_quadrature_contribution(
         .first()
         .copied()
         .context("ETOPO source-cell selection is empty")?;
-    let mut summaries = std::collections::BTreeMap::new();
+    let mut summaries = BTreeMap::new();
     accumulate_etopo_cell_quadrature(
         &mut summaries,
         row,
@@ -1180,7 +1204,7 @@ fn derive_etopo_terrain_layer(
         .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
     validate_etopo_schema(&file)?;
 
-    let mut summaries = std::collections::BTreeMap::new();
+    let mut summaries = HashMap::new();
     for row in 0..ETOPO_LATITUDE_CELLS {
         let selection = NcSliceInfo {
             selections: vec![
@@ -1206,7 +1230,7 @@ fn derive_etopo_terrain_layer(
             bail!("ETOPO row {row} has an unexpected sample count");
         }
         for (column, value) in values.iter().copied().enumerate() {
-            accumulate_etopo_cell_quadrature(
+            accumulate_etopo_cell_quadrature_unordered(
                 &mut summaries,
                 u32::try_from(row)?,
                 u32::try_from(column)?,
@@ -1224,6 +1248,11 @@ fn derive_etopo_terrain_layer(
             );
         }
     }
+
+    // Canonical packing performs ordered point lookups. Sorting only after every
+    // source contribution is accumulated retains bit-for-bit output while avoiding a
+    // tree traversal on each interior quadrature update.
+    let summaries = summaries.into_iter().collect::<BTreeMap<_, _>>();
 
     fs::create_dir(output_directory).with_context(|| {
         format!(
@@ -3043,6 +3072,36 @@ mod tests {
         assert_eq!(quadrature.values().copied().sum::<u32>(), 16);
         assert!(quadrature.values().all(|count| *count > 0));
         assert!(etopo_cell_quadrature(5_400, 10_800, 10, 7).is_err());
+    }
+
+    #[test]
+    fn unordered_full_batch_accumulation_has_the_same_sorted_summary() {
+        let samples = [
+            (0, 0, (-10.25_f32).to_bits()),
+            (1, 1, 0.5_f32.to_bits()),
+            (5_400, 10_800, 123.75_f32.to_bits()),
+            (
+                ETOPO_LATITUDE_CELLS as u32 - 1,
+                ETOPO_LONGITUDE_CELLS as u32 - 1,
+                4.0_f32.to_bits(),
+            ),
+        ];
+        let mut ordered = BTreeMap::new();
+        let mut unordered = HashMap::new();
+        for (row, column, value_bits) in samples {
+            accumulate_etopo_cell_quadrature(&mut ordered, row, column, value_bits, 10, 4)
+                .expect("ordered accumulation");
+            accumulate_etopo_cell_quadrature_unordered(
+                &mut unordered,
+                row,
+                column,
+                value_bits,
+                10,
+                4,
+            )
+            .expect("unordered accumulation");
+        }
+        assert_eq!(unordered.into_iter().collect::<BTreeMap<_, _>>(), ordered);
     }
 
     #[test]
