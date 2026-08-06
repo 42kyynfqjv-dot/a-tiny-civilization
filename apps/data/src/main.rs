@@ -2471,11 +2471,7 @@ fn inspect_natural_earth_land_point(
         })
         .context("source snapshot has no Natural Earth .shp data artifact")?;
     let bytes = fs::read(artifact_root.join(&artifact.artifact_path))?;
-    let inside_land_polygon = natural_earth_contains_point(
-        &bytes,
-        f64::from(longitude_e7) / 10_000_000.0,
-        f64::from(latitude_e7) / 10_000_000.0,
-    )?;
+    let inside_land_polygon = natural_earth_contains_point(&bytes, longitude_e7, latitude_e7)?;
     println!(
         "{}",
         serde_json::to_string(&NaturalEarthLandPointInspection {
@@ -2489,7 +2485,13 @@ fn inspect_natural_earth_land_point(
     Ok(())
 }
 
-fn natural_earth_contains_point(bytes: &[u8], longitude: f64, latitude: f64) -> Result<bool> {
+/// Classify an exact E7 coordinate using the generalized Natural Earth polygons.
+///
+/// Shapefiles store vertices as IEEE-754 doubles.  The classifier converts each
+/// source bit pattern once to its nearest E7 lattice point with integer arithmetic,
+/// then performs the even-odd test using integer cross-products. This prevents host
+/// floating-point behavior from becoming a normalization input.
+fn natural_earth_contains_point(bytes: &[u8], longitude_e7: i32, latitude_e7: i32) -> Result<bool> {
     parse_polygon_shapefile(bytes)?;
     let mut inside = false;
     let mut offset = 100_usize;
@@ -2514,7 +2516,13 @@ fn natural_earth_contains_point(bytes: &[u8], longitude: f64, latitude: f64) -> 
                         &body[part_start + (part + 1) * 4..part_start + (part + 1) * 4 + 4],
                     )?)?
                 };
-                if point_in_shapefile_ring(&body[point_start..], start, end, longitude, latitude)? {
+                if point_in_shapefile_ring(
+                    &body[point_start..],
+                    start,
+                    end,
+                    i128::from(longitude_e7),
+                    i128::from(latitude_e7),
+                )? {
                     inside = !inside;
                 }
             }
@@ -2528,31 +2536,73 @@ fn point_in_shapefile_ring(
     points: &[u8],
     start: usize,
     end: usize,
-    x: f64,
-    y: f64,
+    x: i128,
+    y: i128,
 ) -> Result<bool> {
     if end <= start + 2 {
         return Ok(false);
     }
-    let point = |index: usize| -> Result<(f64, f64)> {
+    let point = |index: usize| -> Result<(i128, i128)> {
         let offset = index.checked_mul(16).context("point offset overflow")?;
         Ok((
-            f64::from_bits(le_u64(&points[offset..offset + 8])?),
-            f64::from_bits(le_u64(&points[offset + 8..offset + 16])?),
+            ieee754_degrees_bits_to_e7(le_u64(&points[offset..offset + 8])?)?,
+            ieee754_degrees_bits_to_e7(le_u64(&points[offset + 8..offset + 16])?)?,
         ))
     };
     let mut crossed = false;
     let mut previous = point(end - 1)?;
     for index in start..end {
         let current = point(index)?;
-        if (current.1 > y) != (previous.1 > y)
-            && x < (previous.0 - current.0) * (y - current.1) / (previous.1 - current.1) + current.0
+        let crosses_horizontal_ray = (current.1 > y) != (previous.1 > y);
+        let denominator = previous.1 - current.1;
+        let left = (x - current.0) * denominator;
+        let right = (previous.0 - current.0) * (y - current.1);
+        if crosses_horizontal_ray
+            && if denominator > 0 {
+                left < right
+            } else {
+                left > right
+            }
         {
             crossed = !crossed;
         }
         previous = current;
     }
     Ok(crossed)
+}
+
+fn ieee754_degrees_bits_to_e7(bits: u64) -> Result<i128> {
+    let sign = if bits >> 63 == 0 { 1_i128 } else { -1_i128 };
+    let exponent = i32::try_from((bits >> 52) & 0x7ff)?;
+    let fraction = bits & ((1_u64 << 52) - 1);
+    if exponent == 0x7ff {
+        bail!("Natural Earth coordinate is not finite");
+    }
+    if exponent == 0 && fraction == 0 {
+        return Ok(0);
+    }
+    let (mantissa, binary_exponent) = if exponent == 0 {
+        (i128::from(fraction), -1074_i32)
+    } else {
+        (i128::from((1_u64 << 52) | fraction), exponent - 1075)
+    };
+    let scaled = mantissa
+        .checked_mul(10_000_000)
+        .context("Natural Earth E7 mantissa overflow")?;
+    let rounded = if binary_exponent >= 0 {
+        scaled
+            .checked_shl(u32::try_from(binary_exponent)?)
+            .context("Natural Earth E7 exponent overflow")?
+    } else {
+        let divisor = 1_i128
+            .checked_shl(u32::try_from(-binary_exponent)?)
+            .context("Natural Earth E7 divisor overflow")?;
+        let quotient = scaled / divisor;
+        let remainder = scaled % divisor;
+        quotient + i128::from(remainder * 2 >= divisor)
+    };
+    sign.checked_mul(rounded)
+        .context("Natural Earth E7 sign overflow")
 }
 
 #[derive(Debug, Eq, PartialEq)]
@@ -3288,8 +3338,21 @@ mod tests {
             points.extend_from_slice(&x.to_le_bytes());
             points.extend_from_slice(&y.to_le_bytes());
         }
-        assert!(point_in_shapefile_ring(&points, 0, 5, 1.0, 1.0).expect("inside"));
-        assert!(!point_in_shapefile_ring(&points, 0, 5, 3.0, 1.0).expect("outside"));
+        assert!(point_in_shapefile_ring(&points, 0, 5, 10_000_000, 10_000_000).expect("inside"));
+        assert!(!point_in_shapefile_ring(&points, 0, 5, 30_000_000, 10_000_000).expect("outside"));
+    }
+
+    #[test]
+    fn shapefile_ieee754_coordinates_round_to_the_e7_lattice_without_host_float_math() {
+        assert_eq!(
+            ieee754_degrees_bits_to_e7((-93.125_f64).to_bits()).expect("finite coordinate"),
+            -931_250_000
+        );
+        assert_eq!(
+            ieee754_degrees_bits_to_e7(0.5_f64.to_bits()).expect("finite coordinate"),
+            5_000_000
+        );
+        assert!(ieee754_degrees_bits_to_e7(f64::NAN.to_bits()).is_err());
     }
 
     #[test]
