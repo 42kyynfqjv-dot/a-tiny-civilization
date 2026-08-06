@@ -2710,7 +2710,54 @@ struct Era5AnnualArchiveInspection {
 struct Era5MemberInspection {
     name: String,
     uncompressed_byte_length: u64,
+    latitude_endpoint_ieee754_le_hex: [String; 2],
+    longitude_endpoint_ieee754_le_hex: [String; 2],
     variables: Vec<EtopoVariableInspection>,
+}
+
+const ERA5_MONTHS_PER_YEAR: u64 = 12;
+const ERA5_LATITUDE_CELLS: u64 = 721;
+const ERA5_LONGITUDE_CELLS: u64 = 1_440;
+
+fn expected_era5_member_variables(member_name: &str) -> Result<BTreeMap<&'static str, Vec<u64>>> {
+    let spatial = vec![
+        ERA5_MONTHS_PER_YEAR,
+        ERA5_LATITUDE_CELLS,
+        ERA5_LONGITUDE_CELLS,
+    ];
+    let mut expected = BTreeMap::from([
+        ("expver", vec![ERA5_MONTHS_PER_YEAR]),
+        ("latitude", vec![ERA5_LATITUDE_CELLS]),
+        ("longitude", vec![ERA5_LONGITUDE_CELLS]),
+        ("number", Vec::new()),
+        ("valid_time", vec![ERA5_MONTHS_PER_YEAR]),
+    ]);
+    match member_name {
+        "data_stream-moda_stepType-avgua.nc" => {
+            for name in ["siconc", "sst", "t2m", "u10", "v10"] {
+                expected.insert(name, spatial.clone());
+            }
+        }
+        "data_stream-moda_stepType-avgad.nc" => {
+            expected.insert("tp", spatial);
+        }
+        _ => bail!("unrecognized ERA5 archive member {member_name}"),
+    }
+    Ok(expected)
+}
+
+fn validate_era5_member_schema(file: &NcFile, member_name: &str) -> Result<()> {
+    let expected = expected_era5_member_variables(member_name)?;
+    let observed = file
+        .variables()
+        .with_context(|| format!("enumerate variables in ERA5 member {member_name}"))?
+        .iter()
+        .map(|variable| (variable.name(), variable.shape().to_vec()))
+        .collect::<BTreeMap<_, _>>();
+    if observed != expected {
+        bail!("ERA5 member {member_name} variable schema changed");
+    }
+    Ok(())
 }
 
 /// Inspect one verified ERA5 archive in memory. ZIP member bytes never become a
@@ -2764,6 +2811,15 @@ fn inspect_era5_annual_archive(
         }
         let file = NcFile::from_bytes(&bytes)
             .with_context(|| format!("parse ERA5 ZIP member {member_name} as NetCDF"))?;
+        validate_era5_member_schema(&file, member_name)?;
+        let latitude_endpoint_ieee754_le_hex =
+            inspect_etopo_axis_endpoints(&file, "latitude", ERA5_LATITUDE_CELLS, "ERA5 latitude")?;
+        let longitude_endpoint_ieee754_le_hex = inspect_etopo_axis_endpoints(
+            &file,
+            "longitude",
+            ERA5_LONGITUDE_CELLS,
+            "ERA5 longitude",
+        )?;
         let mut variables = file
             .variables()
             .with_context(|| format!("enumerate variables in ERA5 member {member_name}"))?
@@ -2777,6 +2833,8 @@ fn inspect_era5_annual_archive(
         members.push(Era5MemberInspection {
             name: member_name.to_owned(),
             uncompressed_byte_length,
+            latitude_endpoint_ieee754_le_hex,
+            longitude_endpoint_ieee754_le_hex,
             variables,
         });
     }
@@ -4090,6 +4148,20 @@ mod tests {
     use std::time::{SystemTime, UNIX_EPOCH};
 
     use super::*;
+
+    #[test]
+    fn era5_member_contract_separates_instantaneous_and_accumulated_fields() {
+        let instantaneous = expected_era5_member_variables(ERA5_ARCHIVE_MEMBERS[0])
+            .expect("instantaneous ERA5 schema");
+        let accumulated = expected_era5_member_variables(ERA5_ARCHIVE_MEMBERS[1])
+            .expect("accumulated ERA5 schema");
+        assert_eq!(instantaneous.get("t2m"), Some(&vec![12, 721, 1_440]));
+        assert_eq!(instantaneous.get("siconc"), Some(&vec![12, 721, 1_440]));
+        assert!(!instantaneous.contains_key("tp"));
+        assert_eq!(accumulated.get("tp"), Some(&vec![12, 721, 1_440]));
+        assert!(!accumulated.contains_key("t2m"));
+        assert!(expected_era5_member_variables("unexpected.nc").is_err());
+    }
 
     fn temporary_root(label: &str) -> PathBuf {
         let nonce = SystemTime::now()
