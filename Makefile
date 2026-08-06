@@ -1,7 +1,7 @@
 COMPOSE ?= docker-compose
 COMPOSE_FILES := -f compose.yaml
 
-.PHONY: up down logs ps smoke check proof-world hindsight-up
+.PHONY: up down logs ps smoke check proof-world hindsight-up production-preflight
 
 up:
 	$(COMPOSE) $(COMPOSE_FILES) up --build -d
@@ -28,3 +28,6 @@ proof-world:
 
 hindsight-up:
 	$(COMPOSE) $(COMPOSE_FILES) -f compose.hindsight.yaml up --build -d
+
+production-preflight:
+	./scripts/production-preflight.sh
