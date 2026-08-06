@@ -27,7 +27,8 @@ pub use event::{
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
-    decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
+    S2FaceUv, decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
+    s2_face_ij_center_uv,
 };
 pub use hash::{CanonicalHashError, Digest};
 pub use identity::{EntityId, EventId, WorldId};

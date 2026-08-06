@@ -88,6 +88,15 @@ pub struct S2FaceIj {
     pub level: u8,
 }
 
+/// Exact rational face coordinates at the geometric centre of an S2 IJ cell.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct S2FaceUv {
+    pub face: u8,
+    pub u_numerator: i128,
+    pub v_numerator: i128,
+    pub denominator: i128,
+}
+
 /// A WGS 84 coordinate in exact half-arcsecond units.
 ///
 /// ETOPO 2022's 60-arc-second `Area` cells have centers on this lattice. Keeping this
@@ -207,6 +216,50 @@ pub fn decode_s2_face_ij(cell: S2CellId) -> S2FaceIj {
         j,
         level,
     }
+}
+
+/// Apply S2's quadratic projection to the exact centre of a decoded IJ cell.
+pub fn s2_face_ij_center_uv(ij: S2FaceIj) -> Result<S2FaceUv, GeographicRoutingError> {
+    let size = 1_i128
+        .checked_shl(u32::from(ij.level))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    let denominator = size
+        .checked_mul(size)
+        .and_then(|value| value.checked_mul(3))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    let coordinate = |index: u32| -> Result<i128, GeographicRoutingError> {
+        let doubled = i128::from(index)
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .ok_or(GeographicRoutingError::Overflow)?;
+        let squared_size = size
+            .checked_mul(size)
+            .ok_or(GeographicRoutingError::Overflow)?;
+        if doubled >= size {
+            doubled
+                .checked_mul(doubled)
+                .and_then(|value| value.checked_sub(squared_size))
+                .ok_or(GeographicRoutingError::Overflow)
+        } else {
+            let complement = size
+                .checked_mul(2)
+                .and_then(|value| value.checked_sub(doubled))
+                .ok_or(GeographicRoutingError::Overflow)?;
+            squared_size
+                .checked_sub(
+                    complement
+                        .checked_mul(complement)
+                        .ok_or(GeographicRoutingError::Overflow)?,
+                )
+                .ok_or(GeographicRoutingError::Overflow)
+        }
+    };
+    Ok(S2FaceUv {
+        face: ij.face,
+        u_numerator: coordinate(ij.i)?,
+        v_numerator: coordinate(ij.j)?,
+        denominator,
+    })
 }
 
 fn route_turns_to_s2(
@@ -540,6 +593,40 @@ mod tests {
                 Ok(cell)
             );
         }
+    }
+
+    #[test]
+    fn ij_cell_centres_use_exact_quadratic_face_coordinates() {
+        let lower = S2FaceIj {
+            face: 0,
+            i: 0,
+            j: 0,
+            level: 1,
+        };
+        let upper = S2FaceIj {
+            face: 0,
+            i: 1,
+            j: 1,
+            level: 1,
+        };
+        assert_eq!(
+            s2_face_ij_center_uv(lower),
+            Ok(S2FaceUv {
+                face: 0,
+                u_numerator: -5,
+                v_numerator: -5,
+                denominator: 12
+            })
+        );
+        assert_eq!(
+            s2_face_ij_center_uv(upper),
+            Ok(S2FaceUv {
+                face: 0,
+                u_numerator: 5,
+                v_numerator: 5,
+                denominator: 12
+            })
+        );
     }
 
     #[test]
