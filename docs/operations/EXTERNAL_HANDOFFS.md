@@ -46,6 +46,21 @@ temperature, and sea ice. The raw downloads remain outside Git and are admitted 
 after exact hashes, terms evidence, and retrieval metadata are frozen in a source
 snapshot.
 
+### Copernicus satellite land cover
+
+The existing CDS account and API credential can also acquire the pinned global 2022
+`satellite-land-cover` `v2_1_1` response selected in
+[ADR 0034](../adr/0034-copernicus-land-and-soil-source-composition.md). CDS requires
+separate acceptance of this dataset's licences. The authenticated request probe fails
+closed with `required licences not accepted` until the owner visits the
+[land-cover licence manager](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=download#manage-licences)
+and accepts every required term. No new API key or account is required.
+
+After acceptance, report only `CDS land-cover licences accepted`. Acquisition will
+then observe the actual response media type and byte length before publishing an
+immutable source artifact; it will not assume that the response container matches the
+dataset's internal NetCDF format.
+
 ## Required before a public deployment
 
 ### Server and backups
@@ -140,6 +155,7 @@ For now, it is enough to report the completion state, not the secret:
 
 - `CDS API access ready` when the full-Earth climate normalizer is ready for its
   pinned acquisition;
+- `CDS land-cover licences accepted` after the dataset-specific terms are accepted;
 - `Cloudflare tunnel created` (and hostname chosen),
 - `backup destination selected`,
 - `Stripe account ready` when supporter payments are ready to build,
