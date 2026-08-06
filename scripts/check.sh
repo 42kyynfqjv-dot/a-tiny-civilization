@@ -10,6 +10,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 python3 ./scripts/verify-s2-routing.py
+python3 ./scripts/verify-geographic-s2-routing.py
 ./scripts/check-boundaries.sh
 ./scripts/verify-demo.sh
 

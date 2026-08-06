@@ -361,7 +361,30 @@ pub enum GeographicRoutingError {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeMap;
+
+    use serde::Deserialize;
+
     use super::*;
+
+    const GOLDEN_VECTORS: &str = include_str!("../testdata/geographic-s2-v1.json");
+
+    #[derive(Deserialize)]
+    struct GoldenSuite {
+        schema_version: u16,
+        coordinate_frame: String,
+        address_bridge: String,
+        angle_algorithm: String,
+        vectors: Vec<GoldenVector>,
+    }
+
+    #[derive(Deserialize)]
+    struct GoldenVector {
+        name: String,
+        latitude_e7: i32,
+        longitude_e7: i32,
+        cells: BTreeMap<String, String>,
+    }
 
     #[test]
     fn cardinal_geographic_directions_select_the_expected_s2_faces() {
@@ -395,6 +418,31 @@ mod tests {
                 finest.ancestor(level),
                 Ok(route_geographic_to_s2(coordinate, level).expect("routable ancestor"))
             );
+        }
+    }
+
+    #[test]
+    fn checked_in_geographic_vectors_pin_the_source_coordinate_contract() {
+        let suite: GoldenSuite =
+            serde_json::from_str(GOLDEN_VECTORS).expect("valid geographic golden suite");
+        assert_eq!(suite.schema_version, 1);
+        assert_eq!(suite.coordinate_frame, "WGS84 geodetic e7 degree");
+        assert_eq!(suite.address_bridge, "wgs84_ecef_geocentric_ray");
+        assert_eq!(suite.angle_algorithm, "cordic_q62_turns_v1");
+        for vector in suite.vectors {
+            let coordinate = GeographicCoordinateE7::new(vector.latitude_e7, vector.longitude_e7)
+                .unwrap_or_else(|error| {
+                    panic!("{} has an invalid coordinate: {error}", vector.name)
+                });
+            for (level, expected) in vector.cells {
+                let level = level.parse::<u8>().expect("fixture level is numeric");
+                assert_eq!(
+                    route_geographic_to_s2(coordinate, level).map(|cell| cell.to_string()),
+                    Ok(expected),
+                    "{} at L{level}",
+                    vector.name
+                );
+            }
         }
     }
 

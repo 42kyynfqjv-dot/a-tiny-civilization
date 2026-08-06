@@ -1,0 +1,18 @@
+{
+  "schema_version": 1,
+  "coordinate_frame": "WGS84 geodetic e7 degree",
+  "address_bridge": "wgs84_ecef_geocentric_ray",
+  "angle_algorithm": "cordic_q62_turns_v1",
+  "vectors": [
+    { "name": "equator_greenwich", "latitude_e7": 0, "longitude_e7": 0, "cells": { "10": "1000010000000000" } },
+    { "name": "equator_east_90", "latitude_e7": 0, "longitude_e7": 900000000, "cells": { "10": "3000010000000000" } },
+    { "name": "equator_west_90", "latitude_e7": 0, "longitude_e7": -900000000, "cells": { "10": "9000010000000000" } },
+    { "name": "north_pole", "latitude_e7": 900000000, "longitude_e7": 0, "cells": { "10": "5000010000000000" } },
+    { "name": "south_pole", "latitude_e7": -900000000, "longitude_e7": 0, "cells": { "10": "b000010000000000" } },
+    { "name": "lower_mississippi_reference", "latitude_e7": 387000000, "longitude_e7": -903000000, "cells": { "10": "87d8c90000000000", "14": "87d8c82700000000" } },
+    { "name": "sydney", "latitude_e7": -338688000, "longitude_e7": 1512093000, "cells": { "10": "6b0d570000000000" } },
+    { "name": "tokyo", "latitude_e7": 356895000, "longitude_e7": 1396917000, "cells": { "10": "6018670000000000" } },
+    { "name": "antimeridian_east", "latitude_e7": 0, "longitude_e7": 1799999999, "cells": { "10": "6fffff0000000000" } },
+    { "name": "antimeridian_west", "latitude_e7": 0, "longitude_e7": -1800000000, "cells": { "10": "7000010000000000" } }
+  ]
+}
