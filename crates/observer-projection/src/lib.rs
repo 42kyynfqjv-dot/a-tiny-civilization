@@ -476,7 +476,8 @@ pub trait SupporterReservationStore: Send + Sync {
         birth: &CommittedBirth,
     ) -> Result<Option<SupporterReservation>, ReservationStoreError>;
 
-    /// Marks still-active reservations as unavailable after immutable world archival.
+    /// Marks every unmatched reservation as unavailable after immutable world archival.
+    /// Matched historical aliases remain intact.
     async fn expire_world_reservations(
         &self,
         world_id: WorldId,

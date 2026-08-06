@@ -422,6 +422,21 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
     );
     assert!(store.match_committed_birth(&birth).await?.is_none());
 
+    let pending_expiry_id = Uuid::new_v4();
+    let mut pending_expiry_request = request.clone();
+    pending_expiry_request.reservation_id = pending_expiry_id;
+    pending_expiry_request.observer_label = "Unmatched pending label".to_owned();
+    store.create_reservation(&pending_expiry_request).await?;
+    let active_expiry_id = Uuid::new_v4();
+    let mut active_expiry_request = request.clone();
+    active_expiry_request.reservation_id = active_expiry_id;
+    active_expiry_request.observer_label = "Unmatched active label".to_owned();
+    store.create_reservation(&active_expiry_request).await?;
+    store
+        .record_verified_payment(active_expiry_id, "stripe_webhook_event_2")
+        .await?;
+    store.approve_reservation(active_expiry_id).await?;
+
     let event_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM event_batches WHERE world_id = $1")
             .bind(manifest.world_id.as_uuid())
@@ -443,6 +458,17 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
         .execute(&pool)
         .await;
     assert!(deletion.is_err());
+
+    assert_eq!(store.expire_world_reservations(manifest.world_id).await?, 2);
+    assert_eq!(store.expire_world_reservations(manifest.world_id).await?, 0);
+    for reservation_id in [pending_expiry_id, active_expiry_id] {
+        let state: String =
+            sqlx::query_scalar("SELECT state FROM supporter_reservations WHERE id = $1")
+                .bind(reservation_id)
+                .fetch_one(&pool)
+                .await?;
+        assert_eq!(state, "expired");
+    }
     Ok(())
 }
 

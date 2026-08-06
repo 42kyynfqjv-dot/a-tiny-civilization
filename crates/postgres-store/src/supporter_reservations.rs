@@ -198,7 +198,7 @@ impl SupporterReservationStore for PostgresStore {
         world_id: WorldId,
     ) -> Result<u64, ReservationStoreError> {
         let result = sqlx::query(
-            "UPDATE supporter_reservations SET state = 'expired' WHERE world_id = $1 AND state IN ('pending_moderation', 'active')",
+            "UPDATE supporter_reservations SET state = 'expired' WHERE world_id = $1 AND state IN ('pending_payment', 'pending_moderation', 'active')",
         )
         .bind(world_id.as_uuid())
         .execute(self.pool())

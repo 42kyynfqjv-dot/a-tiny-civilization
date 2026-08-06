@@ -19,8 +19,9 @@ UI, or public checkout endpoint.
   consumes the oldest matching active reservation. It only stores an external label
   link; it never inserts or changes a world event, organism, state, or schedule.
 - Unique birth-event and organism links prevent duplicate fulfillment. Matched and
-  payment evidence are immutable. Archive handling expires unmatched eligible queue
-  entries but preserves their history.
+  payment evidence are immutable. After the observer projector sees an immutable
+  archived lifecycle state, it idempotently expires every unmatched reservation
+  (including pending payment and moderation) while preserving matched history.
 - This lives behind `observer-projection`, which does not depend on the engine. The
   runner has no direct dependency on the reservation port or a payment/auth crate.
 

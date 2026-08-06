@@ -3,7 +3,9 @@
 use anyhow::{Context, Result};
 use application::WorldStore;
 use clap::{Parser, Subcommand};
-use observer_projection::{ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore};
+use observer_projection::{
+    ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, SupporterReservationStore,
+};
 use postgres_store::PostgresStore;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use world_domain::WorldId;
@@ -122,6 +124,21 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
                 findings += 1;
             }
         }
+        // Archive is already an immutable canonical fact. Checking the durable lifecycle
+        // state also covers worlds archived before this projector version was deployed.
+        // Expiration is idempotent observer-side bookkeeping only.
+        let world = store
+            .load_world(*world_id)
+            .await
+            .context("load durable world lifecycle for supporter expiration")?;
+        let expired_reservations = if world.status == world_domain::WorldStatus::Archived {
+            store
+                .expire_world_reservations(*world_id)
+                .await
+                .context("expire unmatched supporter reservations for archived world")?
+        } else {
+            0
+        };
         let through = store
             .public_timeline_cursor(*world_id)
             .await
@@ -132,6 +149,7 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             through_sequence = through.get(),
             indexed_batches = indexed,
             finding_batches = findings,
+            expired_reservations,
             "public timeline projection completed"
         );
     }
