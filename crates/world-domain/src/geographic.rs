@@ -79,6 +79,15 @@ pub struct GeographicCoordinateE7 {
     longitude_e7: i32,
 }
 
+/// Discrete S2 face coordinates decoded from a structurally valid CellId.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct S2FaceIj {
+    pub face: u8,
+    pub i: u32,
+    pub j: u32,
+    pub level: u8,
+}
+
 /// A WGS 84 coordinate in exact half-arcsecond units.
 ///
 /// ETOPO 2022's 60-arc-second `Area` cells have centers on this lattice. Keeping this
@@ -169,6 +178,35 @@ pub fn route_half_arcsecond_to_s2(
         half_arcseconds_to_turns(coordinate.longitude_half_arcseconds),
         level,
     )
+}
+
+/// Decode the exact Hilbert-position bits of a CellId back to its face/IJ cell.
+/// This is the discrete first half of inverse S2 geometry; it performs no floating
+/// point coordinate conversion.
+pub fn decode_s2_face_ij(cell: S2CellId) -> S2FaceIj {
+    const SWAP: usize = 1;
+    const IJ_TO_POS: [[u8; 4]; 4] = [[0, 1, 3, 2], [0, 3, 1, 2], [2, 3, 1, 0], [2, 1, 3, 0]];
+    const POS_TO_ORIENTATION: [usize; 4] = [SWAP, 0, 0, 3];
+    let level = cell.level();
+    let mut orientation = usize::from(cell.face()) & SWAP;
+    let (mut i, mut j) = (0_u32, 0_u32);
+    for depth in 0..level {
+        let shift = 2 * u32::from(MAX_S2_LEVEL - depth - 1) + 1;
+        let position = usize::try_from((cell.get() >> shift) & 3).expect("two bits fit usize");
+        let ij = IJ_TO_POS[orientation]
+            .iter()
+            .position(|candidate| usize::from(*candidate) == position)
+            .expect("S2 orientation contains every position");
+        i = (i << 1) | u32::try_from(ij >> 1).expect("IJ bit fits u32");
+        j = (j << 1) | u32::try_from(ij & 1).expect("IJ bit fits u32");
+        orientation ^= POS_TO_ORIENTATION[position];
+    }
+    S2FaceIj {
+        face: cell.face(),
+        i,
+        j,
+        level,
+    }
 }
 
 fn route_turns_to_s2(
@@ -482,6 +520,25 @@ mod tests {
             let cell = route_geographic_to_s2(coordinate, 10).expect("routable coordinate");
             assert_eq!(cell.face(), face);
             assert_eq!(cell.level(), 10);
+        }
+    }
+
+    #[test]
+    fn cell_id_hilbert_bits_decode_to_their_exact_face_ij_coordinates() {
+        for (latitude, longitude) in [
+            (0, 0),
+            (387_000_000, -903_000_000),
+            (-452_000_000, 1_702_000_000),
+        ] {
+            let coordinate =
+                GeographicCoordinateE7::new(latitude, longitude).expect("valid coordinate");
+            let cell = route_geographic_to_s2(coordinate, 14).expect("routable coordinate");
+            let decoded = decode_s2_face_ij(cell);
+            assert_eq!(decoded.level, 14);
+            assert_eq!(
+                cell_id_from_face_ij(decoded.face, decoded.i, decoded.j, decoded.level),
+                Ok(cell)
+            );
         }
     }
 

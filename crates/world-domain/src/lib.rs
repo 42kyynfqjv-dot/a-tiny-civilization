@@ -26,8 +26,8 @@ pub use event::{
     OrganismRole,
 };
 pub use geographic::{
-    GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError,
-    route_geographic_to_s2, route_half_arcsecond_to_s2,
+    GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
+    decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
 };
 pub use hash::{CanonicalHashError, Digest};
 pub use identity::{EntityId, EventId, WorldId};
