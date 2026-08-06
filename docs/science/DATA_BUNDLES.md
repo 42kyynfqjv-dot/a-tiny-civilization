@@ -117,9 +117,10 @@ artifact and digest.
 An exact source snapshot precedes a world-data bundle. Its canonical manifest records
 the upstream revision/release, dataset version, retrieval date, scope, limitations,
 license and version evidence, and every artifact URL, role, byte length, and SHA-256
-digest. Schema v1 requires every immutable artifact URL to contain the declared
-upstream revision. Fetching is an explicit operator action; live simulation and replay
-never use the network.
+digest. Schema v1 requires every artifact URL to contain either the declared immutable
+revision or, for an official frozen release with no commit identity, the declared
+versioned release locator. Fetching is an explicit operator action; live simulation and
+replay never use the network.
 
 Acquire only missing artifacts into the ignored local cache:
 
@@ -141,9 +142,9 @@ The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-
 format, exhaustive offline tree traversal, CLI, and adversarial tests are implemented.
 The tests cover tampered leaves, false counts, cycles, malformed S2 identities,
 duplicate/unsorted entries, noncanonical index bytes, wrong layer/level metadata, and
-cross-face parentage. The first pre-normalization snapshot pins exact public-domain
-Natural Earth generalized global land artifacts and license/version evidence. No
-global scientific release, normalized layer root, or canonical seed is claimed yet.
-Lower Buffalo remains only the first high-resolution conformance tile. The next data
-work is measurement-oriented global snapshots, deterministic normalization and
-planet-level roots, then reference-tile normalization without placeholder values.
+cross-face parentage. Exact pre-normalization snapshots now pin public-domain Natural
+Earth generalized global land artifacts and CC0 NOAA ETOPO 2022 global 60 arc-second
+bedrock relief with its official release, license, and version evidence. No normalized
+layer root or canonical seed is claimed yet. Lower Buffalo remains only the first
+high-resolution conformance tile. The next data work is deterministic normalization
+and planet-level roots, then reference-tile normalization without placeholder values.

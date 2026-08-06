@@ -135,9 +135,9 @@ bytes before configured genesis.
 Pre-normalization evidence uses a separate canonical source-snapshot contract. Exact
 upstream bytes are streamed into an ignored local cache, length- and SHA-256-verified,
 and never overwritten in place. A snapshot proves what was acquired; it is not a
-normalized bundle and cannot satisfy genesis. The first snapshot pins public-domain
-Natural Earth generalized global land polygons, with their cartographic limitations
-kept inside the hashed manifest. See
+normalized bundle and cannot satisfy genesis. Snapshots now pin public-domain Natural
+Earth generalized land polygons and CC0 NOAA ETOPO 2022 v1 global bedrock relief, with
+their cartographic and measurement limitations kept inside hashed manifests. See
 [ADR 0015](adr/0015-exact-upstream-source-snapshots.md).
 
 The entire planet has canonical coarse ecological state. Regional, landscape, and

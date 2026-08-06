@@ -156,6 +156,7 @@ pub enum SourceSnapshotArtifactRole {
 #[serde(rename_all = "snake_case")]
 pub enum SourceSnapshotLocatorPolicy {
     RevisionInEveryArtifactUrl,
+    ReleaseInEveryArtifactUrl,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -391,15 +392,27 @@ impl SourceSnapshotManifest {
         require_text(&self.publisher, "source_snapshot.publisher")?;
         validate_https_url(&self.documentation_url, "source_snapshot.documentation_url")?;
         require_text(&self.upstream_release, "source_snapshot.upstream_release")?;
-        if self.upstream_revision.len() < 12
-            || !self
-                .upstream_revision
-                .bytes()
-                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-        {
-            return Err(SourceSnapshotError::InvalidUpstreamRevision(
-                self.upstream_revision.clone(),
-            ));
+        match self.artifact_locator_policy {
+            SourceSnapshotLocatorPolicy::RevisionInEveryArtifactUrl => {
+                if self.upstream_revision.len() < 12
+                    || !self
+                        .upstream_revision
+                        .bytes()
+                        .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+                {
+                    return Err(SourceSnapshotError::InvalidUpstreamRevision(
+                        self.upstream_revision.clone(),
+                    ));
+                }
+            }
+            SourceSnapshotLocatorPolicy::ReleaseInEveryArtifactUrl => {
+                if self.upstream_release.len() < 4 {
+                    return Err(SourceSnapshotError::InvalidUpstreamReleaseLocator(
+                        self.upstream_release.clone(),
+                    ));
+                }
+                require_text(&self.upstream_revision, "source_snapshot.upstream_revision")?;
+            }
         }
         require_text(&self.dataset_version, "source_snapshot.dataset_version")?;
         require_text(
@@ -438,6 +451,18 @@ impl SourceSnapshotManifest {
                     });
                 }
                 SourceSnapshotLocatorPolicy::RevisionInEveryArtifactUrl => {}
+                SourceSnapshotLocatorPolicy::ReleaseInEveryArtifactUrl
+                    if !artifact
+                        .download_url
+                        .to_ascii_lowercase()
+                        .contains(&self.upstream_release.to_ascii_lowercase()) =>
+                {
+                    return Err(SourceSnapshotError::ArtifactUrlMissingRelease {
+                        path: artifact.artifact_path.clone(),
+                        release: self.upstream_release.clone(),
+                    });
+                }
+                SourceSnapshotLocatorPolicy::ReleaseInEveryArtifactUrl => {}
             }
             roles.insert(artifact.role);
         }
@@ -1599,12 +1624,18 @@ pub enum SourceSnapshotError {
         "source-snapshot upstream revision must be at least 12 lowercase hexadecimal characters, found {0:?}"
     )]
     InvalidUpstreamRevision(String),
+    #[error(
+        "source-snapshot versioned-release locator must be at least four characters, found {0:?}"
+    )]
+    InvalidUpstreamReleaseLocator(String),
     #[error("source-snapshot limitation occurs more than once: {0:?}")]
     DuplicateLimitation(String),
     #[error("source snapshot is missing required artifact role {0:?}")]
     MissingArtifactRole(SourceSnapshotArtifactRole),
     #[error("source artifact {path:?} URL does not contain declared revision {revision:?}")]
     ArtifactUrlMissingRevision { path: String, revision: String },
+    #[error("source artifact {path:?} URL does not contain declared release {release:?}")]
+    ArtifactUrlMissingRelease { path: String, release: String },
     #[error("source-snapshot artifact digest must not be all zero")]
     ZeroDigest,
     #[error("source-snapshot artifact byte length must be positive")]
@@ -1631,6 +1662,8 @@ mod tests {
     const SOURCE_ARTIFACT: &[u8] = b"source artifact fixture";
     const NATURAL_EARTH_10M_LAND_SNAPSHOT: &[u8] =
         include_bytes!("../../../data/source-snapshots/natural-earth-10m-land-v5.1.2.json");
+    const ETOPO_2022_V1_60S_BED_SNAPSHOT: &[u8] =
+        include_bytes!("../../../data/source-snapshots/etopo-2022-v1-60s-bed.json");
 
     fn source_snapshot() -> SourceSnapshotManifest {
         let artifact = |role, path: &str, bytes: &[u8]| SourceSnapshotArtifact {
@@ -1734,6 +1767,27 @@ mod tests {
             Err(SourceSnapshotError::ArtifactUrlMissingRevision { .. })
         ));
 
+        let mut release_bound = source_snapshot();
+        release_bound.artifact_locator_policy =
+            SourceSnapshotLocatorPolicy::ReleaseInEveryArtifactUrl;
+        release_bound.upstream_release = "release-2022".to_owned();
+        release_bound.upstream_revision = "v1".to_owned();
+        for artifact in &mut release_bound.artifacts {
+            artifact.download_url = format!(
+                "https://example.test/release-2022/{}",
+                artifact.artifact_path
+            );
+        }
+        release_bound
+            .validate()
+            .expect("versioned-release URLs are explicit evidence locators");
+
+        release_bound.artifacts[0].download_url = "https://example.test/source.bin".to_owned();
+        assert!(matches!(
+            release_bound.validate(),
+            Err(SourceSnapshotError::ArtifactUrlMissingRelease { .. })
+        ));
+
         let mut duplicate_limitation = source_snapshot();
         duplicate_limitation
             .limitations
@@ -1787,6 +1841,40 @@ mod tests {
                 .expect("valid snapshot content digest")
                 .to_string(),
             "21382550977608ef2f8e3f4f787a987d7c06848560fcd8902b6a44e7857b427a"
+        );
+    }
+
+    #[test]
+    fn committed_etopo_snapshot_is_canonical_and_fingerprinted() {
+        let snapshot = SourceSnapshotManifest::from_canonical_slice(ETOPO_2022_V1_60S_BED_SNAPSHOT)
+            .expect("committed ETOPO snapshot is canonical");
+        assert_eq!(snapshot.upstream_release, "2022");
+        assert_eq!(snapshot.upstream_revision, "v1");
+        assert_eq!(
+            snapshot.artifact_locator_policy,
+            SourceSnapshotLocatorPolicy::ReleaseInEveryArtifactUrl
+        );
+        assert_eq!(snapshot.artifacts.len(), 4);
+        assert!(snapshot.artifacts.iter().all(|artifact| {
+            artifact
+                .download_url
+                .to_ascii_lowercase()
+                .contains(&snapshot.upstream_release)
+        }));
+        assert_eq!(
+            snapshot
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.byte_length)
+                .sum::<u64>(),
+            492_202_239
+        );
+        assert_eq!(
+            snapshot
+                .content_digest()
+                .expect("valid snapshot content digest")
+                .to_string(),
+            "9f043ed3c6ffd9ca02890643cc54a37e404a5ebeb76dd09b7fca4b9fb609aa0b"
         );
     }
 

@@ -109,13 +109,14 @@ measurement-oriented global source snapshots and normalized L10 roots, a coupled
 ecological quantity policy with retained refinement state and deltas, and durable
 embodied position/movement integration.
 
-The first upstream snapshot is now committed independently of any world bundle. It
-pins Natural Earth v5.1.2 generalized global land polygons at an immutable revision,
-including nine artifact URLs, exact lengths and hashes, dataset/release version
-evidence, public-domain evidence, and material limitations. The source CLI performs
-HTTPS-only streaming acquisition with no replacement and complete offline verification.
-This proves the acquisition chain but does not promote generalized cartography into a
-canonical coastline or satisfy any required full-Earth layer root.
+Two upstream snapshots are now committed independently of any world bundle. Natural
+Earth v5.1.2 pins generalized global land polygons at an immutable revision; NOAA
+ETOPO 2022 v1 pins a global 60 arc-second bedrock NetCDF release through an explicit
+versioned-release locator. Both retain artifact URLs, exact lengths/hashes, version and
+license evidence, and material limitations. The source CLI performs HTTPS-only
+streaming acquisition with no replacement and complete offline verification. This
+proves the acquisition chain but does not create a canonical coastline, relief layer,
+or full-Earth root.
 
 ### 3. Situated memory and bounded cognition
 

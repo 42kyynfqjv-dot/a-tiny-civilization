@@ -29,10 +29,13 @@ ecology.
   type, decimal byte length, and SHA-256 digest. A complete manifest requires all four
   roles and strict path ordering. Zero lengths, zero hashes, duplicate limitations,
   unsafe paths, non-HTTPS URLs, missing roles, and mutable-looking revisions fail.
-- Schema v1 requires `revision_in_every_artifact_url`: the declared lowercase
-  hexadecimal upstream revision must occur literally in every artifact URL. A provider
-  without revision-bound immutable locators needs a future explicit locator policy; a
-  floating URL beside an unrelated hash is not accepted silently.
+- Schema v1 supports two explicit acquisition locators. `revision_in_every_artifact_url`
+  requires the declared lowercase hexadecimal upstream revision to occur literally in
+  every artifact URL. `release_in_every_artifact_url` is for an official frozen release
+  archive that has no commit identity: its declared release text must occur in every
+  artifact URL, and each retained byte is still pinned by length and SHA-256. The latter
+  is not a fallback for a floating endpoint: it is accepted only when the provider's
+  versioned release locator applies to every retained artifact.
 - Canonical source-snapshot bytes are compact field-ordered JSON followed by one LF.
   The manifest digest covers those exact bytes. Artifact paths describe the local
   cache layout; they may normalize upstream filename case while download URLs retain
@@ -77,6 +80,20 @@ This is actual global land geometry, but it is generalized cartography at a nomi
 1:10,000,000 scale. It is useful for proving acquisition and as coarse land/coastline
 evidence; it cannot by itself define measurement-resolution coastlines, bathymetry,
 elevation, habitat, materials, ecology, local terrain, or an S2 L10 canonical root.
+
+The second committed manifest is NOAA NCEI's ETOPO 2022 v1 60 arc-second bedrock
+elevation NetCDF. NOAA publishes that completed global release under CC0-1.0 and its
+official user guide describes the global 30/60 arc-second products as downsampled from
+the 15 arc-second tiles. The NOAA archive has a versioned release path rather than a
+Git commit, so this snapshot uses `release_in_every_artifact_url` with release `2022`
+and revision `v1`. Every retained URL contains the release text and every byte is
+length- and SHA-256-pinned.
+
+Four exact artifacts total 492,202,239 bytes: the 491,284,376-byte global bedrock
+NetCDF, user guide, CC0/license metadata, and version catalog. The canonical manifest
+digest is `9f043ed3c6ffd9ca02890643cc54a37e404a5ebeb76dd09b7fca4b9fb609aa0b`.
+ETOPO supplies a real global topography/bathymetry baseline, but this low-resolution
+bedrock product is neither a navigation source nor a complete world/ecology bundle.
 
 ## Verification
 
