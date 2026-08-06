@@ -583,6 +583,18 @@ input {
 .live-record-grid li a { text-decoration: underline; text-decoration-color: rgba(24, 63, 49, 0.3); text-underline-offset: 3px; }
 .live-record-grid li em, .live-record-grid li small { color: #788178; font-family: var(--font-geist-mono), monospace; font-size: 9px; font-style: normal; }
 
+.archive-section { margin: 74px auto 0; max-width: 1420px; }
+.archive-heading { border-bottom: 1px solid var(--line); padding: 0 0 19px; }
+.archive-heading > p { color: var(--ink-soft); font-size: 13px; line-height: 1.55; margin: 0; max-width: 360px; }
+.archive-status { border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 13px; line-height: 1.55; margin: 16px 0 0; padding: 17px 0; }
+.archive-list { display: grid; gap: 12px; list-style: none; margin: 16px 0 0; padding: 0; }
+.archive-list > li { align-items: start; background: var(--white); border: 1px solid var(--line); border-radius: 12px; display: grid; gap: 22px; grid-template-columns: minmax(170px, .65fr) minmax(0, 1.35fr); padding: 17px; }
+.archive-list p { color: var(--moss-light); font-family: var(--font-geist-mono), monospace; font-size: 10px; margin: 0 0 6px; text-transform: uppercase; }
+.archive-list strong { font-size: 14px; letter-spacing: -.02em; }
+.archive-list dl { display: grid; gap: 14px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 0; }
+.archive-list dt { color: #788178; font-size: 9px; letter-spacing: .09em; text-transform: uppercase; }
+.archive-list dd { color: var(--ink-soft); font-family: var(--font-geist-mono), monospace; font-size: 10px; margin: 6px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
 .wiki-page { background: var(--paper); min-height: 100vh; }
 .wiki-topbar { align-items: center; border-bottom: 1px solid var(--line); display: grid; gap: 28px; grid-template-columns: minmax(220px, 1fr) auto minmax(170px, 1fr); margin: 0 auto; max-width: 1420px; min-height: 76px; padding: 0 24px; }
 .wiki-topbar nav { display: flex; gap: 18px; }
@@ -622,6 +634,7 @@ input {
   .live-record-heading, .live-record-grid { display: grid; grid-template-columns: 1fr; }
   .audit-hashes { grid-template-columns: 1fr; }
   .audit-hashes > div + div { border-left: 0; border-top: 1px solid var(--line); }
+  .archive-list > li, .archive-list dl { grid-template-columns: 1fr; }
   .wiki-topbar { gap: 12px; grid-template-columns: 1fr auto; padding: 14px 20px; }
   .wiki-topbar nav { grid-column: 1 / -1; grid-row: 2; }
   .wiki-topbar .foundation-pulse { display: none; }

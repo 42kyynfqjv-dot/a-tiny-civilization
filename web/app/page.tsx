@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { FoundationPulse } from "./components/FoundationPulse";
 import { LiveRecord } from "./components/LiveRecord";
+import { ArchiveIndex } from "./components/ArchiveIndex";
 
 export const metadata: Metadata = {
   title: "Live World",
@@ -197,6 +198,20 @@ export default function Home() {
         </section>
 
         <LiveRecord />
+
+        <section className="archive-section" id="archive" aria-labelledby="archive-title">
+          <div className="section-heading archive-heading">
+            <div>
+              <p className="eyebrow">World archives</p>
+              <h2 id="archive-title">A reset never erases a history.</h2>
+            </div>
+            <p>
+              Extinction is mechanical. An archived world cannot be revived or rewritten; any
+              successor starts with a separate, explicit seed.
+            </p>
+          </div>
+          <ArchiveIndex />
+        </section>
 
         <section className="wiki-section" id="wiki">
           <div className="section-heading wiki-heading">

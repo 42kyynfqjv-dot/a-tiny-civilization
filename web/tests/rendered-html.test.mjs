@@ -23,6 +23,8 @@ test("server-renders the civilization observatory", async () => {
   assert.match(html, /History, before anyone knows it is history\./);
   assert.match(html, /Observer wiki/);
   assert.match(html, /Name the next naturally born life\./);
+  assert.match(html, /A reset never erases a history\./);
+  assert.match(html, /Extinction is mechanical\./);
   assert.match(html, /Actual materials/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });
