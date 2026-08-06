@@ -50,8 +50,11 @@ envelope, database schema, or current engine state.
 
 ## Deliberate non-decisions
 
-- The kernel is not a durable queue and is not part of a snapshot or state hash yet.
-  The first embodied process will establish the concrete scheduled-work state.
+- Schema-v1 scheduler checkpoints use a canonical, validated JSON envelope for the
+  exact queue. This prevents a future persistence adapter from introducing a
+  serializer-defined ordering, but the checkpoint remains private: it is not engine
+  state, a snapshot field, a database record, or a state-hash input yet. The first
+  embodied process will establish the concrete scheduled-work state and commit path.
 - Its Rust module remains private to `sim-engine`; application and adapter crates cannot
   build canonical work until that embodied boundary is accepted.
 - `location_id: Option<EntityId>` is not treated as an Earth position. The private

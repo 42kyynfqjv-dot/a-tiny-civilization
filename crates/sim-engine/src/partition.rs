@@ -1,19 +1,25 @@
 //! Pure reference ordering and barrier semantics for full-Earth partition execution.
 //!
-//! This kernel deliberately does not persist a queue or enable canonical full-Earth
-//! genesis yet. It proves the ordering contract without changing event, snapshot, or
-//! database schemas before embodied positions and real causal processes exist.
+//! The private scheduler checkpoint has a strict, canonical wire form so a future
+//! durable queue cannot let a platform-specific serializer choose history. It is not
+//! yet engine state, a snapshot field, or a canonical-world authorization.
 
 use std::{
     cmp::Ordering,
     collections::{BTreeMap, BTreeSet},
 };
 
+use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
-use world_domain::{EntityId, MAX_S2_LEVEL, S2CellId, S2CellIdError, SimTick, TimeOverflow};
+use world_domain::{
+    Digest, EntityId, MAX_S2_LEVEL, S2CellId, S2CellIdError, SimTick, TimeOverflow,
+};
+
+/// Version for the private, strict persisted scheduler checkpoint envelope.
+pub(super) const PARTITION_SCHEDULE_SCHEMA_VERSION: u16 = 1;
 
 /// One execution partition at the configured planetary S2 level.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct PartitionId(S2CellId);
 
 impl PartitionId {
@@ -53,7 +59,7 @@ impl PartialOrd for PartitionId {
 }
 
 /// Stable, ruleset-owned identity of the state subject receiving work.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct SubjectKey([u8; 16]);
 
 impl SubjectKey {
@@ -84,7 +90,7 @@ impl PartialOrd for SubjectKey {
 ///
 /// Phase and process codes are versioned by the ruleset that uses the kernel. Their
 /// numeric values, not enum declaration order or debug text, define canonical order.
-#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct WorkKey {
     phase_code: u16,
     subject: SubjectKey,
@@ -113,6 +119,16 @@ impl WorkKey {
         })
     }
 
+    fn validate(self) -> Result<(), SchedulerError> {
+        if self.phase_code == 0 {
+            return Err(SchedulerError::ZeroPhaseCode);
+        }
+        if self.process_code == 0 {
+            return Err(SchedulerError::ZeroProcessCode);
+        }
+        Ok(())
+    }
+
     #[must_use]
     pub const fn subject(self) -> SubjectKey {
         self.subject
@@ -136,7 +152,7 @@ impl PartialOrd for WorkKey {
 }
 
 /// One future causal work item routed to its execution partition.
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ScheduledWork {
     due_tick: SimTick,
     partition: PartitionId,
@@ -213,6 +229,7 @@ impl PartitionSchedule {
             return Err(SchedulerError::InvalidPartitionLevel(partition_level));
         }
         for entry in &entries {
+            entry.key.validate()?;
             if entry.partition.cell().level() != partition_level {
                 return Err(SchedulerError::PartitionLevelMismatch {
                     expected: partition_level,
@@ -276,6 +293,90 @@ impl PartitionSchedule {
             partitions,
             remaining,
         })
+    }
+}
+
+#[derive(Deserialize, Serialize)]
+struct PartitionScheduleWire {
+    partition_level: u8,
+    entries: Vec<ScheduledWork>,
+}
+
+impl Serialize for PartitionSchedule {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: Serializer,
+    {
+        PartitionScheduleWire {
+            partition_level: self.partition_level,
+            entries: self.entries.clone(),
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for PartitionSchedule {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = PartitionScheduleWire::deserialize(deserializer)?;
+        Self::new(wire.partition_level, wire.entries).map_err(de::Error::custom)
+    }
+}
+
+/// A versioned, strict wire envelope for one future-work queue.
+///
+/// Its digest is suitable for binding a later durable queue to a state hash. The
+/// current engine deliberately does not yet store this envelope: no canonical event
+/// or snapshot can claim scheduler durability before embodied processes own the work
+/// codes and lifecycle rules.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub(super) struct PartitionScheduleCheckpoint {
+    schedule_schema_version: u16,
+    schedule: PartitionSchedule,
+}
+
+impl PartitionScheduleCheckpoint {
+    pub(super) fn new(schedule: PartitionSchedule) -> Self {
+        Self {
+            schedule_schema_version: PARTITION_SCHEDULE_SCHEMA_VERSION,
+            schedule,
+        }
+    }
+
+    pub(super) fn canonical_bytes(&self) -> Result<Vec<u8>, SchedulerError> {
+        serde_json::to_vec(self).map_err(|error| SchedulerError::Encoding(error.to_string()))
+    }
+
+    pub(super) fn content_digest(&self) -> Result<Digest, SchedulerError> {
+        Ok(Digest::sha256(&self.canonical_bytes()?))
+    }
+
+    pub(super) fn from_canonical_slice(bytes: &[u8]) -> Result<Self, SchedulerError> {
+        #[derive(Deserialize)]
+        struct Wire {
+            schedule_schema_version: u16,
+            schedule: PartitionSchedule,
+        }
+
+        let wire: Wire = serde_json::from_slice(bytes)
+            .map_err(|error| SchedulerError::Decode(error.to_string()))?;
+        if wire.schedule_schema_version != PARTITION_SCHEDULE_SCHEMA_VERSION {
+            return Err(SchedulerError::UnsupportedScheduleSchema(
+                wire.schedule_schema_version,
+            ));
+        }
+        let checkpoint = Self::new(wire.schedule);
+        if checkpoint.canonical_bytes()? != bytes {
+            return Err(SchedulerError::NonCanonicalCheckpointEncoding);
+        }
+        Ok(checkpoint)
+    }
+
+    #[must_use]
+    pub(super) const fn schedule(&self) -> &PartitionSchedule {
+        &self.schedule
     }
 }
 
@@ -657,6 +758,14 @@ pub enum SchedulerError {
         due_tick: SimTick,
         resolved_tick: SimTick,
     },
+    #[error("scheduler checkpoint schema {0} is unsupported")]
+    UnsupportedScheduleSchema(u16),
+    #[error("scheduler checkpoint bytes are not canonical")]
+    NonCanonicalCheckpointEncoding,
+    #[error("could not encode scheduler checkpoint: {0}")]
+    Encoding(String),
+    #[error("could not decode scheduler checkpoint: {0}")]
+    Decode(String),
     #[error(transparent)]
     S2(#[from] S2CellIdError),
     #[error(transparent)]
@@ -754,6 +863,73 @@ mod tests {
         assert!(matches!(
             PartitionSchedule::new(PARTITION_LEVEL, vec![left, right]),
             Err(SchedulerError::DuplicateWorkKey { .. })
+        ));
+    }
+
+    #[test]
+    fn checkpoint_is_canonical_validated_and_input_order_independent() {
+        let left = scheduled(2, "0000000100000000", 1, 0);
+        let right = scheduled(1, "2000000100000000", 2, 0);
+        let first = PartitionSchedule::new(PARTITION_LEVEL, vec![left, right])
+            .expect("valid first schedule");
+        let second = PartitionSchedule::new(PARTITION_LEVEL, vec![right, left])
+            .expect("valid second schedule");
+
+        let first_checkpoint = PartitionScheduleCheckpoint::new(first);
+        let second_checkpoint = PartitionScheduleCheckpoint::new(second);
+        let first_bytes = first_checkpoint.canonical_bytes().expect("canonical bytes");
+        assert_eq!(
+            first_bytes,
+            second_checkpoint.canonical_bytes().expect("same bytes")
+        );
+        assert_eq!(
+            first_checkpoint
+                .content_digest()
+                .expect("checkpoint digest"),
+            second_checkpoint.content_digest().expect("same digest")
+        );
+        assert_eq!(
+            PartitionScheduleCheckpoint::from_canonical_slice(&first_bytes)
+                .expect("strict checkpoint decoding"),
+            first_checkpoint
+        );
+
+        let pretty = serde_json::to_vec_pretty(&first_checkpoint).expect("pretty JSON");
+        assert!(matches!(
+            PartitionScheduleCheckpoint::from_canonical_slice(&pretty),
+            Err(SchedulerError::NonCanonicalCheckpointEncoding)
+        ));
+    }
+
+    #[test]
+    fn checkpoint_rejects_invalid_work_and_schema() {
+        let schedule = PartitionSchedule::new(
+            PARTITION_LEVEL,
+            vec![scheduled(1, "0000000100000000", 1, 0)],
+        )
+        .expect("valid schedule");
+        let checkpoint = PartitionScheduleCheckpoint::new(schedule);
+        let canonical = String::from_utf8(
+            checkpoint
+                .canonical_bytes()
+                .expect("canonical checkpoint bytes"),
+        )
+        .expect("checkpoint JSON is UTF-8");
+
+        let invalid_work = canonical.replacen("\"phase_code\":10", "\"phase_code\":0", 1);
+        assert!(matches!(
+            PartitionScheduleCheckpoint::from_canonical_slice(invalid_work.as_bytes()),
+            Err(SchedulerError::Decode(_))
+        ));
+
+        let unsupported = canonical.replacen(
+            "\"schedule_schema_version\":1",
+            "\"schedule_schema_version\":2",
+            1,
+        );
+        assert!(matches!(
+            PartitionScheduleCheckpoint::from_canonical_slice(unsupported.as_bytes()),
+            Err(SchedulerError::UnsupportedScheduleSchema(2))
         ));
     }
 
