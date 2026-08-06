@@ -308,6 +308,11 @@ an explicit overlap approximation rather than exact spherical clipping under
 [ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md), and its payload/storage
 contract is [ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md).
 
+The requested output directory is publication-only: the normalizer builds beneath a
+hidden same-parent staging directory and atomically renames it only after every packed
+tile and the root index exist. A stale staging directory means a failed or interrupted
+run and must be inspected rather than silently replaced.
+
 After a batch completes, verify every root reference and packed tile through a fresh
 read before retaining its emitted root hash. This command accepts only a finished
 release directory and does not modify it:

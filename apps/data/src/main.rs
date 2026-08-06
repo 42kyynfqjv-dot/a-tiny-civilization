@@ -1254,14 +1254,9 @@ fn derive_etopo_terrain_layer(
     // tree traversal on each interior quadrature update.
     let summaries = summaries.into_iter().collect::<BTreeMap<_, _>>();
 
-    fs::create_dir(output_directory).with_context(|| {
-        format!(
-            "create ETOPO terrain output directory {}",
-            output_directory.display()
-        )
-    })?;
+    let staging_directory = prepare_terrain_layer_staging_directory(output_directory)?;
     let (root_relative_path, root_bytes) = write_packed_etopo_terrain_layer(
-        output_directory,
+        &staging_directory,
         EtopoTerrainPackingProfile {
             layer_id,
             source_snapshot_digest,
@@ -1272,6 +1267,12 @@ fn derive_etopo_terrain_layer(
         },
         &summaries,
     )?;
+    fs::rename(&staging_directory, output_directory).with_context(|| {
+        format!(
+            "atomically publish ETOPO terrain directory {}",
+            output_directory.display()
+        )
+    })?;
     println!(
         "{}",
         serde_json::to_string(&EtopoTerrainLayerDerivation {
@@ -1292,6 +1293,45 @@ fn derive_etopo_terrain_layer(
         })?
     );
     Ok(())
+}
+
+/// Reserve a same-parent hidden staging directory. The final rename is atomic on the
+/// release filesystem, so readers can observe either no release or a complete root and
+/// its referenced tiles, never the writer's intermediate tree.
+fn prepare_terrain_layer_staging_directory(output_directory: &Path) -> Result<PathBuf> {
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!(
+            "ETOPO terrain output directory {} already exists",
+            output_directory.display()
+        );
+    }
+    let output_parent = output_directory
+        .parent()
+        .context("ETOPO terrain output directory has no parent")?;
+    if !output_parent.is_dir() {
+        bail!(
+            "ETOPO terrain output parent {} is not a directory",
+            output_parent.display()
+        );
+    }
+    let output_name = output_directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("ETOPO terrain output directory name is not UTF-8")?;
+    let staging_directory = output_parent.join(format!(".{output_name}.staging"));
+    if fs::symlink_metadata(&staging_directory).is_ok() {
+        bail!(
+            "ETOPO terrain staging directory {} already exists; inspect it before retrying",
+            staging_directory.display()
+        );
+    }
+    fs::create_dir(&staging_directory).with_context(|| {
+        format!(
+            "create hidden ETOPO terrain staging directory {}",
+            staging_directory.display()
+        )
+    })?;
+    Ok(staging_directory)
 }
 
 #[derive(Clone, Copy)]
@@ -3195,5 +3235,20 @@ mod tests {
             assert!(tile.cells.iter().all(|cell| cell.mean_millimetres == 42));
         }
         fs::remove_dir_all(root).expect("remove miniature terrain layer");
+    }
+
+    #[test]
+    fn terrain_release_staging_is_hidden_until_atomic_rename() {
+        let root = temporary_root("terrain-staging");
+        let output = root.join("release");
+        let staging = prepare_terrain_layer_staging_directory(&output).expect("stage release");
+        assert_eq!(staging, root.join(".release.staging"));
+        assert!(!output.exists());
+        assert!(staging.is_dir());
+        fs::write(staging.join("complete"), b"complete").expect("write staged marker");
+        fs::rename(&staging, &output).expect("atomically publish staged release");
+        assert!(output.join("complete").is_file());
+        assert!(prepare_terrain_layer_staging_directory(&output).is_err());
+        fs::remove_dir_all(root).expect("remove terrain staging root");
     }
 }
