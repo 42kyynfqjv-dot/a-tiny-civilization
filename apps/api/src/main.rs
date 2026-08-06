@@ -7,7 +7,7 @@ use postgres_store::PostgresStore;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Emergent Civilization observer API")]
+#[command(version, about = "A Tiny Civilization observer API")]
 struct Cli {
     #[command(subcommand)]
     command: Option<Command>,

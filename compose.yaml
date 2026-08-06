@@ -1,0 +1,133 @@
+version: "2.4"
+
+x-app-environment: &app-environment
+  APP_ENV: ${APP_ENV:-development}
+  RUST_LOG: ${RUST_LOG:-info}
+  DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
+
+x-rust-service: &rust-service
+  image: a-tiny-civilization-app:local
+  build:
+    context: .
+    dockerfile: Dockerfile
+    network: host
+  environment: *app-environment
+  networks:
+    - backend
+  init: true
+
+services:
+  db:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-civilization}
+      POSTGRES_USER: ${POSTGRES_USER:-civilization}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - backend
+    restart: unless-stopped
+
+  migrate:
+    <<: *rust-service
+    command:
+      [
+        "/bin/sh",
+        "-c",
+        "/app/civilization-api migrate && touch /tmp/migrations-complete && exec sleep infinity",
+      ]
+    depends_on:
+      db:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "test", "-f", "/tmp/migrations-complete"]
+      interval: 2s
+      timeout: 2s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    <<: *rust-service
+    command: ["/app/civilization-api", "serve"]
+    environment:
+      <<: *app-environment
+      API_BIND: 0.0.0.0:8080
+    depends_on:
+      migrate:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://localhost:8080/health/ready"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+      start_period: 5s
+    ports:
+      - "127.0.0.1:${API_PORT:-8080}:8080"
+    networks:
+      - backend
+      - edge
+    restart: unless-stopped
+
+  runner:
+    <<: *rust-service
+    command: ["/app/civilization-runner"]
+    environment:
+      <<: *app-environment
+      RUNNER_HEARTBEAT_SECONDS: ${RUNNER_HEARTBEAT_SECONDS:-5}
+      WORLD_SEED: ${WORLD_SEED:-7640891576956012809}
+    depends_on:
+      migrate:
+        condition: service_healthy
+    restart: unless-stopped
+
+  web:
+    image: a-tiny-civilization-web:local
+    build:
+      context: web
+      dockerfile: Dockerfile
+      network: host
+    environment:
+      OBSERVER_API_URL: http://api:8080
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))",
+        ]
+      interval: 5s
+      timeout: 4s
+      retries: 20
+      start_period: 8s
+    ports:
+      - "127.0.0.1:${WEB_PORT:-3000}:3000"
+    networks:
+      - edge
+    init: true
+    restart: unless-stopped
+
+volumes:
+  postgres-data:
+
+networks:
+  backend:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-atiny-back
+  edge:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.name: br-atiny-edge

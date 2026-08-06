@@ -26,14 +26,14 @@ export default function Home() {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="#live" aria-label="Emergent Civilization home">
+        <a className="brand" href="#live" aria-label="A Tiny Civilization home">
           <span className="brand-mark" aria-hidden="true">
             <span />
             <span />
             <span />
           </span>
           <span>
-            <strong>Emergent</strong>
+            <strong>A Tiny</strong>
             <small>Civilization Observatory</small>
           </span>
         </a>
@@ -242,7 +242,7 @@ export default function Home() {
         </section>
 
         <footer>
-          <p>Emergent Civilization · Public foundation build</p>
+          <p>A Tiny Civilization · Public foundation build</p>
           <p>No LLM key connected · deterministic mode</p>
         </footer>
       </main>

@@ -10,7 +10,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
-#[command(version, about = "Emergent Civilization simulation runner")]
+#[command(version, about = "A Tiny Civilization simulation runner")]
 struct Config {
     #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
     database_url: String,

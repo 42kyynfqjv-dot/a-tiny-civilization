@@ -24,20 +24,20 @@ export async function generateMetadata(): Promise<Metadata> {
   return {
     metadataBase,
     title: {
-      default: "Emergent Civilization Observatory",
-      template: "%s · Emergent Civilization",
+      default: "A Tiny Civilization Observatory",
+      template: "%s · A Tiny Civilization",
     },
     description:
       "Watch an unscripted civilization live, trace every claim to evidence, and explore the worlds it leaves behind.",
     openGraph: {
       type: "website",
-      title: "Emergent Civilization",
+      title: "A Tiny Civilization",
       description: "History without a script.",
-      images: [{ url: "/og.png", width: 1731, height: 909, alt: "Emergent Civilization river-basin observatory" }],
+      images: [{ url: "/og.png", width: 1731, height: 909, alt: "A Tiny Civilization river-basin observatory" }],
     },
     twitter: {
       card: "summary_large_image",
-      title: "Emergent Civilization",
+      title: "A Tiny Civilization",
       description: "History without a script.",
       images: ["/og.png"],
     },

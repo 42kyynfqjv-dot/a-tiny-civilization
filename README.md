@@ -1,7 +1,8 @@
-# Emergent Civilization
+# A Tiny Civilization
 
 A persistent, scientifically grounded civilization simulation in which history is
-an outcome, not a script.
+an outcome, not a script. The public observatory will live at
+[atinycivilization.com](https://atinycivilization.com).
 
 The project models the actual materials, organisms, and ecological relationships of
 Earth while simulated
@@ -55,9 +56,39 @@ web/                  Public observatory and wiki
 
 ## Development
 
-Developer setup commands will be added with the bootable foundation checkpoint.
-Secrets must never be committed; copy `.env.example` to `.env` when configuration
-is needed.
+Prerequisites are Docker Engine, Docker Compose, and Make. Start the complete local
+foundation with:
+
+```bash
+cp .env.example .env
+make up
+make smoke
+```
+
+Then open `http://127.0.0.1:3000`. PostgreSQL, the migration job, observer API,
+simulation runner, and web application start in dependency order. Host ports bind to
+loopback and are not publicly exposed.
+
+Inspect the stack with `make ps` or `make logs`, and stop it with `make down`.
+
+Hindsight is optional and intentionally excluded from the default startup because its
+full development image is large. Start the pinned keyless service with:
+
+```bash
+make hindsight-up
+```
+
+No LLM key is needed in provider-`none` mode. The project will request one only when
+model-backed extraction and reflection are ready for an explicit integration test.
+
+To run all code checks outside containers:
+
+```bash
+make check
+```
+
+Secrets must never be committed; `.env.example` documents every supported runtime
+value while `.env` remains ignored.
 
 ## License
 

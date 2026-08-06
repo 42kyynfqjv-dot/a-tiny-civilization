@@ -1,0 +1,27 @@
+version: "2.4"
+
+services:
+  hindsight:
+    image: ghcr.io/vectorize-io/hindsight:0.8.6
+    environment:
+      HINDSIGHT_API_LLM_PROVIDER: none
+      HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS: "true"
+      HINDSIGHT_API_STORE_DOCUMENT_TEXT: "true"
+      HINDSIGHT_API_WORKER_ID: local-development-worker
+    expose:
+      - "8888"
+    volumes:
+      - hindsight-data:/home/hindsight/.pg0
+    networks:
+      - backend
+    restart: unless-stopped
+
+  runner:
+    environment:
+      HINDSIGHT_BASE_URL: http://hindsight:8888
+    depends_on:
+      hindsight:
+        condition: service_started
+
+volumes:
+  hindsight-data:

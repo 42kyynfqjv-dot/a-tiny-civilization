@@ -1,4 +1,4 @@
-# Emergent Civilization Observatory
+# A Tiny Civilization Observatory
 
 The public, strictly out-of-world interface for observing live and archived
 civilizations. It is a React 19 application built with vinext for a

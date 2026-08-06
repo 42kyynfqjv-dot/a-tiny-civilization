@@ -19,7 +19,7 @@ test("server-renders the civilization observatory", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
 
   const html = await response.text();
-  assert.match(html, /<title>Live World · Emergent Civilization<\/title>/i);
+  assert.match(html, /<title>Live World · A Tiny Civilization<\/title>/i);
   assert.match(html, /History, before anyone knows it is history\./);
   assert.match(html, /Observer wiki/);
   assert.match(html, /Name the next naturally born life\./);
