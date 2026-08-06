@@ -1215,6 +1215,14 @@ fn derive_etopo_terrain_layer(
                 points_per_axis,
             )?;
         }
+        // Progress is operational diagnostics only. It is written to stderr and has no
+        // effect on emitted canonical bytes or the final derivation record.
+        let completed_rows = row + 1;
+        if completed_rows % 360 == 0 || completed_rows == ETOPO_LATITUDE_CELLS {
+            eprintln!(
+                "ETOPO terrain normalization progress: {completed_rows}/{ETOPO_LATITUDE_CELLS} source rows"
+            );
+        }
     }
 
     fs::create_dir(output_directory).with_context(|| {
