@@ -3,13 +3,17 @@ use application::{
     MemoryOutboxStore, MemoryRetain, MemoryRetainReceipt, StoreError, TransitionEffects,
     WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
+use observer_projection::{
+    CommittedBirth, ReservationRequest, ReservationState, ReservationTarget,
+    SupporterReservationStore,
+};
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
 use sqlx::PgPool;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, Digest, EntityId, EventBatch, EventSequence, OrganismRole, SpeciesIdentity,
-    WorldId, WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, Digest, EntityId, EventBatch, EventId, EventSequence, OrganismRole, SimTick,
+    SpeciesIdentity, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 fn manifest(seed: u64) -> WorldManifest {
@@ -346,5 +350,80 @@ async fn successor_requires_an_immutable_archived_predecessor(pool: PgPool) -> R
         .execute(&pool)
         .await;
     assert!(archive_mutation.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_matched(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(404);
+    store.create_world(&manifest, None).await?;
+    let person = initial_person(manifest.world_id);
+    let reservation_id = Uuid::new_v4();
+    let request = ReservationRequest {
+        reservation_id,
+        world_id: manifest.world_id,
+        supporter_subject: "test-account-subject".to_owned(),
+        observer_label: "Ada".to_owned(),
+        target: ReservationTarget::Person,
+        birth_category: BirthCategory::new("female").expect("valid category"),
+    };
+    let pending = store.create_reservation(&request).await?;
+    assert_eq!(pending.state, ReservationState::PendingPayment);
+
+    let birth = CommittedBirth {
+        world_id: manifest.world_id,
+        event_id: EventId::from_uuid(Uuid::new_v4()),
+        event_sequence: EventSequence::new(1),
+        tick: SimTick::new(0),
+        organism_id: person.organism_id,
+        role: OrganismRole::Person,
+        species: person.species.clone(),
+        birth_category: person.birth_category.clone(),
+    };
+    assert!(store.match_committed_birth(&birth).await?.is_none());
+
+    let awaiting_review = store
+        .record_verified_payment(reservation_id, "stripe_webhook_event_1")
+        .await?;
+    assert_eq!(awaiting_review.state, ReservationState::PendingModeration);
+    assert!(store.match_committed_birth(&birth).await?.is_none());
+
+    let active = store.approve_reservation(reservation_id).await?;
+    assert_eq!(active.state, ReservationState::Active);
+    let matched = store
+        .match_committed_birth(&birth)
+        .await?
+        .expect("the committed matching birth receives one observer label");
+    assert_eq!(matched.state, ReservationState::Matched);
+    assert_eq!(
+        matched.matched_birth.expect("birth link").event_id,
+        birth.event_id
+    );
+    assert!(store.match_committed_birth(&birth).await?.is_none());
+
+    let event_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM event_batches WHERE world_id = $1")
+            .bind(manifest.world_id.as_uuid())
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(
+        event_count, 0,
+        "observer matching cannot create canonical events"
+    );
+
+    let matched_mutation =
+        sqlx::query("UPDATE supporter_reservations SET state = 'expired' WHERE id = $1")
+            .bind(reservation_id)
+            .execute(&pool)
+            .await;
+    assert!(matched_mutation.is_err());
+    let deletion = sqlx::query("DELETE FROM supporter_reservations WHERE id = $1")
+        .bind(reservation_id)
+        .execute(&pool)
+        .await;
+    assert!(deletion.is_err());
     Ok(())
 }

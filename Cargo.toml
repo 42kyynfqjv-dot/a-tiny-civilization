@@ -7,6 +7,7 @@ members = [
     "crates/application",
     "crates/hindsight-adapter",
     "crates/observer-api",
+    "crates/observer-projection",
     "crates/postgres-store",
     "crates/sim-engine",
     "crates/world-data",

@@ -188,6 +188,12 @@ Stripe is the intended processor. Apple Pay and Google Pay are checkout methods
 through Stripe. Browser redirects never grant an entitlement; a verified,
 idempotently processed webhook does.
 
+The implemented queue enforces this boundary before checkout exists: a reservation is
+created pending payment, moves to independent moderation after verified payment, and
+only then becomes eligible for observer-side matching against an already committed
+birth. The queue cannot write canonical events or world state. See
+[ADR 0017](adr/0017-observer-only-supporter-reservations.md).
+
 ## 8. Public observatory
 
 The public site eventually provides:

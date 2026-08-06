@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
 mod memory_outbox;
+mod supporter_reservations;
 mod world_store;
 
 #[derive(Clone, Debug)]

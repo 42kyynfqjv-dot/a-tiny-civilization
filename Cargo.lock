@@ -1342,6 +1342,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "observer-projection"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "serde",
+ "thiserror",
+ "uuid",
+ "world-domain",
+]
+
+[[package]]
 name = "once_cell"
 version = "1.21.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1450,6 +1462,7 @@ dependencies = [
  "application",
  "async-trait",
  "chrono",
+ "observer-projection",
  "serde_json",
  "sim-engine",
  "sqlx",

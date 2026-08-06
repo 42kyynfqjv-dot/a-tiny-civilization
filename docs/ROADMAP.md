@@ -142,6 +142,9 @@ the foundation does not invent placeholder experiences.
 ### 5. Supporter participation
 
 - isolated observer accounts, moderated reservations, eligibility queues, and aliases;
+- observer-only reservation persistence is implemented: verified payment enters
+  moderation, approved reservations match only already committed births, and immutable
+  payment/match history cannot affect canonical events or runner dependencies;
 - human and enabled-animal birth matching only after a paid reservation is valid;
 - idempotent Stripe webhooks and Apple Pay/Google Pay through Stripe;
 - Apple and Google sign-in, refunds/transfers, and extinction handling.

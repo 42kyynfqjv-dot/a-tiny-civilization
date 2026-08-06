@@ -29,6 +29,12 @@ check_tree_excludes \
   civilization-runner \
   '^(observer-api|supporter-|payment-|auth-) '
 
+if rg --line-number 'observer-projection|supporter-|payment-|auth-' \
+  apps/runner/Cargo.toml; then
+  echo "Simulation runner must not directly import observer/supporter/payment/auth ports." >&2
+  exit 1
+fi
+
 if rg --ignore-case --line-number \
   '\b(update[[:space:]]+event_batches|delete[[:space:]]+from[[:space:]]+event_batches|truncate([[:space:]]+table)?[[:space:]]+event_batches)\b' \
   db/migrations; then
