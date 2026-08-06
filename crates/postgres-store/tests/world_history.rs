@@ -4,16 +4,16 @@ use application::{
     WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
-    CommittedBirth, ObserverTimelineStore, ReservationRequest, ReservationState, ReservationTarget,
-    SupporterReservationStore,
+    CommittedBirth, ObserverOrganismStore, ObserverTimelineStore, ReservationRequest,
+    ReservationState, ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
 use sqlx::PgPool;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, Digest, EntityId, EventBatch, EventId, EventSequence, OrganismRole, SimTick,
-    SpeciesIdentity, WorldId, WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, DeathCause, Digest, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
+    SimTick, SpeciesIdentity, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 fn manifest(seed: u64) -> WorldManifest {
@@ -476,5 +476,74 @@ async fn observer_timeline_is_idempotent_append_only_and_readable(pool: PgPool) 
             .execute(&pool)
             .await;
     assert!(mutation.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn observer_organisms_are_committed_safe_and_append_only(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(507);
+    let person = initial_person(manifest.world_id);
+    let person_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let (running, genesis_batch, genesis_snapshot) = genesis(&manifest, vec![person])?;
+    let stored = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    assert!(store.apply_public_organism_batch(&genesis_batch).await?);
+    assert!(!store.apply_public_organism_batch(&genesis_batch).await?);
+    let organisms = store.list_public_organisms(manifest.world_id, 10).await?;
+    assert_eq!(organisms.len(), 1);
+    assert_eq!(organisms[0].organism_id, person_id);
+    assert!(organisms[0].ended_event_id.is_none());
+
+    let death_events = running.plan_death(
+        person_id,
+        DeathCause {
+            mechanism: "test_only".to_owned(),
+        },
+    )?;
+    let (after_death, death_batch) = running.commit(
+        EventSequence::new(2),
+        genesis_batch.batch_hash,
+        death_events,
+    )?;
+    let death_snapshot = Snapshot::new(after_death, death_batch.sequence, death_batch.batch_hash)?;
+    store
+        .commit_transition(
+            stored.cursor,
+            &death_batch,
+            &death_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    assert!(store.apply_public_organism_batch(&death_batch).await?);
+    let organism = store
+        .get_public_organism(manifest.world_id, person_id)
+        .await?
+        .expect("committed life is indexed");
+    assert_eq!(
+        organism.ended_event_id,
+        Some(death_batch.events[0].event_id)
+    );
+    assert_eq!(
+        store.public_organism_cursor(manifest.world_id).await?,
+        EventSequence::new(2)
+    );
+    let mutation = sqlx::query("UPDATE observer_organisms SET role = role WHERE world_id = $1")
+        .bind(manifest.world_id.as_uuid())
+        .execute(&pool)
+        .await;
+    assert!(mutation.is_err());
+    let deletion = sqlx::query("DELETE FROM observer_organism_endings WHERE world_id = $1")
+        .bind(manifest.world_id.as_uuid())
+        .execute(&pool)
+        .await;
+    assert!(deletion.is_err());
     Ok(())
 }

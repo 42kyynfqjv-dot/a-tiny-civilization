@@ -11,16 +11,24 @@ use axum::{
     routing::get,
 };
 use chrono::{DateTime, Utc};
-use observer_projection::{ObserverTimelineStore, PublicTimelineItem};
+use observer_projection::{
+    ObserverOrganismStore, ObserverTimelineStore, PublicOrganism, PublicTimelineItem,
+};
 use serde::Deserialize;
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
-use world_domain::WorldId;
+use world_domain::{EntityId, WorldId};
 
 /// Read-only observer composition. The simulation runner does not import this port.
-pub trait ObserverReadStore: FoundationStore + ObserverTimelineStore {}
+pub trait ObserverReadStore:
+    FoundationStore + ObserverTimelineStore + ObserverOrganismStore
+{
+}
 
-impl<T> ObserverReadStore for T where T: FoundationStore + ObserverTimelineStore {}
+impl<T> ObserverReadStore for T where
+    T: FoundationStore + ObserverTimelineStore + ObserverOrganismStore
+{
+}
 
 #[derive(Clone)]
 pub struct ApiState {
@@ -46,6 +54,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/ready", get(ready))
         .route("/api/v1/status", get(status))
         .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
+        .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
+        .route(
+            "/api/v1/worlds/{world_id}/organisms/{organism_id}",
+            get(public_organism),
+        )
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -148,6 +161,55 @@ async fn public_timeline(
         projection_version: observer_projection::PUBLIC_TIMELINE_PROJECTION_VERSION,
         items,
     }))
+}
+
+#[derive(Serialize)]
+struct OrganismsResponse {
+    projection_version: u16,
+    organisms: Vec<PublicOrganism>,
+}
+
+async fn public_organisms(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<OrganismsResponse>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let organisms = state
+        .store
+        .list_public_organisms(world_id, query.limit.unwrap_or(50))
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(OrganismsResponse {
+        projection_version: observer_projection::PUBLIC_ORGANISM_PROJECTION_VERSION,
+        organisms,
+    }))
+}
+
+async fn public_organism(
+    State(state): State<ApiState>,
+    Path((world_id, organism_id)): Path<(String, String)>,
+) -> Result<Json<PublicOrganism>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let organism_id = organism_id
+        .parse::<EntityId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let organism = state
+        .store
+        .get_public_organism(world_id, organism_id)
+        .await
+        .map_err(log_observer_error)?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(organism))
+}
+
+fn log_observer_error(error: observer_projection::ObserverProjectionStoreError) -> ApiError {
+    tracing::error!(%error, "observer projection read failed");
+    ApiError::Unavailable
 }
 
 async fn not_found() -> ApiError {

@@ -74,6 +74,11 @@ append-only observer rows. It withholds reproductive, mortality-mechanism, paren
 location, and internal-identity detail from public copy. The observer API only reads
 that projection. See [ADR 0018](adr/0018-public-timeline-projection.md).
 
+The same process independently maintains `public-organism-v1`: immutable organism
+introduction and ending facts join into safe people/animal records with sourced species
+citations and event provenance. It omits reproductive category, parentage, location,
+mortality mechanism, and supporter aliases. See [ADR 0019](adr/0019-public-organism-index.md).
+
 Snapshots are caches. A complete replay from durable events, or a snapshot plus its
 tail, must produce the same state hash.
 

@@ -16,6 +16,8 @@ use world_domain::{
 
 pub const PUBLIC_TIMELINE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_TIMELINE_PROJECTION_NAME: &str = "public-timeline-v1";
+pub const PUBLIC_ORGANISM_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_ORGANISM_PROJECTION_NAME: &str = "public-organism-v1";
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -161,6 +163,94 @@ pub enum ObserverProjectionStoreError {
     Unavailable(String),
     #[error("observer projection data is corrupt: {0}")]
     Corrupt(String),
+}
+
+/// One restrained observer-facing life record. This is an index over committed facts,
+/// not a name or an identity visible inside the world.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicOrganism {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub organism_id: EntityId,
+    pub role: OrganismRole,
+    pub species: SpeciesIdentity,
+    pub provenance: ClaimProvenance,
+    pub introduced_event_id: EventId,
+    pub introduced_sequence: EventSequence,
+    pub introduced_tick: SimTick,
+    pub ended_event_id: Option<EventId>,
+    pub ended_sequence: Option<EventSequence>,
+    pub ended_tick: Option<SimTick>,
+}
+
+/// Builds public life-index facts from a committed batch. It deliberately excludes
+/// birth category, parentage, location, cause of death, and any observer alias.
+#[must_use]
+pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
+    batch
+        .events
+        .iter()
+        .filter_map(|record| match &record.event {
+            DomainEvent::OrganismInitialized {
+                organism_id,
+                species,
+                role,
+                ..
+            }
+            | DomainEvent::OrganismBorn {
+                organism_id,
+                species,
+                role,
+                ..
+            } => Some(PublicOrganism {
+                projection_version: PUBLIC_ORGANISM_PROJECTION_VERSION,
+                world_id: batch.world_id,
+                organism_id: *organism_id,
+                role: *role,
+                species: species.clone(),
+                provenance: ClaimProvenance::WorldFact,
+                introduced_event_id: record.event_id,
+                introduced_sequence: batch.sequence,
+                introduced_tick: batch.tick,
+                ended_event_id: None,
+                ended_sequence: None,
+                ended_tick: None,
+            }),
+            DomainEvent::WorldStarted { .. }
+            | DomainEvent::WorldConfigured { .. }
+            | DomainEvent::TickAdvanced { .. }
+            | DomainEvent::OrganismDied { .. }
+            | DomainEvent::WorldExtinct
+            | DomainEvent::WorldArchived => None,
+        })
+        .collect()
+}
+
+#[async_trait]
+pub trait ObserverOrganismStore: Send + Sync {
+    /// Atomically projects one committed batch into public life records.
+    /// Returns false when this projection already processed the batch.
+    async fn apply_public_organism_batch(
+        &self,
+        batch: &EventBatch,
+    ) -> Result<bool, ObserverProjectionStoreError>;
+
+    async fn public_organism_cursor(
+        &self,
+        world_id: WorldId,
+    ) -> Result<EventSequence, ObserverProjectionStoreError>;
+
+    async fn list_public_organisms(
+        &self,
+        world_id: WorldId,
+        limit: u16,
+    ) -> Result<Vec<PublicOrganism>, ObserverProjectionStoreError>;
+
+    async fn get_public_organism(
+        &self,
+        world_id: WorldId,
+        organism_id: EntityId,
+    ) -> Result<Option<PublicOrganism>, ObserverProjectionStoreError>;
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -470,6 +560,37 @@ mod tests {
             .collect::<String>()
             .to_ascii_lowercase();
         for withheld in ["female", "falling_rock", "parent", "location"] {
+            assert!(!rendered.contains(withheld), "must withhold {withheld}");
+        }
+    }
+
+    #[test]
+    fn public_organism_index_retains_citations_but_not_sensitive_life_detail() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(21));
+        let batch = EventBatch::new(
+            EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(3),
+            SimTick::new(2),
+            1,
+            Digest::ZERO,
+            vec![DomainEvent::OrganismBorn {
+                organism_id: EntityId::from_uuid(Uuid::from_u128(22)),
+                species: species(),
+                role: OrganismRole::Person,
+                birth_category: BirthCategory::new("female").expect("valid category"),
+                parent_ids: vec![EntityId::from_uuid(Uuid::from_u128(23))],
+                location_id: Some(EntityId::from_uuid(Uuid::from_u128(24))),
+            }],
+            Digest::sha256(b"organism projection state"),
+        )
+        .expect("valid event batch");
+        let organisms = project_public_organisms(&batch);
+        assert_eq!(organisms, project_public_organisms(&batch));
+        assert_eq!(organisms.len(), 1);
+        assert_eq!(organisms[0].species.scientific_name, "Homo sapiens");
+        let rendered = serde_json::to_string(&organisms).expect("serializable index");
+        for withheld in ["female", "parent", "location", "birth_category"] {
             assert!(!rendered.contains(withheld), "must withhold {withheld}");
         }
     }

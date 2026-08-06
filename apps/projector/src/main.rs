@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use application::WorldStore;
 use clap::{Parser, Subcommand};
-use observer_projection::ObserverTimelineStore;
+use observer_projection::{ObserverOrganismStore, ObserverTimelineStore};
 use postgres_store::PostgresStore;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use world_domain::WorldId;
@@ -86,6 +86,24 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
                 applied += 1;
             }
         }
+        let organism_cursor = store
+            .public_organism_cursor(*world_id)
+            .await
+            .context("load public organism projection cursor")?;
+        let organism_batches = store
+            .load_event_batches(*world_id, organism_cursor)
+            .await
+            .context("load committed event batches for public organism projection")?;
+        let mut indexed = 0_u64;
+        for batch in &organism_batches {
+            if store
+                .apply_public_organism_batch(batch)
+                .await
+                .context("persist public organism batch")?
+            {
+                indexed += 1;
+            }
+        }
         let through = store
             .public_timeline_cursor(*world_id)
             .await
@@ -94,6 +112,7 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             world_id = %world_id,
             applied_batches = applied,
             through_sequence = through.get(),
+            indexed_batches = indexed,
             "public timeline projection completed"
         );
     }
