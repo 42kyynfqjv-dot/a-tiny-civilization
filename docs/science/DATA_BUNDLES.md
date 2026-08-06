@@ -212,6 +212,22 @@ This only proves the address and exact area support of one declared source cell.
 support convention is specified in [ADR 0022](../adr/0022-etopo-area-cell-support.md);
 a canonical elevation layer still requires a versioned aggregation kernel.
 
+For reproducible preparation of that aggregation, a sampled source-centre index pairs
+each raw selected ETOPO `f32` value with its exact S2 centre address. It is still not a
+tile or a claim of full-cell ownership; see [ADR 0023](../adr/0023-etopo-s2-centre-index.md).
+
+```bash
+cargo run --locked -p civilization-data -- derive etopo-centre-index \
+  --source-snapshot data/source-snapshots/etopo-2022-v1-60s-bed.json \
+  --artifact-root data/source-cache \
+  --sample-arc-minutes 60 --s2-level 10 \
+  --output data/derived-cache/etopo-2022-v1-60m-centres.bin
+```
+
+The command only writes a new output path. Retain the emitted source and output digests
+with any downstream aggregation; generated intermediate bytes are local artifacts and
+are not committed to Git.
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index

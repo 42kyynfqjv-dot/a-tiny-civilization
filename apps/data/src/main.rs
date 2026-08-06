@@ -16,8 +16,8 @@ use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
-    Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, WorldConfiguration,
-    route_geographic_to_s2, route_half_arcsecond_to_s2,
+    Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL,
+    WorldConfiguration, route_geographic_to_s2, route_half_arcsecond_to_s2,
 };
 
 #[derive(Debug, Parser)]
@@ -127,6 +127,23 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Pair sampled ETOPO source values with their exact centre-routed S2 addresses.
+    ///
+    /// This is a provenance-bound intermediate index, not a canonical elevation layer.
+    EtopoCentreIndex {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Sampling spacing in ETOPO's native one-arc-minute cells. Must divide 60.
+        #[arg(long, default_value_t = 5)]
+        sample_arc_minutes: u16,
+        #[arg(long, default_value_t = 10)]
+        s2_level: u8,
+        /// New output path. It must not exist; existing results are never replaced.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -177,6 +194,19 @@ async fn main() -> Result<()> {
                 &source_snapshot,
                 &artifact_root,
                 sample_arc_minutes,
+                &output,
+            ),
+            DeriveCommand::EtopoCentreIndex {
+                source_snapshot,
+                artifact_root,
+                sample_arc_minutes,
+                s2_level,
+                output,
+            } => derive_etopo_centre_index(
+                &source_snapshot,
+                &artifact_root,
+                sample_arc_minutes,
+                s2_level,
                 &output,
             ),
         },
@@ -258,12 +288,16 @@ fn inspect_etopo_cell_route(row: u32, column: u32, s2_level: u8) -> Result<()> {
 
 const ETOPO_GRID_MAGIC: &[u8; 8] = b"ATCETOP1";
 const ETOPO_GRID_SCHEMA_VERSION: u16 = 1;
+const ETOPO_CENTRE_INDEX_MAGIC: &[u8; 8] = b"ATCECI1\0";
+const ETOPO_CENTRE_INDEX_SCHEMA_VERSION: u16 = 1;
 const ETOPO_LATITUDE_CELLS: u64 = 10_800;
 const ETOPO_LONGITUDE_CELLS: u64 = 21_600;
 const ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS: i32 = -647_940;
 const ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS: i32 = -1_295_940;
 const ETOPO_CELL_STEP_HALF_ARCSECONDS: i32 = 120;
 const ETOPO_GRID_HEADER_LENGTH: usize = 84;
+const ETOPO_CENTRE_INDEX_HEADER_LENGTH: usize = 88;
+const ETOPO_CENTRE_INDEX_RECORD_LENGTH: usize = 12;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EtopoCellSupport {
@@ -341,20 +375,29 @@ struct EtopoGridDerivation {
     output_byte_length: u64,
 }
 
+#[derive(Serialize)]
+struct EtopoCentreIndexDerivation {
+    derivation_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_path: String,
+    source_artifact_hash: Digest,
+    sample_arc_minutes: u16,
+    s2_level: u8,
+    latitude_cells: u32,
+    longitude_cells: u32,
+    output_path: String,
+    output_hash: Digest,
+    output_byte_length: u64,
+}
+
 fn derive_etopo_grid(
     manifest_path: &Path,
     artifact_root: &Path,
     sample_arc_minutes: u16,
     output_path: &Path,
 ) -> Result<()> {
-    let stride = u64::from(sample_arc_minutes);
-    if sample_arc_minutes == 0
-        || 60 % sample_arc_minutes != 0
-        || !ETOPO_LATITUDE_CELLS.is_multiple_of(stride)
-        || !ETOPO_LONGITUDE_CELLS.is_multiple_of(stride)
-    {
-        bail!("sample_arc_minutes must be a non-zero divisor of 60");
-    }
+    let stride = validate_etopo_sample_stride(sample_arc_minutes)?;
     let snapshot = load_source_manifest(manifest_path)?;
     verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
     let artifact = etopo_data_artifact(&snapshot)?;
@@ -415,6 +458,93 @@ fn derive_etopo_grid(
         })?
     );
     Ok(())
+}
+
+fn derive_etopo_centre_index(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    sample_arc_minutes: u16,
+    s2_level: u8,
+    output_path: &Path,
+) -> Result<()> {
+    let stride = validate_etopo_sample_stride(sample_arc_minutes)?;
+    if s2_level > MAX_S2_LEVEL {
+        bail!("s2_level must be within 0 through {MAX_S2_LEVEL}");
+    }
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = etopo_data_artifact(&snapshot)?;
+    let snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
+    validate_etopo_schema(&file)?;
+    let selection = NcSliceInfo {
+        selections: vec![
+            NcSliceInfoElem::Slice {
+                start: 0,
+                end: ETOPO_LATITUDE_CELLS,
+                step: stride,
+            },
+            NcSliceInfoElem::Slice {
+                start: 0,
+                end: ETOPO_LONGITUDE_CELLS,
+                step: stride,
+            },
+        ],
+    };
+    let samples = file
+        .read_variable_slice::<f32>("z", &selection)
+        .context("read selected ETOPO elevation cells")?;
+    let latitude_cells = u32::try_from(ETOPO_LATITUDE_CELLS / stride)?;
+    let longitude_cells = u32::try_from(ETOPO_LONGITUDE_CELLS / stride)?;
+    let expected_samples = usize::try_from(u64::from(latitude_cells) * u64::from(longitude_cells))?;
+    let values = samples
+        .as_slice()
+        .context("ETOPO selection is not contiguous")?;
+    if values.len() != expected_samples {
+        bail!("ETOPO selection has an unexpected number of cells");
+    }
+    let bytes = encode_etopo_centre_index(
+        sample_arc_minutes,
+        s2_level,
+        snapshot_digest,
+        artifact.content_hash,
+        latitude_cells,
+        longitude_cells,
+        values,
+    )?;
+    write_new_artifact(output_path, &bytes)?;
+    let output_hash = Digest::sha256(&bytes);
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoCentreIndexDerivation {
+            derivation_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id.clone(),
+            source_snapshot_digest: snapshot_digest,
+            source_artifact_path: artifact.artifact_path.clone(),
+            source_artifact_hash: artifact.content_hash,
+            sample_arc_minutes,
+            s2_level,
+            latitude_cells,
+            longitude_cells,
+            output_path: output_path.display().to_string(),
+            output_hash,
+            output_byte_length: u64::try_from(bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+fn validate_etopo_sample_stride(sample_arc_minutes: u16) -> Result<u64> {
+    let stride = u64::from(sample_arc_minutes);
+    if sample_arc_minutes == 0
+        || 60 % sample_arc_minutes != 0
+        || !ETOPO_LATITUDE_CELLS.is_multiple_of(stride)
+        || !ETOPO_LONGITUDE_CELLS.is_multiple_of(stride)
+    {
+        bail!("sample_arc_minutes must be a non-zero divisor of 60");
+    }
+    Ok(stride)
 }
 
 fn etopo_data_artifact(snapshot: &SourceSnapshotManifest) -> Result<&SourceSnapshotArtifact> {
@@ -537,6 +667,58 @@ fn encode_etopo_grid(
     for value in values {
         bytes.extend_from_slice(&value.to_bits().to_le_bytes());
     }
+    Ok(bytes)
+}
+
+fn encode_etopo_centre_index(
+    sample_arc_minutes: u16,
+    s2_level: u8,
+    snapshot_digest: Digest,
+    artifact_digest: Digest,
+    latitude_cells: u32,
+    longitude_cells: u32,
+    values: &[f32],
+) -> Result<Vec<u8>> {
+    let stride = validate_etopo_sample_stride(sample_arc_minutes)?;
+    let expected_values = usize::try_from(u64::from(latitude_cells) * u64::from(longitude_cells))?;
+    if values.len() != expected_values
+        || u64::from(latitude_cells) * stride != ETOPO_LATITUDE_CELLS
+        || u64::from(longitude_cells) * stride != ETOPO_LONGITUDE_CELLS
+    {
+        bail!("ETOPO centre index dimensions disagree with sampled source values");
+    }
+    let record_bytes = values
+        .len()
+        .checked_mul(ETOPO_CENTRE_INDEX_RECORD_LENGTH)
+        .context("ETOPO centre index byte length overflow")?;
+    let total = ETOPO_CENTRE_INDEX_HEADER_LENGTH
+        .checked_add(record_bytes)
+        .context("ETOPO centre index total byte length overflow")?;
+    let mut bytes = Vec::with_capacity(total);
+    bytes.extend_from_slice(ETOPO_CENTRE_INDEX_MAGIC);
+    bytes.extend_from_slice(&ETOPO_CENTRE_INDEX_SCHEMA_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&sample_arc_minutes.to_le_bytes());
+    bytes.push(s2_level);
+    bytes.extend_from_slice(&[0_u8; 3]);
+    bytes.extend_from_slice(snapshot_digest.as_bytes());
+    bytes.extend_from_slice(artifact_digest.as_bytes());
+    bytes.extend_from_slice(&latitude_cells.to_le_bytes());
+    bytes.extend_from_slice(&longitude_cells.to_le_bytes());
+
+    for row in 0..latitude_cells {
+        let source_row = u32::try_from(u64::from(row) * stride)?;
+        for column in 0..longitude_cells {
+            let source_column = u32::try_from(u64::from(column) * stride)?;
+            let support = etopo_cell_support(source_row, source_column)?;
+            let cell = route_half_arcsecond_to_s2(support.centre, s2_level)
+                .context("route exact ETOPO source centre to S2")?;
+            let value_index =
+                usize::try_from(u64::from(row) * u64::from(longitude_cells) + u64::from(column))?;
+            bytes.extend_from_slice(&cell.get().to_be_bytes());
+            bytes.extend_from_slice(&values[value_index].to_bits().to_le_bytes());
+        }
+    }
+    debug_assert_eq!(bytes.len(), total);
     Ok(bytes)
 }
 
@@ -1230,6 +1412,36 @@ mod tests {
                 &[1.5],
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn etopo_centre_index_binds_sample_bits_to_exact_routed_centres() {
+        let snapshot = Digest::sha256(b"snapshot");
+        let artifact = Digest::sha256(b"artifact");
+        let mut values = vec![0.0_f32; 180 * 360];
+        values[0] = 1.5;
+        let encoded = encode_etopo_centre_index(60, 10, snapshot, artifact, 180, 360, &values)
+            .expect("encode one-degree ETOPO centre index");
+        assert_eq!(
+            encoded.len(),
+            ETOPO_CENTRE_INDEX_HEADER_LENGTH + values.len() * ETOPO_CENTRE_INDEX_RECORD_LENGTH
+        );
+        assert_eq!(&encoded[0..8], ETOPO_CENTRE_INDEX_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes(encoded[8..10].try_into().expect("schema bytes")),
+            ETOPO_CENTRE_INDEX_SCHEMA_VERSION
+        );
+        assert_eq!(encoded[12], 10);
+        assert_eq!(&encoded[16..48], snapshot.as_bytes());
+        assert_eq!(&encoded[48..80], artifact.as_bytes());
+        assert_eq!(
+            u64::from_be_bytes(encoded[88..96].try_into().expect("S2 cell bytes")),
+            0xa555_5500_0000_0000
+        );
+        assert_eq!(
+            u32::from_le_bytes(encoded[96..100].try_into().expect("sample bytes")),
+            1.5_f32.to_bits()
         );
     }
 
