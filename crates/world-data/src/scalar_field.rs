@@ -7,6 +7,7 @@ use world_domain::{Digest, MAX_S2_LEVEL, S2CellId};
 pub const PACKED_SCALAR_FIELD_TILE_SCHEMA_VERSION: u16 = 1;
 pub const PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.packed-scalar-field-tile+json";
+const MAX_DECIMAL_PLACES: u8 = 9;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct ScalarFieldCell {
@@ -40,6 +41,11 @@ impl PackedScalarFieldTile {
         }
         if !slug(&self.layer_id) || !unit(&self.unit) {
             return Err(ScalarFieldTileError::InvalidIdentifier);
+        }
+        if self.decimal_places > MAX_DECIMAL_PLACES {
+            return Err(ScalarFieldTileError::InvalidDecimalPlaces(
+                self.decimal_places,
+            ));
         }
         if self.source_snapshot_digest == Digest::ZERO
             || self.source_artifact_digest == Digest::ZERO
@@ -127,6 +133,8 @@ pub enum ScalarFieldTileError {
     UnsupportedSchema(u16),
     #[error("invalid scalar-field identifier or unit")]
     InvalidIdentifier,
+    #[error("scalar-field decimal places {0} exceeds the supported maximum")]
+    InvalidDecimalPlaces(u8),
     #[error("scalar-field digest must not be zero")]
     ZeroDigest,
     #[error("invalid quadrature")]
@@ -187,5 +195,37 @@ mod tests {
             PackedScalarFieldTile::from_canonical_slice(&bytes),
             Ok(tile)
         );
+    }
+
+    #[test]
+    fn scalar_field_rejects_unbounded_decimal_precision() {
+        let container: S2CellId = "1000010000000000".parse().expect("valid cell");
+        let tile = PackedScalarFieldTile {
+            tile_schema_version: 1,
+            layer_id: "january-air-temperature".to_owned(),
+            unit: "degC".to_owned(),
+            decimal_places: MAX_DECIMAL_PLACES + 1,
+            source_snapshot_digest: Digest::sha256(b"s"),
+            source_artifact_digest: Digest::sha256(b"a"),
+            quadrature_points_per_axis: 4,
+            container_s2_cell_id: container,
+            target_s2_level: 11,
+            cells: container
+                .children()
+                .expect("children")
+                .into_iter()
+                .map(|s2_cell_id| ScalarFieldCell {
+                    s2_cell_id,
+                    support_samples: 1,
+                    minimum_value: 0,
+                    mean_value: 0,
+                    maximum_value: 0,
+                })
+                .collect(),
+        };
+        assert!(matches!(
+            tile.validate(),
+            Err(ScalarFieldTileError::InvalidDecimalPlaces(10))
+        ));
     }
 }
