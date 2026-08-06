@@ -4,6 +4,7 @@
 /target/
 /.tools/
 /data/source-cache/
+/data/derived-cache/
 /web/node_modules/
 /web/dist/
 /.idea/

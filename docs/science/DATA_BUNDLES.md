@@ -164,6 +164,26 @@ cargo run --locked -p civilization-data -- inspect etopo \
   --artifact-root data/source-cache
 ```
 
+The first reproducible elevation intermediate is a regular sampling of the verified
+source's `z` values. It retains the source `f32` IEEE-754 bits in source row order,
+includes both source digests and the selected spacing in an 84-byte binary header, and
+publishes only to a new path. At the default five-arc-minute spacing it contains
+2,160 × 4,320 samples (37,324,884 bytes):
+
+```bash
+mkdir -p data/derived-cache
+cargo run --locked -p civilization-data -- derive etopo-grid \
+  --source-snapshot data/source-snapshots/etopo-2022-v1-60s-bed.json \
+  --artifact-root data/source-cache \
+  --sample-arc-minutes 5 \
+  --output data/derived-cache/etopo-2022-v1-5m.grid
+```
+
+This is a provenance-bound elevation input for the forthcoming S2 tile normalizer; it
+is deliberately not a substitute for an S2 tile-tree root, a coastline, or a complete
+canonical world-data bundle. Generated intermediates are local operator artifacts and
+are not committed to the source repository.
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index
@@ -172,7 +192,9 @@ The tests cover tampered leaves, false counts, cycles, malformed S2 identities,
 duplicate/unsorted entries, noncanonical index bytes, wrong layer/level metadata, and
 cross-face parentage. Exact pre-normalization snapshots now pin public-domain Natural
 Earth generalized global land artifacts and CC0 NOAA ETOPO 2022 global 60 arc-second
-bedrock relief with its official release, license, and version evidence. No normalized
-layer root or canonical seed is claimed yet. Lower Buffalo remains only the first
-high-resolution conformance tile. The next data work is deterministic normalization
-and planet-level roots, then reference-tile normalization without placeholder values.
+bedrock relief with its official release, license, and version evidence. The ETOPO
+pipeline can now derive a portable, hash-bound global elevation intermediate from that
+evidence. No normalized S2 layer root or canonical seed is claimed yet. Lower Buffalo
+remains only the first high-resolution conformance tile. The next data work is
+deterministic S2 normalization and planet-level roots, then reference-tile
+normalization without placeholder values.

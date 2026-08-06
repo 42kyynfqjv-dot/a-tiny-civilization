@@ -8,7 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use netcdf_reader::NcFile;
+use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{SourceSnapshotArtifact, SourceSnapshotManifest, WorldDataBundle};
@@ -42,6 +42,11 @@ enum Command {
     Inspect {
         #[command(subcommand)]
         command: InspectCommand,
+    },
+    /// Derive deterministic intermediate artifacts from verified scientific sources.
+    Derive {
+        #[command(subcommand)]
+        command: DeriveCommand,
     },
 }
 
@@ -79,6 +84,26 @@ enum InspectCommand {
     },
 }
 
+#[derive(Debug, Subcommand)]
+enum DeriveCommand {
+    /// Preserve a regular, evenly sampled ETOPO elevation grid as portable canonical bytes.
+    ///
+    /// This is a provenance-bound intermediate artifact, not yet a canonical world-data
+    /// layer or a claim that full-Earth genesis is available.
+    EtopoGrid {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Sampling spacing in ETOPO's native one-arc-minute cells. Must divide 60.
+        #[arg(long, default_value_t = 5)]
+        sample_arc_minutes: u16,
+        /// New output path. It must not exist; existing results are never replaced.
+        #[arg(long)]
+        output: PathBuf,
+    },
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -107,7 +132,201 @@ async fn main() -> Result<()> {
                 artifact_root,
             } => inspect_etopo(&source_snapshot, &artifact_root),
         },
+        Command::Derive { command } => match command {
+            DeriveCommand::EtopoGrid {
+                source_snapshot,
+                artifact_root,
+                sample_arc_minutes,
+                output,
+            } => derive_etopo_grid(
+                &source_snapshot,
+                &artifact_root,
+                sample_arc_minutes,
+                &output,
+            ),
+        },
     }
+}
+
+const ETOPO_GRID_MAGIC: &[u8; 8] = b"ATCETOP1";
+const ETOPO_GRID_SCHEMA_VERSION: u16 = 1;
+const ETOPO_LATITUDE_CELLS: u64 = 10_800;
+const ETOPO_LONGITUDE_CELLS: u64 = 21_600;
+const ETOPO_GRID_HEADER_LENGTH: usize = 84;
+
+#[derive(Serialize)]
+struct EtopoGridDerivation {
+    derivation_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_path: String,
+    source_artifact_hash: Digest,
+    sample_arc_minutes: u16,
+    latitude_cells: u32,
+    longitude_cells: u32,
+    output_path: String,
+    output_hash: Digest,
+    output_byte_length: u64,
+}
+
+fn derive_etopo_grid(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    sample_arc_minutes: u16,
+    output_path: &Path,
+) -> Result<()> {
+    let stride = u64::from(sample_arc_minutes);
+    if sample_arc_minutes == 0
+        || 60 % sample_arc_minutes != 0
+        || !ETOPO_LATITUDE_CELLS.is_multiple_of(stride)
+        || !ETOPO_LONGITUDE_CELLS.is_multiple_of(stride)
+    {
+        bail!("sample_arc_minutes must be a non-zero divisor of 60");
+    }
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = etopo_data_artifact(&snapshot)?;
+    let snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
+    validate_etopo_schema(&file)?;
+    let selection = NcSliceInfo {
+        selections: vec![
+            NcSliceInfoElem::Slice {
+                start: 0,
+                end: ETOPO_LATITUDE_CELLS,
+                step: stride,
+            },
+            NcSliceInfoElem::Slice {
+                start: 0,
+                end: ETOPO_LONGITUDE_CELLS,
+                step: stride,
+            },
+        ],
+    };
+    let samples = file
+        .read_variable_slice::<f32>("z", &selection)
+        .context("read selected ETOPO elevation cells")?;
+    let latitude_cells = u32::try_from(ETOPO_LATITUDE_CELLS / stride)?;
+    let longitude_cells = u32::try_from(ETOPO_LONGITUDE_CELLS / stride)?;
+    let expected_samples = usize::try_from(u64::from(latitude_cells) * u64::from(longitude_cells))?;
+    let values = samples
+        .as_slice()
+        .context("ETOPO selection is not contiguous")?;
+    if values.len() != expected_samples {
+        bail!("ETOPO selection has an unexpected number of cells");
+    }
+    let bytes = encode_etopo_grid(
+        sample_arc_minutes,
+        snapshot_digest,
+        artifact.content_hash,
+        latitude_cells,
+        longitude_cells,
+        values,
+    )?;
+    write_new_artifact(output_path, &bytes)?;
+    let output_hash = Digest::sha256(&bytes);
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoGridDerivation {
+            derivation_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id.clone(),
+            source_snapshot_digest: snapshot_digest,
+            source_artifact_path: artifact.artifact_path.clone(),
+            source_artifact_hash: artifact.content_hash,
+            sample_arc_minutes,
+            latitude_cells,
+            longitude_cells,
+            output_path: output_path.display().to_string(),
+            output_hash,
+            output_byte_length: u64::try_from(bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+fn etopo_data_artifact(snapshot: &SourceSnapshotManifest) -> Result<&SourceSnapshotArtifact> {
+    snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .context("source snapshot has no ETOPO NetCDF data artifact")
+}
+
+fn validate_etopo_schema(file: &NcFile) -> Result<()> {
+    let lat = file.variable("lat").context("ETOPO has no lat variable")?;
+    let lon = file.variable("lon").context("ETOPO has no lon variable")?;
+    let elevation = file.variable("z").context("ETOPO has no z variable")?;
+    if lat.shape() != [ETOPO_LATITUDE_CELLS]
+        || lon.shape() != [ETOPO_LONGITUDE_CELLS]
+        || elevation.shape() != [ETOPO_LATITUDE_CELLS, ETOPO_LONGITUDE_CELLS]
+    {
+        bail!("ETOPO variables do not have the pinned global 60-arc-second shape");
+    }
+    Ok(())
+}
+
+fn encode_etopo_grid(
+    sample_arc_minutes: u16,
+    snapshot_digest: Digest,
+    artifact_digest: Digest,
+    latitude_cells: u32,
+    longitude_cells: u32,
+    values: &[f32],
+) -> Result<Vec<u8>> {
+    let expected_values = usize::try_from(u64::from(latitude_cells) * u64::from(longitude_cells))?;
+    if values.len() != expected_values {
+        bail!("ETOPO grid value count disagrees with its declared dimensions");
+    }
+    let value_bytes = values
+        .len()
+        .checked_mul(std::mem::size_of::<u32>())
+        .context("ETOPO grid byte length overflow")?;
+    let total = ETOPO_GRID_HEADER_LENGTH
+        .checked_add(value_bytes)
+        .context("ETOPO grid total byte length overflow")?;
+    let mut bytes = Vec::with_capacity(total);
+    bytes.extend_from_slice(ETOPO_GRID_MAGIC);
+    bytes.extend_from_slice(&ETOPO_GRID_SCHEMA_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&sample_arc_minutes.to_le_bytes());
+    bytes.extend_from_slice(snapshot_digest.as_bytes());
+    bytes.extend_from_slice(artifact_digest.as_bytes());
+    bytes.extend_from_slice(&latitude_cells.to_le_bytes());
+    bytes.extend_from_slice(&longitude_cells.to_le_bytes());
+    for value in values {
+        bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+    }
+    Ok(bytes)
+}
+
+fn write_new_artifact(output_path: &Path, bytes: &[u8]) -> Result<()> {
+    let parent = output_path
+        .parent()
+        .context("output path has no parent directory")?;
+    let parent = parent
+        .canonicalize()
+        .with_context(|| format!("failed to resolve output directory {}", parent.display()))?;
+    let file_name = output_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("output filename is not UTF-8")?;
+    let destination = parent.join(file_name);
+    if fs::symlink_metadata(&destination).is_ok() {
+        bail!("derived artifact {} already exists", destination.display());
+    }
+    let mut partial = PartialDownload::create(&parent, file_name)?;
+    partial
+        .file
+        .write_all(bytes)
+        .with_context(|| format!("failed to write {}", partial.path.display()))?;
+    partial
+        .file
+        .sync_all()
+        .with_context(|| format!("failed to sync {}", partial.path.display()))?;
+    partial.persist_without_replacement(&destination)
 }
 
 #[derive(Serialize)]
@@ -691,5 +910,56 @@ mod tests {
         bytes[28..32].copy_from_slice(&1000_u32.to_le_bytes());
         bytes[32..36].copy_from_slice(&5_u32.to_le_bytes());
         assert!(parse_polygon_shapefile(&bytes).is_err());
+    }
+
+    #[test]
+    fn etopo_grid_bytes_preserve_provenance_dimensions_and_float_bits() {
+        let snapshot = Digest::sha256(b"snapshot");
+        let artifact = Digest::sha256(b"artifact");
+        let encoded = encode_etopo_grid(5, snapshot, artifact, 1, 2, &[1.5, -42.25])
+            .expect("encode a small ETOPO grid");
+        assert_eq!(encoded.len(), ETOPO_GRID_HEADER_LENGTH + 8);
+        assert_eq!(&encoded[0..8], ETOPO_GRID_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes(encoded[8..10].try_into().expect("schema bytes")),
+            1
+        );
+        assert_eq!(
+            u16::from_le_bytes(encoded[10..12].try_into().expect("stride bytes")),
+            5
+        );
+        assert_eq!(&encoded[12..44], snapshot.as_bytes());
+        assert_eq!(&encoded[44..76], artifact.as_bytes());
+        assert_eq!(
+            u32::from_le_bytes(encoded[76..80].try_into().expect("latitude bytes")),
+            1
+        );
+        assert_eq!(
+            u32::from_le_bytes(encoded[80..84].try_into().expect("longitude bytes")),
+            2
+        );
+        assert_eq!(
+            u32::from_le_bytes(encoded[84..88].try_into().expect("first value bytes")),
+            1.5_f32.to_bits()
+        );
+        assert_eq!(
+            u32::from_le_bytes(encoded[88..92].try_into().expect("second value bytes")),
+            (-42.25_f32).to_bits()
+        );
+    }
+
+    #[test]
+    fn etopo_grid_rejects_dimensions_that_disagree_with_values() {
+        assert!(
+            encode_etopo_grid(
+                5,
+                Digest::sha256(b"snapshot"),
+                Digest::sha256(b"artifact"),
+                1,
+                2,
+                &[1.5],
+            )
+            .is_err()
+        );
     }
 }
