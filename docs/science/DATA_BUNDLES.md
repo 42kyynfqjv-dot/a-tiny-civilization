@@ -228,6 +228,21 @@ The command only writes a new output path. Retain the emitted source and output 
 with any downstream aggregation; generated intermediate bytes are local artifacts and
 are not committed to Git.
 
+The index can be independently revalidated and summarized at an ancestor S2 level:
+
+```bash
+cargo run --locked -p civilization-data -- derive centre-summary \
+  --input /tmp/atc-etopo-2022-v1-60m-centres.bin \
+  --s2-level 0 \
+  --output /tmp/atc-etopo-2022-v1-60m-centre-summary-l0.bin
+```
+
+This output is a fixed-point **source-centre quadrature summary**. It contains sample
+counts and min/mean/max relief values in signed millimetres, along with input/source
+digests. It is useful evidence while building the true normalizer, but does not claim
+that source rectangles are contained by, or area-weighted over, the target S2 cells.
+See [ADR 0024](../adr/0024-etopo-source-centre-quadrature-summary.md).
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index
@@ -237,8 +252,9 @@ duplicate/unsorted entries, noncanonical index bytes, wrong layer/level metadata
 cross-face parentage. Exact pre-normalization snapshots now pin public-domain Natural
 Earth generalized global land artifacts and CC0 NOAA ETOPO 2022 global 60 arc-second
 bedrock relief with its official release, license, and version evidence. The ETOPO
-pipeline can now derive a portable, hash-bound global elevation intermediate from that
-evidence. No normalized S2 layer root or canonical seed is claimed yet. Lower Buffalo
+pipeline can now derive a portable, hash-bound global elevation intermediate and a
+separately checked source-centre quadrature summary from that evidence. No normalized
+S2 layer root or canonical seed is claimed yet. Lower Buffalo
 remains only the first high-resolution conformance tile. The next data work is
 deterministic S2 normalization and planet-level roots, then reference-tile
 normalization without placeholder values.

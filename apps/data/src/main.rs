@@ -16,7 +16,7 @@ use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
-    Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL,
+    Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId,
     WorldConfiguration, route_geographic_to_s2, route_half_arcsecond_to_s2,
 };
 
@@ -144,6 +144,21 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Summarize a verified ETOPO centre-attribution index at a coarser S2 level.
+    ///
+    /// This is a source-centre quadrature summary, not a target-cell coverage or
+    /// area-overlap terrain layer.
+    CentreSummary {
+        /// Existing ETOPO centre index to read and validate.
+        #[arg(long)]
+        input: PathBuf,
+        /// S2 level to summarize into. It must not be finer than the input level.
+        #[arg(long)]
+        s2_level: u8,
+        /// New output path. It must not exist; existing results are never replaced.
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -209,6 +224,11 @@ async fn main() -> Result<()> {
                 s2_level,
                 &output,
             ),
+            DeriveCommand::CentreSummary {
+                input,
+                s2_level,
+                output,
+            } => derive_etopo_centre_summary(&input, s2_level, &output),
         },
     }
 }
@@ -290,6 +310,8 @@ const ETOPO_GRID_MAGIC: &[u8; 8] = b"ATCETOP1";
 const ETOPO_GRID_SCHEMA_VERSION: u16 = 1;
 const ETOPO_CENTRE_INDEX_MAGIC: &[u8; 8] = b"ATCECI1\0";
 const ETOPO_CENTRE_INDEX_SCHEMA_VERSION: u16 = 1;
+const ETOPO_CENTRE_SUMMARY_MAGIC: &[u8; 8] = b"ATCECS1\0";
+const ETOPO_CENTRE_SUMMARY_SCHEMA_VERSION: u16 = 1;
 const ETOPO_LATITUDE_CELLS: u64 = 10_800;
 const ETOPO_LONGITUDE_CELLS: u64 = 21_600;
 const ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS: i32 = -647_940;
@@ -298,6 +320,8 @@ const ETOPO_CELL_STEP_HALF_ARCSECONDS: i32 = 120;
 const ETOPO_GRID_HEADER_LENGTH: usize = 84;
 const ETOPO_CENTRE_INDEX_HEADER_LENGTH: usize = 88;
 const ETOPO_CENTRE_INDEX_RECORD_LENGTH: usize = 12;
+const ETOPO_CENTRE_SUMMARY_HEADER_LENGTH: usize = 124;
+const ETOPO_CENTRE_SUMMARY_RECORD_LENGTH: usize = 40;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 struct EtopoCellSupport {
@@ -389,6 +413,73 @@ struct EtopoCentreIndexDerivation {
     output_path: String,
     output_hash: Digest,
     output_byte_length: u64,
+}
+
+#[derive(Serialize)]
+struct EtopoCentreSummaryDerivation {
+    derivation_schema_version: u16,
+    input_path: String,
+    input_hash: Digest,
+    source_snapshot_digest: Digest,
+    source_artifact_hash: Digest,
+    source_sample_arc_minutes: u16,
+    source_s2_level: u8,
+    summary_s2_level: u8,
+    summary_cells: u32,
+    source_samples: u64,
+    output_path: String,
+    output_hash: Digest,
+    output_byte_length: u64,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EtopoCentreIndexHeader {
+    sample_arc_minutes: u16,
+    s2_level: u8,
+    snapshot_digest: Digest,
+    artifact_digest: Digest,
+    latitude_cells: u32,
+    longitude_cells: u32,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct EtopoCentreIndexRecord {
+    cell: S2CellId,
+    value_bits: u32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct EtopoCentreSummaryStats {
+    samples: u64,
+    total_millimetres: i64,
+    minimum_millimetres: i64,
+    maximum_millimetres: i64,
+}
+
+impl EtopoCentreSummaryStats {
+    fn add(&mut self, millimetres: i64) -> Result<()> {
+        if self.samples == 0 {
+            self.minimum_millimetres = millimetres;
+            self.maximum_millimetres = millimetres;
+        } else {
+            self.minimum_millimetres = self.minimum_millimetres.min(millimetres);
+            self.maximum_millimetres = self.maximum_millimetres.max(millimetres);
+        }
+        self.samples = self
+            .samples
+            .checked_add(1)
+            .context("ETOPO summary sample overflow")?;
+        self.total_millimetres = self
+            .total_millimetres
+            .checked_add(millimetres)
+            .context("ETOPO summary total overflow")?;
+        Ok(())
+    }
+
+    fn mean_millimetres(self) -> i64 {
+        debug_assert!(self.samples > 0);
+        round_divide_i64(self.total_millimetres, self.samples as i64)
+    }
 }
 
 fn derive_etopo_grid(
@@ -530,6 +621,65 @@ fn derive_etopo_centre_index(
             output_path: output_path.display().to_string(),
             output_hash,
             output_byte_length: u64::try_from(bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+fn derive_etopo_centre_summary(
+    input_path: &Path,
+    summary_s2_level: u8,
+    output_path: &Path,
+) -> Result<()> {
+    if summary_s2_level > MAX_S2_LEVEL {
+        bail!("s2_level must be within 0 through {MAX_S2_LEVEL}");
+    }
+    let bytes = fs::read(input_path)
+        .with_context(|| format!("read ETOPO centre index {}", input_path.display()))?;
+    let input_hash = Digest::sha256(&bytes);
+    let (header, records) = decode_etopo_centre_index(&bytes)?;
+    if summary_s2_level > header.s2_level {
+        bail!(
+            "summary s2_level {summary_s2_level} is finer than centre index level {}",
+            header.s2_level
+        );
+    }
+
+    let mut cells = std::collections::BTreeMap::<S2CellId, EtopoCentreSummaryStats>::new();
+    for (sample_index, record) in records.iter().copied().enumerate() {
+        let source_cell = record.cell;
+        let expected = expected_etopo_index_cell(sample_index, header)?;
+        if source_cell != expected {
+            bail!("centre-index record {sample_index} disagrees with the pinned source lattice");
+        }
+        let target = source_cell
+            .ancestor(summary_s2_level)
+            .context("derive coarser S2 source-attribution address")?;
+        let millimetres = f32_bits_to_rounded_millimetres(record.value_bits)?;
+        cells.entry(target).or_default().add(millimetres)?;
+    }
+    let source_samples = u64::from(header.latitude_cells)
+        .checked_mul(u64::from(header.longitude_cells))
+        .context("ETOPO centre index sample count overflow")?;
+    let output =
+        encode_etopo_centre_summary(input_hash, header, summary_s2_level, &cells, source_samples)?;
+    write_new_artifact(output_path, &output)?;
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoCentreSummaryDerivation {
+            derivation_schema_version: 1,
+            input_path: input_path.display().to_string(),
+            input_hash,
+            source_snapshot_digest: header.snapshot_digest,
+            source_artifact_hash: header.artifact_digest,
+            source_sample_arc_minutes: header.sample_arc_minutes,
+            source_s2_level: header.s2_level,
+            summary_s2_level,
+            summary_cells: u32::try_from(cells.len())?,
+            source_samples,
+            output_path: output_path.display().to_string(),
+            output_hash: Digest::sha256(&output),
+            output_byte_length: u64::try_from(output.len())?,
         })?
     );
     Ok(())
@@ -717,6 +867,178 @@ fn encode_etopo_centre_index(
             bytes.extend_from_slice(&cell.get().to_be_bytes());
             bytes.extend_from_slice(&values[value_index].to_bits().to_le_bytes());
         }
+    }
+    debug_assert_eq!(bytes.len(), total);
+    Ok(bytes)
+}
+
+fn decode_etopo_centre_index(
+    bytes: &[u8],
+) -> Result<(EtopoCentreIndexHeader, Vec<EtopoCentreIndexRecord>)> {
+    if bytes.len() < ETOPO_CENTRE_INDEX_HEADER_LENGTH {
+        bail!("ETOPO centre index is shorter than its header");
+    }
+    if &bytes[..8] != ETOPO_CENTRE_INDEX_MAGIC {
+        bail!("ETOPO centre index magic is invalid");
+    }
+    let schema_version = u16::from_le_bytes(bytes[8..10].try_into()?);
+    if schema_version != ETOPO_CENTRE_INDEX_SCHEMA_VERSION {
+        bail!("ETOPO centre index schema version {schema_version} is unsupported");
+    }
+    let sample_arc_minutes = u16::from_le_bytes(bytes[10..12].try_into()?);
+    let s2_level = bytes[12];
+    if bytes[13..16] != [0_u8; 3] {
+        bail!("ETOPO centre index reserved bytes must be zero");
+    }
+    let header = EtopoCentreIndexHeader {
+        sample_arc_minutes,
+        s2_level,
+        snapshot_digest: Digest::from_bytes(bytes[16..48].try_into()?),
+        artifact_digest: Digest::from_bytes(bytes[48..80].try_into()?),
+        latitude_cells: u32::from_le_bytes(bytes[80..84].try_into()?),
+        longitude_cells: u32::from_le_bytes(bytes[84..88].try_into()?),
+    };
+    let stride = validate_etopo_sample_stride(header.sample_arc_minutes)?;
+    if header.s2_level > MAX_S2_LEVEL
+        || u64::from(header.latitude_cells) * stride != ETOPO_LATITUDE_CELLS
+        || u64::from(header.longitude_cells) * stride != ETOPO_LONGITUDE_CELLS
+    {
+        bail!("ETOPO centre index header dimensions or S2 level are invalid");
+    }
+    let record_count = usize::try_from(
+        u64::from(header.latitude_cells)
+            .checked_mul(u64::from(header.longitude_cells))
+            .context("ETOPO centre index record count overflow")?,
+    )?;
+    let expected_length = ETOPO_CENTRE_INDEX_HEADER_LENGTH
+        .checked_add(
+            record_count
+                .checked_mul(ETOPO_CENTRE_INDEX_RECORD_LENGTH)
+                .context("ETOPO centre index byte length overflow")?,
+        )
+        .context("ETOPO centre index total byte length overflow")?;
+    if bytes.len() != expected_length {
+        bail!("ETOPO centre index byte length disagrees with its header");
+    }
+    let records = bytes[ETOPO_CENTRE_INDEX_HEADER_LENGTH..]
+        .chunks_exact(ETOPO_CENTRE_INDEX_RECORD_LENGTH)
+        .map(|record| {
+            Ok(EtopoCentreIndexRecord {
+                cell: S2CellId::new(u64::from_be_bytes(
+                    record[..8].try_into().expect("fixed record cell"),
+                ))?,
+                value_bits: u32::from_le_bytes(
+                    record[8..12].try_into().expect("fixed record value"),
+                ),
+            })
+        });
+    Ok((header, records.collect::<Result<Vec<_>>>()?))
+}
+
+fn expected_etopo_index_cell(
+    sample_index: usize,
+    header: EtopoCentreIndexHeader,
+) -> Result<S2CellId> {
+    let columns = usize::try_from(header.longitude_cells)?;
+    let row = u32::try_from(sample_index / columns)?;
+    let column = u32::try_from(sample_index % columns)?;
+    let stride = validate_etopo_sample_stride(header.sample_arc_minutes)?;
+    let source_row = u32::try_from(u64::from(row) * stride)?;
+    let source_column = u32::try_from(u64::from(column) * stride)?;
+    route_half_arcsecond_to_s2(
+        etopo_cell_support(source_row, source_column)?.centre,
+        header.s2_level,
+    )
+    .context("route expected ETOPO centre-index source cell")
+}
+
+fn f32_bits_to_rounded_millimetres(bits: u32) -> Result<i64> {
+    let sign = if bits >> 31 == 0 { 1_i128 } else { -1_i128 };
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let fraction = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        bail!("ETOPO value is not finite");
+    }
+    let (significand, power) = if exponent == 0 {
+        (i128::from(fraction), -149)
+    } else {
+        (i128::from((1_u32 << 23) | fraction), exponent - 150)
+    };
+    let numerator = sign
+        .checked_mul(significand)
+        .and_then(|value| value.checked_mul(1_000))
+        .context("ETOPO millimetre conversion overflow")?;
+    let millimetres = if power >= 0 {
+        numerator
+            .checked_shl(u32::try_from(power)?)
+            .context("ETOPO millimetre conversion overflow")?
+    } else {
+        let divisor_shift = u32::try_from(-power)?;
+        // A finite f32 significand times 1,000 is below 2^34. Any divisor at
+        // 2^127 or greater therefore rounds to zero at millimetre precision and
+        // cannot be a nearest-even tie. Avoid constructing an out-of-range i128.
+        if divisor_shift >= 127 {
+            0
+        } else {
+            round_divide_i128(numerator, 1_i128 << divisor_shift)
+        }
+    };
+    i64::try_from(millimetres).context("ETOPO value is outside signed millimetre range")
+}
+
+fn round_divide_i128(numerator: i128, denominator: i128) -> i128 {
+    debug_assert!(denominator > 0);
+    let quotient = numerator / denominator;
+    let remainder = numerator % denominator;
+    let twice_remainder = remainder.unsigned_abs() * 2;
+    let denominator = denominator as u128;
+    if twice_remainder > denominator || (twice_remainder == denominator && quotient % 2 != 0) {
+        quotient + numerator.signum()
+    } else {
+        quotient
+    }
+}
+
+fn round_divide_i64(numerator: i64, denominator: i64) -> i64 {
+    i64::try_from(round_divide_i128(
+        i128::from(numerator),
+        i128::from(denominator),
+    ))
+    .expect("i64 division result remains within i64")
+}
+
+fn encode_etopo_centre_summary(
+    input_hash: Digest,
+    header: EtopoCentreIndexHeader,
+    summary_s2_level: u8,
+    cells: &std::collections::BTreeMap<S2CellId, EtopoCentreSummaryStats>,
+    source_samples: u64,
+) -> Result<Vec<u8>> {
+    let record_bytes = cells
+        .len()
+        .checked_mul(ETOPO_CENTRE_SUMMARY_RECORD_LENGTH)
+        .context("ETOPO centre summary record bytes overflow")?;
+    let total = ETOPO_CENTRE_SUMMARY_HEADER_LENGTH
+        .checked_add(record_bytes)
+        .context("ETOPO centre summary total bytes overflow")?;
+    let mut bytes = Vec::with_capacity(total);
+    bytes.extend_from_slice(ETOPO_CENTRE_SUMMARY_MAGIC);
+    bytes.extend_from_slice(&ETOPO_CENTRE_SUMMARY_SCHEMA_VERSION.to_le_bytes());
+    bytes.extend_from_slice(&header.sample_arc_minutes.to_le_bytes());
+    bytes.push(header.s2_level);
+    bytes.push(summary_s2_level);
+    bytes.extend_from_slice(&[0_u8; 2]);
+    bytes.extend_from_slice(input_hash.as_bytes());
+    bytes.extend_from_slice(header.snapshot_digest.as_bytes());
+    bytes.extend_from_slice(header.artifact_digest.as_bytes());
+    bytes.extend_from_slice(&u32::try_from(cells.len())?.to_le_bytes());
+    bytes.extend_from_slice(&source_samples.to_le_bytes());
+    for (cell, stats) in cells {
+        bytes.extend_from_slice(&cell.get().to_be_bytes());
+        bytes.extend_from_slice(&stats.samples.to_le_bytes());
+        bytes.extend_from_slice(&stats.minimum_millimetres.to_le_bytes());
+        bytes.extend_from_slice(&stats.mean_millimetres().to_le_bytes());
+        bytes.extend_from_slice(&stats.maximum_millimetres.to_le_bytes());
     }
     debug_assert_eq!(bytes.len(), total);
     Ok(bytes)
@@ -1443,6 +1765,90 @@ mod tests {
             u32::from_le_bytes(encoded[96..100].try_into().expect("sample bytes")),
             1.5_f32.to_bits()
         );
+    }
+
+    #[test]
+    fn etopo_centre_summary_revalidates_every_source_route_and_preserves_fixed_point_stats() {
+        let root = temporary_root("etopo-centre-summary");
+        let input = root.join("centres.bin");
+        let output = root.join("summary.bin");
+        let mut values = vec![1.5_f32; 180 * 360];
+        values[0] = -2.25;
+        fs::write(
+            &input,
+            encode_etopo_centre_index(
+                60,
+                10,
+                Digest::sha256(b"snapshot"),
+                Digest::sha256(b"artifact"),
+                180,
+                360,
+                &values,
+            )
+            .expect("encode centre index"),
+        )
+        .expect("write centre index");
+
+        derive_etopo_centre_summary(&input, 0, &output).expect("derive source-centre summary");
+        let bytes = fs::read(&output).expect("read summary");
+        assert_eq!(&bytes[..8], ETOPO_CENTRE_SUMMARY_MAGIC);
+        assert_eq!(
+            u16::from_le_bytes(bytes[8..10].try_into().expect("summary schema")),
+            ETOPO_CENTRE_SUMMARY_SCHEMA_VERSION
+        );
+        assert_eq!(bytes[12], 10);
+        assert_eq!(bytes[13], 0);
+        let cells = u32::from_le_bytes(bytes[112..116].try_into().expect("summary cell count"));
+        assert!(cells >= 6);
+        let records = &bytes[ETOPO_CENTRE_SUMMARY_HEADER_LENGTH..];
+        assert_eq!(
+            records.len(),
+            usize::try_from(cells).expect("cell count") * 40
+        );
+        let source_samples = records
+            .chunks_exact(ETOPO_CENTRE_SUMMARY_RECORD_LENGTH)
+            .map(|record| u64::from_le_bytes(record[8..16].try_into().expect("sample count")))
+            .sum::<u64>();
+        assert_eq!(source_samples, 64_800);
+        assert_eq!(
+            u64::from_le_bytes(bytes[116..124].try_into().expect("header sample count")),
+            64_800
+        );
+
+        let mut tampered = fs::read(&input).expect("read centre index");
+        tampered[88] ^= 1;
+        let tampered_input = root.join("tampered-centres.bin");
+        fs::write(&tampered_input, tampered).expect("write tampered index");
+        assert!(
+            derive_etopo_centre_summary(&tampered_input, 0, &root.join("rejected.bin")).is_err()
+        );
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn etopo_float_bits_round_to_signed_millimetres_without_host_float_math() {
+        assert_eq!(
+            f32_bits_to_rounded_millimetres(1.5_f32.to_bits()).expect("finite f32"),
+            1_500
+        );
+        assert_eq!(
+            f32_bits_to_rounded_millimetres((-2.25_f32).to_bits()).expect("finite f32"),
+            -2_250
+        );
+        assert_eq!(
+            f32_bits_to_rounded_millimetres(0.0005_f32.to_bits()).expect("finite f32"),
+            1
+        );
+        assert_eq!(
+            f32_bits_to_rounded_millimetres((-0.0005_f32).to_bits()).expect("finite f32"),
+            -1
+        );
+        assert_eq!(
+            f32_bits_to_rounded_millimetres(1).expect("subnormal f32"),
+            0
+        );
+        assert!(f32_bits_to_rounded_millimetres(f32::NAN.to_bits()).is_err());
+        assert!(f32_bits_to_rounded_millimetres(f32::INFINITY.to_bits()).is_err());
     }
 
     #[test]
