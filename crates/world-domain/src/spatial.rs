@@ -4,6 +4,8 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer, de};
 use thiserror::Error;
 
 pub const MAX_S2_LEVEL: u8 = 30;
+/// Refuse pathological allocations when a caller asks to materialize a large subtree.
+pub const MAX_MATERIALIZED_S2_DESCENDANTS: usize = 65_536;
 
 /// One structurally valid 64-bit S2 CellId.
 ///
@@ -66,6 +68,52 @@ impl S2CellId {
             Self::new(base + 5 * child_lsb)?,
             Self::new(base + 7 * child_lsb)?,
         ])
+    }
+
+    /// Materialize every descendant at `target_level` in strict CellId order.
+    ///
+    /// This is intended for bounded causal refinement steps such as L10→L14, not
+    /// for enumerating an entire planetary hierarchy. Larger requests fail before
+    /// allocating memory, and callers that need broader scans must stream explicitly.
+    pub fn descendants_at(self, target_level: u8) -> Result<Vec<Self>, S2CellIdError> {
+        let level = self.level();
+        if target_level < level {
+            return Err(S2CellIdError::CoarserDescendantLevel {
+                requested: target_level,
+                cell_level: level,
+            });
+        }
+        if target_level > MAX_S2_LEVEL {
+            return Err(S2CellIdError::DescendantLevelOutOfRange(target_level));
+        }
+        let levels_down = u32::from(target_level - level);
+        let count = 1_usize.checked_shl(2 * levels_down).ok_or(
+            S2CellIdError::DescendantEnumerationTooLarge {
+                requested: target_level,
+                maximum: MAX_MATERIALIZED_S2_DESCENDANTS,
+            },
+        )?;
+        if count > MAX_MATERIALIZED_S2_DESCENDANTS {
+            return Err(S2CellIdError::DescendantEnumerationTooLarge {
+                requested: target_level,
+                maximum: MAX_MATERIALIZED_S2_DESCENDANTS,
+            });
+        }
+
+        let mut descendants = vec![self];
+        for _ in level..target_level {
+            let mut next = Vec::with_capacity(descendants.len().checked_mul(4).ok_or(
+                S2CellIdError::DescendantEnumerationTooLarge {
+                    requested: target_level,
+                    maximum: MAX_MATERIALIZED_S2_DESCENDANTS,
+                },
+            )?);
+            for parent in descendants {
+                next.extend(parent.children()?);
+            }
+            descendants = next;
+        }
+        Ok(descendants)
     }
 
     #[must_use]
@@ -135,6 +183,12 @@ pub enum S2CellIdError {
     NoChildrenAtMaximumLevel,
     #[error("S2 ancestor level {requested} is finer than cell level {cell_level}")]
     FinerAncestor { requested: u8, cell_level: u8 },
+    #[error("S2 descendant level {requested} is coarser than cell level {cell_level}")]
+    CoarserDescendantLevel { requested: u8, cell_level: u8 },
+    #[error("S2 descendant level {0} is outside 0 through 30")]
+    DescendantLevelOutOfRange(u8),
+    #[error("materializing descendants at level {requested} exceeds the maximum of {maximum}")]
+    DescendantEnumerationTooLarge { requested: u8, maximum: usize },
 }
 
 #[cfg(test)]
@@ -200,5 +254,35 @@ mod tests {
         }
         let leaf = S2CellId::new(0x1000_0000_0000_0001).expect("valid level-30 leaf");
         assert!(leaf.children().is_err());
+    }
+
+    #[test]
+    fn bounded_descendant_enumeration_is_complete_ordered_and_fails_closed() {
+        for face in 0_u64..6 {
+            let parent =
+                S2CellId::new((face << 61) | 0x0000_0100_0000_0000).expect("valid level-10 parent");
+            assert_eq!(parent.level(), 10);
+            let descendants = parent.descendants_at(14).expect("bounded descendants");
+            assert_eq!(descendants.len(), 256);
+            assert!(descendants.windows(2).all(|pair| pair[0] < pair[1]));
+            assert!(descendants.iter().all(|cell| cell.level() == 14));
+            assert!(descendants.iter().all(|cell| parent.contains(*cell)));
+        }
+
+        let parent = "1000010000000000"
+            .parse::<S2CellId>()
+            .expect("valid level-10 parent");
+        assert!(matches!(
+            parent.descendants_at(9),
+            Err(S2CellIdError::CoarserDescendantLevel { .. })
+        ));
+        assert!(matches!(
+            parent.descendants_at(31),
+            Err(S2CellIdError::DescendantLevelOutOfRange(31))
+        ));
+        assert!(matches!(
+            parent.descendants_at(19),
+            Err(S2CellIdError::DescendantEnumerationTooLarge { .. })
+        ));
     }
 }
