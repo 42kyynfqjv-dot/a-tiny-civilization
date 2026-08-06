@@ -158,6 +158,20 @@ enum InspectCommand {
         #[arg(long, default_value_t = 4)]
         points_per_axis: u8,
     },
+    /// Verify every artifact in a standalone packed ETOPO terrain layer release.
+    EtopoTerrainLayer {
+        /// Directory emitted by `derive etopo-terrain-layer`.
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value = "bedrock-relief")]
+        layer_id: String,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        #[arg(long, default_value_t = 4)]
+        points_per_axis: u8,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -316,6 +330,19 @@ async fn main() -> Result<()> {
             } => inspect_etopo_quadrature_throughput(
                 start_row,
                 source_rows,
+                target_s2_level,
+                points_per_axis,
+            ),
+            InspectCommand::EtopoTerrainLayer {
+                input_directory,
+                layer_id,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
+            } => inspect_etopo_terrain_layer(
+                &input_directory,
+                &layer_id,
+                container_s2_level,
                 target_s2_level,
                 points_per_axis,
             ),
@@ -622,6 +649,170 @@ fn inspect_etopo_quadrature_throughput(
         })?
     );
     Ok(())
+}
+
+#[derive(Serialize)]
+struct EtopoTerrainLayerInspection {
+    inspection_schema_version: u16,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    quadrature_points_per_axis: u8,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+    tile_count: u64,
+    target_cell_count: u64,
+    tile_byte_length: u64,
+}
+
+/// Fully validate the flat L6→L10 terrain release before it is used as evidence.
+///
+/// This is intentionally independent from derivation: it rereads each canonical tile,
+/// checks the root's content-addressed references, and requires uniform provenance and
+/// packing parameters across the complete global layer.
+fn inspect_etopo_terrain_layer(
+    input_directory: &Path,
+    layer_id: &str,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_bytes = read_release_file(input_directory, &root_relative_path)?;
+    let root = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical ETOPO terrain-layer root index")?;
+    if root.layer_id != layer_id {
+        bail!(
+            "ETOPO terrain root declares layer {:?}, expected {:?}",
+            root.layer_id,
+            layer_id
+        );
+    }
+    let expected_containers = global_s2_cells_at_level(container_s2_level)?;
+    if root.entries.len() != expected_containers.len() {
+        bail!(
+            "ETOPO terrain root has {} tiles, expected {} at S2 level {container_s2_level}",
+            root.entries.len(),
+            expected_containers.len()
+        );
+    }
+
+    let mut source_snapshot_digest = None;
+    let mut source_artifact_digest = None;
+    let mut tile_byte_length = 0_u64;
+    let mut target_cell_count = 0_u64;
+    for (entry, expected_container) in root.entries.iter().zip(expected_containers) {
+        if entry.kind != TileTreeEntryKind::Tile
+            || entry.s2_level != container_s2_level
+            || entry.s2_cell_id != expected_container.to_string()
+        {
+            bail!(
+                "ETOPO terrain root entry is not the expected L{container_s2_level} tile for {expected_container}"
+            );
+        }
+        if entry.artifact.media_type != PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE {
+            bail!(
+                "ETOPO terrain tile {:?} has unexpected media type {:?}",
+                entry.artifact.path,
+                entry.artifact.media_type
+            );
+        }
+        let bytes = read_release_file(input_directory, &entry.artifact.path)?;
+        if u64::try_from(bytes.len())? != entry.artifact.byte_length
+            || Digest::sha256(&bytes) != entry.artifact.content_hash
+        {
+            bail!(
+                "ETOPO terrain tile {:?} fails its root reference",
+                entry.artifact.path
+            );
+        }
+        let tile = PackedScalarTerrainTile::from_canonical_slice(&bytes).with_context(|| {
+            format!(
+                "decode canonical ETOPO terrain tile {:?}",
+                entry.artifact.path
+            )
+        })?;
+        if tile.layer_id != layer_id
+            || tile.container_s2_cell_id != expected_container
+            || tile.target_s2_level != target_s2_level
+            || tile.quadrature_points_per_axis != points_per_axis
+        {
+            bail!(
+                "ETOPO terrain tile {:?} has inconsistent packing metadata",
+                entry.artifact.path
+            );
+        }
+        match source_snapshot_digest {
+            Some(expected) if expected != tile.source_snapshot_digest => {
+                bail!("ETOPO terrain tiles disagree on source snapshot digest")
+            }
+            None => source_snapshot_digest = Some(tile.source_snapshot_digest),
+            _ => {}
+        }
+        match source_artifact_digest {
+            Some(expected) if expected != tile.source_artifact_digest => {
+                bail!("ETOPO terrain tiles disagree on source artifact digest")
+            }
+            None => source_artifact_digest = Some(tile.source_artifact_digest),
+            _ => {}
+        }
+        tile_byte_length = tile_byte_length
+            .checked_add(entry.artifact.byte_length)
+            .context("ETOPO terrain tile byte total overflow")?;
+        target_cell_count = target_cell_count
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("ETOPO terrain target cell total overflow")?;
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoTerrainLayerInspection {
+            inspection_schema_version: 1,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            quadrature_points_per_axis: points_per_axis,
+            source_snapshot_digest: source_snapshot_digest
+                .context("ETOPO terrain root is empty")?,
+            source_artifact_digest: source_artifact_digest
+                .context("ETOPO terrain root is empty")?,
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+            tile_count: u64::try_from(root.entries.len())?,
+            target_cell_count,
+            tile_byte_length,
+        })?
+    );
+    Ok(())
+}
+
+fn read_release_file(root: &Path, relative_path: &str) -> Result<Vec<u8>> {
+    if Path::new(relative_path)
+        .components()
+        .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        bail!("release artifact path {relative_path:?} is not portable");
+    }
+    let canonical_root = root
+        .canonicalize()
+        .with_context(|| format!("resolve release directory {}", root.display()))?;
+    let path = canonical_root.join(relative_path);
+    let metadata = fs::symlink_metadata(&path)
+        .with_context(|| format!("inspect release artifact {}", path.display()))?;
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        bail!("release artifact {} must be a regular file", path.display());
+    }
+    let canonical_path = path
+        .canonicalize()
+        .with_context(|| format!("resolve release artifact {}", path.display()))?;
+    if !canonical_path.starts_with(&canonical_root) {
+        bail!("release artifact {relative_path:?} escapes its release directory");
+    }
+    fs::read(canonical_path).with_context(|| format!("read release artifact {relative_path:?}"))
 }
 
 const ETOPO_GRID_MAGIC: &[u8; 8] = b"ATCETOP1";
@@ -2926,6 +3117,8 @@ mod tests {
             fs::read(root.join(&root_path)).expect("root bytes"),
             root_bytes
         );
+        inspect_etopo_terrain_layer(&root, "bedrock-relief", 0, 1, 4)
+            .expect("independently inspect miniature terrain layer");
         for entry in index.entries {
             let tile = PackedScalarTerrainTile::from_canonical_slice(
                 &fs::read(root.join(entry.artifact.path)).expect("tile bytes"),

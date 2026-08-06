@@ -308,6 +308,19 @@ an explicit overlap approximation rather than exact spherical clipping under
 [ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md), and its payload/storage
 contract is [ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md).
 
+After a batch completes, verify every root reference and packed tile through a fresh
+read before retaining its emitted root hash. This command accepts only a finished
+release directory and does not modify it:
+
+```bash
+cargo run --release --locked -p civilization-data -- inspect etopo-terrain-layer \
+  --input-directory data/derived-cache/etopo-2022-v1-l6-l10-q4
+```
+
+The layer is evidence only after this traversal and an independent rebuild to a new
+directory produce the same root hash. Neither one successful batch nor matching roots
+turns it into a complete world-data bundle.
+
 Before scheduling a new machine, measure the same optimized fixed-point routing path
 without writing output:
 
@@ -331,8 +344,10 @@ Earth generalized global land artifacts, CC0 NOAA ETOPO 2022 global 60 arc-secon
 bedrock relief, and one CC0 CHELSA-BIOCLIM+ v2.1 January 1981–2010 temperature normal
 with official release, license, and version evidence. The ETOPO
 pipeline can now derive a portable, hash-bound global elevation intermediate and a
-separately checked source-centre quadrature summary from that evidence. No normalized
-S2 layer root or canonical seed is claimed yet. The CHELSA inspector verifies the
+separately checked source-centre quadrature summary from that evidence. The full ETOPO
+normalizer can also emit and exhaustively reread a packed terrain-layer root; no output
+is claimed as a normalized scientific layer until it has been generated and independently
+rebuilt. No canonical seed is claimed yet. The CHELSA inspector verifies the
 retained January grid without turning it into climate semantics. Lower Buffalo remains
 only the first high-resolution conformance tile. The next data work is deterministic
 S2 normalization and planet-level roots, then reference-tile normalization without
