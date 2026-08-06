@@ -1463,7 +1463,8 @@ fn derive_etopo_terrain_layer(
     // tree traversal on each interior quadrature update.
     let summaries = summaries.into_iter().collect::<BTreeMap<_, _>>();
 
-    let staging_directory = prepare_terrain_layer_staging_directory(output_directory)?;
+    let staging_directory =
+        prepare_or_resume_natural_earth_land_staging_directory(output_directory)?;
     let (root_relative_path, root_bytes) = write_packed_etopo_terrain_layer(
         &staging_directory,
         EtopoTerrainPackingProfile {
@@ -1614,17 +1615,35 @@ fn write_packed_natural_earth_land_reference_layer(
         .into_iter()
         .enumerate()
     {
-        let tile = pack_natural_earth_land_reference_tile(
-            layer_id,
-            source_snapshot_digest,
-            source_artifact_digest,
-            prepared_land,
-            container,
-            target_s2_level,
-        )?;
-        let bytes = tile.canonical_bytes()?;
         let relative_path = format!("layers/{layer_id}/{level_directory}/{container}.tile");
-        write_new_artifact(&output_directory.join(&relative_path), &bytes)?;
+        let artifact_path = output_directory.join(&relative_path);
+        let bytes = match fs::read(&artifact_path) {
+            Ok(existing) => {
+                validate_resumable_natural_earth_land_tile(
+                    &existing,
+                    layer_id,
+                    source_snapshot_digest,
+                    source_artifact_digest,
+                    container,
+                    target_s2_level,
+                )?;
+                existing
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let tile = pack_natural_earth_land_reference_tile(
+                    layer_id,
+                    source_snapshot_digest,
+                    source_artifact_digest,
+                    prepared_land,
+                    container,
+                    target_s2_level,
+                )?;
+                let bytes = tile.canonical_bytes()?;
+                write_new_artifact(&artifact_path, &bytes)?;
+                bytes
+            }
+            Err(error) => return Err(error).context("read staged land-reference tile"),
+        };
         entries.push(TileTreeEntry {
             kind: TileTreeEntryKind::Tile,
             s2_cell_id: container.to_string(),
@@ -1650,8 +1669,43 @@ fn write_packed_natural_earth_land_reference_layer(
     };
     let root_bytes = root.canonical_bytes()?;
     let root_relative_path = format!("layers/{layer_id}/root.index");
-    write_new_artifact(&output_directory.join(&root_relative_path), &root_bytes)?;
+    let root_path = output_directory.join(&root_relative_path);
+    match fs::read(&root_path) {
+        Ok(existing) if existing == root_bytes => {}
+        Ok(_) => bail!("staged land-reference root does not match the requested derivation"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_new_artifact(&root_path, &root_bytes)?;
+        }
+        Err(error) => return Err(error).context("read staged land-reference root"),
+    }
     Ok((root_relative_path, root_bytes))
+}
+
+fn validate_resumable_natural_earth_land_tile(
+    bytes: &[u8],
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+) -> Result<()> {
+    let tile = PackedBooleanFieldTile::from_canonical_slice(bytes)
+        .context("decode staged land-reference tile")?;
+    if tile.canonical_bytes()? != bytes {
+        bail!("staged land-reference tile is not canonical");
+    }
+    if tile.tile_schema_version != 1
+        || tile.layer_id != layer_id
+        || tile.source_snapshot_digest != source_snapshot_digest
+        || tile.source_artifact_digest != source_artifact_digest
+        || tile.sample_policy != "s2-cell-centre-e7-v1"
+        || tile.container_s2_cell_id != container_s2_cell_id
+        || tile.target_s2_level != target_s2_level
+    {
+        bail!("staged land-reference tile does not match the requested derivation");
+    }
+    tile.validate()
+        .context("validate staged land-reference tile")
 }
 
 fn pack_natural_earth_land_reference_tile(
@@ -1730,6 +1784,47 @@ fn prepare_terrain_layer_staging_directory(output_directory: &Path) -> Result<Pa
         )
     })?;
     Ok(staging_directory)
+}
+
+/// Resume only the unpublished, hidden Natural Earth staging tree. Every reused tile
+/// is decoded, re-canonicalized, and checked against the current layer/source/profile
+/// before it is admitted into the new root index. This makes an interrupted long global
+/// derivation recoverable without ever exposing a partial release or replacing data.
+fn prepare_or_resume_natural_earth_land_staging_directory(
+    output_directory: &Path,
+) -> Result<PathBuf> {
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!(
+            "land-reference output directory {} already exists",
+            output_directory.display()
+        );
+    }
+    let output_parent = output_directory
+        .parent()
+        .context("land-reference output directory has no parent")?;
+    if !output_parent.is_dir() {
+        bail!(
+            "land-reference output parent {} is not a directory",
+            output_parent.display()
+        );
+    }
+    let output_name = output_directory
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("land-reference output directory name is not UTF-8")?;
+    let staging_directory = output_parent.join(format!(".{output_name}.staging"));
+    match fs::symlink_metadata(&staging_directory) {
+        Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => bail!(
+            "land-reference staging path {} is not a real directory",
+            staging_directory.display()
+        ),
+        Ok(_) => Ok(staging_directory),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            fs::create_dir(&staging_directory)?;
+            Ok(staging_directory)
+        }
+        Err(error) => Err(error.into()),
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -4174,6 +4269,21 @@ mod tests {
         );
         inspect_natural_earth_land_reference_layer(&root, "land-reference", 0, 1)
             .expect("independently inspect miniature land-reference layer");
+        // Replaying an interrupted writer against an already-complete hidden tree
+        // must verify and reuse its exact canonical artifacts rather than overwrite.
+        let (resumed_root_path, resumed_root_bytes) =
+            write_packed_natural_earth_land_reference_layer(
+                &root,
+                "land-reference",
+                Digest::sha256(b"snapshot"),
+                Digest::sha256(b"artifact"),
+                &prepared,
+                0,
+                1,
+            )
+            .expect("resume miniature land-reference layer");
+        assert_eq!(resumed_root_path, root_path);
+        assert_eq!(resumed_root_bytes, root_bytes);
         for entry in index.entries {
             let tile = PackedBooleanFieldTile::from_canonical_slice(
                 &fs::read(root.join(entry.artifact.path)).expect("tile bytes"),
