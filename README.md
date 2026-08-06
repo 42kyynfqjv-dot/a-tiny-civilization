@@ -35,6 +35,10 @@ See [the project contract](docs/PROJECT_CONTRACT.md) and
 principles. The [public roadmap](docs/ROADMAP.md) separates facts that must exist from
 tick zero from observer features that can be projected later.
 
+Contributors should begin with [CONTRIBUTING.md](CONTRIBUTING.md); it explains the
+determinism, scientific-evidence, privacy, and dependency-boundary rules that apply to
+every pull request.
+
 ## Status
 
 Foundation under active construction. The first vertical slice will include a
