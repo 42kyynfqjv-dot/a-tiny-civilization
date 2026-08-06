@@ -23,6 +23,10 @@ On the Ubuntu server, clone a tagged repository revision and create a root-reada
 environment file outside the checkout. Do not put credentials in `.env`, Git, shell
 history, browser screenshots, or chat.
 
+The account-by-account boundary, timing, and secret-handling rules are in
+[Owner-controlled production handoffs](EXTERNAL_HANDOFFS.md). No current integration
+requires a screen share or a credential in this repository.
+
 Required runtime values are:
 
 - `POSTGRES_DB`, `POSTGRES_USER`, and a unique `POSTGRES_PASSWORD`;
