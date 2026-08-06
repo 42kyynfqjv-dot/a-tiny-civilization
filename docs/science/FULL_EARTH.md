@@ -125,10 +125,11 @@ geographic-to-S2 contract with source-area geometry pinned in
 Source-centre routing can now be retained as a hash-bound intermediate under
 [ADR 0023](../adr/0023-etopo-s2-centre-index.md), but this remains attribution rather
 than area ownership. The remaining prerequisite is a source-grid aggregation kernel; see
-[ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md). A provenance-safe
-source-centre quadrature summary is now available under
-[ADR 0024](../adr/0024-etopo-source-centre-quadrature-summary.md), but it is preparation
-rather than that kernel: canonical relief still needs a stated target-support policy.
+[ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md). V1 uses the fixed,
+deterministic interior quadrature target-support policy in
+[ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md), explicitly not exact
+spherical clipping. The concrete layer profile and global root still need to be
+constructed and verified.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.

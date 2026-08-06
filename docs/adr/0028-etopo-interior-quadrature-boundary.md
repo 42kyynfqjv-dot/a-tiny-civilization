@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted on 2026-08-06 as a normalizer building block. It does not emit a normalized
-terrain tile, tile-tree root, world-data bundle, or canonical world.
+Accepted on 2026-08-06 as the v1 terrain-support policy. It does not yet emit a
+normalized terrain tile, tile-tree root, world-data bundle, or canonical world.
 
 ## Context
 
@@ -23,6 +23,11 @@ must not be quietly replaced by a host GIS operation.
 - Every emitted target count is an equal-weight sample count. It is explicitly an
   approximation to source-cell overlap, not exact spherical clipping, equal physical
   area, or a replacement for a vertical/horizontal datum policy.
+- V1 canonical relief normalization will use this fixed, deterministic interior
+  quadrature rather than exact spherical source-cell clipping. Its selected sampling
+  profile and error disclosure are part of the published layer manifest. Exact
+  clipping is deferred as a possible future, versioned policy revision; it is not a
+  prerequisite for the first canonical world.
 - A one-point quadrature must equal the existing exact source-centre route. Tests also
   require exact lattice divisibility and conservation of the declared point count.
 
