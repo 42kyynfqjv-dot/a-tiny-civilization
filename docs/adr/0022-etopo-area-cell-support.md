@@ -42,10 +42,12 @@ representable without host floating point.
 
 ## Verification
 
-The CLI and tests prove the first and last cells, including polar and antimeridian
-edges, have the declared centres and bounds. Out-of-range row/column inputs fail
-closed. The existing fixed-point geographic-to-S2 verifier remains the independent
-proof of centre routing.
+Before inspection or derivation, the data CLI reads all pinned `lat` and `lon` values
+through the portable NetCDF reader and requires each one to quantize to its expected
+half-arcsecond lattice position. The CLI and tests also prove the first and last cells,
+including polar and antimeridian edges, have the declared centres and bounds.
+Out-of-range row/column inputs fail closed. The existing fixed-point
+geographic-to-S2 verifier remains the independent proof of centre routing.
 
 ## Consequences
 

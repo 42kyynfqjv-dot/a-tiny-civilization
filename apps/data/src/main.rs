@@ -438,7 +438,73 @@ fn validate_etopo_schema(file: &NcFile) -> Result<()> {
     {
         bail!("ETOPO variables do not have the pinned global 60-arc-second shape");
     }
+    validate_etopo_coordinate_axes(file)?;
     Ok(())
+}
+
+fn validate_etopo_coordinate_axes(file: &NcFile) -> Result<()> {
+    validate_etopo_coordinate_axis(
+        file,
+        "lat",
+        ETOPO_LATITUDE_CELLS,
+        ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS,
+        "latitude",
+    )?;
+    validate_etopo_coordinate_axis(
+        file,
+        "lon",
+        ETOPO_LONGITUDE_CELLS,
+        ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS,
+        "longitude",
+    )
+}
+
+fn validate_etopo_coordinate_axis(
+    file: &NcFile,
+    variable_name: &str,
+    expected_length: u64,
+    first_half_arcseconds: i32,
+    axis_name: &str,
+) -> Result<()> {
+    let values = file
+        .read_variable::<f64>(variable_name)
+        .with_context(|| format!("read ETOPO {axis_name} coordinate axis"))?;
+    let values = values
+        .as_slice()
+        .with_context(|| format!("ETOPO {axis_name} coordinate axis is not contiguous"))?;
+    if values.len() != usize::try_from(expected_length)? {
+        bail!("ETOPO {axis_name} coordinate axis has an unexpected length");
+    }
+    for (index, value) in values.iter().copied().enumerate() {
+        let expected = first_half_arcseconds
+            .checked_add(
+                i32::try_from(index)?
+                    .checked_mul(ETOPO_CELL_STEP_HALF_ARCSECONDS)
+                    .context("ETOPO axis index overflow")?,
+            )
+            .context("ETOPO coordinate axis overflow")?;
+        let observed = f64_to_half_arcseconds(value).with_context(|| {
+            format!("ETOPO {axis_name} coordinate {index} is not on the half-arcsecond lattice")
+        })?;
+        if observed != expected {
+            bail!(
+                "ETOPO {axis_name} coordinate {index} is {observed} half-arcseconds, expected {expected}"
+            );
+        }
+    }
+    Ok(())
+}
+
+fn f64_to_half_arcseconds(value: f64) -> Result<i32> {
+    if !value.is_finite() {
+        bail!("coordinate is not finite");
+    }
+    let scaled = value * 7_200.0;
+    let rounded = scaled.round();
+    if (scaled - rounded).abs() > 0.000_001 {
+        bail!("coordinate is not within one millionth half-arcsecond of the source lattice");
+    }
+    i32::try_from(rounded as i64).context("coordinate is outside the half-arcsecond domain")
 }
 
 fn encode_etopo_grid(
@@ -509,6 +575,8 @@ struct EtopoInspection {
     artifact_path: String,
     artifact_hash: Digest,
     artifact_byte_length: u64,
+    latitude_endpoint_ieee754_le_hex: [String; 2],
+    longitude_endpoint_ieee754_le_hex: [String; 2],
     variables: Vec<EtopoVariableInspection>,
 }
 
@@ -532,6 +600,11 @@ fn inspect_etopo(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
     let source_snapshot_digest = snapshot.content_digest()?;
     let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
         .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
+    validate_etopo_schema(&file)?;
+    let latitude_endpoint_ieee754_le_hex =
+        inspect_etopo_axis_endpoints(&file, "lat", ETOPO_LATITUDE_CELLS, "latitude")?;
+    let longitude_endpoint_ieee754_le_hex =
+        inspect_etopo_axis_endpoints(&file, "lon", ETOPO_LONGITUDE_CELLS, "longitude")?;
     let mut variables = file
         .variables()
         .context("enumerate ETOPO variables")?
@@ -545,16 +618,41 @@ fn inspect_etopo(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
     println!(
         "{}",
         serde_json::to_string(&EtopoInspection {
-            inspection_schema_version: 1,
+            inspection_schema_version: 2,
             source_snapshot_id: snapshot.snapshot_id,
             source_snapshot_digest,
             artifact_path: artifact.artifact_path.clone(),
             artifact_hash: artifact.content_hash,
             artifact_byte_length: artifact.byte_length,
+            latitude_endpoint_ieee754_le_hex,
+            longitude_endpoint_ieee754_le_hex,
             variables,
         })?
     );
     Ok(())
+}
+
+fn inspect_etopo_axis_endpoints(
+    file: &NcFile,
+    variable_name: &str,
+    expected_length: u64,
+    axis_name: &str,
+) -> Result<[String; 2]> {
+    let values = file
+        .read_variable::<f64>(variable_name)
+        .with_context(|| format!("read ETOPO {axis_name} coordinate axis"))?;
+    let values = values
+        .as_slice()
+        .with_context(|| format!("ETOPO {axis_name} coordinate axis is not contiguous"))?;
+    if values.len() != usize::try_from(expected_length)? {
+        bail!("ETOPO {axis_name} coordinate axis has an unexpected length");
+    }
+    let first = values.first().context("ETOPO coordinate axis is empty")?;
+    let last = values.last().context("ETOPO coordinate axis is empty")?;
+    Ok([
+        format!("{:016x}", first.to_bits()),
+        format!("{:016x}", last.to_bits()),
+    ])
 }
 
 #[derive(Serialize)]
@@ -1179,5 +1277,19 @@ mod tests {
         assert_eq!(seam_right.east_boundary_half_arcseconds, 1_296_000);
         assert!(etopo_cell_support(10_800, 0).is_err());
         assert!(etopo_cell_support(0, 21_600).is_err());
+    }
+
+    #[test]
+    fn coordinate_lattice_quantization_rejects_off_grid_values() {
+        assert_eq!(
+            f64_to_half_arcseconds(-647_940.0 / 7_200.0).expect("valid latitude"),
+            -647_940
+        );
+        assert_eq!(
+            f64_to_half_arcseconds(1_295_940.0 / 7_200.0).expect("valid longitude"),
+            1_295_940
+        );
+        assert!(f64_to_half_arcseconds(0.000_000_1).is_err());
+        assert!(f64_to_half_arcseconds(f64::NAN).is_err());
     }
 }

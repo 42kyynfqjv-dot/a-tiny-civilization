@@ -156,7 +156,9 @@ cargo run --locked -p civilization-data -- inspect natural-earth-land \
 ```
 
 The pinned ETOPO NetCDF schema is likewise inspected with the repository's pure-Rust
-NetCDF-4 reader, so normalization does not rely on host GDAL or NetCDF tools:
+NetCDF-4 reader, so normalization does not rely on host GDAL or NetCDF tools. The
+reader verifies every `lat` and `lon` coordinate lies on the expected 60-arc-second
+half-arcsecond lattice before it inspects or derives data:
 
 ```bash
 cargo run --locked -p civilization-data -- inspect etopo \
