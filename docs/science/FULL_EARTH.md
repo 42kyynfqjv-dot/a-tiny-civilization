@@ -45,7 +45,7 @@ date, terms snapshot, byte length, and SHA-256 digest enter a validated bundle.
 | Land cover | [ESA WorldCover 2021](https://esa-worldcover.org/en/data-access) | Evidence for observed cover; built-up/cropland classes are anthropogenic unknowns, not ready-made wilderness. |
 | Surface water | [JRC Global Surface Water](https://global-surface-water.appspot.com/download) | Observed water history and seasonality; not an instruction to expose dams or modern labels. |
 | Watersheds | [HydroSHEDS products](https://www.hydrosheds.org/products) | Globally consistent routing/basins/rivers/lakes; exact product-specific redistribution and commercial terms must pass review. |
-| Climate | [ERA5-Land](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land) | Freeze a dated release and derive a declared climate-normal period; never consume a moving upstream series during a world. |
+| Climate | [ERA5-Land](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land) plus [CHELSA-BIOCLIM+](https://www.envidat.ch/metadata/bioclim_plus) | Freeze dated releases and derive a declared climate-normal period; never consume a moving upstream series during a world. The first CHELSA January normal is exact source evidence only, not a complete climate root. |
 | Soils | [SoilGrids](https://docs.isric.org/globaldata/soilgrids/index.html) | Global soil-property estimates and prediction intervals; not local ground truth. |
 | Taxonomy and occurrences | [GBIF](https://www.gbif.org/publishing-data) plus compatible taxonomic authorities | DOI-pinned downloads and stable identities; retain only records whose individual licenses permit the release. Occurrences are evidence, not species ranges. |
 

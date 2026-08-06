@@ -257,8 +257,9 @@ format, exhaustive offline tree traversal, CLI, and adversarial tests are implem
 The tests cover tampered leaves, false counts, cycles, malformed S2 identities,
 duplicate/unsorted entries, noncanonical index bytes, wrong layer/level metadata, and
 cross-face parentage. Exact pre-normalization snapshots now pin public-domain Natural
-Earth generalized global land artifacts and CC0 NOAA ETOPO 2022 global 60 arc-second
-bedrock relief with its official release, license, and version evidence. The ETOPO
+Earth generalized global land artifacts, CC0 NOAA ETOPO 2022 global 60 arc-second
+bedrock relief, and one CC0 CHELSA-BIOCLIM+ v2.1 January 1981–2010 temperature normal
+with official release, license, and version evidence. The ETOPO
 pipeline can now derive a portable, hash-bound global elevation intermediate and a
 separately checked source-centre quadrature summary from that evidence. No normalized
 S2 layer root or canonical seed is claimed yet. Lower Buffalo

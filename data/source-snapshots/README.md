@@ -17,8 +17,8 @@ After acquisition, the same complete set can be checked without network access b
 replacing `fetch` with `validate`. Fetch never replaces an existing file: matching
 bytes are reused, while any mismatch stops with an error.
 
-The first two manifests cover Natural Earth generalized global land polygons and NOAA
-ETOPO 2022 global 60 arc-second bedrock relief. Their own limitations are part of the
-canonical manifests; they are evidence and acquisition proofs, not simulation-ready
-world bundles. See
+The first three manifests cover Natural Earth generalized global land polygons, NOAA
+ETOPO 2022 global 60 arc-second bedrock relief, and one CC0 CHELSA-BIOCLIM+ v2.1 global
+January temperature normal. Their own limitations are part of the canonical manifests;
+they are evidence and acquisition proofs, not simulation-ready world bundles. See
 [ADR 0015](../../docs/adr/0015-exact-upstream-source-snapshots.md).

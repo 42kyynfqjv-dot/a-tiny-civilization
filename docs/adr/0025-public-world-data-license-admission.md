@@ -33,7 +33,9 @@ it as world evidence.
 - Openly licensed climate candidates, including [CHELSA-BIOCLIM+](https://www.chelsa-climate.org/datasets/chelsa_bioclim)
   (whose publisher reports CC0 1.0 for the current data release), may be evaluated in
   a separate source snapshot with exact artifacts, terms, version evidence, and
-  documented limits. No climate source is committed by this ADR.
+  documented limits. The initial CHELSA January snapshot is subsequently pinned under
+  [ADR 0026](0026-evidence-bound-source-release-locators.md); it remains far short of
+  a complete climate layer.
 
 ## Verification
 

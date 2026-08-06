@@ -29,13 +29,18 @@ ecology.
   type, decimal byte length, and SHA-256 digest. A complete manifest requires all four
   roles and strict path ordering. Zero lengths, zero hashes, duplicate limitations,
   unsafe paths, non-HTTPS URLs, missing roles, and mutable-looking revisions fail.
-- Schema v1 supports two explicit acquisition locators. `revision_in_every_artifact_url`
+- Schema v1 supports three explicit acquisition locators. `revision_in_every_artifact_url`
   requires the declared lowercase hexadecimal upstream revision to occur literally in
   every artifact URL. `release_in_every_artifact_url` is for an official frozen release
   archive that has no commit identity: its declared release text must occur in every
   artifact URL, and each retained byte is still pinned by length and SHA-256. The latter
   is not a fallback for a floating endpoint: it is accepted only when the provider's
   versioned release locator applies to every retained artifact.
+- `evidence_bound_release` supports an official split distribution: every data URL
+  contains the declared release, while at least one retained version-evidence URL
+  contains the declared immutable catalog or DOI revision. All other artifacts remain
+  exact byte/length pinned. It is not accepted if either binding is absent; see
+  [ADR 0026](0026-evidence-bound-source-release-locators.md).
 - Canonical source-snapshot bytes are compact field-ordered JSON followed by one LF.
   The manifest digest covers those exact bytes. Artifact paths describe the local
   cache layout; they may normalize upstream filename case while download URLs retain
@@ -99,6 +104,18 @@ NetCDF, user guide, CC0/license metadata, and version catalog. The canonical man
 digest is `9f043ed3c6ffd9ca02890643cc54a37e404a5ebeb76dd09b7fca4b9fb609aa0b`.
 ETOPO supplies a real global topography/bathymetry baseline, but this low-resolution
 bedrock product is neither a navigation source nor a complete world/ecology bundle.
+
+The third committed manifest is CHELSA-BIOCLIM+ v2.1's global January 1981–2010
+near-surface mean-temperature NetCDF. CHELSA’s EnviDat metadata declares CC0-1.0 and
+the retained DOI is `10.16904/envidat.332`. The data object's official URL carries
+`V.2.1`; the DOI-hosted technical specification is retained as both documentation and
+version evidence. This is the first use of the evidence-bound locator policy described
+in [ADR 0026](0026-evidence-bound-source-release-locators.md).
+
+The manifest pins four artifacts totaling 105,303,650 bytes, with canonical digest
+`339fc85f4c2be97aacaa182b6f1cee6abd036ce8f7381d29be5f9f0a9694828b`. It is one
+January climate normal only—not a complete climate forcing, ocean climate model, or
+canonical climate root.
 
 ## Verification
 

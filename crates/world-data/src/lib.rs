@@ -170,6 +170,9 @@ pub enum SourceSnapshotArtifactRole {
 pub enum SourceSnapshotLocatorPolicy {
     RevisionInEveryArtifactUrl,
     ReleaseInEveryArtifactUrl,
+    /// Data URLs carry the versioned release while a retained version-evidence URL
+    /// carries a separate immutable catalog/DOI revision.
+    EvidenceBoundRelease,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -429,6 +432,14 @@ impl SourceSnapshotManifest {
                 }
                 require_text(&self.upstream_revision, "source_snapshot.upstream_revision")?;
             }
+            SourceSnapshotLocatorPolicy::EvidenceBoundRelease => {
+                if self.upstream_release.len() < 4 {
+                    return Err(SourceSnapshotError::InvalidUpstreamReleaseLocator(
+                        self.upstream_release.clone(),
+                    ));
+                }
+                require_text(&self.upstream_revision, "source_snapshot.upstream_revision")?;
+            }
         }
         require_text(&self.dataset_version, "source_snapshot.dataset_version")?;
         require_text(
@@ -483,6 +494,19 @@ impl SourceSnapshotManifest {
                     });
                 }
                 SourceSnapshotLocatorPolicy::ReleaseInEveryArtifactUrl => {}
+                SourceSnapshotLocatorPolicy::EvidenceBoundRelease
+                    if artifact.role == SourceSnapshotArtifactRole::Data
+                        && !artifact
+                            .download_url
+                            .to_ascii_lowercase()
+                            .contains(&self.upstream_release.to_ascii_lowercase()) =>
+                {
+                    return Err(SourceSnapshotError::DataArtifactUrlMissingRelease {
+                        path: artifact.artifact_path.clone(),
+                        release: self.upstream_release.clone(),
+                    });
+                }
+                SourceSnapshotLocatorPolicy::EvidenceBoundRelease => {}
             }
             roles.insert(artifact.role);
         }
@@ -495,6 +519,19 @@ impl SourceSnapshotManifest {
             if !roles.contains(&required) {
                 return Err(SourceSnapshotError::MissingArtifactRole(required));
             }
+        }
+        if self.artifact_locator_policy == SourceSnapshotLocatorPolicy::EvidenceBoundRelease
+            && !self.artifacts.iter().any(|artifact| {
+                artifact.role == SourceSnapshotArtifactRole::VersionEvidence
+                    && artifact
+                        .download_url
+                        .to_ascii_lowercase()
+                        .contains(&self.upstream_revision.to_ascii_lowercase())
+            })
+        {
+            return Err(SourceSnapshotError::VersionEvidenceUrlMissingRevision(
+                self.upstream_revision.clone(),
+            ));
         }
         Ok(())
     }
@@ -1727,6 +1764,10 @@ pub enum SourceSnapshotError {
     ArtifactUrlMissingRevision { path: String, revision: String },
     #[error("source artifact {path:?} URL does not contain declared release {release:?}")]
     ArtifactUrlMissingRelease { path: String, release: String },
+    #[error("source data artifact {path:?} URL does not contain declared release {release:?}")]
+    DataArtifactUrlMissingRelease { path: String, release: String },
+    #[error("source snapshot has no version-evidence URL containing declared revision {0:?}")]
+    VersionEvidenceUrlMissingRevision(String),
     #[error("source-snapshot artifact digest must not be all zero")]
     ZeroDigest,
     #[error("source-snapshot artifact byte length must be positive")]
@@ -1755,6 +1796,9 @@ mod tests {
         include_bytes!("../../../data/source-snapshots/natural-earth-10m-land-v5.1.2.json");
     const ETOPO_2022_V1_60S_BED_SNAPSHOT: &[u8] =
         include_bytes!("../../../data/source-snapshots/etopo-2022-v1-60s-bed.json");
+    const CHELSA_BIOCLIM_PLUS_V2_1_TAS_JANUARY_SNAPSHOT: &[u8] = include_bytes!(
+        "../../../data/source-snapshots/chelsa-bioclim-plus-v2.1-tas-january-1981-2010.json"
+    );
 
     fn source_snapshot() -> SourceSnapshotManifest {
         let artifact = |role, path: &str, bytes: &[u8]| SourceSnapshotArtifact {
@@ -1879,6 +1923,46 @@ mod tests {
             Err(SourceSnapshotError::ArtifactUrlMissingRelease { .. })
         ));
 
+        let mut evidence_bound = source_snapshot();
+        evidence_bound.artifact_locator_policy = SourceSnapshotLocatorPolicy::EvidenceBoundRelease;
+        evidence_bound.upstream_release = "v2.1".to_owned();
+        evidence_bound.upstream_revision = "doi-10.16904-envidat.332".to_owned();
+        for artifact in &mut evidence_bound.artifacts {
+            artifact.download_url = if artifact.role == SourceSnapshotArtifactRole::Data {
+                format!("https://example.test/v2.1/{}", artifact.artifact_path)
+            } else if artifact.role == SourceSnapshotArtifactRole::VersionEvidence {
+                format!(
+                    "https://example.test/doi-10.16904-envidat.332/{}",
+                    artifact.artifact_path
+                )
+            } else {
+                format!("https://example.test/evidence/{}", artifact.artifact_path)
+            };
+        }
+        evidence_bound
+            .validate()
+            .expect("versioned data plus retained version evidence are explicit");
+
+        let mut data_without_release = evidence_bound.clone();
+        data_without_release.artifacts[0].download_url =
+            "https://example.test/floating/data/land.shp".to_owned();
+        assert!(matches!(
+            data_without_release.validate(),
+            Err(SourceSnapshotError::DataArtifactUrlMissingRelease { .. })
+        ));
+
+        let mut evidence_without_revision = evidence_bound;
+        let version = evidence_without_revision
+            .artifacts
+            .iter_mut()
+            .find(|artifact| artifact.role == SourceSnapshotArtifactRole::VersionEvidence)
+            .expect("fixture has version evidence");
+        version.download_url = "https://example.test/evidence/version.txt".to_owned();
+        assert!(matches!(
+            evidence_without_revision.validate(),
+            Err(SourceSnapshotError::VersionEvidenceUrlMissingRevision(_))
+        ));
+
         let mut duplicate_limitation = source_snapshot();
         duplicate_limitation
             .limitations
@@ -1998,6 +2082,48 @@ mod tests {
                 .expect("valid snapshot content digest")
                 .to_string(),
             "9f043ed3c6ffd9ca02890643cc54a37e404a5ebeb76dd09b7fca4b9fb609aa0b"
+        );
+    }
+
+    #[test]
+    fn committed_chelsa_snapshot_is_canonical_and_evidence_bound() {
+        let snapshot = SourceSnapshotManifest::from_canonical_slice(
+            CHELSA_BIOCLIM_PLUS_V2_1_TAS_JANUARY_SNAPSHOT,
+        )
+        .expect("committed CHELSA snapshot is canonical");
+        assert_eq!(snapshot.upstream_release, "V.2.1");
+        assert_eq!(snapshot.upstream_revision, "10.16904_envidat.332");
+        assert_eq!(
+            snapshot.artifact_locator_policy,
+            SourceSnapshotLocatorPolicy::EvidenceBoundRelease
+        );
+        assert_eq!(snapshot.license_expression, "CC0-1.0");
+        assert_eq!(snapshot.artifacts.len(), 4);
+        assert!(snapshot.artifacts.iter().any(|artifact| {
+            artifact.role == SourceSnapshotArtifactRole::VersionEvidence
+                && artifact.download_url.contains(&snapshot.upstream_revision)
+        }));
+        assert!(
+            snapshot
+                .artifacts
+                .iter()
+                .filter(|artifact| { artifact.role == SourceSnapshotArtifactRole::Data })
+                .all(|artifact| artifact.download_url.contains(&snapshot.upstream_release))
+        );
+        assert_eq!(
+            snapshot
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.byte_length)
+                .sum::<u64>(),
+            105_303_650
+        );
+        assert_eq!(
+            snapshot
+                .content_digest()
+                .expect("valid snapshot content digest")
+                .to_string(),
+            "339fc85f4c2be97aacaa182b6f1cee6abd036ce8f7381d29be5f9f0a9694828b"
         );
     }
 
