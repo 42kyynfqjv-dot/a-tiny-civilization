@@ -118,7 +118,10 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                     "The world entered its archive",
                     "Its committed history remains available for observation.",
                 ),
-                DomainEvent::WorldConfigured { .. } | DomainEvent::TickAdvanced { .. } => {
+                DomainEvent::WorldConfigured { .. }
+                | DomainEvent::TickAdvanced { .. }
+                | DomainEvent::OrganismPerceived { .. }
+                | DomainEvent::OrganismActed { .. } => {
                     return None;
                 }
             };
@@ -287,6 +290,8 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             DomainEvent::WorldStarted { .. }
             | DomainEvent::WorldConfigured { .. }
             | DomainEvent::TickAdvanced { .. }
+            | DomainEvent::OrganismPerceived { .. }
+            | DomainEvent::OrganismActed { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
             | DomainEvent::WorldArchived => None,

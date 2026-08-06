@@ -14,11 +14,11 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    BirthCategory, CanonicalHashError, DeathCause, Digest, DomainEvent, EVENT_SCHEMA_VERSION,
-    EntityId, EventBatch, EventBatchError, EventSequence, ExecutionScale,
-    LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, SequenceOverflow, SimTick, SpeciesIdentity,
-    SpeciesIdentityError, TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId,
-    WorldManifest, WorldStatus,
+    BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, DeathCause, Digest,
+    DomainEvent, EVENT_SCHEMA_VERSION, EntityId, EventBatch, EventBatchError, EventSequence,
+    ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, PrimitiveAction, SequenceOverflow,
+    SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow,
+    WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
 };
 
 /// Version pinned to each world so old histories are never silently reinterpreted.
@@ -249,6 +249,40 @@ impl EngineState {
         Ok(events)
     }
 
+    /// Record direct sensory evidence for a living organism. This is not an observer
+    /// projection and cannot contain an affordance or culturally learned conclusion.
+    pub fn plan_perception(
+        &self,
+        organism_id: EntityId,
+        perception: SituatedPerception,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.require_living_organism(organism_id)?;
+        perception
+            .validate()
+            .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+        Ok(vec![DomainEvent::OrganismPerceived {
+            organism_id,
+            perception,
+        }])
+    }
+
+    /// Record a chosen primitive bodily act for a living organism. World physics will
+    /// eventually resolve effects; this event itself encodes no cultural outcome.
+    pub fn plan_action(
+        &self,
+        organism_id: EntityId,
+        action: PrimitiveAction,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.require_living_organism(organism_id)?;
+        action
+            .validate()
+            .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+        Ok(vec![DomainEvent::OrganismActed {
+            organism_id,
+            action,
+        }])
+    }
+
     pub fn commit(
         &self,
         sequence: EventSequence,
@@ -411,6 +445,24 @@ impl EngineState {
                     cause: cause.clone(),
                 });
             }
+            DomainEvent::OrganismPerceived {
+                organism_id,
+                perception,
+            } => {
+                self.require_living_organism(*organism_id)?;
+                perception
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+            DomainEvent::OrganismActed {
+                organism_id,
+                action,
+            } => {
+                self.require_living_organism(*organism_id)?;
+                action
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
             DomainEvent::WorldExtinct => {
                 self.require_status(WorldStatus::Running)?;
                 if self.living_people() != 0 {
@@ -442,6 +494,18 @@ impl EngineState {
                 expected,
                 actual: self.status,
             })
+        }
+    }
+
+    fn require_living_organism(&self, organism_id: EntityId) -> Result<(), EngineError> {
+        let organism = self
+            .organisms
+            .get(&organism_id)
+            .ok_or(EngineError::UnknownOrganism(organism_id))?;
+        if organism.is_alive() {
+            Ok(())
+        } else {
+            Err(EngineError::OrganismAlreadyDead(organism_id))
         }
     }
 
@@ -632,14 +696,22 @@ fn replay_from_cursor(
             .events
             .iter()
             .any(|record| matches!(&record.event, DomainEvent::WorldConfigured { .. }));
-        let expected_event_schema = if state.configuration.is_some() || configures_world {
-            EVENT_SCHEMA_VERSION
+        let is_configured = state.configuration.is_some() || configures_world;
+        let valid_schema = if is_configured {
+            matches!(
+                batch.event_schema_version,
+                CONFIGURED_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
+            )
         } else {
-            LEGACY_EVENT_SCHEMA_VERSION
+            batch.event_schema_version == LEGACY_EVENT_SCHEMA_VERSION
         };
-        if batch.event_schema_version != expected_event_schema {
+        if !valid_schema {
             return Err(EngineError::BatchEventSchemaMismatch {
-                expected: expected_event_schema,
+                expected: if is_configured {
+                    EVENT_SCHEMA_VERSION
+                } else {
+                    LEGACY_EVENT_SCHEMA_VERSION
+                },
                 actual: batch.event_schema_version,
             });
         }
@@ -711,6 +783,8 @@ pub enum EngineError {
     UnknownParent(EntityId),
     #[error("organism {0} is already dead")]
     OrganismAlreadyDead(EntityId),
+    #[error("embodied event is invalid: {0}")]
+    InvalidEmbodiedEvent(String),
     #[error("parent identities must be strictly sorted and unique")]
     NonCanonicalParentOrder,
     #[error("cannot mark the world extinct while viable people remain")]
@@ -772,7 +846,8 @@ mod tests {
     use uuid::Uuid;
     use world_domain::{
         CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
-        PersonRepresentation, S2Projection, SchedulerKind, SpatialGrid, WorldDataBundleReference,
+        PerceptionChannel, PersonRepresentation, PrimitiveActionKind, PropertyReading,
+        S2Projection, SchedulerKind, SituatedPerception, SpatialGrid, WorldDataBundleReference,
         WorldSeed, WorldStatus,
     };
 
@@ -884,6 +959,59 @@ mod tests {
             .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
             .expect("valid tick batch");
         vec![genesis, tick]
+    }
+
+    #[test]
+    fn embodied_perceptions_and_actions_are_replayable_and_never_public_mechanisms() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                world_configuration(),
+                vec![initial_person(manifest.world_id)],
+            )
+            .expect("configured genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("configured genesis batch");
+        assert_eq!(genesis.event_schema_version, EVENT_SCHEMA_VERSION);
+        let person_id = initial_person(manifest.world_id).organism_id;
+        let perception = running
+            .plan_perception(
+                person_id,
+                SituatedPerception {
+                    subject_id: None,
+                    readings: vec![PropertyReading {
+                        channel: PerceptionChannel::Touch,
+                        property_code: "surface_roughness".to_owned(),
+                        quantized_value: 7,
+                        uncertainty: 1,
+                    }],
+                },
+            )
+            .expect("label-free perception");
+        let (after_perception, perception_batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, perception)
+            .expect("perception batch");
+        let action = after_perception
+            .plan_action(
+                person_id,
+                PrimitiveAction {
+                    kind: PrimitiveActionKind::ApplyForce,
+                    target_id: None,
+                    intensity: 3,
+                },
+            )
+            .expect("primitive action");
+        let (after_action, action_batch) = after_perception
+            .commit(EventSequence::new(3), perception_batch.batch_hash, action)
+            .expect("action batch");
+        let replayed = replay(manifest, &[genesis, perception_batch, action_batch])
+            .expect("embodied history replays");
+        assert_eq!(
+            replayed.state.state_hash().expect("replay hash"),
+            after_action.state_hash().expect("live hash")
+        );
     }
 
     #[test]

@@ -2,8 +2,9 @@
 
 ## Status
 
-Accepted on 2026-08-06. The domain contracts are implemented; durable embodied events
-and species-specific execution follow the scientific parameter and scheduler work.
+Accepted on 2026-08-06. Schema-3 durable embodied events and replay validation are
+implemented; species-specific execution follows the scientific parameter and scheduler
+work.
 
 ## Decision
 
@@ -24,5 +25,6 @@ and species-specific execution follow the scientific parameter and scheduler wor
 
 The engine can give organisms evolutionary bodily capability without telling them what
 objects are for. Cultural discoveries must be learned from observed effects, memory,
-imitation, and communication. Before a canonical world, these contracts must be added
-to versioned durable perception/action events and tied to sourced species parameters.
+imitation, and communication. Schema-1 and schema-2 histories remain replayable;
+schema-3 is required for the new embodied events. Before a canonical world, their
+effects must be tied to sourced species parameters and deterministic local physics.

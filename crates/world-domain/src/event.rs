@@ -2,12 +2,13 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHashError, Digest, EntityId, EventId, EventSequence, SimTick, SpeciesIdentity,
-    WorldConfiguration, WorldId, WorldManifest,
+    CanonicalHashError, Digest, EntityId, EventId, EventSequence, PrimitiveAction, SimTick,
+    SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
-pub const EVENT_SCHEMA_VERSION: u16 = 2;
+pub const CONFIGURED_EVENT_SCHEMA_VERSION: u16 = 2;
+pub const EVENT_SCHEMA_VERSION: u16 = 3;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -94,6 +95,16 @@ pub enum DomainEvent {
     OrganismDied {
         organism_id: EntityId,
         cause: DeathCause,
+    },
+    /// Direct label-free sensory evidence available to one living organism.
+    OrganismPerceived {
+        organism_id: EntityId,
+        perception: SituatedPerception,
+    },
+    /// One chosen use-neutral bodily operation. World physics resolves its effect.
+    OrganismActed {
+        organism_id: EntityId,
+        action: PrimitiveAction,
     },
     WorldExtinct,
     WorldArchived,
@@ -229,7 +240,7 @@ impl EventBatch {
 fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchError> {
     if !matches!(
         event_schema_version,
-        LEGACY_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
+        LEGACY_EVENT_SCHEMA_VERSION | CONFIGURED_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -244,6 +255,23 @@ fn validate_event_for_schema(
         && matches!(event, DomainEvent::WorldConfigured { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismPerceived { .. } | DomainEvent::OrganismActed { .. }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    match event {
+        DomainEvent::OrganismPerceived { perception, .. } => perception
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::OrganismActed { action, .. } => action
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        _ => {}
     }
     Ok(())
 }
@@ -274,6 +302,8 @@ pub enum EventBatchError {
     UnsupportedSchema(u16),
     #[error("event requires a newer event schema version")]
     EventRequiresNewerSchema,
+    #[error("embodied event is invalid: {0}")]
+    InvalidEmbodiedEvent(String),
     #[error("event identity at index {index} is not deterministic")]
     InvalidEventIdentity { index: u32 },
     #[error("event batch hash mismatch: stored {expected}, calculated {calculated}")]
@@ -288,7 +318,10 @@ pub enum EventBatchError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{SpatialGrid, WorldConfiguration, WorldDataBundleReference, WorldSeed};
+    use crate::{
+        PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading,
+        SituatedPerception, SpatialGrid, WorldConfiguration, WorldDataBundleReference, WorldSeed,
+    };
     use uuid::Uuid;
 
     fn manifest() -> WorldManifest {
@@ -391,5 +424,70 @@ mod tests {
             result,
             Err(EventBatchError::EventRequiresNewerSchema)
         ));
+    }
+
+    #[test]
+    fn embodied_events_require_schema_three_and_reject_privileged_readings() {
+        let manifest = manifest();
+        let perception = DomainEvent::OrganismPerceived {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(3)),
+            perception: SituatedPerception {
+                subject_id: None,
+                readings: vec![PropertyReading {
+                    channel: PerceptionChannel::Touch,
+                    property_code: "tool".to_owned(),
+                    quantized_value: 1,
+                    uncertainty: 0,
+                }],
+            },
+        };
+        assert!(
+            EventBatch::new(
+                CONFIGURED_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![perception.clone()],
+                Digest::sha256(b"post-state"),
+            )
+            .is_err()
+        );
+        assert!(
+            EventBatch::new(
+                EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![perception],
+                Digest::sha256(b"post-state"),
+            )
+            .is_err()
+        );
+
+        let action = DomainEvent::OrganismActed {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(3)),
+            action: PrimitiveAction {
+                kind: PrimitiveActionKind::ApplyForce,
+                target_id: None,
+                intensity: 1,
+            },
+        };
+        assert!(
+            EventBatch::new(
+                EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![action],
+                Digest::sha256(b"post-state"),
+            )
+            .is_ok()
+        );
     }
 }

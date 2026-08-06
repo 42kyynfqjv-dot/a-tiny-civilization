@@ -21,8 +21,9 @@ pub use embodiment::{
     PropertyReading, SituatedPerception,
 };
 pub use event::{
-    BirthCategory, CategoryError, DeathCause, DomainEvent, EVENT_SCHEMA_VERSION, EventBatch,
-    EventBatchError, EventRecord, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
+    BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CategoryError, DeathCause, DomainEvent,
+    EVENT_SCHEMA_VERSION, EventBatch, EventBatchError, EventRecord, LEGACY_EVENT_SCHEMA_VERSION,
+    OrganismRole,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError,

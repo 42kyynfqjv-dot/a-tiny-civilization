@@ -136,7 +136,10 @@ impl ObserverFindingStore for PostgresStore {
                     )
                     .await?
                 }
-                DomainEvent::WorldConfigured { .. } | DomainEvent::TickAdvanced { .. } => {}
+                DomainEvent::WorldConfigured { .. }
+                | DomainEvent::TickAdvanced { .. }
+                | DomainEvent::OrganismPerceived { .. }
+                | DomainEvent::OrganismActed { .. } => {}
             }
         }
         for role in [OrganismRole::Person, OrganismRole::Fauna] {
