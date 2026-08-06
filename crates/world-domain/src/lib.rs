@@ -1,6 +1,7 @@
 //! Durable, replay-safe domain primitives shared by the engine and its adapters.
 
 mod configuration;
+mod embodiment;
 mod event;
 mod geographic;
 mod hash;
@@ -14,6 +15,10 @@ pub use configuration::{
     LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION, PartitionedExecution, PersonRepresentation,
     S2Projection, SchedulerKind, SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION,
     WorldConfiguration, WorldConfigurationError, WorldDataBundleReference, WorldGeometry,
+};
+pub use embodiment::{
+    EmbodimentError, NeedKind, NeedSignal, PerceptionChannel, PrimitiveAction, PrimitiveActionKind,
+    PropertyReading, SituatedPerception,
 };
 pub use event::{
     BirthCategory, CategoryError, DeathCause, DomainEvent, EVENT_SCHEMA_VERSION, EventBatch,
