@@ -1552,7 +1552,8 @@ fn derive_natural_earth_land_reference_layer(
         })
         .context("source snapshot has no Natural Earth .shp data artifact")?;
     let bytes = fs::read(artifact_root.join(&artifact.artifact_path))?;
-    parse_polygon_shapefile(&bytes).context("validate Natural Earth polygon stream")?;
+    let prepared_land = PreparedNaturalEarthLand::from_shapefile(&bytes)
+        .context("validate and prepare Natural Earth polygon stream")?;
     let source_snapshot_digest = snapshot.content_digest()?;
     let staging_directory = prepare_terrain_layer_staging_directory(output_directory)?;
     let (root_relative_path, root_bytes) = write_packed_natural_earth_land_reference_layer(
@@ -1560,7 +1561,7 @@ fn derive_natural_earth_land_reference_layer(
         layer_id,
         source_snapshot_digest,
         artifact.content_hash,
-        &bytes,
+        &prepared_land,
         container_s2_level,
         target_s2_level,
     )?;
@@ -1598,7 +1599,7 @@ fn write_packed_natural_earth_land_reference_layer(
     layer_id: &str,
     source_snapshot_digest: Digest,
     source_artifact_digest: Digest,
-    source_bytes: &[u8],
+    prepared_land: &PreparedNaturalEarthLand,
     container_s2_level: u8,
     target_s2_level: u8,
 ) -> Result<(String, Vec<u8>)> {
@@ -1617,7 +1618,7 @@ fn write_packed_natural_earth_land_reference_layer(
             layer_id,
             source_snapshot_digest,
             source_artifact_digest,
-            source_bytes,
+            prepared_land,
             container,
             target_s2_level,
         )?;
@@ -1657,7 +1658,7 @@ fn pack_natural_earth_land_reference_tile(
     layer_id: &str,
     source_snapshot_digest: Digest,
     source_artifact_digest: Digest,
-    source_bytes: &[u8],
+    prepared_land: &PreparedNaturalEarthLand,
     container_s2_cell_id: S2CellId,
     target_s2_level: u8,
 ) -> Result<PackedBooleanFieldTile> {
@@ -1670,11 +1671,10 @@ fn pack_natural_earth_land_reference_tile(
             Ok(BooleanFieldCell {
                 s2_cell_id,
                 support_samples: 1,
-                true_samples: u64::from(natural_earth_contains_point_unvalidated(
-                    source_bytes,
-                    coordinate.longitude_e7(),
-                    coordinate.latitude_e7(),
-                )?),
+                true_samples: u64::from(
+                    prepared_land
+                        .contains_point(coordinate.longitude_e7(), coordinate.latitude_e7()),
+                ),
             })
         })
         .collect::<Result<Vec<_>>>()?;
@@ -2962,6 +2962,141 @@ fn natural_earth_contains_point(bytes: &[u8], longitude_e7: i32, latitude_e7: i3
     natural_earth_contains_point_unvalidated(bytes, longitude_e7, latitude_e7)
 }
 
+// A one-degree latitude bucket is deliberately only an execution index.  It has no
+// representation in a derived tile: the classifier below performs exactly the same
+// half-open horizontal-ray test as `point_in_shapefile_ring`, using the same E7
+// conversion.  It prevents the full source stream (and its IEEE-754 decoding) from
+// being traversed once per L10 target centre.
+const NATURAL_EARTH_LATITUDE_BUCKETS: usize = 180;
+const NATURAL_EARTH_E7_PER_DEGREE: i128 = 10_000_000;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct NaturalEarthEdge {
+    current_x: i128,
+    current_y: i128,
+    previous_x: i128,
+    previous_y: i128,
+}
+
+#[derive(Debug)]
+struct PreparedNaturalEarthLand {
+    // Edges are present in every degree band that can satisfy
+    // min_y <= query_y < max_y. Order is source order, though parity makes the
+    // result independent of that order.
+    edges_by_latitude_bucket: Vec<Vec<NaturalEarthEdge>>,
+}
+
+impl PreparedNaturalEarthLand {
+    fn from_shapefile(bytes: &[u8]) -> Result<Self> {
+        parse_polygon_shapefile(bytes)?;
+        let mut edges_by_latitude_bucket = vec![Vec::new(); NATURAL_EARTH_LATITUDE_BUCKETS];
+        let mut offset = 100_usize;
+        while offset < bytes.len() {
+            let content_length = usize::try_from(be_u32(&bytes[offset + 4..offset + 8])?)?
+                .checked_mul(2)
+                .context("record length overflow")?;
+            let body = &bytes[offset + 8..offset + 8 + content_length];
+            if le_u32(&body[..4])? == 5 {
+                let parts = usize::try_from(le_u32(&body[36..40])?)?;
+                let points = usize::try_from(le_u32(&body[40..44])?)?;
+                let part_start = 44;
+                let point_start = part_start + parts * 4;
+                let source_points = &body[point_start..];
+                for part in 0..parts {
+                    let start = usize::try_from(le_u32(
+                        &body[part_start + part * 4..part_start + part * 4 + 4],
+                    )?)?;
+                    let end = if part + 1 == parts {
+                        points
+                    } else {
+                        usize::try_from(le_u32(
+                            &body[part_start + (part + 1) * 4..part_start + (part + 1) * 4 + 4],
+                        )?)?
+                    };
+                    if end <= start + 2 {
+                        continue;
+                    }
+                    let point = |index: usize| -> Result<(i128, i128)> {
+                        let point_offset =
+                            index.checked_mul(16).context("point offset overflow")?;
+                        Ok((
+                            ieee754_degrees_bits_to_e7(le_u64(
+                                &source_points[point_offset..point_offset + 8],
+                            )?)?,
+                            ieee754_degrees_bits_to_e7(le_u64(
+                                &source_points[point_offset + 8..point_offset + 16],
+                            )?)?,
+                        ))
+                    };
+                    let mut previous = point(end - 1)?;
+                    for index in start..end {
+                        let current = point(index)?;
+                        let edge = NaturalEarthEdge {
+                            current_x: current.0,
+                            current_y: current.1,
+                            previous_x: previous.0,
+                            previous_y: previous.1,
+                        };
+                        if edge.current_y != edge.previous_y {
+                            let lower = edge.current_y.min(edge.previous_y);
+                            let upper = edge.current_y.max(edge.previous_y) - 1;
+                            let first = natural_earth_latitude_bucket(lower)?;
+                            let last = natural_earth_latitude_bucket(upper)?;
+                            for bucket_edges in edges_by_latitude_bucket
+                                .iter_mut()
+                                .take(last + 1)
+                                .skip(first)
+                            {
+                                bucket_edges.push(edge);
+                            }
+                        }
+                        previous = current;
+                    }
+                }
+            }
+            offset += 8 + content_length;
+        }
+        Ok(Self {
+            edges_by_latitude_bucket,
+        })
+    }
+
+    fn contains_point(&self, longitude_e7: i32, latitude_e7: i32) -> bool {
+        let x = i128::from(longitude_e7);
+        let y = i128::from(latitude_e7);
+        let bucket = natural_earth_latitude_bucket(y)
+            .expect("validated geographic E7 coordinate must select a latitude bucket");
+        self.edges_by_latitude_bucket[bucket]
+            .iter()
+            .filter(|edge| (edge.current_y > y) != (edge.previous_y > y))
+            .fold(false, |inside, edge| {
+                let denominator = edge.previous_y - edge.current_y;
+                let left = (x - edge.current_x) * denominator;
+                let right = (edge.previous_x - edge.current_x) * (y - edge.current_y);
+                if if denominator > 0 {
+                    left < right
+                } else {
+                    left > right
+                } {
+                    !inside
+                } else {
+                    inside
+                }
+            })
+    }
+}
+
+fn natural_earth_latitude_bucket(latitude_e7: i128) -> Result<usize> {
+    if !(-900_000_000..=900_000_000).contains(&latitude_e7) {
+        bail!("Natural Earth latitude is outside exact WGS 84 E7 bounds");
+    }
+    // 90° has no non-horizontal crossing edge, but route it to the final bucket
+    // so direct classification remains total at the closed geographic pole.
+    let bucket = ((latitude_e7 + 900_000_000) / NATURAL_EARTH_E7_PER_DEGREE)
+        .min(i128::try_from(NATURAL_EARTH_LATITUDE_BUCKETS - 1)?);
+    usize::try_from(bucket).context("latitude bucket does not fit usize")
+}
+
 /// The caller has already validated the complete polygon stream with
 /// `parse_polygon_shapefile`; this avoids a full source traversal per target cell.
 fn natural_earth_contains_point_unvalidated(
@@ -3829,6 +3964,36 @@ mod tests {
     }
 
     #[test]
+    fn prepared_land_index_preserves_even_odd_membership_across_buckets() {
+        // The two vertical sides of a 0°..2° square cross both 0° and 1° buckets;
+        // the horizontal sides intentionally do not enter a horizontal-ray index.
+        let mut buckets = vec![Vec::new(); NATURAL_EARTH_LATITUDE_BUCKETS];
+        for bucket_edges in buckets.iter_mut().take(93).skip(90) {
+            bucket_edges.extend([
+                NaturalEarthEdge {
+                    current_x: 20_000_000,
+                    current_y: 20_000_000,
+                    previous_x: 20_000_000,
+                    previous_y: 0,
+                },
+                NaturalEarthEdge {
+                    current_x: 0,
+                    current_y: 0,
+                    previous_x: 0,
+                    previous_y: 20_000_000,
+                },
+            ]);
+        }
+        let prepared = PreparedNaturalEarthLand {
+            edges_by_latitude_bucket: buckets,
+        };
+        assert!(prepared.contains_point(10_000_000, 10_000_000));
+        assert!(!prepared.contains_point(30_000_000, 10_000_000));
+        assert!(prepared.contains_point(10_000_000, 19_000_000));
+        assert!(!prepared.contains_point(10_000_000, 30_000_000));
+    }
+
+    #[test]
     fn shapefile_ieee754_coordinates_round_to_the_e7_lattice_without_host_float_math() {
         assert_eq!(
             ieee754_degrees_bits_to_e7((-93.125_f64).to_bits()).expect("finite coordinate"),
@@ -3989,13 +4154,14 @@ mod tests {
     fn miniature_land_reference_layer_writes_and_reloads_every_packed_tile() {
         let root = temporary_root("land-reference-layer");
         let source = minimal_null_polygon_shapefile();
-        parse_polygon_shapefile(&source).expect("validated empty source");
+        let prepared =
+            PreparedNaturalEarthLand::from_shapefile(&source).expect("validated empty source");
         let (root_path, root_bytes) = write_packed_natural_earth_land_reference_layer(
             &root,
             "land-reference",
             Digest::sha256(b"snapshot"),
             Digest::sha256(b"artifact"),
-            &source,
+            &prepared,
             0,
             1,
         )
