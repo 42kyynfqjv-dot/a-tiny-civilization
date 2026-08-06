@@ -3,6 +3,8 @@
 //! A seasonal tile retains every declared phase rather than reducing a normal year to
 //! an annual average. It is intentionally an evidence container, not a weather model.
 
+use std::collections::BTreeSet;
+
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{Digest, MAX_S2_LEVEL, S2CellId};
@@ -64,6 +66,15 @@ impl PackedSeasonalScalarFieldTile {
             || self.source_artifact_digests.contains(&Digest::ZERO)
         {
             return Err(SeasonalFieldTileError::ZeroDigest);
+        }
+        if self
+            .source_artifact_digests
+            .iter()
+            .collect::<BTreeSet<_>>()
+            .len()
+            != MONTHS_PER_NORMAL_YEAR
+        {
+            return Err(SeasonalFieldTileError::RepeatedSourceArtifact);
         }
         if self.quadrature_points_per_axis == 0
             || 60 % u16::from(self.quadrature_points_per_axis) != 0
@@ -169,6 +180,8 @@ pub enum SeasonalFieldTileError {
     InvalidCycle,
     #[error("seasonal-field digest must not be zero")]
     ZeroDigest,
+    #[error("each normal-month phase must retain a distinct source artifact")]
+    RepeatedSourceArtifact,
     #[error("invalid quadrature")]
     InvalidQuadrature,
     #[error("invalid target level")]
@@ -250,6 +263,12 @@ mod tests {
         assert_eq!(
             flattened.validate(),
             Err(SeasonalFieldTileError::InvalidPhaseValues)
+        );
+        let mut repeated_source = tile();
+        repeated_source.source_artifact_digests[11] = repeated_source.source_artifact_digests[0];
+        assert_eq!(
+            repeated_source.validate(),
+            Err(SeasonalFieldTileError::RepeatedSourceArtifact)
         );
     }
 }
