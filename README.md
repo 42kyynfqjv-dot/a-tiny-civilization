@@ -61,5 +61,5 @@ is needed.
 
 ## License
 
-No reuse license has been selected yet. The source is publicly visible, but all
-rights remain reserved until a license is added.
+Licensed under the [Apache License 2.0](LICENSE). Contributions are welcomed under
+the same license.
