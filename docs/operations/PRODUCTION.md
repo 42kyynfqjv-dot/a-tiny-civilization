@@ -8,10 +8,10 @@ until the scientific bundle and embodied execution milestones are complete.
 
 `compose.yaml` publishes the web and observer API only to loopback. The optional
 `compose.tunnel.yaml` joins `cloudflared` only to the `edge` Docker network, which can
-reach `web`. It cannot reach PostgreSQL, the runner, projector, or migrations because
-they are on the separate `backend` network. Configure the remotely managed Cloudflare
-Tunnel public hostname to use `http://web:3000`; do not route to `api`, `db`, or a host
-port.
+reach `web`. The web-to-API network is separate and internal, so the tunnel cannot
+reach the observer API; PostgreSQL, the runner, projector, and migrations remain on
+the separate `backend` network. Configure the remotely managed Cloudflare Tunnel public
+hostname to use `http://web:3000`; do not route to `api`, `db`, or a host port.
 
 Keep the host firewall closed to public inbound HTTP and database traffic. Use SSH with
 key-based access for the host and Cloudflare Access for any administrative route that

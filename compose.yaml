@@ -74,7 +74,9 @@ services:
       - "127.0.0.1:${API_PORT:-8080}:8080"
     networks:
       - backend
-      - edge
+      # Only the web server may reach the observer API. In particular, the public
+      # tunnel is deliberately absent from this network.
+      - web-api
     restart: unless-stopped
 
   runner:
@@ -127,6 +129,7 @@ services:
       - "127.0.0.1:${WEB_PORT:-3000}:3000"
     networks:
       - edge
+      - web-api
     init: true
     restart: unless-stopped
 
@@ -142,3 +145,8 @@ networks:
     driver: bridge
     driver_opts:
       com.docker.network.bridge.name: br-atiny-edge
+  web-api:
+    driver: bridge
+    internal: true
+    driver_opts:
+      com.docker.network.bridge.name: br-atiny-web-api
