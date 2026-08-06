@@ -110,6 +110,13 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Inspect and cross-check all twelve pinned CHELSA monthly temperature normals.
+    ChelsaAnnualTemperature {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+    },
     /// Read one exact raw sample from the pinned CHELSA January-temperature grid.
     ChelsaJanuaryCell {
         #[arg(long)]
@@ -355,6 +362,10 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_chelsa_january_temperature(&source_snapshot, &artifact_root),
+            InspectCommand::ChelsaAnnualTemperature {
+                source_snapshot,
+                artifact_root,
+            } => inspect_chelsa_annual_temperature(&source_snapshot, &artifact_root),
             InspectCommand::ChelsaJanuaryCell {
                 source_snapshot,
                 artifact_root,
@@ -2503,6 +2514,25 @@ struct ChelsaJanuaryTemperatureInspection {
 }
 
 #[derive(Serialize)]
+struct ChelsaAnnualTemperatureInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    monthly_normals: Vec<ChelsaMonthlyTemperatureInspection>,
+    shared_latitude_endpoint_ieee754_le_hex: [String; 2],
+    shared_longitude_endpoint_ieee754_le_hex: [String; 2],
+    documented_raw_to_millicelsius: &'static str,
+}
+
+#[derive(Serialize)]
+struct ChelsaMonthlyTemperatureInspection {
+    month: u8,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+}
+
+#[derive(Serialize)]
 struct ChelsaJanuaryCellInspection {
     inspection_schema_version: u16,
     source_snapshot_id: String,
@@ -2572,6 +2602,77 @@ fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path
             longitude_endpoint_ieee754_le_hex,
             data_attributes,
             variables,
+        })?
+    );
+    Ok(())
+}
+
+/// Verify that every retained monthly normal has the same declared CHELSA grid and
+/// exact coordinate axes before a climate normalizer can treat them as one annual
+/// cycle. This reads metadata and coordinate endpoints, not the full raster payload.
+fn inspect_chelsa_annual_temperature(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let mut artifacts = snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.artifact_path.cmp(&right.artifact_path));
+    if artifacts.len() != 12 {
+        bail!("annual CHELSA snapshot must retain exactly twelve monthly NetCDF artifacts");
+    }
+    let mut shared_latitude = None;
+    let mut shared_longitude = None;
+    let mut monthly_normals = Vec::with_capacity(12);
+    for (offset, artifact) in artifacts.into_iter().enumerate() {
+        let expected_month = u8::try_from(offset + 1)?;
+        let expected_suffix = format!("tas_{expected_month:02}_1981-2010_v.2.1.nc");
+        if !artifact.artifact_path.ends_with(&expected_suffix) {
+            bail!("annual CHELSA artifacts are not canonical January-through-December order");
+        }
+        let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+            .context("parse verified CHELSA NetCDF through the pure-Rust reader")?;
+        validate_chelsa_january_temperature_schema(&file)?;
+        let latitude =
+            inspect_etopo_axis_endpoints(&file, "lat", CHELSA_LATITUDE_CELLS, "CHELSA latitude")?;
+        let longitude =
+            inspect_etopo_axis_endpoints(&file, "lon", CHELSA_LONGITUDE_CELLS, "CHELSA longitude")?;
+        if let Some(expected) = shared_latitude.as_ref()
+            && &latitude != expected
+        {
+            bail!("CHELSA monthly normals disagree on the latitude coordinate axis");
+        }
+        if let Some(expected) = shared_longitude.as_ref()
+            && &longitude != expected
+        {
+            bail!("CHELSA monthly normals disagree on the longitude coordinate axis");
+        }
+        shared_latitude.get_or_insert(latitude);
+        shared_longitude.get_or_insert(longitude);
+        monthly_normals.push(ChelsaMonthlyTemperatureInspection {
+            month: expected_month,
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_hash: artifact.content_hash,
+            artifact_byte_length: artifact.byte_length,
+        });
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaAnnualTemperatureInspection {
+            inspection_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            monthly_normals,
+            shared_latitude_endpoint_ieee754_le_hex: shared_latitude
+                .context("annual CHELSA snapshot is empty")?,
+            shared_longitude_endpoint_ieee754_le_hex: shared_longitude
+                .context("annual CHELSA snapshot is empty")?,
+            documented_raw_to_millicelsius: "stored value * 100 - 273150",
         })?
     );
     Ok(())

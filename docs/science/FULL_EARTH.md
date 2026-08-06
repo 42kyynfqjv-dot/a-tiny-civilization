@@ -150,6 +150,13 @@ every root reference and packed tile. Its identifier is deliberately
 global reference and coarse cross-check, not a scientific-resolution coastal boundary.
 The batch is offline evidence only; a stronger coastline source and every other
 required layer remain necessary before bundle or genesis claims.
+
+CHELSA temperature evidence now retains all twelve 1981–2010 monthly global normals
+under one source snapshot. The annual inspector verifies every artifact hash, the
+January-through-December identity/order, the shared NetCDF grid shape, and exact
+latitude/longitude endpoint bits before a climate normalizer may join the months into
+one annual cycle. It is still land-only temperature evidence: precipitation, wind,
+ocean forcing, and weather dynamics remain separate required work.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
