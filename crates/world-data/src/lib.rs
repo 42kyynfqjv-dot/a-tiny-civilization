@@ -1,6 +1,12 @@
 //! Deterministic, provenance-complete scientific input bundles.
 
+mod scalar_field;
 mod terrain;
+
+pub use scalar_field::{
+    PackedScalarFieldTile, ScalarFieldCell, ScalarFieldTileError,
+    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_SCHEMA_VERSION,
+};
 
 pub use terrain::{
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_SCHEMA_VERSION,
