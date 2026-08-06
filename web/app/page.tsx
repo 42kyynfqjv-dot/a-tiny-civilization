@@ -102,7 +102,7 @@ export default function Home() {
       <main className="main-content" id="live">
         <section className="hero-copy">
           <div>
-            <p className="eyebrow accent">World 001 · Genesis chamber</p>
+            <p className="eyebrow accent">Global reference · Pre-genesis</p>
             <h1>History, before anyone knows it is history.</h1>
           </div>
           <p className="hero-intro">
@@ -115,15 +115,15 @@ export default function Home() {
           <div className="panel-toolbar">
             <div>
               <p className="eyebrow">Live terrain</p>
-              <h2 id="world-panel-title">River basin · seed awaiting launch</h2>
+              <h2 id="world-panel-title">Earth coverage · seed not yet committed</h2>
             </div>
             <div className="map-controls" aria-label="Map display status">
-              <span>Scientific truth</span>
-              <span>Agent perception</span>
+              <span>Scientific reference</span>
+              <span>Observer projection</span>
             </div>
           </div>
 
-          <div className="world-map" role="img" aria-label="Abstract river basin initialization map">
+          <div className="world-map" role="img" aria-label="Abstract global reference field before a world is created">
             <div className="terrain terrain-one" />
             <div className="terrain terrain-two" />
             <div className="river river-main" />
@@ -133,13 +133,13 @@ export default function Home() {
             <span className="map-point point-two" />
             <span className="map-point animal point-three" />
             <span className="map-point animal point-four" />
-            <div className="map-coordinate coordinate-north">N 52°</div>
-            <div className="map-coordinate coordinate-scale">12 km</div>
+            <div className="map-coordinate coordinate-north">Whole Earth</div>
+            <div className="map-coordinate coordinate-scale">L10 reference</div>
             <div className="genesis-marker">
               <span className="marker-pulse" />
               <div>
-                <strong>Initial conditions</strong>
-                <small>World creation has not been committed</small>
+                <strong>Genesis remains uncommitted</strong>
+                <small>No location or population has been selected</small>
               </div>
             </div>
           </div>
