@@ -4,7 +4,7 @@ use application::{
     WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
-    CommittedBirth, ReservationRequest, ReservationState, ReservationTarget,
+    CommittedBirth, ObserverTimelineStore, ReservationRequest, ReservationState, ReservationTarget,
     SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
@@ -425,5 +425,56 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
         .execute(&pool)
         .await;
     assert!(deletion.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn observer_timeline_is_idempotent_append_only_and_readable(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(505);
+    let created = store.create_world(&manifest, None).await?;
+    let (_, batch, snapshot) = genesis(&manifest, Vec::new())?;
+    store
+        .commit_transition(
+            created.cursor,
+            &batch,
+            &snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let uncommitted_manifest = WorldManifest::new(
+        WorldId::from_uuid(Uuid::new_v4()),
+        WorldSeed::new(506),
+        RULESET_VERSION,
+    );
+    let (_, uncommitted_batch, _) = genesis(&uncommitted_manifest, Vec::new())?;
+    assert!(
+        store
+            .apply_public_timeline_batch(&uncommitted_batch)
+            .await
+            .is_err()
+    );
+    assert!(store.apply_public_timeline_batch(&batch).await?);
+    assert!(!store.apply_public_timeline_batch(&batch).await?);
+    assert_eq!(
+        store.public_timeline_cursor(manifest.world_id).await?,
+        EventSequence::new(1)
+    );
+    let items = store.list_public_timeline(manifest.world_id, 50).await?;
+    assert_eq!(items.len(), 1);
+    assert_eq!(items[0].source_event_id, batch.events[0].event_id);
+
+    let row_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM observer_timeline_items WHERE world_id = $1")
+            .bind(manifest.world_id.as_uuid())
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(row_count, 1);
+    let mutation =
+        sqlx::query("UPDATE observer_timeline_items SET title = title WHERE world_id = $1")
+            .bind(manifest.world_id.as_uuid())
+            .execute(&pool)
+            .await;
+    assert!(mutation.is_err());
     Ok(())
 }

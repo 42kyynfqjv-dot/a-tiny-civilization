@@ -85,6 +85,10 @@ pub trait WorldStore: Send + Sync {
 
     async fn list_running_world_ids(&self) -> Result<Vec<WorldId>, StoreError>;
 
+    /// Enumerates durable worlds for observer projectors. This is read-only and does
+    /// not grant an observer a way to initialize, advance, or modify a world.
+    async fn list_world_ids(&self) -> Result<Vec<WorldId>, StoreError>;
+
     async fn load_event_batches(
         &self,
         world_id: WorldId,

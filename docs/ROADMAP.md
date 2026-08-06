@@ -135,6 +135,8 @@ the foundation does not invent placeholder experiences.
 ### 4. Evidence observatory
 
 - project canonical maps, events, people, animals, lineages, and provenance;
+- a cursor-driven, append-only safe public timeline projection and read-only API are
+  implemented; every item links to a committed event and omits explicit mechanism data;
 - generated observer wiki and conditional artifact archive;
 - versioned deterministic first/record/streak finding aids with replay tests;
 - downloadable event ranges and visible state-hash verification.

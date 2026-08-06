@@ -1,0 +1,22 @@
+[package]
+name = "civilization-projector"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+application = { path = "../../crates/application" }
+clap.workspace = true
+dotenvy.workspace = true
+observer-projection = { path = "../../crates/observer-projection" }
+postgres-store = { path = "../../crates/postgres-store" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+world-domain = { path = "../../crates/world-domain" }
+
+[lints]
+workspace = true

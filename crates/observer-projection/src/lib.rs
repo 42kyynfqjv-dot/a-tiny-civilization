@@ -10,9 +10,158 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, EntityId, EventId, EventSequence, OrganismRole, SimTick, SpeciesIdentity,
-    WorldId,
+    BirthCategory, DomainEvent, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
+    SimTick, SpeciesIdentity, WorldId,
 };
+
+pub const PUBLIC_TIMELINE_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_TIMELINE_PROJECTION_NAME: &str = "public-timeline-v1";
+
+/// Observer-facing provenance classes. They never create knowledge inside a world.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaimProvenance {
+    WorldFact,
+    ObservedEvidence,
+    ContemporaryClaim,
+    LaterInterpretation,
+    ObserverInference,
+    Disputed,
+}
+
+/// Deliberately restrained public event types. Raw biological and mortality mechanism
+/// detail stays in canonical history, never in this projection.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicTimelineKind {
+    WorldBegan,
+    InitialPersonPresent,
+    InitialAnimalPresent,
+    PersonBorn,
+    AnimalBorn,
+    LifeEnded,
+    PeopleExtinct,
+    WorldArchived,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicTimelineItem {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub source_event_id: EventId,
+    pub source_sequence: EventSequence,
+    pub source_tick: SimTick,
+    pub source_event_index: u32,
+    pub kind: PublicTimelineKind,
+    pub provenance: ClaimProvenance,
+    pub title: String,
+    pub summary: String,
+}
+
+/// Produces a factual, restrained public finding aid from one committed batch.
+///
+/// The function never consumes wall-clock time, user input, labels, or model output.
+/// It has no path back into the simulation and intentionally discards sex category,
+/// death cause, parentage, location, and internal scientific identities.
+#[must_use]
+pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
+    batch
+        .events
+        .iter()
+        .filter_map(|record| {
+            let (kind, title, summary) = match &record.event {
+                DomainEvent::WorldStarted { .. } => (
+                    PublicTimelineKind::WorldBegan,
+                    "A world began",
+                    "Initial conditions were committed to the public record.",
+                ),
+                DomainEvent::OrganismInitialized { role, .. } => match role {
+                    OrganismRole::Person => (
+                        PublicTimelineKind::InitialPersonPresent,
+                        "An initial person was present",
+                        "The initial population was recorded.",
+                    ),
+                    OrganismRole::Fauna => (
+                        PublicTimelineKind::InitialAnimalPresent,
+                        "An initial animal was present",
+                        "The initial ecology was recorded.",
+                    ),
+                },
+                DomainEvent::OrganismBorn { role, .. } => match role {
+                    OrganismRole::Person => (
+                        PublicTimelineKind::PersonBorn,
+                        "A person was born",
+                        "A new life entered the recorded population.",
+                    ),
+                    OrganismRole::Fauna => (
+                        PublicTimelineKind::AnimalBorn,
+                        "An animal was born",
+                        "A new animal entered the recorded population.",
+                    ),
+                },
+                DomainEvent::OrganismDied { .. } => (
+                    PublicTimelineKind::LifeEnded,
+                    "A life ended",
+                    "A death was recorded without public mechanism detail.",
+                ),
+                DomainEvent::WorldExtinct => (
+                    PublicTimelineKind::PeopleExtinct,
+                    "No people remained",
+                    "The world reached its mechanical extinction condition.",
+                ),
+                DomainEvent::WorldArchived => (
+                    PublicTimelineKind::WorldArchived,
+                    "The world entered its archive",
+                    "Its committed history remains available for observation.",
+                ),
+                DomainEvent::WorldConfigured { .. } | DomainEvent::TickAdvanced { .. } => {
+                    return None;
+                }
+            };
+            Some(PublicTimelineItem {
+                projection_version: PUBLIC_TIMELINE_PROJECTION_VERSION,
+                world_id: batch.world_id,
+                source_event_id: record.event_id,
+                source_sequence: batch.sequence,
+                source_tick: batch.tick,
+                source_event_index: record.index,
+                kind,
+                provenance: ClaimProvenance::WorldFact,
+                title: title.to_owned(),
+                summary: summary.to_owned(),
+            })
+        })
+        .collect()
+}
+
+#[async_trait]
+pub trait ObserverTimelineStore: Send + Sync {
+    /// Atomically projects one committed batch and advances the durable cursor.
+    /// Returns false for a batch that was already projected.
+    async fn apply_public_timeline_batch(
+        &self,
+        batch: &EventBatch,
+    ) -> Result<bool, ObserverProjectionStoreError>;
+
+    async fn public_timeline_cursor(
+        &self,
+        world_id: WorldId,
+    ) -> Result<EventSequence, ObserverProjectionStoreError>;
+
+    async fn list_public_timeline(
+        &self,
+        world_id: WorldId,
+        limit: u16,
+    ) -> Result<Vec<PublicTimelineItem>, ObserverProjectionStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum ObserverProjectionStoreError {
+    #[error("observer projection storage is unavailable: {0}")]
+    Unavailable(String),
+    #[error("observer projection data is corrupt: {0}")]
+    Corrupt(String),
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -204,6 +353,7 @@ pub enum ReservationStoreError {
 mod tests {
     use super::*;
     use uuid::Uuid;
+    use world_domain::{Digest, EVENT_SCHEMA_VERSION, WorldManifest, WorldSeed};
 
     fn species() -> SpeciesIdentity {
         SpeciesIdentity::new(
@@ -268,5 +418,59 @@ mod tests {
             request.validate(),
             Err(ReservationError::InvalidSupporterSubject)
         );
+    }
+
+    #[test]
+    fn public_timeline_is_deterministic_and_withholds_sensitive_mechanism_detail() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(11));
+        let manifest = WorldManifest::new(world_id, WorldSeed::new(42), 1);
+        let events = vec![
+            DomainEvent::WorldStarted { manifest },
+            DomainEvent::OrganismBorn {
+                organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
+                species: species(),
+                role: OrganismRole::Person,
+                birth_category: BirthCategory::new("female").expect("valid category"),
+                parent_ids: vec![EntityId::from_uuid(Uuid::from_u128(13))],
+                location_id: Some(EntityId::from_uuid(Uuid::from_u128(14))),
+            },
+            DomainEvent::OrganismDied {
+                organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
+                cause: world_domain::DeathCause {
+                    mechanism: "falling_rock".to_owned(),
+                },
+            },
+            DomainEvent::TickAdvanced {
+                from: SimTick::new(6),
+                to: SimTick::new(7),
+            },
+        ];
+        let batch = EventBatch::new(
+            EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(8),
+            SimTick::new(7),
+            1,
+            Digest::ZERO,
+            events,
+            Digest::sha256(b"projection state"),
+        )
+        .expect("valid event batch");
+        let first = project_public_timeline(&batch);
+        assert_eq!(first, project_public_timeline(&batch));
+        assert_eq!(first.len(), 3);
+        assert!(first.iter().all(|item| {
+            item.provenance == ClaimProvenance::WorldFact
+                && item.source_sequence == batch.sequence
+                && item.source_tick == batch.tick
+        }));
+        let rendered = first
+            .iter()
+            .map(|item| format!("{} {}", item.title, item.summary))
+            .collect::<String>()
+            .to_ascii_lowercase();
+        for withheld in ["female", "falling_rock", "parent", "location"] {
+            assert!(!rendered.contains(withheld), "must withhold {withheld}");
+        }
     }
 }

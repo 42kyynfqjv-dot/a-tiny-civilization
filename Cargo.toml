@@ -2,6 +2,7 @@
 members = [
     "apps/api",
     "apps/data",
+    "apps/projector",
     "apps/verify",
     "apps/runner",
     "crates/application",

@@ -6,7 +6,7 @@ COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY apps ./apps
 COPY crates ./crates
 COPY db ./db
-RUN cargo build --locked --release --bin civilization-api --bin civilization-runner
+RUN cargo build --locked --release --bin civilization-api --bin civilization-projector --bin civilization-runner
 
 FROM debian:bookworm-slim AS runtime
 
@@ -17,6 +17,7 @@ RUN apt-get update \
 RUN useradd --create-home --uid 10001 civilization
 WORKDIR /app
 COPY --from=builder /source/target/release/civilization-api /app/civilization-api
+COPY --from=builder /source/target/release/civilization-projector /app/civilization-projector
 COPY --from=builder /source/target/release/civilization-runner /app/civilization-runner
 
 USER civilization

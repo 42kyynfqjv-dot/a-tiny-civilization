@@ -5,25 +5,33 @@ use std::{sync::Arc, time::Instant};
 use application::FoundationStore;
 use axum::{
     Json, Router,
-    extract::State,
+    extract::{Path, Query, State},
     http::StatusCode,
     response::{IntoResponse, Response},
     routing::get,
 };
 use chrono::{DateTime, Utc};
+use observer_projection::{ObserverTimelineStore, PublicTimelineItem};
+use serde::Deserialize;
 use serde::Serialize;
 use tower_http::trace::TraceLayer;
+use world_domain::WorldId;
+
+/// Read-only observer composition. The simulation runner does not import this port.
+pub trait ObserverReadStore: FoundationStore + ObserverTimelineStore {}
+
+impl<T> ObserverReadStore for T where T: FoundationStore + ObserverTimelineStore {}
 
 #[derive(Clone)]
 pub struct ApiState {
-    store: Arc<dyn FoundationStore>,
+    store: Arc<dyn ObserverReadStore>,
     environment: Arc<str>,
     started_at: Instant,
 }
 
 impl ApiState {
     #[must_use]
-    pub fn new(store: Arc<dyn FoundationStore>, environment: impl Into<Arc<str>>) -> Self {
+    pub fn new(store: Arc<dyn ObserverReadStore>, environment: impl Into<Arc<str>>) -> Self {
         Self {
             store,
             environment: environment.into(),
@@ -37,6 +45,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/api/v1/status", get(status))
+        .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -105,6 +114,39 @@ async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse>, A
             archived: status.archived_worlds,
         },
         latest_runner_heartbeat: status.latest_runner_heartbeat,
+    }))
+}
+
+#[derive(Debug, Deserialize)]
+struct TimelineQuery {
+    limit: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct TimelineResponse {
+    projection_version: u16,
+    items: Vec<PublicTimelineItem>,
+}
+
+async fn public_timeline(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<TimelineResponse>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let items = state
+        .store
+        .list_public_timeline(world_id, query.limit.unwrap_or(50))
+        .await
+        .map_err(|error| {
+            tracing::error!(%error, "observer timeline read failed");
+            ApiError::Unavailable
+        })?;
+    Ok(Json(TimelineResponse {
+        projection_version: observer_projection::PUBLIC_TIMELINE_PROJECTION_VERSION,
+        items,
     }))
 }
 

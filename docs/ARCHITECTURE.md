@@ -68,6 +68,12 @@ Projectors consume durable sequence numbers and update purpose-built observer re
 models idempotently. PostgreSQL notifications may reduce latency but never replace
 the durable cursor.
 
+The first projector is `civilization-projector`: it derives a bounded public timeline
+from committed batches, atomically advances a versioned projection cursor, and stores
+append-only observer rows. It withholds reproductive, mortality-mechanism, parentage,
+location, and internal-identity detail from public copy. The observer API only reads
+that projection. See [ADR 0018](adr/0018-public-timeline-projection.md).
+
 Snapshots are caches. A complete replay from durable events, or a snapshot plus its
 tail, must produce the same state hash.
 

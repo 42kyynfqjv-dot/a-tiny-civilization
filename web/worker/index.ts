@@ -4,6 +4,7 @@ import handler from "vinext/server/app-router-entry";
 
 interface Env {
   ASSETS: Fetcher;
+  OBSERVER_API_URL?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -27,6 +28,17 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+
+    if (url.pathname.startsWith("/api/")) {
+      if (!env.OBSERVER_API_URL) {
+        return Response.json(
+          { error: { code: "observer_api_unconfigured", message: "observer API is unavailable" } },
+          { status: 503 },
+        );
+      }
+      const upstream = new URL(url.pathname + url.search, env.OBSERVER_API_URL);
+      return fetch(new Request(upstream, request));
+    }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];

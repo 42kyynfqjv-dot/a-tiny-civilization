@@ -121,8 +121,10 @@ make smoke
 ```
 
 Then open `http://127.0.0.1:3000`. PostgreSQL, the migration job, observer API,
-simulation runner, and web application start in dependency order. Host ports bind to
-loopback and are not publicly exposed.
+simulation runner, observer projector, and web application start in dependency order.
+The projector only reads committed event batches and builds append-only public timeline
+rows; it cannot advance a world. Host ports bind to loopback and are not publicly
+exposed.
 
 Inspect the stack with `make ps` or `make logs`, and stop it with `make down`.
 

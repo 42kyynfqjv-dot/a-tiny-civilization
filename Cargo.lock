@@ -332,6 +332,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "civilization-projector"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "application",
+ "clap",
+ "dotenvy",
+ "observer-projection",
+ "postgres-store",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "world-domain",
+]
+
+[[package]]
 name = "civilization-runner"
 version = "0.1.0"
 dependencies = [
@@ -1335,10 +1351,12 @@ dependencies = [
  "application",
  "axum",
  "chrono",
+ "observer-projection",
  "serde",
  "serde_json",
  "tower-http",
  "tracing",
+ "world-domain",
 ]
 
 [[package]]

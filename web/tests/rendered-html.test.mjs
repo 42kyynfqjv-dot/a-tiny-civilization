@@ -26,3 +26,29 @@ test("server-renders the civilization observatory", async () => {
   assert.match(html, /Actual materials/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });
+
+test("proxies only observer API paths when configured", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("proxy", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const originalFetch = globalThis.fetch;
+  let upstream;
+  globalThis.fetch = async (request) => {
+    upstream = new URL(request.url);
+    return Response.json({ ok: true });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("http://localhost/api/v1/status?sample=1"),
+      {
+        ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+        OBSERVER_API_URL: "http://observer.internal:8080/",
+      },
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+    assert.equal(response.status, 200);
+    assert.equal(upstream.href, "http://observer.internal:8080/api/v1/status?sample=1");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

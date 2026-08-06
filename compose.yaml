@@ -89,6 +89,17 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  projector:
+    <<: *rust-service
+    command: ["/app/civilization-projector", "serve"]
+    environment:
+      <<: *app-environment
+      PROJECTOR_POLL_SECONDS: ${PROJECTOR_POLL_SECONDS:-5}
+    depends_on:
+      migrate:
+        condition: service_healthy
+    restart: unless-stopped
+
   web:
     image: a-tiny-civilization-web:local
     build:
