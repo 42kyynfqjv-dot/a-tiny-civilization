@@ -12,6 +12,7 @@ cargo test --workspace --locked
 python3 ./scripts/verify-s2-routing.py
 python3 ./scripts/verify-geographic-s2-routing.py
 python3 ./scripts/verify-era5-request.py
+python3 ./scripts/verify-era5-provenance-tools.py
 ./scripts/check-boundaries.sh
 ./scripts/verify-demo.sh
 
