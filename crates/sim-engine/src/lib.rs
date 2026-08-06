@@ -417,6 +417,9 @@ impl EngineState {
                     return Err(EngineError::ConfigurationAfterOrganisms);
                 }
                 configuration.validate()?;
+                if configuration.embodied_patch_s2_level().is_some() {
+                    return Err(EngineError::PartitionedExecutionNotImplemented);
+                }
                 self.configuration = Some(configuration.clone());
             }
             DomainEvent::OrganismInitialized {
@@ -1108,15 +1111,6 @@ mod tests {
         .expect("valid full-Earth configuration")
     }
 
-    fn face_zero_patch(path: &[usize]) -> S2CellId {
-        let mut cell = S2CellId::new(1_u64 << 60).expect("face root");
-        for child_index in path {
-            cell = cell.children().expect("children")[*child_index];
-        }
-        assert_eq!(cell.level(), 23);
-        cell
-    }
-
     fn committed_history() -> Vec<EventBatch> {
         let manifest = manifest();
         let initial = EngineState::new(manifest.clone());
@@ -1324,58 +1318,22 @@ mod tests {
     }
 
     #[test]
-    fn full_earth_positions_and_movements_are_schema_gated_and_replayable() {
+    fn manual_full_earth_events_cannot_bypass_the_genesis_guard() {
         let manifest = manifest();
-        let person_id = initial_person(manifest.world_id).organism_id;
-        let start = face_zero_patch(&[0; 23]);
-        let end = face_zero_patch(&[
-            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
-        ]);
         let initial = EngineState::new(manifest.clone());
-        let events = vec![
-            DomainEvent::WorldStarted {
-                manifest: manifest.clone(),
-            },
-            DomainEvent::WorldConfigured {
-                configuration: full_earth_configuration(),
-            },
-            DomainEvent::OrganismInitialized {
-                organism_id: person_id,
-                species: human(),
-                role: OrganismRole::Person,
-                birth_category: BirthCategory::new("female").expect("category"),
-                initial_age_ticks: 0,
-                location_id: None,
-                embodied_patch: Some(start),
-            },
-        ];
-        let (running, genesis) = initial
-            .commit(EventSequence::new(1), Digest::ZERO, events)
-            .expect("full-Earth positioned genesis");
-        assert_eq!(
-            genesis.event_schema_version,
-            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
-        );
-        assert_eq!(
-            running.organisms().next().expect("person").embodied_patch(),
-            Some(start)
-        );
-        let movement = running.plan_movement(person_id, end).expect("movement");
-        let (moved, batch) = running
-            .commit(EventSequence::new(2), genesis.batch_hash, movement)
-            .expect("commit movement");
-        assert_eq!(
-            moved.organisms().next().expect("person").embodied_patch(),
-            Some(end)
-        );
-        assert_eq!(
-            Snapshot::new(moved.clone(), EventSequence::new(2), batch.batch_hash)
-                .expect("positioned snapshot")
-                .snapshot_schema_version,
-            EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
-        );
-        let replayed = replay(manifest, &[genesis, batch]).expect("replay positioned history");
-        assert_eq!(replayed.state, moved);
+        assert!(matches!(
+            initial.commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                vec![
+                    DomainEvent::WorldStarted { manifest },
+                    DomainEvent::WorldConfigured {
+                        configuration: full_earth_configuration(),
+                    },
+                ],
+            ),
+            Err(EngineError::PartitionedExecutionNotImplemented)
+        ));
     }
 
     #[test]
