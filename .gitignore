@@ -1,0 +1,15 @@
+/.env
+/.env.*
+!/.env.example
+/target/
+/web/node_modules/
+/web/dist/
+/.idea/
+/.vscode/
+*.swp
+*.swo
+.DS_Store
+coverage/
+playwright-report/
+test-results/
+*.log
