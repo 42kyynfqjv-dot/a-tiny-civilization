@@ -132,6 +132,14 @@ The [bundle release contract](science/DATA_BUNDLES.md) rejects incomplete proven
 floating-point parameters, dangling assumptions, mismatched coverage, and noncanonical
 bytes before configured genesis.
 
+Pre-normalization evidence uses a separate canonical source-snapshot contract. Exact
+upstream bytes are streamed into an ignored local cache, length- and SHA-256-verified,
+and never overwritten in place. A snapshot proves what was acquired; it is not a
+normalized bundle and cannot satisfy genesis. The first snapshot pins public-domain
+Natural Earth generalized global land polygons, with their cartographic limitations
+kept inside the hashed manifest. See
+[ADR 0015](adr/0015-exact-upstream-source-snapshots.md).
+
 The entire planet has canonical coarse ecological state. Regional, landscape, and
 embodied detail refines only when causal activity approaches it. Refinement conserves
 parent totals, is stream-seeded and order-independent, and cannot be triggered by an

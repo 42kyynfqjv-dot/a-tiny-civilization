@@ -112,13 +112,38 @@ The command performs no network access. A successful URL field means the URL is
 well-formed immutable provenance; it does not replace the required local source
 artifact and digest.
 
+## Pre-normalization source snapshots
+
+An exact source snapshot precedes a world-data bundle. Its canonical manifest records
+the upstream revision/release, dataset version, retrieval date, scope, limitations,
+license and version evidence, and every artifact URL, role, byte length, and SHA-256
+digest. Schema v1 requires every immutable artifact URL to contain the declared
+upstream revision. Fetching is an explicit operator action; live simulation and replay
+never use the network.
+
+Acquire only missing artifacts into the ignored local cache:
+
+```bash
+cargo run --locked -p civilization-data -- source fetch \
+  data/source-snapshots/natural-earth-10m-land-v5.1.2.json \
+  --artifact-root data/source-cache
+```
+
+The fetcher uses HTTPS, streaming hashes, bounded lengths, safe directories, temporary
+files, and no-replacement publication. Existing matching artifacts are reused;
+existing mismatches fail. The same manifest and complete cache can then be verified
+offline with `source validate`. See
+[ADR 0015](../adr/0015-exact-upstream-source-snapshots.md).
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index
 format, exhaustive offline tree traversal, CLI, and adversarial tests are implemented.
 The tests cover tampered leaves, false counts, cycles, malformed S2 identities,
 duplicate/unsorted entries, noncanonical index bytes, wrong layer/level metadata, and
-cross-face parentage. No global scientific release or canonical seed is claimed yet.
+cross-face parentage. The first pre-normalization snapshot pins exact public-domain
+Natural Earth generalized global land artifacts and license/version evidence. No
+global scientific release, normalized layer root, or canonical seed is claimed yet.
 Lower Buffalo remains only the first high-resolution conformance tile. The next data
-work is to archive the first global source snapshots and exact licenses, construct
-planet-level roots, and normalize the reference tile without placeholder values.
+work is measurement-oriented global snapshots, deterministic normalization and
+planet-level roots, then reference-tile normalization without placeholder values.

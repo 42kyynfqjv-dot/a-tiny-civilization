@@ -105,9 +105,17 @@ L10-to-L14 reference now enumerates all 256 children, allocates generic sourced
 extensive totals with exact order-independent integer arithmetic, and reaggregates them
 without loss. It explicitly proves why a synthesis generation must be retained rather
 than recalculated. It likewise changes no durable boundary. The next checkpoints are
-the first exact global source snapshots, a coupled ecological quantity policy with
-retained refinement state and deltas, and durable embodied position/movement
-integration.
+measurement-oriented global source snapshots and normalized L10 roots, a coupled
+ecological quantity policy with retained refinement state and deltas, and durable
+embodied position/movement integration.
+
+The first upstream snapshot is now committed independently of any world bundle. It
+pins Natural Earth v5.1.2 generalized global land polygons at an immutable revision,
+including nine artifact URLs, exact lengths and hashes, dataset/release version
+evidence, public-domain evidence, and material limitations. The source CLI performs
+HTTPS-only streaming acquisition with no replacement and complete offline verification.
+This proves the acquisition chain but does not promote generalized cartography into a
+canonical coastline or satisfy any required full-Earth layer root.
 
 ### 3. Situated memory and bounded cognition
 

@@ -9,7 +9,10 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+reqwest.workspace = true
 serde_json.workspace = true
+sha2.workspace = true
+tokio.workspace = true
 world-data = { path = "../../crates/world-data" }
 world-data-filesystem = { path = "../../crates/world-data-filesystem" }
 world-domain = { path = "../../crates/world-domain" }

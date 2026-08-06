@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 anyhow.workspace = true
+sha2.workspace = true
 world-data = { path = "../world-data" }
 world-domain = { path = "../world-domain" }
 

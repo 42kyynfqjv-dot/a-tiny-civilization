@@ -13,6 +13,7 @@ use world_domain::{
 pub const LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 1;
 pub const WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 2;
 pub const TILE_TREE_INDEX_SCHEMA_VERSION: u16 = 1;
+pub const SOURCE_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 const MAX_DECIMAL_PLACES: u8 = 9;
 const FORBIDDEN_AFFORDANCE_CODES: &[&str] = &[
     "building",
@@ -117,6 +118,55 @@ pub struct SourceRecord {
     pub artifact_hash: Digest,
     #[serde(with = "u64_decimal")]
     pub artifact_byte_length: u64,
+}
+
+/// Exact upstream evidence acquired before normalization into a world-data bundle.
+///
+/// A source snapshot is never itself a canonical world input. It records immutable
+/// acquisition facts so a later normalization pipeline can cite verified source bytes.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceSnapshotManifest {
+    pub source_snapshot_schema_version: u16,
+    pub snapshot_id: String,
+    pub title: String,
+    pub publisher: String,
+    pub documentation_url: String,
+    pub upstream_release: String,
+    pub upstream_revision: String,
+    pub artifact_locator_policy: SourceSnapshotLocatorPolicy,
+    pub dataset_version: String,
+    pub retrieved_on: NaiveDate,
+    pub license_expression: String,
+    pub license_url: String,
+    pub scope: String,
+    pub limitations: Vec<String>,
+    pub artifacts: Vec<SourceSnapshotArtifact>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSnapshotArtifactRole {
+    Data,
+    Documentation,
+    LicenseEvidence,
+    VersionEvidence,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceSnapshotLocatorPolicy {
+    RevisionInEveryArtifactUrl,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SourceSnapshotArtifact {
+    pub role: SourceSnapshotArtifactRole,
+    pub artifact_path: String,
+    pub download_url: String,
+    pub media_type: String,
+    pub content_hash: Digest,
+    #[serde(with = "u64_decimal")]
+    pub byte_length: u64,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -327,6 +377,129 @@ pub struct BundleArtifact<'a> {
     pub relative_path: &'a str,
     pub content_hash: Digest,
     pub byte_length: u64,
+}
+
+impl SourceSnapshotManifest {
+    pub fn validate(&self) -> Result<(), SourceSnapshotError> {
+        if self.source_snapshot_schema_version != SOURCE_SNAPSHOT_SCHEMA_VERSION {
+            return Err(SourceSnapshotError::UnsupportedSchema(
+                self.source_snapshot_schema_version,
+            ));
+        }
+        validate_slug(&self.snapshot_id, "source_snapshot.snapshot_id")?;
+        require_text(&self.title, "source_snapshot.title")?;
+        require_text(&self.publisher, "source_snapshot.publisher")?;
+        validate_https_url(&self.documentation_url, "source_snapshot.documentation_url")?;
+        require_text(&self.upstream_release, "source_snapshot.upstream_release")?;
+        if self.upstream_revision.len() < 12
+            || !self
+                .upstream_revision
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        {
+            return Err(SourceSnapshotError::InvalidUpstreamRevision(
+                self.upstream_revision.clone(),
+            ));
+        }
+        require_text(&self.dataset_version, "source_snapshot.dataset_version")?;
+        require_text(
+            &self.license_expression,
+            "source_snapshot.license_expression",
+        )?;
+        validate_https_url(&self.license_url, "source_snapshot.license_url")?;
+        require_text(&self.scope, "source_snapshot.scope")?;
+        require_nonempty(&self.limitations, "source_snapshot.limitations")?;
+        require_nonempty(&self.artifacts, "source_snapshot.artifacts")?;
+
+        let mut limitations = BTreeSet::new();
+        for limitation in &self.limitations {
+            require_text(limitation, "source_snapshot.limitations")?;
+            if !limitations.insert(limitation.as_str()) {
+                return Err(SourceSnapshotError::DuplicateLimitation(limitation.clone()));
+            }
+        }
+
+        validate_sorted_unique(
+            self.artifacts
+                .iter()
+                .map(|artifact| artifact.artifact_path.as_str()),
+            "source_snapshot.artifacts",
+        )?;
+        let mut roles = BTreeSet::new();
+        for artifact in &self.artifacts {
+            artifact.validate()?;
+            match self.artifact_locator_policy {
+                SourceSnapshotLocatorPolicy::RevisionInEveryArtifactUrl
+                    if !artifact.download_url.contains(&self.upstream_revision) =>
+                {
+                    return Err(SourceSnapshotError::ArtifactUrlMissingRevision {
+                        path: artifact.artifact_path.clone(),
+                        revision: self.upstream_revision.clone(),
+                    });
+                }
+                SourceSnapshotLocatorPolicy::RevisionInEveryArtifactUrl => {}
+            }
+            roles.insert(artifact.role);
+        }
+        for required in [
+            SourceSnapshotArtifactRole::Data,
+            SourceSnapshotArtifactRole::Documentation,
+            SourceSnapshotArtifactRole::LicenseEvidence,
+            SourceSnapshotArtifactRole::VersionEvidence,
+        ] {
+            if !roles.contains(&required) {
+                return Err(SourceSnapshotError::MissingArtifactRole(required));
+            }
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, SourceSnapshotError> {
+        self.validate()?;
+        let mut bytes = serde_json::to_vec(self)
+            .map_err(|error| SourceSnapshotError::Encoding(error.to_string()))?;
+        bytes.push(b'\n');
+        Ok(bytes)
+    }
+
+    pub fn content_digest(&self) -> Result<Digest, SourceSnapshotError> {
+        Ok(Digest::sha256(&self.canonical_bytes()?))
+    }
+
+    pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, SourceSnapshotError> {
+        let snapshot: Self = serde_json::from_slice(bytes)
+            .map_err(|error| SourceSnapshotError::Decode(error.to_string()))?;
+        snapshot.validate()?;
+        if snapshot.canonical_bytes()? != bytes {
+            return Err(SourceSnapshotError::NonCanonicalEncoding);
+        }
+        Ok(snapshot)
+    }
+}
+
+impl SourceSnapshotArtifact {
+    pub fn validate(&self) -> Result<(), SourceSnapshotError> {
+        validate_artifact_path(&self.artifact_path, "source_snapshot.artifact_path")?;
+        validate_https_url(&self.download_url, "source_snapshot.artifact.download_url")?;
+        validate_media_type(&self.media_type)?;
+        if self.content_hash == Digest::ZERO {
+            return Err(SourceSnapshotError::ZeroDigest);
+        }
+        if self.byte_length == 0 {
+            return Err(SourceSnapshotError::ZeroByteLength);
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn expected_artifact(&self) -> BundleArtifact<'_> {
+        BundleArtifact {
+            kind: BundleArtifactKind::Source,
+            relative_path: &self.artifact_path,
+            content_hash: self.content_hash,
+            byte_length: self.byte_length,
+        }
+    }
 }
 
 impl WorldDataBundle {
@@ -614,6 +787,14 @@ impl BundleArtifact<'_> {
     pub fn verify_bytes(&self, bytes: &[u8]) -> Result<(), BundleError> {
         let actual_length =
             u64::try_from(bytes.len()).map_err(|_| BundleError::HostLengthOverflow)?;
+        self.verify_observation(actual_length, Digest::sha256(bytes))
+    }
+
+    pub fn verify_observation(
+        &self,
+        actual_length: u64,
+        actual_digest: Digest,
+    ) -> Result<(), BundleError> {
         if actual_length != self.byte_length {
             return Err(BundleError::ArtifactLengthMismatch {
                 path: self.relative_path.to_owned(),
@@ -621,12 +802,11 @@ impl BundleArtifact<'_> {
                 actual: actual_length,
             });
         }
-        let actual = Digest::sha256(bytes);
-        if actual != self.content_hash {
+        if actual_digest != self.content_hash {
             return Err(BundleError::ArtifactDigestMismatch {
                 path: self.relative_path.to_owned(),
                 expected: self.content_hash,
-                actual,
+                actual: actual_digest,
             });
         }
         Ok(())
@@ -1411,6 +1591,34 @@ pub enum BundleError {
     },
 }
 
+#[derive(Debug, Error)]
+pub enum SourceSnapshotError {
+    #[error("source-snapshot schema version {0} is unsupported")]
+    UnsupportedSchema(u16),
+    #[error(
+        "source-snapshot upstream revision must be at least 12 lowercase hexadecimal characters, found {0:?}"
+    )]
+    InvalidUpstreamRevision(String),
+    #[error("source-snapshot limitation occurs more than once: {0:?}")]
+    DuplicateLimitation(String),
+    #[error("source snapshot is missing required artifact role {0:?}")]
+    MissingArtifactRole(SourceSnapshotArtifactRole),
+    #[error("source artifact {path:?} URL does not contain declared revision {revision:?}")]
+    ArtifactUrlMissingRevision { path: String, revision: String },
+    #[error("source-snapshot artifact digest must not be all zero")]
+    ZeroDigest,
+    #[error("source-snapshot artifact byte length must be positive")]
+    ZeroByteLength,
+    #[error("source-snapshot JSON could not be decoded: {0}")]
+    Decode(String),
+    #[error("source-snapshot JSON could not be encoded: {0}")]
+    Encoding(String),
+    #[error("source-snapshot bytes are valid JSON but not the canonical schema encoding")]
+    NonCanonicalEncoding,
+    #[error(transparent)]
+    SharedValidation(#[from] BundleError),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1421,6 +1629,166 @@ mod tests {
     };
 
     const SOURCE_ARTIFACT: &[u8] = b"source artifact fixture";
+    const NATURAL_EARTH_10M_LAND_SNAPSHOT: &[u8] =
+        include_bytes!("../../../data/source-snapshots/natural-earth-10m-land-v5.1.2.json");
+
+    fn source_snapshot() -> SourceSnapshotManifest {
+        let artifact = |role, path: &str, bytes: &[u8]| SourceSnapshotArtifact {
+            role,
+            artifact_path: path.to_owned(),
+            download_url: format!(
+                "https://example.test/0123456789abcdef0123456789abcdef01234567/{path}"
+            ),
+            media_type: "application/octet-stream".to_owned(),
+            content_hash: Digest::sha256(bytes),
+            byte_length: u64::try_from(bytes.len()).expect("fixture length fits u64"),
+        };
+        SourceSnapshotManifest {
+            source_snapshot_schema_version: SOURCE_SNAPSHOT_SCHEMA_VERSION,
+            snapshot_id: "global-land-v1".to_owned(),
+            title: "Global land evidence".to_owned(),
+            publisher: "Example publisher".to_owned(),
+            documentation_url: "https://example.test/global-land".to_owned(),
+            upstream_release: "v1.2.3".to_owned(),
+            upstream_revision: "0123456789abcdef0123456789abcdef01234567".to_owned(),
+            artifact_locator_policy: SourceSnapshotLocatorPolicy::RevisionInEveryArtifactUrl,
+            dataset_version: "1.2.2".to_owned(),
+            retrieved_on: NaiveDate::from_ymd_opt(2026, 8, 6).expect("valid fixture date"),
+            license_expression: "LicenseRef-Example-Public-Domain".to_owned(),
+            license_url: "https://example.test/terms".to_owned(),
+            scope: "Generalized global land polygons.".to_owned(),
+            limitations: vec!["Not a simulation-ready coastline.".to_owned()],
+            artifacts: vec![
+                artifact(SourceSnapshotArtifactRole::Data, "data/land.shp", b"shape"),
+                artifact(
+                    SourceSnapshotArtifactRole::Documentation,
+                    "docs/readme.html",
+                    b"documentation",
+                ),
+                artifact(
+                    SourceSnapshotArtifactRole::LicenseEvidence,
+                    "docs/terms.txt",
+                    b"public domain",
+                ),
+                artifact(
+                    SourceSnapshotArtifactRole::VersionEvidence,
+                    "docs/version.txt",
+                    b"1.2.2",
+                ),
+            ],
+        }
+    }
+
+    #[test]
+    fn source_snapshot_round_trips_only_as_canonical_complete_evidence() {
+        let snapshot = source_snapshot();
+        let bytes = snapshot.canonical_bytes().expect("valid source snapshot");
+        let decoded = SourceSnapshotManifest::from_canonical_slice(&bytes)
+            .expect("canonical snapshot round trip");
+        assert_eq!(decoded, snapshot);
+        assert_eq!(
+            decoded.content_digest().expect("valid content digest"),
+            Digest::sha256(&bytes)
+        );
+
+        let mut pretty = serde_json::to_vec_pretty(&snapshot).expect("pretty snapshot JSON");
+        pretty.push(b'\n');
+        assert!(matches!(
+            SourceSnapshotManifest::from_canonical_slice(&pretty),
+            Err(SourceSnapshotError::NonCanonicalEncoding)
+        ));
+    }
+
+    #[test]
+    fn source_snapshot_rejects_ambiguous_provenance_and_artifacts() {
+        let mut missing_role = source_snapshot();
+        missing_role
+            .artifacts
+            .retain(|artifact| artifact.role != SourceSnapshotArtifactRole::LicenseEvidence);
+        assert!(matches!(
+            missing_role.validate(),
+            Err(SourceSnapshotError::MissingArtifactRole(
+                SourceSnapshotArtifactRole::LicenseEvidence
+            ))
+        ));
+
+        let mut unsorted = source_snapshot();
+        unsorted.artifacts.swap(0, 1);
+        assert!(unsorted.validate().is_err());
+
+        let mut unsafe_path = source_snapshot();
+        unsafe_path.artifacts[0].artifact_path = "../land.shp".to_owned();
+        assert!(unsafe_path.validate().is_err());
+
+        let mut mutable_revision = source_snapshot();
+        mutable_revision.upstream_revision = "main".to_owned();
+        assert!(matches!(
+            mutable_revision.validate(),
+            Err(SourceSnapshotError::InvalidUpstreamRevision(_))
+        ));
+
+        let mut unbound_url = source_snapshot();
+        unbound_url.artifacts[0].download_url = "https://example.test/source.bin".to_owned();
+        assert!(matches!(
+            unbound_url.validate(),
+            Err(SourceSnapshotError::ArtifactUrlMissingRevision { .. })
+        ));
+
+        let mut duplicate_limitation = source_snapshot();
+        duplicate_limitation
+            .limitations
+            .push(duplicate_limitation.limitations[0].clone());
+        assert!(matches!(
+            duplicate_limitation.validate(),
+            Err(SourceSnapshotError::DuplicateLimitation(_))
+        ));
+    }
+
+    #[test]
+    fn source_snapshot_artifact_observation_checks_length_and_digest() {
+        let artifact = &source_snapshot().artifacts[0];
+        let expected = artifact.expected_artifact();
+        expected.verify_bytes(b"shape").expect("valid bytes");
+        assert!(matches!(
+            expected.verify_bytes(b"shap"),
+            Err(BundleError::ArtifactLengthMismatch { .. })
+        ));
+        assert!(matches!(
+            expected.verify_bytes(b"other"),
+            Err(BundleError::ArtifactDigestMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn committed_natural_earth_snapshot_is_canonical_and_fingerprinted() {
+        let snapshot =
+            SourceSnapshotManifest::from_canonical_slice(NATURAL_EARTH_10M_LAND_SNAPSHOT)
+                .expect("committed Natural Earth snapshot is canonical");
+        assert_eq!(snapshot.upstream_release, "v5.1.2");
+        assert_eq!(snapshot.dataset_version, "5.1.1");
+        assert_eq!(snapshot.artifacts.len(), 9);
+        assert!(
+            snapshot
+                .artifacts
+                .iter()
+                .all(|artifact| artifact.download_url.contains(&snapshot.upstream_revision))
+        );
+        assert_eq!(
+            snapshot
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.byte_length)
+                .sum::<u64>(),
+            7_209_312
+        );
+        assert_eq!(
+            snapshot
+                .content_digest()
+                .expect("valid snapshot content digest")
+                .to_string(),
+            "21382550977608ef2f8e3f4f787a987d7c06848560fcd8902b6a44e7857b427a"
+        );
+    }
 
     fn grid() -> SpatialGrid {
         SpatialGrid {

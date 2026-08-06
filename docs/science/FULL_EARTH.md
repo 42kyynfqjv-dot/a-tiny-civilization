@@ -38,6 +38,7 @@ date, terms snapshot, byte length, and SHA-256 digest enter a validated bundle.
 | Domain | Candidate source | Intended role and caution |
 | --- | --- | --- |
 | Global relief | [NOAA ETOPO 2022](https://www.ncei.noaa.gov/products/etopo-global-relief-model) | Global land/bathymetry baseline; retain source-type and vertical-reference metadata. |
+| Generalized land reference | [Natural Earth 1:10m land](https://www.naturalearthdata.com/downloads/10m-physical-vectors/10m-land/) | Public-domain global land geometry for acquisition and coarse cross-checks; generalized cartography is not a measurement-resolution canonical coastline. |
 | Bathymetry | [GEBCO gridded bathymetry](https://www.gebco.net/data_and_products/gridded_bathymetry_data/) | Ocean refinement and type-identifier evidence; much seabed detail is interpolated and releases change annually. |
 | Land terrain | [NASADEM](https://www.earthdata.nasa.gov/data/catalog/lpcloud-nasadem-hgt-001) plus compatible national bare-earth models | Finer land elevation where coverage and terms permit; a digital surface model must not be mislabeled as bare terrain. |
 | Polar terrain | [ArcticDEM and REMA](https://www.pgc.umn.edu/guides/stereo-derived-elevation-models/pgc-dem-products-arcticdem-rema-and-earthdem/) | Higher-resolution polar terrain with its uncertainty and attribution retained. |
@@ -113,6 +114,8 @@ Lower Buffalo participates under exactly the same rule as every other eligible c
 3. ~~Implement the private fixed-point ECEF-to-S2 address reference and cross-language
    golden verification.~~ Complete.
 4. Freeze license-compatible global source artifacts and construct L10 layer roots.
+   In progress: the first exact snapshot pins Natural Earth generalized global land
+   polygons and their public-domain/version evidence. No normalized root is claimed.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.

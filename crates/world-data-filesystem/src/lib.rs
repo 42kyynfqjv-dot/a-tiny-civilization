@@ -3,15 +3,18 @@
 use std::{
     collections::{BTreeSet, VecDeque},
     fs,
-    path::{Path, PathBuf},
+    io::Read,
+    path::{Component, Path, PathBuf},
 };
 
 use anyhow::{Context, Result, bail};
+use sha2::{Digest as _, Sha256};
 use world_data::{
-    BundleArtifact, BundleArtifactKind, DataLayerStorage, TileTreeEntry, TileTreeEntryKind,
-    TileTreeIndex, TileTreeReference, WorldDataBundle,
+    BundleArtifact, BundleArtifactKind, DataLayerStorage, SourceSnapshotArtifact,
+    SourceSnapshotManifest, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, TileTreeReference,
+    WorldDataBundle,
 };
-use world_domain::S2CellId;
+use world_domain::{Digest, S2CellId};
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VerificationStats {
@@ -67,33 +70,119 @@ impl SafeArtifactRoot {
         Ok(Self { canonical_root })
     }
 
-    fn read(&self, relative_path: &str) -> Result<Vec<u8>> {
-        let unresolved = self.canonical_root.join(relative_path);
-        let metadata = fs::symlink_metadata(&unresolved).with_context(|| {
-            format!("failed to inspect bundle artifact {}", unresolved.display())
-        })?;
-        if metadata.file_type().is_symlink() {
-            bail!(
-                "bundle artifact {} is a symbolic link",
-                unresolved.display()
-            );
-        }
-        if !metadata.is_file() {
-            bail!("bundle artifact {} is not a file", unresolved.display());
+    fn resolve_file(&self, relative_path: &str) -> Result<PathBuf> {
+        let components = Path::new(relative_path).components().collect::<Vec<_>>();
+        let mut unresolved = self.canonical_root.clone();
+        for (index, component) in components.iter().enumerate() {
+            let Component::Normal(part) = component else {
+                bail!("scientific artifact path {relative_path:?} is not portable");
+            };
+            unresolved.push(part);
+            let metadata = fs::symlink_metadata(&unresolved).with_context(|| {
+                format!(
+                    "failed to inspect scientific artifact {}",
+                    unresolved.display()
+                )
+            })?;
+            if metadata.file_type().is_symlink() {
+                bail!(
+                    "scientific artifact path component {} is a symbolic link",
+                    unresolved.display()
+                );
+            }
+            let is_leaf = index + 1 == components.len();
+            if is_leaf && !metadata.is_file() {
+                bail!("scientific artifact {} is not a file", unresolved.display());
+            }
+            if !is_leaf && !metadata.is_dir() {
+                bail!(
+                    "scientific artifact parent {} is not a directory",
+                    unresolved.display()
+                );
+            }
         }
         let resolved = unresolved.canonicalize().with_context(|| {
-            format!("failed to resolve bundle artifact {}", unresolved.display())
+            format!(
+                "failed to resolve scientific artifact {}",
+                unresolved.display()
+            )
         })?;
         if !resolved.starts_with(&self.canonical_root) {
             bail!(
-                "bundle artifact {} resolves outside {}",
+                "scientific artifact {} resolves outside {}",
                 unresolved.display(),
                 self.canonical_root.display()
             );
         }
-        fs::read(&resolved)
-            .with_context(|| format!("failed to read bundle artifact {}", resolved.display()))
+        Ok(resolved)
     }
+
+    fn read(&self, relative_path: &str) -> Result<Vec<u8>> {
+        let resolved = self.resolve_file(relative_path)?;
+        fs::read(&resolved)
+            .with_context(|| format!("failed to read scientific artifact {}", resolved.display()))
+    }
+}
+
+/// Verify every exact upstream artifact in a source-snapshot manifest without loading
+/// complete files into memory.
+pub fn verify_source_snapshot_artifacts(
+    snapshot: &SourceSnapshotManifest,
+    artifact_root: &Path,
+) -> Result<VerificationStats> {
+    snapshot.validate().context("source snapshot is invalid")?;
+    let artifact_root = SafeArtifactRoot::new(artifact_root)?;
+    let mut stats = VerificationStats::default();
+    for artifact in &snapshot.artifacts {
+        verify_source_artifact(&artifact_root, artifact)?;
+        stats.add_artifact(artifact.byte_length)?;
+    }
+    Ok(stats)
+}
+
+/// Verify one already-validated source artifact beneath a safe root.
+pub fn verify_source_snapshot_artifact(
+    artifact: &SourceSnapshotArtifact,
+    artifact_root: &Path,
+) -> Result<()> {
+    artifact.validate().context("source artifact is invalid")?;
+    verify_source_artifact(&SafeArtifactRoot::new(artifact_root)?, artifact)
+}
+
+fn verify_source_artifact(
+    artifact_root: &SafeArtifactRoot,
+    artifact: &SourceSnapshotArtifact,
+) -> Result<()> {
+    let path = artifact_root.resolve_file(&artifact.artifact_path)?;
+    let mut file = fs::File::open(&path)
+        .with_context(|| format!("failed to open source artifact {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut actual_length = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .with_context(|| format!("failed to read source artifact {}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        actual_length = actual_length
+            .checked_add(u64::try_from(count).context("source read length overflow")?)
+            .context("source artifact byte count overflow")?;
+        if actual_length > artifact.byte_length {
+            bail!(
+                "source artifact {:?} exceeds expected length {}",
+                artifact.artifact_path,
+                artifact.byte_length
+            );
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual_digest = Digest::from_bytes(hasher.finalize().into());
+    artifact
+        .expected_artifact()
+        .verify_observation(actual_length, actual_digest)
+        .with_context(|| format!("source artifact {:?} is invalid", artifact.artifact_path))
 }
 
 /// Verify every retained source, bounded raster, tile index, and tile under `artifact_root`.
@@ -291,7 +380,10 @@ mod tests {
     use std::collections::BTreeMap;
 
     use super::*;
-    use world_data::{TILE_TREE_INDEX_SCHEMA_VERSION, TileArtifactReference, TileTreeEntryKind};
+    use world_data::{
+        SourceSnapshotArtifact, SourceSnapshotArtifactRole, TILE_TREE_INDEX_SCHEMA_VERSION,
+        TileArtifactReference, TileTreeEntryKind,
+    };
     use world_domain::Digest;
 
     fn artifact(path: &str, media_type: &str, bytes: &[u8]) -> TileArtifactReference {
@@ -390,6 +482,47 @@ mod tests {
                 .cloned()
                 .with_context(|| format!("missing fixture {path}"))
         })
+    }
+
+    #[test]
+    fn source_snapshot_verification_streams_and_rejects_tampering() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "a-tiny-civilization-source-snapshot-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create source snapshot fixture root");
+        let bytes = vec![0x5a; 2 * 64 * 1024 + 17];
+        fs::write(root.join("source.bin"), &bytes).expect("write source fixture");
+        let artifact = SourceSnapshotArtifact {
+            role: SourceSnapshotArtifactRole::Data,
+            artifact_path: "source.bin".to_owned(),
+            download_url: "https://example.test/source.bin".to_owned(),
+            media_type: "application/octet-stream".to_owned(),
+            content_hash: Digest::sha256(&bytes),
+            byte_length: u64::try_from(bytes.len()).expect("fixture length fits u64"),
+        };
+        verify_source_snapshot_artifact(&artifact, &root).expect("valid streamed source");
+
+        let mut tampered = bytes.clone();
+        tampered[64 * 1024] ^= 1;
+        fs::write(root.join("source.bin"), tampered).expect("write same-length tamper");
+        assert!(verify_source_snapshot_artifact(&artifact, &root).is_err());
+
+        fs::write(root.join("source.bin"), &bytes[..bytes.len() - 1])
+            .expect("write truncated tamper");
+        assert!(verify_source_snapshot_artifact(&artifact, &root).is_err());
+
+        let mut oversized = bytes.clone();
+        oversized.push(0);
+        fs::write(root.join("source.bin"), oversized).expect("write oversized tamper");
+        assert!(verify_source_snapshot_artifact(&artifact, &root).is_err());
+        fs::remove_dir_all(root).expect("remove source snapshot fixture root");
     }
 
     #[test]

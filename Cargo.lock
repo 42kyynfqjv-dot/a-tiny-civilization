@@ -322,7 +322,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "clap",
+ "reqwest",
  "serde_json",
+ "sha2",
+ "tokio",
  "world-data",
  "world-data-filesystem",
  "world-domain",
@@ -3040,6 +3043,7 @@ name = "world-data-filesystem"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "sha2",
  "world-data",
  "world-domain",
 ]

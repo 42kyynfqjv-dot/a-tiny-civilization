@@ -3,6 +3,7 @@
 !/.env.example
 /target/
 /.tools/
+/data/source-cache/
 /web/node_modules/
 /web/dist/
 /.idea/

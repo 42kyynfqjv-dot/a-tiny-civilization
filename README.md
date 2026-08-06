@@ -68,6 +68,14 @@ changes durable schemas. Persistent full-Earth execution remains intentionally
 disabled until exact source bundles, coupled ecological quantities, retained refined
 state, durable embodied movement, scheduling, and persistence are integrated.
 
+The first exact upstream snapshot now pins Natural Earth v5.1.2 generalized global
+land polygons as nine public-domain artifacts at one immutable commit: URLs, roles,
+byte lengths, SHA-256 hashes, version evidence, license evidence, and limitations are
+canonical. HTTPS acquisition streams into an ignored cache, never replaces an existing
+file, and finishes with complete offline verification. This is real whole-Earth source
+evidence and acquisition plumbing—not yet a normalized coastline layer or world bundle.
+See [ADR 0015](docs/adr/0015-exact-upstream-source-snapshots.md).
+
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never
 change fertility, mortality, cognition, or event detail. The project publishes measured
