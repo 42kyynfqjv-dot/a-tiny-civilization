@@ -11,7 +11,7 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
     BirthCategory, DomainEvent, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
-    SimTick, SpeciesIdentity, WorldId,
+    SimTick, SpeciesIdentity, WorldId, WorldStatus,
 };
 
 pub const PUBLIC_TIMELINE_PROJECTION_VERSION: u16 = 1;
@@ -163,6 +163,22 @@ pub enum ObserverProjectionStoreError {
     Unavailable(String),
     #[error("observer projection data is corrupt: {0}")]
     Corrupt(String),
+}
+
+/// Public routing metadata for a world. This is a read-only view of the durable
+/// lifecycle cursor, deliberately separate from the simulation write port.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicWorld {
+    pub world_id: WorldId,
+    pub status: WorldStatus,
+    pub through_sequence: EventSequence,
+    pub tick: SimTick,
+    pub predecessor_world_id: Option<WorldId>,
+}
+
+#[async_trait]
+pub trait ObserverWorldStore: Send + Sync {
+    async fn list_public_worlds(&self) -> Result<Vec<PublicWorld>, ObserverProjectionStoreError>;
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,

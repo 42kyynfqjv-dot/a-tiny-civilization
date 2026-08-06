@@ -4,8 +4,8 @@ use application::{
     WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
-    CommittedBirth, ObserverOrganismStore, ObserverTimelineStore, ReservationRequest,
-    ReservationState, ReservationTarget, SupporterReservationStore,
+    CommittedBirth, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
+    ReservationRequest, ReservationState, ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
@@ -57,6 +57,10 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
     let store = PostgresStore::from_pool(pool);
     let manifest = manifest(101);
     let created = store.create_world(&manifest, None).await?;
+    let public_worlds = store.list_public_worlds().await?;
+    assert_eq!(public_worlds.len(), 1);
+    assert_eq!(public_worlds[0].world_id, manifest.world_id);
+    assert_eq!(public_worlds[0].status, WorldStatus::Initializing);
     let (running, genesis_batch, genesis_snapshot) =
         genesis(&manifest, vec![initial_person(manifest.world_id)])?;
 

@@ -26,8 +26,9 @@ npm run lint
 npm test
 ```
 
-The status indicator reads `/api/v1/status`. It intentionally degrades to an offline
-state while the Rust API is absent.
+The status indicator reads `/api/v1/status`. The live record reads `/api/v1/worlds`,
+then its bounded timeline and organism endpoints. It intentionally degrades to an
+honest pre-genesis or offline state while the Rust API is absent.
 
 ## License
 

@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { FoundationPulse } from "./components/FoundationPulse";
+import { LiveRecord } from "./components/LiveRecord";
 
 export const metadata: Metadata = {
   title: "Live World",
@@ -193,6 +194,8 @@ export default function Home() {
             <a href="#wiki">Read the evidence model <span aria-hidden="true">→</span></a>
           </article>
         </section>
+
+        <LiveRecord />
 
         <section className="wiki-section" id="wiki">
           <div className="section-heading wiki-heading">

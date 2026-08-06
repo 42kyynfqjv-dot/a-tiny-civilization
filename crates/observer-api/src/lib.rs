@@ -12,7 +12,8 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use observer_projection::{
-    ObserverOrganismStore, ObserverTimelineStore, PublicOrganism, PublicTimelineItem,
+    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicOrganism,
+    PublicTimelineItem, PublicWorld,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -21,12 +22,12 @@ use world_domain::{EntityId, WorldId};
 
 /// Read-only observer composition. The simulation runner does not import this port.
 pub trait ObserverReadStore:
-    FoundationStore + ObserverTimelineStore + ObserverOrganismStore
+    FoundationStore + ObserverTimelineStore + ObserverOrganismStore + ObserverWorldStore
 {
 }
 
 impl<T> ObserverReadStore for T where
-    T: FoundationStore + ObserverTimelineStore + ObserverOrganismStore
+    T: FoundationStore + ObserverTimelineStore + ObserverOrganismStore + ObserverWorldStore
 {
 }
 
@@ -53,6 +54,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/api/v1/status", get(status))
+        .route("/api/v1/worlds", get(public_worlds))
         .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route(
@@ -128,6 +130,20 @@ async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse>, A
         },
         latest_runner_heartbeat: status.latest_runner_heartbeat,
     }))
+}
+
+#[derive(Serialize)]
+struct WorldsResponse {
+    worlds: Vec<PublicWorld>,
+}
+
+async fn public_worlds(State(state): State<ApiState>) -> Result<Json<WorldsResponse>, ApiError> {
+    let worlds = state
+        .store
+        .list_public_worlds()
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(WorldsResponse { worlds }))
 }
 
 #[derive(Debug, Deserialize)]

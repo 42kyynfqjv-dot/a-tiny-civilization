@@ -79,6 +79,11 @@ introduction and ending facts join into safe people/animal records with sourced 
 citations and event provenance. It omits reproductive category, parentage, location,
 mortality mechanism, and supporter aliases. See [ADR 0019](adr/0019-public-organism-index.md).
 
+The API also exposes a bounded read-only world index so the public web client can
+select a current world without receiving a simulation write capability. It polls this
+index, then the safe timeline and organism projections; unavailable or empty history is
+shown as such rather than replaced with invented content.
+
 Snapshots are caches. A complete replay from durable events, or a snapshot plus its
 tail, must produce the same state hash.
 
