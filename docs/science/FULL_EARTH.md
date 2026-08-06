@@ -134,8 +134,13 @@ all 256 L10 values, under
 [ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md); this avoids pretending
 millions of individual filesystem artifacts are an operationally sound release.
 The full-source ETOPO batch and its deterministic integer accumulation path are now
-implemented, but the global output has not yet been generated, independently rebuilt,
-or admitted into a complete scientific bundle.
+implemented. The global packed L6→L10 bedrock-relief release has been generated,
+exhaustively inspected, independently rebuilt, and atomically republished. All three
+derivations produced the same root-index SHA-256
+`0794832d533a81e0889779a78aa39d730a3b09a98edff37b57ef76f394504876`.
+This proves the one terrain layer only; it is not a complete scientific bundle or a
+canonical world. Climate, coastline, hydrography, habitat, soil, and ecological
+evidence remain required.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
