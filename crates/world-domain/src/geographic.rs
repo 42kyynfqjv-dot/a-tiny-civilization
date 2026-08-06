@@ -824,6 +824,30 @@ mod tests {
     }
 
     #[test]
+    fn every_global_l6_cell_centre_round_trips_through_wgs84_e7() {
+        for face in 0_u64..6 {
+            let root = S2CellId::new((face << 61) | (1_u64 << 60)).expect("face root");
+            let mut cells = vec![root];
+            for _ in 0..6 {
+                cells = cells
+                    .into_iter()
+                    .flat_map(|cell| cell.children().expect("children"))
+                    .collect();
+            }
+            for cell in cells {
+                let centre = s2_ray_to_geographic_e7(
+                    s2_face_uv_to_ray(
+                        s2_face_ij_center_uv(decode_s2_face_ij(cell)).expect("centre"),
+                    )
+                    .expect("ray"),
+                )
+                .expect("centre converts");
+                assert_eq!(route_geographic_to_s2(centre, 6), Ok(cell));
+            }
+        }
+    }
+
+    #[test]
     fn geographic_routing_is_repeatable_and_levels_share_ancestors() {
         let coordinate =
             GeographicCoordinateE7::new(387_000_000, -903_000_000).expect("valid coordinate");
