@@ -2,7 +2,7 @@ use std::{
     collections::{BTreeMap, HashMap},
     ffi::OsStr,
     fs::{self, File, OpenOptions},
-    io::Write,
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -155,6 +155,15 @@ enum InspectCommand {
         /// Longitude in exact 10^-7 degrees.
         #[arg(long)]
         longitude_e7: i32,
+    },
+    /// Inspect the two NetCDF members inside one verified annual ERA5 ZIP response.
+    Era5AnnualArchive {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long, default_value_t = 1981)]
+        year: u16,
     },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
@@ -420,6 +429,11 @@ async fn main() -> Result<()> {
                 latitude_e7,
                 longitude_e7,
             ),
+            InspectCommand::Era5AnnualArchive {
+                source_snapshot,
+                artifact_root,
+                year,
+            } => inspect_era5_annual_archive(&source_snapshot, &artifact_root, year),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -2673,6 +2687,113 @@ struct ChelsaMonthlyTemperatureInspection {
     artifact_path: String,
     artifact_hash: Digest,
     artifact_byte_length: u64,
+}
+
+const ERA5_ARCHIVE_MEMBERS: [&str; 2] = [
+    "data_stream-moda_stepType-avgua.nc",
+    "data_stream-moda_stepType-avgad.nc",
+];
+
+#[derive(Serialize)]
+struct Era5AnnualArchiveInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    year: u16,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+    members: Vec<Era5MemberInspection>,
+}
+
+#[derive(Serialize)]
+struct Era5MemberInspection {
+    name: String,
+    uncompressed_byte_length: u64,
+    variables: Vec<EtopoVariableInspection>,
+}
+
+/// Inspect one verified ERA5 archive in memory. ZIP member bytes never become a
+/// source artifact or a durable intermediate: this is a parser-boundary probe before
+/// climate semantics and spatial normalization are specified.
+fn inspect_era5_annual_archive(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    year: u16,
+) -> Result<()> {
+    if !(1981..=2010).contains(&year) {
+        bail!("ERA5 inspection year must be inside the pinned 1981-2010 normal period");
+    }
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let expected_name = format!("-{:04}.zip", year);
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(&expected_name)
+        })
+        .with_context(|| format!("source snapshot has no ERA5 archive for {year}"))?;
+    let archive_path = artifact_root.join(&artifact.artifact_path);
+    let archive_file = File::open(&archive_path)
+        .with_context(|| format!("open verified ERA5 archive {}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(archive_file)
+        .context("open verified ERA5 ZIP archive through the portable reader")?;
+    if archive.len() != ERA5_ARCHIVE_MEMBERS.len() {
+        bail!("ERA5 ZIP archive has an unexpected member count");
+    }
+    let mut members = Vec::with_capacity(ERA5_ARCHIVE_MEMBERS.len());
+    for member_name in ERA5_ARCHIVE_MEMBERS {
+        let mut member = archive
+            .by_name(member_name)
+            .with_context(|| format!("ERA5 ZIP archive is missing member {member_name}"))?;
+        let uncompressed_byte_length = member.size();
+        if uncompressed_byte_length == 0 {
+            bail!("ERA5 ZIP member {member_name} is empty");
+        }
+        let capacity = usize::try_from(uncompressed_byte_length)
+            .context("ERA5 ZIP member is too large for this platform")?;
+        let mut bytes = Vec::with_capacity(capacity);
+        member
+            .read_to_end(&mut bytes)
+            .with_context(|| format!("read ERA5 ZIP member {member_name}"))?;
+        if u64::try_from(bytes.len())? != uncompressed_byte_length {
+            bail!("ERA5 ZIP member {member_name} did not yield its declared byte length");
+        }
+        let file = NcFile::from_bytes(&bytes)
+            .with_context(|| format!("parse ERA5 ZIP member {member_name} as NetCDF"))?;
+        let mut variables = file
+            .variables()
+            .with_context(|| format!("enumerate variables in ERA5 member {member_name}"))?
+            .iter()
+            .map(|variable| EtopoVariableInspection {
+                name: variable.name().to_owned(),
+                shape: variable.shape().to_vec(),
+            })
+            .collect::<Vec<_>>();
+        variables.sort_by(|left, right| left.name.cmp(&right.name));
+        members.push(Era5MemberInspection {
+            name: member_name.to_owned(),
+            uncompressed_byte_length,
+            variables,
+        });
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&Era5AnnualArchiveInspection {
+            inspection_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            year,
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_hash: artifact.content_hash,
+            artifact_byte_length: artifact.byte_length,
+            members,
+        })?
+    );
+    Ok(())
 }
 
 #[derive(Serialize)]

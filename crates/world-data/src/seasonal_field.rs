@@ -79,9 +79,7 @@ impl PackedSeasonalScalarFieldTile {
             if artifact.digest == Digest::ZERO {
                 return Err(SeasonalFieldTileError::ZeroDigest);
             }
-            if artifact.phase_mask == 0
-                || artifact.phase_mask & !normal_year_phase_mask() != 0
-            {
+            if artifact.phase_mask == 0 || artifact.phase_mask & !normal_year_phase_mask() != 0 {
                 return Err(SeasonalFieldTileError::InvalidSourcePhaseCoverage);
             }
             if previous.is_some_and(|digest| digest >= artifact.digest) {
