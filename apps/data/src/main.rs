@@ -2127,6 +2127,7 @@ struct ChelsaJanuaryCellInspection {
     latitude_ieee754_le_hex: String,
     longitude_ieee754_le_hex: String,
     raw_band1_ieee754_le_hex: String,
+    documented_temperature_millicelsius: i64,
 }
 
 fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
@@ -2239,6 +2240,7 @@ fn inspect_chelsa_january_cell(
         .first()
         .copied()
         .context("CHELSA sample selection is empty")?;
+    let documented_temperature_millicelsius = chelsa_raw_tas_to_millicelsius(value)?;
     println!(
         "{}",
         serde_json::to_string(&ChelsaJanuaryCellInspection {
@@ -2252,9 +2254,23 @@ fn inspect_chelsa_january_cell(
             latitude_ieee754_le_hex: format!("{:016x}", latitude.to_bits()),
             longitude_ieee754_le_hex: format!("{:016x}", longitude.to_bits()),
             raw_band1_ieee754_le_hex: format!("{:08x}", value.to_bits()),
+            documented_temperature_millicelsius,
         })?
     );
     Ok(())
+}
+
+/// The retained CHELSA technical specification defines `tas_01` through `tas_12`
+/// as degrees Celsius after multiplying stored values by 0.1 and adding -273.15.
+fn chelsa_raw_tas_to_millicelsius(raw: f32) -> Result<i64> {
+    if !raw.is_finite() || raw.fract() != 0.0 {
+        bail!("CHELSA tas sample must be a finite integral stored value");
+    }
+    let stored = raw as i64;
+    stored
+        .checked_mul(100)
+        .and_then(|value| value.checked_sub(273_150))
+        .context("CHELSA tas millidegree conversion overflow")
 }
 
 fn validate_chelsa_cell_address(row: u64, column: u64) -> Result<()> {
@@ -3111,6 +3127,15 @@ mod tests {
             .expect("last CHELSA cell");
         assert!(validate_chelsa_cell_address(CHELSA_LATITUDE_CELLS, 0).is_err());
         assert!(validate_chelsa_cell_address(0, CHELSA_LONGITUDE_CELLS).is_err());
+    }
+
+    #[test]
+    fn chelsa_documented_tas_transform_uses_integer_millicelsius() {
+        assert_eq!(
+            chelsa_raw_tas_to_millicelsius(2992.0).expect("documented conversion"),
+            26_050
+        );
+        assert!(chelsa_raw_tas_to_millicelsius(2992.5).is_err());
     }
 
     #[test]
