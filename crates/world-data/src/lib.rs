@@ -2,6 +2,7 @@
 
 mod boolean_field;
 mod scalar_field;
+mod seasonal_field;
 mod terrain;
 
 pub use boolean_field::{
@@ -12,6 +13,12 @@ pub use boolean_field::{
 pub use scalar_field::{
     PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_SCHEMA_VERSION,
     PackedScalarFieldTile, ScalarFieldCell, ScalarFieldTileError,
+};
+
+pub use seasonal_field::{
+    MONTHS_PER_NORMAL_YEAR, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SEASONAL_FIELD_TILE_SCHEMA_VERSION, PackedSeasonalScalarFieldTile,
+    SeasonalFieldTileError, SeasonalScalarFieldCell,
 };
 
 pub use terrain::{
