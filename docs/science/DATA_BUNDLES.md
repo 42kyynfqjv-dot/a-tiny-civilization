@@ -206,8 +206,9 @@ cargo run --locked -p civilization-data -- inspect etopo-cell-route \
   --row 5399 --column 10800 --s2-level 10
 ```
 
-This only proves the address of one declared source centre. A canonical elevation
-layer still requires versioned area-support and aggregation rules.
+This only proves the address and exact area support of one declared source cell. The
+support convention is specified in [ADR 0022](../adr/0022-etopo-area-cell-support.md);
+a canonical elevation layer still requires a versioned aggregation kernel.
 
 ## Current state
 

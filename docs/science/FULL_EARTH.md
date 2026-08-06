@@ -120,8 +120,9 @@ source-snapshot manifest digests before a normalizer can claim a root. A determi
 Natural Earth binary inspector now validates and parses the pinned polygon stream into
 an auditable raw framing summary; ETOPO can derive a hash-bound regular global
 elevation intermediate, and its exact area-cell centres route through the fixed-point
-geographic-to-S2 contract. Neither claims a normalized root. The remaining
-prerequisite is source-grid sampling/support geometry; see
+geographic-to-S2 contract with source-area geometry pinned in
+[ADR 0022](../adr/0022-etopo-area-cell-support.md). Neither claims a normalized root.
+The remaining prerequisite is a source-grid aggregation kernel; see
 [ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md).
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after

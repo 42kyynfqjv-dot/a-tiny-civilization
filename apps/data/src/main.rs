@@ -217,17 +217,22 @@ struct EtopoCellRouteInspection {
     inspection_schema_version: u16,
     source_grid: &'static str,
     sample_support: &'static str,
+    boundary_convention: &'static str,
     row: u32,
     column: u32,
     latitude_half_arcseconds: i32,
     longitude_half_arcseconds: i32,
+    south_boundary_half_arcseconds: i32,
+    north_boundary_half_arcseconds: i32,
+    west_boundary_half_arcseconds: i32,
+    east_boundary_half_arcseconds: i32,
     s2_level: u8,
     s2_cell_id: String,
 }
 
 fn inspect_etopo_cell_route(row: u32, column: u32, s2_level: u8) -> Result<()> {
-    let coordinate = etopo_cell_center(row, column)?;
-    let cell = route_half_arcsecond_to_s2(coordinate, s2_level)
+    let support = etopo_cell_support(row, column)?;
+    let cell = route_half_arcsecond_to_s2(support.centre, s2_level)
         .context("route ETOPO cell centre to S2")?;
     println!(
         "{}",
@@ -235,10 +240,15 @@ fn inspect_etopo_cell_route(row: u32, column: u32, s2_level: u8) -> Result<()> {
             inspection_schema_version: 1,
             source_grid: "NOAA ETOPO 2022 v1 60-arc-second WGS 84 / EGM2008",
             sample_support: "60-arc-second area cell center",
+            boundary_convention: "south/west inclusive, north/east exclusive; +180 wraps to -180",
             row,
             column,
-            latitude_half_arcseconds: coordinate.latitude_half_arcseconds(),
-            longitude_half_arcseconds: coordinate.longitude_half_arcseconds(),
+            latitude_half_arcseconds: support.centre.latitude_half_arcseconds(),
+            longitude_half_arcseconds: support.centre.longitude_half_arcseconds(),
+            south_boundary_half_arcseconds: support.south_boundary_half_arcseconds,
+            north_boundary_half_arcseconds: support.north_boundary_half_arcseconds,
+            west_boundary_half_arcseconds: support.west_boundary_half_arcseconds,
+            east_boundary_half_arcseconds: support.east_boundary_half_arcseconds,
             s2_level,
             s2_cell_id: cell.to_string(),
         })?
@@ -255,26 +265,65 @@ const ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS: i32 = -1_295_940;
 const ETOPO_CELL_STEP_HALF_ARCSECONDS: i32 = 120;
 const ETOPO_GRID_HEADER_LENGTH: usize = 84;
 
-fn etopo_cell_center(row: u32, column: u32) -> Result<GeographicCoordinateHalfArcsecond> {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct EtopoCellSupport {
+    centre: GeographicCoordinateHalfArcsecond,
+    south_boundary_half_arcseconds: i32,
+    north_boundary_half_arcseconds: i32,
+    west_boundary_half_arcseconds: i32,
+    east_boundary_half_arcseconds: i32,
+}
+
+fn etopo_cell_support(row: u32, column: u32) -> Result<EtopoCellSupport> {
     if u64::from(row) >= ETOPO_LATITUDE_CELLS || u64::from(column) >= ETOPO_LONGITUDE_CELLS {
         bail!("ETOPO row and column must be within its pinned 10800 by 21600 grid");
     }
-    let latitude_half_arcseconds = ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS
+    let south_boundary_half_arcseconds = (-648_000_i32)
         .checked_add(
             i32::try_from(row)?
                 .checked_mul(ETOPO_CELL_STEP_HALF_ARCSECONDS)
                 .context("ETOPO row coordinate overflow")?,
         )
         .context("ETOPO latitude coordinate overflow")?;
-    let longitude_half_arcseconds = ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS
+    let west_boundary_half_arcseconds = (-1_296_000_i32)
         .checked_add(
             i32::try_from(column)?
                 .checked_mul(ETOPO_CELL_STEP_HALF_ARCSECONDS)
                 .context("ETOPO column coordinate overflow")?,
         )
         .context("ETOPO longitude coordinate overflow")?;
-    GeographicCoordinateHalfArcsecond::new(latitude_half_arcseconds, longitude_half_arcseconds)
-        .context("derive exact ETOPO area-cell centre")
+    let north_boundary_half_arcseconds = south_boundary_half_arcseconds
+        .checked_add(ETOPO_CELL_STEP_HALF_ARCSECONDS)
+        .context("ETOPO north boundary overflow")?;
+    let east_boundary_half_arcseconds = west_boundary_half_arcseconds
+        .checked_add(ETOPO_CELL_STEP_HALF_ARCSECONDS)
+        .context("ETOPO east boundary overflow")?;
+    let latitude_half_arcseconds = south_boundary_half_arcseconds
+        .checked_add(ETOPO_CELL_STEP_HALF_ARCSECONDS / 2)
+        .context("ETOPO latitude centre overflow")?;
+    let longitude_half_arcseconds = west_boundary_half_arcseconds
+        .checked_add(ETOPO_CELL_STEP_HALF_ARCSECONDS / 2)
+        .context("ETOPO longitude centre overflow")?;
+    if latitude_half_arcseconds
+        != ETOPO_FIRST_LATITUDE_CENTER_HALF_ARCSECONDS
+            + i32::try_from(row)? * ETOPO_CELL_STEP_HALF_ARCSECONDS
+        || longitude_half_arcseconds
+            != ETOPO_FIRST_LONGITUDE_CENTER_HALF_ARCSECONDS
+                + i32::try_from(column)? * ETOPO_CELL_STEP_HALF_ARCSECONDS
+    {
+        bail!("ETOPO source-centre lattice disagrees with its declared area support");
+    }
+    Ok(EtopoCellSupport {
+        centre: GeographicCoordinateHalfArcsecond::new(
+            latitude_half_arcseconds,
+            longitude_half_arcseconds,
+        )
+        .context("derive exact ETOPO area-cell centre")?,
+        south_boundary_half_arcseconds,
+        north_boundary_half_arcseconds,
+        west_boundary_half_arcseconds,
+        east_boundary_half_arcseconds,
+    })
 }
 
 #[derive(Serialize)]
@@ -1088,7 +1137,8 @@ mod tests {
 
     #[test]
     fn etopo_cell_centres_keep_the_pinned_area_raster_lattice() {
-        let first = etopo_cell_center(0, 0).expect("first cell centre");
+        let first_support = etopo_cell_support(0, 0).expect("first cell support");
+        let first = first_support.centre;
         assert_eq!(
             (
                 first.latitude_half_arcseconds(),
@@ -1096,7 +1146,17 @@ mod tests {
             ),
             (-647_940, -1_295_940)
         );
-        let last = etopo_cell_center(10_799, 21_599).expect("last cell centre");
+        assert_eq!(
+            (
+                first_support.south_boundary_half_arcseconds,
+                first_support.north_boundary_half_arcseconds,
+                first_support.west_boundary_half_arcseconds,
+                first_support.east_boundary_half_arcseconds,
+            ),
+            (-648_000, -647_880, -1_296_000, -1_295_880)
+        );
+        let last_support = etopo_cell_support(10_799, 21_599).expect("last cell support");
+        let last = last_support.centre;
         assert_eq!(
             (
                 last.latitude_half_arcseconds(),
@@ -1104,7 +1164,20 @@ mod tests {
             ),
             (647_940, 1_295_940)
         );
-        assert!(etopo_cell_center(10_800, 0).is_err());
-        assert!(etopo_cell_center(0, 21_600).is_err());
+        assert_eq!(
+            (
+                last_support.south_boundary_half_arcseconds,
+                last_support.north_boundary_half_arcseconds,
+                last_support.west_boundary_half_arcseconds,
+                last_support.east_boundary_half_arcseconds,
+            ),
+            (647_880, 648_000, 1_295_880, 1_296_000)
+        );
+        let seam_left = etopo_cell_support(5_400, 0).expect("western seam support");
+        let seam_right = etopo_cell_support(5_400, 21_599).expect("eastern seam support");
+        assert_eq!(seam_left.west_boundary_half_arcseconds, -1_296_000);
+        assert_eq!(seam_right.east_boundary_half_arcseconds, 1_296_000);
+        assert!(etopo_cell_support(10_800, 0).is_err());
+        assert!(etopo_cell_support(0, 21_600).is_err());
     }
 }

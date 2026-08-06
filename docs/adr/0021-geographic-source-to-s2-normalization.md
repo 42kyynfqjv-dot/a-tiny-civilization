@@ -60,7 +60,8 @@ for canonical normalizer output.
 ## Consequences
 
 The project does not gain a deceptively plausible elevation tile tree just because an
-upstream raster is available. The next data implementation task is a source-grid-to-S2
-sampling ADR and normalizer. This preserves the central claim:
+upstream raster is available. ETOPO's exact source-area support is now pinned in
+[ADR 0022](0022-etopo-area-cell-support.md). The next data implementation task is a
+source-grid-to-S2 aggregation kernel and normalizer. This preserves the central claim:
 the public can reproduce an emitted layer root from stated evidence and rules, rather
 than trust a host-specific GIS pipeline.
