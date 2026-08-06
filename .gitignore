@@ -2,6 +2,7 @@
 /.env.*
 !/.env.example
 /target/
+/.tools/
 /web/node_modules/
 /web/dist/
 /.idea/
