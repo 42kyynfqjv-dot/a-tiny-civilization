@@ -144,6 +144,17 @@ existing mismatches fail. The same manifest and complete cache can then be verif
 offline with `source validate`. See
 [ADR 0015](../adr/0015-exact-upstream-source-snapshots.md).
 
+The first dependency-light source inspection is available for the pinned Natural Earth
+polygon stream. It verifies the complete source snapshot before parsing the ESRI
+shapefile framing and prints a deterministic, raw-IEEE-bits summary; it is not a
+normalized coastline or a canonical layer root:
+
+```bash
+cargo run --locked -p civilization-data -- inspect natural-earth-land \
+  --source-snapshot data/source-snapshots/natural-earth-10m-land-v5.1.2.json \
+  --artifact-root data/source-cache
+```
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index

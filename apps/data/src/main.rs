@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{SourceSnapshotArtifact, SourceSnapshotManifest, WorldDataBundle};
 use world_data_filesystem::{
@@ -36,6 +37,11 @@ enum Command {
         #[command(subcommand)]
         command: SourceCommand,
     },
+    /// Inspect exact source bytes without treating them as normalized world data.
+    Inspect {
+        #[command(subcommand)]
+        command: InspectCommand,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -49,6 +55,17 @@ enum SourceCommand {
     /// Fetch missing artifacts over HTTPS, refusing to replace any existing file.
     Fetch {
         manifest: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InspectCommand {
+    /// Parse the pinned Natural Earth polygon stream into an auditable summary.
+    NaturalEarthLand {
+        #[arg(long)]
+        source_snapshot: PathBuf,
         #[arg(long)]
         artifact_root: PathBuf,
     },
@@ -72,7 +89,168 @@ async fn main() -> Result<()> {
                 artifact_root,
             } => fetch_source(&manifest, &artifact_root).await,
         },
+        Command::Inspect { command } => match command {
+            InspectCommand::NaturalEarthLand {
+                source_snapshot,
+                artifact_root,
+            } => inspect_natural_earth_land(&source_snapshot, &artifact_root),
+        },
     }
+}
+
+#[derive(Serialize)]
+struct NaturalEarthLandInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+    shapefile_version: u32,
+    declared_shape_type: u32,
+    bounding_box_ieee754_le_hex: [String; 4],
+    record_count: u64,
+    polygon_record_count: u64,
+    part_count: u64,
+    point_count: u64,
+}
+
+fn inspect_natural_earth_land(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".shp")
+        })
+        .context("source snapshot has no Natural Earth .shp data artifact")?;
+    let bytes = fs::read(artifact_root.join(&artifact.artifact_path))?;
+    let parsed = parse_polygon_shapefile(&bytes)?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let inspection = NaturalEarthLandInspection {
+        inspection_schema_version: 1,
+        source_snapshot_id: snapshot.snapshot_id,
+        source_snapshot_digest,
+        artifact_path: artifact.artifact_path.clone(),
+        artifact_hash: artifact.content_hash,
+        artifact_byte_length: artifact.byte_length,
+        shapefile_version: parsed.version,
+        declared_shape_type: parsed.shape_type,
+        bounding_box_ieee754_le_hex: parsed.bounding_box.map(|bits| format!("{bits:016x}")),
+        record_count: parsed.records,
+        polygon_record_count: parsed.polygons,
+        part_count: parsed.parts,
+        point_count: parsed.points,
+    };
+    println!("{}", serde_json::to_string(&inspection)?);
+    Ok(())
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct PolygonShapefileSummary {
+    version: u32,
+    shape_type: u32,
+    bounding_box: [u64; 4],
+    records: u64,
+    polygons: u64,
+    parts: u64,
+    points: u64,
+}
+
+fn parse_polygon_shapefile(bytes: &[u8]) -> Result<PolygonShapefileSummary> {
+    if bytes.len() < 100 {
+        bail!("shapefile is shorter than its header");
+    }
+    if be_u32(&bytes[0..4])? != 9994 {
+        bail!("unexpected shapefile code");
+    }
+    let words = usize::try_from(be_u32(&bytes[24..28])?)?;
+    if words.checked_mul(2) != Some(bytes.len()) {
+        bail!("shapefile header length disagrees with file");
+    }
+    let version = le_u32(&bytes[28..32])?;
+    if version != 1000 {
+        bail!("unsupported shapefile version {version}");
+    }
+    let shape_type = le_u32(&bytes[32..36])?;
+    if shape_type != 5 {
+        bail!("expected polygon shapefile type 5");
+    }
+    let mut bounding_box = [0_u64; 4];
+    for (index, value) in bounding_box.iter_mut().enumerate() {
+        *value = le_u64(&bytes[36 + index * 8..44 + index * 8])?;
+    }
+    let (mut offset, mut records, mut polygons, mut parts, mut points) =
+        (100_usize, 0_u64, 0_u64, 0_u64, 0_u64);
+    while offset < bytes.len() {
+        if bytes.len() - offset < 8 {
+            bail!("truncated shapefile record header");
+        }
+        let content_length = usize::try_from(be_u32(&bytes[offset + 4..offset + 8])?)?
+            .checked_mul(2)
+            .context("shapefile record length overflow")?;
+        let start = offset.checked_add(8).context("record offset overflow")?;
+        let end = start
+            .checked_add(content_length)
+            .context("record end overflow")?;
+        if end > bytes.len() {
+            bail!("truncated shapefile record body");
+        }
+        records += 1;
+        let body = &bytes[start..end];
+        if body.len() < 4 {
+            bail!("empty shapefile record");
+        }
+        match le_u32(&body[..4])? {
+            0 => {}
+            5 => {
+                if body.len() < 44 {
+                    bail!("truncated polygon record");
+                }
+                let record_parts = usize::try_from(le_u32(&body[36..40])?)?;
+                let record_points = usize::try_from(le_u32(&body[40..44])?)?;
+                let expected = 44_usize
+                    .checked_add(record_parts.checked_mul(4).context("part overflow")?)
+                    .and_then(|value| value.checked_add(record_points.checked_mul(16)?))
+                    .context("polygon record length overflow")?;
+                if expected != body.len() {
+                    bail!("polygon record length disagrees with counts");
+                }
+                polygons += 1;
+                parts += u64::try_from(record_parts)?;
+                points += u64::try_from(record_points)?;
+            }
+            _ => bail!("polygon shapefile contains an unexpected record type"),
+        }
+        offset = end;
+    }
+    Ok(PolygonShapefileSummary {
+        version,
+        shape_type,
+        bounding_box,
+        records,
+        polygons,
+        parts,
+        points,
+    })
+}
+
+fn be_u32(bytes: &[u8]) -> Result<u32> {
+    Ok(u32::from_be_bytes(
+        bytes.try_into().context("expected four bytes")?,
+    ))
+}
+fn le_u32(bytes: &[u8]) -> Result<u32> {
+    Ok(u32::from_le_bytes(
+        bytes.try_into().context("expected four bytes")?,
+    ))
+}
+fn le_u64(bytes: &[u8]) -> Result<u64> {
+    Ok(u64::from_le_bytes(
+        bytes.try_into().context("expected eight bytes")?,
+    ))
 }
 
 fn validate(bundle_path: PathBuf, configuration_path: Option<&PathBuf>) -> Result<()> {
@@ -422,5 +600,28 @@ mod tests {
         assert!(prepare_destination(&canonical_root, "redirect/source.bin").is_err());
         fs::remove_dir_all(root).expect("remove test root");
         fs::remove_dir_all(outside).expect("remove outside root");
+    }
+
+    #[test]
+    fn parses_a_null_record_in_a_polygon_shapefile() {
+        let mut bytes = vec![0_u8; 112];
+        bytes[0..4].copy_from_slice(&9994_u32.to_be_bytes());
+        bytes[24..28].copy_from_slice(&56_u32.to_be_bytes());
+        bytes[28..32].copy_from_slice(&1000_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&5_u32.to_le_bytes());
+        bytes[104..108].copy_from_slice(&2_u32.to_be_bytes());
+        let summary = parse_polygon_shapefile(&bytes).expect("valid minimal shapefile");
+        assert_eq!(summary.records, 1);
+        assert_eq!(summary.polygons, 0);
+    }
+
+    #[test]
+    fn rejects_a_header_with_a_wrong_declared_length() {
+        let mut bytes = vec![0_u8; 100];
+        bytes[0..4].copy_from_slice(&9994_u32.to_be_bytes());
+        bytes[24..28].copy_from_slice(&49_u32.to_be_bytes());
+        bytes[28..32].copy_from_slice(&1000_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&5_u32.to_le_bytes());
+        assert!(parse_polygon_shapefile(&bytes).is_err());
     }
 }
