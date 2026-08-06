@@ -64,6 +64,23 @@ It means abstractions preserve the relevant measured causal behavior and never r
 real materials or organisms with convenient fantasy equivalents. Any unsupported
 parameter is visibly marked as an assumption until an authoritative source replaces it.
 
+The canonical spatial domain is the full present-geography Earth, not a hand-selected
+biome enclosure. Global ecology may remain at a conserved coarse resolution while
+organisms and physical effects cause deterministic regional and local refinement.
+Observer attention can never activate canonical detail. Direct modern infrastructure,
+borders, written labels, and place names do not enter the agent environment; ecological
+reconstruction and unresolved physical legacies are explicit assumptions rather than
+claims of pristine or prehistoric Earth.
+
+Every person remains a durable individual at every population size. The engine may use
+documented cohort representations for appropriate plants, microbes, insects, fish, or
+fauna tiers, but it may not aggregate people because they are numerous or unobserved.
+Execution is deterministically event-scheduled and spatially partitioned. Resource
+pressure may slow wall-clock progress or pause after a committed hash boundary; it may
+not modify fertility, mortality, cognition, detail, event recording, or random outcomes.
+The project promises a correct resumable history and published capacity measurements,
+not unlimited or twenty-billion-person real-time throughput.
+
 ## 3. Cognition
 
 Every person has a lightweight deterministic brain containing needs, traits,
@@ -199,9 +216,14 @@ policy never changes what agents perceive or what causally occurs.
 
 ## 9. Deployment and secrets
 
-The initial production target is one Ubuntu server. Public HTTP traffic reaches the
-web/API origin through Cloudflare Tunnel. PostgreSQL and internal services are never
-published through the tunnel. Administrative surfaces may use Cloudflare Access.
+The initial production target is one Ubuntu server for a small population. Public HTTP
+traffic reaches the web/API origin through Cloudflare Tunnel. PostgreSQL and internal
+services are never published through the tunnel. Administrative surfaces may use
+Cloudflare Access.
+
+Additional deterministic partition workers may be added when measured simulation load
+requires them. Worker count and ownership are operational and cannot alter canonical
+ordering or state hashes.
 
 Credentials are supplied at runtime, excluded from version control, scoped to the
 least privilege possible, and documented through redacted examples.

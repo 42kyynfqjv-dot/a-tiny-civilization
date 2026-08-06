@@ -8,8 +8,10 @@ mod manifest;
 mod time;
 
 pub use configuration::{
-    SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION, WorldConfiguration, WorldConfigurationError,
-    WorldDataBundleReference,
+    CapacityExhaustionPolicy, EarthResolutionLevels, ExecutionScale, FullEarthGrid,
+    LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION, PartitionedExecution, PersonRepresentation,
+    S2Projection, SchedulerKind, SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION,
+    WorldConfiguration, WorldConfigurationError, WorldDataBundleReference, WorldGeometry,
 };
 pub use event::{
     BirthCategory, CategoryError, DeathCause, DomainEvent, EVENT_SCHEMA_VERSION, EventBatch,

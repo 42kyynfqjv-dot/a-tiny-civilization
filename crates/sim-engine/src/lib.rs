@@ -6,9 +6,10 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
     BirthCategory, CanonicalHashError, DeathCause, Digest, DomainEvent, EVENT_SCHEMA_VERSION,
-    EntityId, EventBatch, EventBatchError, EventSequence, LEGACY_EVENT_SCHEMA_VERSION,
-    OrganismRole, SequenceOverflow, SimTick, SpeciesIdentity, SpeciesIdentityError, TimeOverflow,
-    WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
+    EntityId, EventBatch, EventBatchError, EventSequence, ExecutionScale,
+    LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, SequenceOverflow, SimTick, SpeciesIdentity,
+    SpeciesIdentityError, TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId,
+    WorldManifest, WorldStatus,
 };
 
 /// Version pinned to each world so old histories are never silently reinterpreted.
@@ -153,6 +154,9 @@ impl EngineState {
         initial_organisms: Vec<InitialOrganism>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
         configuration.validate()?;
+        if matches!(&configuration.execution, ExecutionScale::Partitioned { .. }) {
+            return Err(EngineError::PartitionedExecutionNotImplemented);
+        }
         self.plan_genesis_internal(Some(configuration), initial_organisms)
     }
 
@@ -247,7 +251,7 @@ impl EngineState {
         next.validate()?;
         if let Some(configuration) = &next.configuration {
             let actual = u64::try_from(events.len()).map_err(|_| EngineError::TooManyEvents)?;
-            let maximum = u64::from(configuration.max_events_per_transition);
+            let maximum = u64::from(configuration.transition_event_limit());
             if actual > maximum {
                 return Err(EngineError::EventBudgetExceeded { actual, maximum });
             }
@@ -686,6 +690,8 @@ pub enum EngineError {
     EventBudgetExceeded { actual: u64, maximum: u64 },
     #[error("transition contains more events than the host can count")]
     TooManyEvents,
+    #[error("full-Earth genesis is blocked until deterministic partition execution is implemented")]
+    PartitionedExecutionNotImplemented,
     #[error("organism {0} already exists")]
     DuplicateOrganism(EntityId),
     #[error("organism map key {0} does not match its value")]
@@ -755,7 +761,11 @@ pub enum EngineError {
 mod tests {
     use super::*;
     use uuid::Uuid;
-    use world_domain::{SpatialGrid, WorldDataBundleReference, WorldSeed, WorldStatus};
+    use world_domain::{
+        CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
+        PersonRepresentation, S2Projection, SchedulerKind, SpatialGrid, WorldDataBundleReference,
+        WorldSeed, WorldStatus,
+    };
 
     fn manifest() -> WorldManifest {
         WorldManifest::new(
@@ -809,6 +819,46 @@ mod tests {
             10_000,
         )
         .expect("valid world configuration")
+    }
+
+    fn full_earth_configuration() -> WorldConfiguration {
+        WorldConfiguration::new_full_earth(
+            300,
+            FullEarthGrid {
+                physics_crs_epsg: 4_978,
+                catalog_crs_epsg: 4_979,
+                vertical_crs_epsg: 3_855,
+                s2_definition_url: "https://s2geometry.io/devguide/s2cell_hierarchy".to_owned(),
+                s2_library_revision: "0123456789abcdef".to_owned(),
+                s2_definition_hash: Digest::sha256(b"engine S2 fixture"),
+                s2_projection: S2Projection::Quadratic,
+                levels: EarthResolutionLevels {
+                    planetary_aggregate: 10,
+                    regional_ecology: 14,
+                    active_landscape: 18,
+                    embodied_patch: 23,
+                },
+                refinement_policy_version: 1,
+            },
+            WorldDataBundleReference::new(
+                2,
+                "full-earth-engine-test",
+                "0.1.0",
+                Digest::sha256(b"full-Earth engine data"),
+                "https://data.atinycivilization.com/full-earth-engine-test/0.1.0.json",
+                "CC-BY-4.0",
+            )
+            .expect("valid full-Earth bundle reference"),
+            PartitionedExecution {
+                scheduler_schema_version: 1,
+                scheduler: SchedulerKind::DeterministicEventQueue,
+                partition_s2_level: 10,
+                person_representation: PersonRepresentation::DurableIndividuals,
+                capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+                max_events_per_partition_transition: 10_000,
+            },
+        )
+        .expect("valid full-Earth configuration")
     }
 
     fn committed_history() -> Vec<EventBatch> {
@@ -939,7 +989,9 @@ mod tests {
         let manifest = manifest();
         let initial = EngineState::new(manifest.clone());
         let mut configuration = world_configuration();
-        configuration.max_events_per_transition = 2;
+        configuration.execution = world_domain::ExecutionScale::SingleTransition {
+            max_events_per_transition: 2,
+        };
         let genesis_events = initial
             .plan_configured_genesis(configuration, vec![initial_person(manifest.world_id)])
             .expect("valid configured genesis plan");
@@ -950,6 +1002,15 @@ mod tests {
                 actual: 3,
                 maximum: 2,
             })
+        ));
+    }
+
+    #[test]
+    fn canonical_full_earth_genesis_is_blocked_until_partition_execution_exists() {
+        let initial = EngineState::new(manifest());
+        assert!(matches!(
+            initial.plan_configured_genesis(full_earth_configuration(), Vec::new()),
+            Err(EngineError::PartitionedExecutionNotImplemented)
         ));
     }
 

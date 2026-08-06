@@ -5,7 +5,7 @@ an outcome, not a script. The public observatory will live at
 [atinycivilization.com](https://atinycivilization.com).
 
 The project models the actual materials, organisms, and ecological relationships of
-Earth while simulated
+Earth across the planet's present-day land masses and oceans, while simulated
 people begin without our scientific categories, technologies, institutions, or
 historical destination. They can only learn from perception, memory, action,
 conversation, experiment, error, and cultural transmission.
@@ -43,12 +43,26 @@ structured memory behind a Hindsight adapter, an observer API, and a public site
 
 No LLM key is required for the deterministic foundation.
 
-The first bounded scientific target is the
-[Lower Buffalo–Ozark river valley](docs/science/FIRST_BIOME.md). It is a sourced
-data-pipeline target, not a launched or previewed world; canonical genesis remains
-blocked until the complete content-addressed biome bundle passes its published gates.
+The canonical spatial domain is the full Earth. It uses coarse conserved ecology
+globally and deterministic finer detail only around causal activity; opening a map can
+never refine or change the world. Direct modern infrastructure, borders, writing, and
+place labels are excluded, while uncertain reconstruction is disclosed rather than
+presented as pristine or prehistoric Earth. See the
+[full-Earth decision](docs/adr/0010-full-earth-causal-refinement.md) and
+[scientific data plan](docs/science/FULL_EARTH.md).
+
+The [Lower Buffalo–Ozark river valley](docs/science/FIRST_BIOME.md) is the first sourced
+high-resolution conformance tile, not a world boundary or selected starting site.
+Canonical genesis remains blocked until the complete content-addressed global bundle,
+causal refinement, and deterministic partition scheduler pass their published gates.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network.
+
+Every person remains an individual even if the population becomes enormous. Load may
+slow or pause wall-clock advancement after a committed hash boundary; it may never
+change fertility, mortality, cognition, or event detail. The project publishes measured
+capacity rather than claiming unlimited real-time scale. See the
+[population-scale decision](docs/adr/0011-population-scale-and-capacity.md).
 
 ## Verify the core claim
 
@@ -95,7 +109,7 @@ loopback and are not publicly exposed.
 Inspect the stack with `make ps` or `make logs`, and stop it with `make down`.
 
 The runner deliberately does not invent a seed or silently create a world. To exercise
-durable ticks without claiming to launch the eventual real-biome world, explicitly
+durable ticks without claiming to launch the eventual full-Earth world, explicitly
 initialize the built-in non-production proof fixture:
 
 ```bash
@@ -127,7 +141,8 @@ memory-delivery worker. Subjective records are committed to PostgreSQL with thei
 source transition before the worker can send them. Stable operation and document IDs
 make lost acknowledgements safe to retry; service failure never blocks a simulation
 tick. The current proof engine does not fabricate subjective perceptions, so the queue
-remains empty until embodied perception begins in the real-biome milestone.
+remains empty until embodied perception begins in the full-Earth/reference-tile
+milestone.
 
 No LLM key is needed for retain or recall in this mode. The project will request one
 only when model-backed extraction and reflection are ready for an explicit integration

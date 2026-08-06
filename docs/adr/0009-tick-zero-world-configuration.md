@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted on 2026-08-06.
+Accepted on 2026-08-06. Its immutability and compatibility decisions remain active;
+its bounded raster is retained as schema v1 for fixtures but is superseded for the
+canonical world by [ADR 0010](0010-full-earth-causal-refinement.md).
 
 ## Context
 
@@ -29,7 +31,7 @@ URL continuing to exist or returning the same bytes.
   configured; adding the field without changing the schema marker is rejected.
 - A configured world uses event schema v2 for every later batch. Replay rejects a
   schema downgrade even when the individual event payload would be valid under v1.
-- Configuration pins:
+- Legacy configuration schema v1 pins:
   - its own schema version;
   - the positive whole-second duration represented by every simulation tick;
   - an EPSG coordinate reference, integer-millimetre raster origin and cell size,
@@ -37,13 +39,18 @@ URL continuing to exist or returning the same bytes.
   - a world-data bundle schema, identifier, version, SHA-256 content digest, HTTPS
     publication URL, and license expression;
   - the maximum ordered events allowed in any atomic transition, including genesis.
+- Canonical configuration schema v2 instead pins the full-Earth S2 hierarchy, physical
+  reference frames, causal resolution tiers, refinement policy, deterministic
+  partition scheduler, durable-individual person representation, per-partition event
+  budget, and pause-at-committed-boundary capacity policy.
 - Before configured genesis is committed, the application layer must have the exact
   bundle bytes locally and verify their SHA-256 digest. The pure engine never fetches
   a remote source during live execution or replay.
 - The normalized bundle retains every upstream source identifier, retrieval/version
   metadata, units, uncertainty, transformation, license, and assumption. Its content
   hash covers those records as well as engine parameters.
-- The raster is an environment data structure, not an agent concept. Organisms may
+- Any raster or global cell hierarchy is an environment data structure, not an agent
+  concept. Organisms may
   later occupy fixed-point positions within it, but they are never told a cell label,
   EPSG code, species name, material name, or modern map category.
 - Every canonical tick is executed. Wall-clock scheduling may make ticks arrive
@@ -67,3 +74,5 @@ URL continuing to exist or returning the same bytes.
   organism's conceptual vocabulary.
 - Event-volume limits become visible world facts rather than host-dependent failure
   behavior. A transition exceeding its configured limit fails before it can commit.
+  For schema v2 the limit is per deterministic partition, never a global population
+  cap. See [ADR 0011](0011-population-scale-and-capacity.md).

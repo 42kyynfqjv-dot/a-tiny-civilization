@@ -1,15 +1,15 @@
-# First biome: Lower Buffalo–Ozark river valley
+# Reference tile: Lower Buffalo–Ozark river valley
 
 ## Status
 
-Selected as the first data-pipeline and embodied-simulation target. This is **not** an
-authorization to create the canonical public world. Exact source snapshots,
-normalized parameters, licenses, assumptions, and the unpreviewed seed must pass the
-gates below before genesis.
+Selected as the first high-resolution data-pipeline and embodied-simulation regression
+tile. It is **not** the canonical world's extent, a preferred starting location, or an
+Arkansas-shaped ecological template for other regions. The public world covers the
+full Earth under [ADR 0010](../adr/0010-full-earth-causal-refinement.md).
 
 ## Why this reference domain
 
-The lower Buffalo River area in northern Arkansas provides a bounded but varied
+The lower Buffalo River area in northern Arkansas provides a compact but varied
 temperate ecology without requiring extreme-winter survival in the first ruleset.
 The National Park Service documents long hot summers, short mild winters, a roughly
 200-day growing season, and lower reaches that usually retain flow year-round. It also
@@ -19,7 +19,9 @@ bottoms, gravel and sand.
 The same watershed contains upland oak-hickory forest, riparian/floodplain forest,
 glades, barrens, and native river-cane thickets. These adjacent habitats create real
 differences in water, shelter, food, movement, fire, and material affordances without
-requiring a continent-scale model.
+requiring every global ingestion problem to be debugged simultaneously. That makes it
+useful for repeatable hydrology, geology, ecology, perception, and agent tests—not for
+limiting where history can go.
 
 Primary orientation sources:
 
@@ -29,30 +31,33 @@ Primary orientation sources:
 - [NPS mammal inventory](https://www.nps.gov/buff/learn/nature/mammals.htm)
 - [NPS fish inventory](https://www.nps.gov/buff/planyourvisit/fishing.htm)
 
-## Model extent
+## Reference window
 
-The proposed first normalized world is 8.192 by 8.192 kilometres represented by a
-256 by 256 environmental raster with 32-metre source cells. Organism locations and
-interactions are not restricted to the cell centre; later rules use fixed-point local
-coordinates.
+The regression window is approximately 8.192 by 8.192 kilometres. Legacy schema-v1
+pipeline tests may represent it as a 256 by 256 raster with 32-metre source cells.
+Canonical data is re-addressed through the pinned S2 hierarchy and uses WGS 84
+Earth-fixed/local coordinates for physical interactions. Neither representation
+creates a wall at the window boundary.
 
 The source domain is the lower-river district toward the White River confluence. The
-normalized world will retain measured elevation, slope, drainage, soil, climate, and
+normalized tile will retain measured elevation, slope, drainage, soil, climate, and
 habitat distributions, but it will not expose modern roads, buildings, parcels,
 place names, protected cave locations, or archaeological locations. If geometry is
 rotated, warped, or procedurally assembled to remove those features, that
 transformation and its seed are first-class assumptions in the bundle.
 
-This is a present-climate ecological counterfactual, not a depiction of an empty
+This fixture is a present-climate ecological counterfactual, not a depiction of an empty
 wilderness, a prehistoric date, or a reconstruction of any Indigenous people. The
 simulation models generic embodied agents learning inside an ecology; it does not
 appropriate a real community's language, practices, artifacts, or history.
 
-## Initial actual-world roster
+## Reference-tile actual-world roster
 
-The first bundle stays deliberately small. Each named entry is an actual Earth taxon
-or material. Stable taxonomic identifiers will be resolved and validated during
-ingestion rather than copied into this decision document by hand.
+The fixture roster stays deliberately small. Each named entry is an actual Earth taxon
+or material used to exercise the global catalog and local interaction rules. It is not
+the complete global roster and does not imply these organisms will be present at
+genesis. Stable taxonomic identifiers will be resolved and validated during ingestion
+rather than copied into this decision document by hand.
 
 Candidate plants:
 
@@ -109,9 +114,9 @@ colour, temperature, odour, taste, hardness, fracture response, moisture, flexib
 combustion behavior, energy effect, toxicity symptoms—not modern labels such as
 `edible`, `tool`, `medicine`, `prey`, or `building material`.
 
-## Canonical-genesis gates
+## Reference-tile completion gates
 
-Before the first public seed is chosen:
+Before this tile can support global-engine conformance tests:
 
 - every entity has a stable identity, citation, units, license, and assumption status;
 - every input artifact is locally archived and content-hashed;
@@ -120,8 +125,9 @@ Before the first public seed is chosen:
 - the identity tier of every population is fixed and event-volume tested;
 - perception tests prove that privileged scientific and use labels cannot cross into
   agent inputs;
-- a configured genesis and at least one simulated year replay to identical hashes on
-  two clean runs;
+- the same local causal history produces identical hashes through dense execution and
+  the full-Earth partition/event scheduler;
 - the observer projection can explain every displayed claim through source data or
   canonical events;
-- the canonical seed procedure is published before an unpreviewed seed is generated.
+- global genesis eligibility never treats this fixture as preferred, and the tile can
+  be selected only if the published unpreviewed procedure naturally chooses it.

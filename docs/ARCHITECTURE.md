@@ -113,15 +113,25 @@ and licenses remain separate from ruleset-specific normalized parameters. The en
 may approximate a process at an appropriate scale, but every approximation is explicit
 and testable; it must not silently substitute an invented material, animal, or ecology.
 
-A configured world commits its causal time scale, integer spatial grid, and the
-SHA-256 digest of its complete normalized scientific bundle at tick zero. The
-application verifies locally archived bundle bytes before genesis; live execution and
+A configured public world commits its causal time scale, full-Earth S2 address
+hierarchy, WGS 84/EGM2008 physical frames, deterministic refinement policy,
+partition scheduler semantics, and the SHA-256 digest of its complete normalized
+scientific bundle at tick zero. The application verifies locally archived bundle bytes
+before genesis; live execution and
 replay never fetch scientific inputs from the network. See
-[ADR 0009](adr/0009-tick-zero-world-configuration.md) and the
-[first-biome source plan](science/FIRST_BIOME.md). The
-[bundle release contract](science/DATA_BUNDLES.md) rejects incomplete provenance,
-floating-point parameters, dangling assumptions, mismatched grids, and noncanonical
+[ADR 0009](adr/0009-tick-zero-world-configuration.md),
+[ADR 0010](adr/0010-full-earth-causal-refinement.md), and the
+[full-Earth scientific data plan](science/FULL_EARTH.md). The
+[Lower Buffalo reference tile](science/FIRST_BIOME.md) exercises that global contract.
+The [bundle release contract](science/DATA_BUNDLES.md) rejects incomplete provenance,
+floating-point parameters, dangling assumptions, mismatched coverage, and noncanonical
 bytes before configured genesis.
+
+The entire planet has canonical coarse ecological state. Regional, landscape, and
+embodied detail refines only when causal activity approaches it. Refinement conserves
+parent totals, is stream-seeded and order-independent, and cannot be triggered by an
+observer request. Fine simulation geometry is always marked as measured, transformed,
+or inferred; resolution is never presented as evidence quality.
 
 ## Deployment boundary
 
@@ -133,6 +143,15 @@ be included before production configuration is required.
 ## Scaling posture
 
 Do not introduce Redis, Kafka, Kubernetes, or independent microservices before
-measurement demonstrates a need. The first scaling metrics are event bytes per
-simulated day, replay duration, snapshot size, projection lag, memory request rate,
-and cognition cost.
+measurement demonstrates a need. The single-process engine remains the deterministic
+reference implementation, but canonical full-Earth genesis is blocked until the same
+history can execute through deterministic S2 partitions. Every person remains an
+individual; infrastructure pressure may slow or pause wall-clock advancement at a
+committed hash boundary but cannot change causal rules or discard lives. See
+[ADR 0011](adr/0011-population-scale-and-capacity.md).
+
+The first scaling metrics are active individuals, scheduled transitions, cross-cell
+messages, event bytes per simulated day, replay duration, snapshot size, projection
+lag, memory request rate, and cognition cost. Published capacity reports include the
+hardware and active fraction; the project does not claim unlimited or twenty-billion-
+person real-time throughput.

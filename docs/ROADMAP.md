@@ -13,6 +13,10 @@ These are write-side commitments and must be active before the first durable wor
 - stable identity for every individually modeled person and animal, including real
   species identity, birth, death, lineage, and deterministic event ordering;
 - a versioned identity tier for species or life stages modeled as cohorts;
+- full-Earth coverage, conserved off-region state, causal refinement, and deterministic
+  partition/event scheduling;
+- durable individual representation for every person, with resource exhaustion able
+  only to pause after a committed boundary;
 - sourced real-world entities and an explicit assumption ledger;
 - label-free perceptions and primitive actions rather than invention names;
 - exact external cognition and memory inputs, including timeout or absence;
@@ -62,24 +66,32 @@ rebuilt without changing a world.
 The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction transition,
 authorized successor operation, and tamper detection are implemented and covered by
 the full repository checks. Canonical world initialization remains intentionally
-blocked on the first real-biome bundle; the available initialization command is
-visibly non-production and requires an explicit world identifier and seed.
+blocked on the full-Earth scientific bundle and partition scheduler; the available
+initialization command is visibly non-production and requires an explicit world
+identifier and seed.
 
-### 2. First real biome and embodied lives
+### 2. Full Earth, reference tile, and embodied lives
 
-- select a bounded, documented real biome and publish its source/assumption ledger;
+- pin full present-geography Earth coverage, source/assumption/license ledgers, and
+  content-addressed global layer roots;
+- implement deterministic S2 partition scheduling, conserved causal refinement, and
+  capacity stop/resume equivalence;
+- complete Lower Buffalo–Ozark as a high-resolution conformance tile, not a world edge;
 - implement space/time scale, energetics, mortality, perception, primitive action,
   communication, heredity, and versioned fauna identity tiers;
 - demonstrate that agents receive properties and effects, never scientific labels.
 
-The Lower Buffalo–Ozark river valley is selected as the bounded data-pipeline target.
-Event schema v2 now pins immutable tick duration, integer spatial geometry,
-content-addressed scientific inputs, and transition volume at configured genesis while
-leaving published v1 proof hashes unchanged. The scientific bundle schema and offline
-release validator now enforce canonical bytes, source/entity/evidence integrity,
-fixed-decimal parameters, required ecological layers, and configuration matching.
-Archiving and normalizing the actual Lower Buffalo source data is the next checkpoint;
-no canonical seed has been selected.
+Configuration schema v2 now defines full-Earth S2 addressing, WGS 84/EGM2008 physical
+frames, four causal resolution tiers, deterministic event partitions, durable
+individual people, and pause-at-committed-boundary capacity behavior. Scientific bundle
+schema v2 requires content-addressed global climate, elevation, bathymetry, coastline,
+habitat, hydrography, and soil roots plus an explicit counterfactual-baseline policy.
+Legacy bounded schema-v1 bytes remain supported. The current engine deliberately blocks
+full-Earth genesis until partition execution exists. No canonical seed has been
+selected.
+
+The next checkpoint implements tile-tree traversal and the partition scheduler's
+single-worker reference path, then archives the first exact global source snapshots.
 
 ### 3. Situated memory and bounded cognition
 
@@ -130,3 +142,5 @@ The first public vertical slice is done only when a fresh clone can:
    observatory;
 9. prove that observer, supporter, payment, and remote-memory availability cannot
    affect a canonical tick.
+10. run the same local history through dense and partitioned scheduling to identical
+    bytes, and stop/resume a capacity boundary without changing them.

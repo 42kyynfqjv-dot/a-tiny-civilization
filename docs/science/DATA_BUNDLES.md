@@ -5,14 +5,14 @@ more worlds. It is not a design note, a loose folder of downloads, or an instruc
 to launch a world. Canonical genesis is allowed only when the release validator and
 its matching `WorldConfiguration` both pass.
 
-## Schema-v1 release requirements
+## Shared release requirements
 
 Every bundle contains:
 
 - its schema, stable identifier, numeric semantic version, title, and aggregate
   license expression;
 - a named and described reference domain with source links;
-- the exact integer spatial grid also committed in world configuration;
+- the exact coverage definition also committed in world configuration;
 - a versioned normalization pipeline, source revision, and executable/source digest;
 - source records with publisher, HTTPS URL, version, retrieval date, license, byte
   length, safe relative path, media type, and SHA-256 digest of the retained artifact;
@@ -20,9 +20,25 @@ Every bundle contains:
 - exact fixed-decimal, categorical, or Boolean normalized parameters;
 - a provenance record for every parameter;
 - every engineering assumption, cited by the parameters it affects;
-- content-addressed climate, elevation, habitat, hydrography, and soil layers whose
-  shapes match the grid, whose fields declare units, and whose relative files are
-  present and hash correctly.
+- content-addressed scientific layers whose fields declare units and whose release
+  roots are present and hash correctly.
+
+Bounded schema v1 is retained for development fixtures and published compatibility.
+It requires one integer raster and climate, elevation, habitat, hydrography, and soil
+layers with matching dimensions.
+
+Canonical schema v2 is full-Earth only. It requires the pinned S2 hierarchy and
+WGS 84/EGM2008 physical frames plus climate, elevation, bathymetry, coastline,
+habitat, hydrography, and soil layer families. Each layer points to a
+content-addressed tile-tree root with declared S2 level coverage and leaf count.
+Traversed child indexes and tiles are verified against the path from that root; a
+fine simulation level never implies that its source was measured at that resolution.
+
+Schema v2 also records a manifest cutoff date, explicitly per-source epoch composite,
+mean-sea-level definition, direct-human-feature exclusion/inference policy, and
+sensitive-location policy. A source retrieved after the manifest cutoff is rejected.
+The release is a present-geography counterfactual biosphere, not a synchronized modern
+photograph or a reconstructed prehistoric Earth.
 
 Vectors use ascending byte order and contain no duplicate identifiers. Parameter
 values cannot contain floating-point numbers. Decimal quantities use integer bounds,
@@ -56,9 +72,10 @@ scientific implementation that does not exist.
 Release JSON uses the compact field order emitted by the Rust schema. The validator
 parses, validates, re-encodes, and requires byte equality. Whitespace-only or key-order
 variants are rejected even when they represent the same generic JSON value. The
-SHA-256 digest therefore identifies one exact portable manifest. That manifest forms
-a Merkle-style release root: it carries the path, length, and SHA-256 digest of every
-retained source snapshot and normalized layer.
+SHA-256 digest therefore identifies one exact portable manifest. A schema-v1 manifest
+carries every retained source and normalized raster directly. A schema-v2 manifest
+carries retained source records plus normalized tile-tree roots; hashes are checked
+again as each branch or leaf is traversed.
 
 Validate a release with:
 
@@ -66,11 +83,13 @@ Validate a release with:
 cargo run --locked -p civilization-data -- validate path/to/bundle.json
 ```
 
-The command resolves artifact paths relative to the manifest, rejects path traversal,
-reads every artifact, and checks its exact byte length and digest. It does not report a
-release as valid when only the JSON manifest is available.
+The command resolves root artifact paths relative to the manifest, rejects path
+traversal, reads every declared source and layer-root artifact, and checks its exact
+byte length and digest. It does not report a release as valid when only the JSON
+manifest is available. Schema-v2 child traversal is a separate materialization gate;
+the root hash prevents an unrecorded child from entering history.
 
-Also prove that schema, bundle identity/version, license, spatial grid, and content
+Also prove that schema, bundle identity/version, license, coverage geometry, and content
 digest match a proposed tick-zero configuration:
 
 ```bash
@@ -85,7 +104,9 @@ artifact and digest.
 
 ## Current state
 
-The schema, pure validator, CLI, and adversarial unit tests are implemented. No Lower
-Buffalo release bundle is claimed yet. The next data work is to archive and hash the
-specific authoritative source snapshots, resolve stable identities for the approved
-roster, and normalize measured parameters without inventing placeholder values.
+The schema-v1 compatibility path, schema-v2 full-Earth contract, pure validator, CLI,
+and adversarial unit tests are implemented. No global scientific release or canonical
+seed is claimed yet. Lower Buffalo is now only the first high-resolution conformance
+tile. The next data work is to implement and verify tile-tree traversal, archive the
+first global source snapshots and exact licenses, build planet-level layers, and then
+normalize the reference tile without inventing placeholder values.

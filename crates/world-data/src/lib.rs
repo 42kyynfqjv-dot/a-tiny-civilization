@@ -6,9 +6,10 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
-use world_domain::{Digest, SpatialGrid, WorldConfiguration};
+use world_domain::{Digest, FullEarthGrid, SpatialGrid, WorldConfiguration, WorldGeometry};
 
-pub const WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 1;
+pub const WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 2;
 const MAX_DECIMAL_PLACES: u8 = 9;
 const FORBIDDEN_AFFORDANCE_CODES: &[&str] = &[
     "building",
@@ -32,13 +33,56 @@ pub struct WorldDataBundle {
     pub title: String,
     pub license_expression: String,
     pub reference_domain: ReferenceDomain,
-    pub spatial_grid: SpatialGrid,
+    #[serde(flatten)]
+    pub coverage: WorldDataCoverage,
     pub normalization: NormalizationRecord,
     pub sources: Vec<SourceRecord>,
     pub assumptions: Vec<AssumptionRecord>,
     pub entities: Vec<CatalogEntity>,
     pub parameters: Vec<ParameterRecord>,
     pub layers: Vec<DataLayer>,
+}
+
+/// Spatial coverage encoded without changing legacy schema-v1 JSON field names.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum WorldDataCoverage {
+    BoundedRaster {
+        spatial_grid: SpatialGrid,
+    },
+    FullEarth {
+        full_earth_grid: FullEarthGrid,
+        earth_baseline: EarthBaseline,
+    },
+}
+
+/// The public world uses present physical geography plus a documented counterfactual
+/// biosphere. Source epochs remain explicit; this is not a synchronized historical Earth.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct EarthBaseline {
+    pub manifest_cutoff_date: NaiveDate,
+    pub source_epoch_policy: SourceEpochPolicy,
+    pub human_feature_policy: HumanFeaturePolicy,
+    pub sensitive_location_policy: SensitiveLocationPolicy,
+    pub sea_level_definition: String,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SourceEpochPolicy {
+    PerSourceEpochComposite,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HumanFeaturePolicy {
+    ExcludeDirectFeaturesAndFlagInferences,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SensitiveLocationPolicy {
+    OmitOrGeneralize,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -154,7 +198,9 @@ pub struct ScaledRange {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DataLayerKind {
+    Bathymetry,
     Climate,
+    Coastline,
     Elevation,
     Habitat,
     Hydrography,
@@ -162,8 +208,18 @@ pub enum DataLayerKind {
 }
 
 impl DataLayerKind {
-    const REQUIRED: [Self; 5] = [
+    const REQUIRED_BOUNDED: [Self; 5] = [
         Self::Climate,
+        Self::Elevation,
+        Self::Habitat,
+        Self::Hydrography,
+        Self::Soil,
+    ];
+
+    const REQUIRED_FULL_EARTH: [Self; 7] = [
+        Self::Bathymetry,
+        Self::Climate,
+        Self::Coastline,
         Self::Elevation,
         Self::Habitat,
         Self::Hydrography,
@@ -181,16 +237,44 @@ pub struct FieldUnit {
 pub struct DataLayer {
     pub layer_id: String,
     pub kind: DataLayerKind,
-    pub artifact_path: String,
-    pub media_type: String,
-    pub width_cells: u32,
-    pub height_cells: u32,
-    pub content_hash: Digest,
-    #[serde(with = "u64_decimal")]
-    pub byte_length: u64,
+    #[serde(flatten)]
+    pub storage: DataLayerStorage,
     pub units: Vec<FieldUnit>,
     pub source_ids: Vec<String>,
     pub transformation: String,
+}
+
+/// A bounded release stores one raster. A full-Earth release stores a content-addressed
+/// tile-tree root, whose child indexes and leaves are verified when traversed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum DataLayerStorage {
+    Raster {
+        artifact_path: String,
+        media_type: String,
+        width_cells: u32,
+        height_cells: u32,
+        content_hash: Digest,
+        #[serde(with = "u64_decimal")]
+        byte_length: u64,
+    },
+    FullEarthTileTree {
+        tile_tree: TileTreeReference,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TileTreeReference {
+    pub index_schema_version: u16,
+    pub root_index_path: String,
+    pub root_index_media_type: String,
+    pub root_index_hash: Digest,
+    #[serde(with = "u64_decimal")]
+    pub root_index_byte_length: u64,
+    #[serde(with = "u64_decimal")]
+    pub leaf_tile_count: u64,
+    pub minimum_s2_level: u8,
+    pub maximum_s2_level: u8,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -209,16 +293,26 @@ pub struct BundleArtifact<'a> {
 
 impl WorldDataBundle {
     pub fn validate(&self) -> Result<(), BundleError> {
-        if self.bundle_schema_version != WORLD_DATA_BUNDLE_SCHEMA_VERSION {
+        if !matches!(
+            self.bundle_schema_version,
+            LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION | WORLD_DATA_BUNDLE_SCHEMA_VERSION
+        ) {
             return Err(BundleError::UnsupportedSchema(self.bundle_schema_version));
+        }
+        match (&self.coverage, self.bundle_schema_version) {
+            (WorldDataCoverage::BoundedRaster { .. }, LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION)
+            | (WorldDataCoverage::FullEarth { .. }, WORLD_DATA_BUNDLE_SCHEMA_VERSION) => {}
+            _ => {
+                return Err(BundleError::CoverageSchemaMismatch {
+                    schema: self.bundle_schema_version,
+                });
+            }
         }
         validate_slug(&self.bundle_id, "bundle_id")?;
         validate_semver(&self.bundle_version)?;
         require_text(&self.title, "title")?;
         require_text(&self.license_expression, "license_expression")?;
-        self.spatial_grid
-            .validate()
-            .map_err(|error| BundleError::InvalidSpatialGrid(error.to_string()))?;
+        self.coverage.validate()?;
         self.normalization.validate()?;
 
         require_nonempty(&self.sources, "sources")?;
@@ -285,6 +379,14 @@ impl WorldDataBundle {
         for source in &self.sources {
             source.validate()?;
         }
+        if let WorldDataCoverage::FullEarth { earth_baseline, .. } = &self.coverage
+            && self
+                .sources
+                .iter()
+                .any(|source| source.retrieved_on > earth_baseline.manifest_cutoff_date)
+        {
+            return Err(BundleError::SourceAfterManifestCutoff);
+        }
         for assumption in &self.assumptions {
             assumption.validate()?;
         }
@@ -327,12 +429,16 @@ impl WorldDataBundle {
 
         let mut layer_kinds = BTreeSet::new();
         for layer in &self.layers {
-            layer.validate(&source_ids, &self.spatial_grid)?;
+            layer.validate(&source_ids, &self.coverage)?;
             layer_kinds.insert(layer.kind);
         }
-        for required in DataLayerKind::REQUIRED {
-            if !layer_kinds.contains(&required) {
-                return Err(BundleError::MissingRequiredLayer(required));
+        let required_layers: &[DataLayerKind] = match &self.coverage {
+            WorldDataCoverage::BoundedRaster { .. } => &DataLayerKind::REQUIRED_BOUNDED,
+            WorldDataCoverage::FullEarth { .. } => &DataLayerKind::REQUIRED_FULL_EARTH,
+        };
+        for required in required_layers {
+            if !layer_kinds.contains(required) {
+                return Err(BundleError::MissingRequiredLayer(*required));
             }
         }
 
@@ -395,8 +501,28 @@ impl WorldDataBundle {
         if reference.license_expression != self.license_expression {
             return Err(BundleError::ConfigurationMismatch("license_expression"));
         }
-        if configuration.spatial_grid != self.spatial_grid {
-            return Err(BundleError::ConfigurationMismatch("spatial_grid"));
+        let coverage_matches = match (&self.coverage, &configuration.geometry) {
+            (
+                WorldDataCoverage::BoundedRaster {
+                    spatial_grid: bundle,
+                },
+                WorldGeometry::BoundedRaster {
+                    spatial_grid: configured,
+                },
+            ) => bundle == configured,
+            (
+                WorldDataCoverage::FullEarth {
+                    full_earth_grid: bundle,
+                    ..
+                },
+                WorldGeometry::FullEarth {
+                    full_earth_grid: configured,
+                },
+            ) => bundle == configured,
+            _ => false,
+        };
+        if !coverage_matches {
+            return Err(BundleError::ConfigurationMismatch("coverage"));
         }
         if reference.content_hash != self.content_digest()? {
             return Err(BundleError::ConfigurationMismatch("content_hash"));
@@ -413,13 +539,36 @@ impl WorldDataBundle {
                 content_hash: source.artifact_hash,
                 byte_length: source.artifact_byte_length,
             })
-            .chain(self.layers.iter().map(|layer| BundleArtifact {
-                kind: BundleArtifactKind::NormalizedLayer,
-                relative_path: &layer.artifact_path,
-                content_hash: layer.content_hash,
-                byte_length: layer.byte_length,
-            }))
+            .chain(self.layers.iter().map(DataLayer::artifact))
             .collect()
+    }
+}
+
+impl WorldDataCoverage {
+    fn validate(&self) -> Result<(), BundleError> {
+        match self {
+            Self::BoundedRaster { spatial_grid } => spatial_grid
+                .validate()
+                .map_err(|error| BundleError::InvalidSpatialGrid(error.to_string())),
+            Self::FullEarth {
+                full_earth_grid,
+                earth_baseline,
+            } => {
+                full_earth_grid
+                    .validate()
+                    .map_err(|error| BundleError::InvalidFullEarthGrid(error.to_string()))?;
+                earth_baseline.validate()
+            }
+        }
+    }
+}
+
+impl EarthBaseline {
+    fn validate(&self) -> Result<(), BundleError> {
+        require_text(
+            &self.sea_level_definition,
+            "earth_baseline.sea_level_definition",
+        )
     }
 }
 
@@ -621,19 +770,13 @@ impl EvidenceRecord {
 }
 
 impl DataLayer {
-    fn validate(&self, source_ids: &BTreeSet<&str>, grid: &SpatialGrid) -> Result<(), BundleError> {
+    fn validate(
+        &self,
+        source_ids: &BTreeSet<&str>,
+        coverage: &WorldDataCoverage,
+    ) -> Result<(), BundleError> {
         validate_slug(&self.layer_id, "layer_id")?;
-        validate_artifact_path(&self.artifact_path, "layer.artifact_path")?;
-        validate_media_type(&self.media_type)?;
-        if self.width_cells != grid.width_cells || self.height_cells != grid.height_cells {
-            return Err(BundleError::LayerShapeMismatch(self.layer_id.clone()));
-        }
-        if self.content_hash == Digest::ZERO {
-            return Err(BundleError::ZeroDigest("layer.content_hash"));
-        }
-        if self.byte_length == 0 {
-            return Err(BundleError::ZeroByteLength("layer.byte_length"));
-        }
+        self.storage.validate(&self.layer_id, coverage)?;
         require_nonempty(&self.units, "layer.units")?;
         validate_sorted_unique(
             self.units.iter().map(|unit| unit.field.as_str()),
@@ -646,6 +789,99 @@ impl DataLayer {
         require_nonempty(&self.source_ids, "layer.source_ids")?;
         validate_references(&self.source_ids, source_ids, "layer.source_ids")?;
         require_text(&self.transformation, "layer.transformation")
+    }
+
+    fn artifact(&self) -> BundleArtifact<'_> {
+        match &self.storage {
+            DataLayerStorage::Raster {
+                artifact_path,
+                content_hash,
+                byte_length,
+                ..
+            } => BundleArtifact {
+                kind: BundleArtifactKind::NormalizedLayer,
+                relative_path: artifact_path,
+                content_hash: *content_hash,
+                byte_length: *byte_length,
+            },
+            DataLayerStorage::FullEarthTileTree { tile_tree } => BundleArtifact {
+                kind: BundleArtifactKind::NormalizedLayer,
+                relative_path: &tile_tree.root_index_path,
+                content_hash: tile_tree.root_index_hash,
+                byte_length: tile_tree.root_index_byte_length,
+            },
+        }
+    }
+}
+
+impl DataLayerStorage {
+    fn validate(&self, layer_id: &str, coverage: &WorldDataCoverage) -> Result<(), BundleError> {
+        match (self, coverage) {
+            (
+                Self::Raster {
+                    artifact_path,
+                    media_type,
+                    width_cells,
+                    height_cells,
+                    content_hash,
+                    byte_length,
+                },
+                WorldDataCoverage::BoundedRaster { spatial_grid },
+            ) => {
+                validate_artifact_path(artifact_path, "layer.artifact_path")?;
+                validate_media_type(media_type)?;
+                if *width_cells != spatial_grid.width_cells
+                    || *height_cells != spatial_grid.height_cells
+                {
+                    return Err(BundleError::LayerShapeMismatch(layer_id.to_owned()));
+                }
+                if *content_hash == Digest::ZERO {
+                    return Err(BundleError::ZeroDigest("layer.content_hash"));
+                }
+                if *byte_length == 0 {
+                    return Err(BundleError::ZeroByteLength("layer.byte_length"));
+                }
+                Ok(())
+            }
+            (
+                Self::FullEarthTileTree { tile_tree },
+                WorldDataCoverage::FullEarth {
+                    full_earth_grid, ..
+                },
+            ) => tile_tree.validate(full_earth_grid),
+            _ => Err(BundleError::LayerStorageCoverageMismatch(
+                layer_id.to_owned(),
+            )),
+        }
+    }
+}
+
+impl TileTreeReference {
+    fn validate(&self, grid: &FullEarthGrid) -> Result<(), BundleError> {
+        if self.index_schema_version == 0 {
+            return Err(BundleError::ZeroTileIndexSchemaVersion);
+        }
+        validate_artifact_path(&self.root_index_path, "tile_tree.root_index_path")?;
+        validate_media_type(&self.root_index_media_type)?;
+        if self.root_index_hash == Digest::ZERO {
+            return Err(BundleError::ZeroDigest("tile_tree.root_index_hash"));
+        }
+        if self.root_index_byte_length == 0 {
+            return Err(BundleError::ZeroByteLength(
+                "tile_tree.root_index_byte_length",
+            ));
+        }
+        if self.leaf_tile_count == 0 {
+            return Err(BundleError::ZeroTileCount);
+        }
+        if self.minimum_s2_level > self.maximum_s2_level
+            || self.minimum_s2_level > grid.levels.planetary_aggregate
+            || self.maximum_s2_level < grid.levels.planetary_aggregate
+            || self.maximum_s2_level > grid.levels.embodied_patch
+        {
+            return Err(BundleError::InvalidTileLevelRange);
+        }
+        Ok(())
     }
 }
 
@@ -848,6 +1084,8 @@ mod i64_decimal {
 pub enum BundleError {
     #[error("world-data bundle schema version {0} is unsupported")]
     UnsupportedSchema(u16),
+    #[error("world-data bundle schema {schema} does not match its coverage shape")]
+    CoverageSchemaMismatch { schema: u16 },
     #[error("{field} must be a lowercase ASCII slug, found {value:?}")]
     InvalidSlug { field: &'static str, value: String },
     #[error("bundle version must be numeric major.minor.patch, found {0:?}")]
@@ -874,6 +1112,10 @@ pub enum BundleError {
     ZeroByteLength(&'static str),
     #[error("invalid spatial grid: {0}")]
     InvalidSpatialGrid(String),
+    #[error("invalid full-Earth grid: {0}")]
+    InvalidFullEarthGrid(String),
+    #[error("a source retrieval date falls after the full-Earth manifest cutoff")]
+    SourceAfterManifestCutoff,
     #[error("entity {0:?} has no normalized parameters")]
     EntityWithoutParameters(String),
     #[error("assumption {0:?} is never cited by parameter evidence")]
@@ -895,6 +1137,14 @@ pub enum BundleError {
     MissingRequiredLayer(DataLayerKind),
     #[error("layer {0:?} dimensions do not match the bundle grid")]
     LayerShapeMismatch(String),
+    #[error("layer {0:?} storage does not match the bundle coverage")]
+    LayerStorageCoverageMismatch(String),
+    #[error("tile-tree index schema version must be greater than zero")]
+    ZeroTileIndexSchemaVersion,
+    #[error("tile-tree leaf count must be greater than zero")]
+    ZeroTileCount,
+    #[error("tile-tree S2 levels must include the planetary tier and not exceed the patch tier")]
+    InvalidTileLevelRange,
     #[error("invalid media type {0:?}")]
     InvalidMediaType(String),
     #[error("{field} must be a safe portable relative path, found {value:?}")]
@@ -930,7 +1180,11 @@ pub enum BundleError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use world_domain::{WorldConfiguration, WorldDataBundleReference};
+    use world_domain::{
+        CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
+        PersonRepresentation, S2Projection, SchedulerKind, WorldConfiguration,
+        WorldDataBundleReference, WorldGeometry,
+    };
 
     const SOURCE_ARTIFACT: &[u8] = b"source artifact fixture";
 
@@ -966,12 +1220,14 @@ mod tests {
         DataLayer {
             layer_id: id.to_owned(),
             kind,
-            artifact_path: format!("layers/{id}.grid"),
-            media_type: "application/vnd.atinycivilization.grid+i32".to_owned(),
-            width_cells: 256,
-            height_cells: 256,
-            content_hash: Digest::from_bytes([salt; 32]),
-            byte_length: 262_144,
+            storage: DataLayerStorage::Raster {
+                artifact_path: format!("layers/{id}.grid"),
+                media_type: "application/vnd.atinycivilization.grid+i32".to_owned(),
+                width_cells: 256,
+                height_cells: 256,
+                content_hash: Digest::from_bytes([salt; 32]),
+                byte_length: 262_144,
+            },
             units: vec![FieldUnit {
                 field: "value".to_owned(),
                 unit: "1".to_owned(),
@@ -983,7 +1239,7 @@ mod tests {
 
     fn bundle() -> WorldDataBundle {
         WorldDataBundle {
-            bundle_schema_version: WORLD_DATA_BUNDLE_SCHEMA_VERSION,
+            bundle_schema_version: LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION,
             bundle_id: "bundle-schema-test".to_owned(),
             bundle_version: "0.1.0".to_owned(),
             title: "World-data schema test fixture".to_owned(),
@@ -994,7 +1250,9 @@ mod tests {
                     .to_owned(),
                 source_ids: vec!["usgs-water-reference".to_owned()],
             },
-            spatial_grid: grid(),
+            coverage: WorldDataCoverage::BoundedRaster {
+                spatial_grid: grid(),
+            },
             normalization: NormalizationRecord {
                 pipeline_id: "bundle-schema-test".to_owned(),
                 pipeline_version: "0.1.0".to_owned(),
@@ -1049,7 +1307,7 @@ mod tests {
             300,
             grid(),
             WorldDataBundleReference::new(
-                WORLD_DATA_BUNDLE_SCHEMA_VERSION,
+                bundle.bundle_schema_version,
                 bundle.bundle_id.clone(),
                 bundle.bundle_version.clone(),
                 digest,
@@ -1060,6 +1318,109 @@ mod tests {
             10_000,
         )
         .expect("valid configuration")
+    }
+
+    fn full_earth_grid() -> FullEarthGrid {
+        FullEarthGrid {
+            physics_crs_epsg: 4_978,
+            catalog_crs_epsg: 4_979,
+            vertical_crs_epsg: 3_855,
+            s2_definition_url: "https://s2geometry.io/devguide/s2cell_hierarchy".to_owned(),
+            s2_library_revision: "0123456789abcdef".to_owned(),
+            s2_definition_hash: Digest::sha256(b"world-data S2 fixture"),
+            s2_projection: S2Projection::Quadratic,
+            levels: EarthResolutionLevels {
+                planetary_aggregate: 10,
+                regional_ecology: 14,
+                active_landscape: 18,
+                embodied_patch: 23,
+            },
+            refinement_policy_version: 1,
+        }
+    }
+
+    fn tiled_layer(kind: DataLayerKind, id: &str, salt: u8) -> DataLayer {
+        DataLayer {
+            layer_id: id.to_owned(),
+            kind,
+            storage: DataLayerStorage::FullEarthTileTree {
+                tile_tree: TileTreeReference {
+                    index_schema_version: 1,
+                    root_index_path: format!("layers/{id}/root.index"),
+                    root_index_media_type: "application/vnd.atinycivilization.tile-index+json"
+                        .to_owned(),
+                    root_index_hash: Digest::from_bytes([salt; 32]),
+                    root_index_byte_length: 4_096,
+                    leaf_tile_count: 6_291_456,
+                    minimum_s2_level: 10,
+                    maximum_s2_level: 23,
+                },
+            },
+            units: vec![FieldUnit {
+                field: "value".to_owned(),
+                unit: "1".to_owned(),
+            }],
+            source_ids: vec!["usgs-water-reference".to_owned()],
+            transformation: "Global tile-tree schema fixture; not a scientific release.".to_owned(),
+        }
+    }
+
+    fn full_earth_bundle() -> WorldDataBundle {
+        let mut bundle = bundle();
+        bundle.bundle_schema_version = WORLD_DATA_BUNDLE_SCHEMA_VERSION;
+        bundle.bundle_id = "full-earth-schema-test".to_owned();
+        bundle.reference_domain = ReferenceDomain {
+            name: "Full Earth schema fixture".to_owned(),
+            description: "Code-only full-Earth coverage fixture; not scientific data.".to_owned(),
+            source_ids: vec!["usgs-water-reference".to_owned()],
+        };
+        bundle.coverage = WorldDataCoverage::FullEarth {
+            full_earth_grid: full_earth_grid(),
+            earth_baseline: EarthBaseline {
+                manifest_cutoff_date: NaiveDate::from_ymd_opt(2026, 8, 6)
+                    .expect("valid fixture date"),
+                source_epoch_policy: SourceEpochPolicy::PerSourceEpochComposite,
+                human_feature_policy: HumanFeaturePolicy::ExcludeDirectFeaturesAndFlagInferences,
+                sensitive_location_policy: SensitiveLocationPolicy::OmitOrGeneralize,
+                sea_level_definition: "Pinned mean-sea-level surface fixture.".to_owned(),
+            },
+        };
+        bundle.layers = vec![
+            tiled_layer(DataLayerKind::Bathymetry, "bathymetry", 1),
+            tiled_layer(DataLayerKind::Climate, "climate", 2),
+            tiled_layer(DataLayerKind::Coastline, "coastline", 3),
+            tiled_layer(DataLayerKind::Elevation, "elevation", 4),
+            tiled_layer(DataLayerKind::Habitat, "habitat", 5),
+            tiled_layer(DataLayerKind::Hydrography, "hydrography", 6),
+            tiled_layer(DataLayerKind::Soil, "soil", 7),
+        ];
+        bundle
+    }
+
+    fn full_earth_configuration(bundle: &WorldDataBundle) -> WorldConfiguration {
+        let digest = bundle.content_digest().expect("valid full-Earth digest");
+        WorldConfiguration::new_full_earth(
+            300,
+            full_earth_grid(),
+            WorldDataBundleReference::new(
+                bundle.bundle_schema_version,
+                bundle.bundle_id.clone(),
+                bundle.bundle_version.clone(),
+                digest,
+                "https://data.atinycivilization.com/tests/full-earth-bundle.json",
+                bundle.license_expression.clone(),
+            )
+            .expect("valid bundle reference"),
+            PartitionedExecution {
+                scheduler_schema_version: 1,
+                scheduler: SchedulerKind::DeterministicEventQueue,
+                partition_s2_level: 10,
+                person_representation: PersonRepresentation::DurableIndividuals,
+                capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+                max_events_per_partition_transition: 10_000,
+            },
+        )
+        .expect("valid full-Earth configuration")
     }
 
     #[test]
@@ -1148,10 +1509,41 @@ mod tests {
     fn configuration_mismatch_cannot_be_hidden_by_valid_json() {
         let bundle = bundle();
         let mut configuration = configuration(&bundle);
-        configuration.spatial_grid.cell_size_mm = 64_000;
+        let WorldGeometry::BoundedRaster { spatial_grid } = &mut configuration.geometry else {
+            panic!("legacy fixture must use a raster");
+        };
+        spatial_grid.cell_size_mm = 64_000;
         assert!(matches!(
             bundle.validate_for_configuration(&configuration),
-            Err(BundleError::ConfigurationMismatch("spatial_grid"))
+            Err(BundleError::ConfigurationMismatch("coverage"))
+        ));
+    }
+
+    #[test]
+    fn full_earth_bundle_requires_global_layers_and_matches_partitioned_configuration() {
+        let bundle = full_earth_bundle();
+        assert!(bundle.validate().is_ok());
+        assert!(
+            bundle
+                .validate_for_configuration(&full_earth_configuration(&bundle))
+                .is_ok()
+        );
+
+        let bytes = bundle
+            .canonical_bytes()
+            .expect("canonical full-Earth bytes");
+        let encoded = std::str::from_utf8(&bytes).expect("UTF-8 bundle");
+        assert!(encoded.contains("\"full_earth_grid\""));
+        assert!(encoded.contains("\"tile_tree\""));
+        assert!(encoded.contains("\"exclude_direct_features_and_flag_inferences\""));
+
+        let mut missing_coastline = bundle;
+        missing_coastline
+            .layers
+            .retain(|layer| layer.kind != DataLayerKind::Coastline);
+        assert!(matches!(
+            missing_coastline.validate(),
+            Err(BundleError::MissingRequiredLayer(DataLayerKind::Coastline))
         ));
     }
 }
