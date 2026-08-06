@@ -155,6 +155,15 @@ cargo run --locked -p civilization-data -- inspect natural-earth-land \
   --artifact-root data/source-cache
 ```
 
+The pinned ETOPO NetCDF schema is likewise inspected with the repository's pure-Rust
+NetCDF-4 reader, so normalization does not rely on host GDAL or NetCDF tools:
+
+```bash
+cargo run --locked -p civilization-data -- inspect etopo \
+  --source-snapshot data/source-snapshots/etopo-2022-v1-60s-bed.json \
+  --artifact-root data/source-cache
+```
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index

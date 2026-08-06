@@ -8,6 +8,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use netcdf_reader::NcFile;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{SourceSnapshotArtifact, SourceSnapshotManifest, WorldDataBundle};
@@ -69,6 +70,13 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Inspect the pinned ETOPO NetCDF schema through the portable Rust reader.
+    Etopo {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+    },
 }
 
 #[tokio::main]
@@ -94,8 +102,68 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_natural_earth_land(&source_snapshot, &artifact_root),
+            InspectCommand::Etopo {
+                source_snapshot,
+                artifact_root,
+            } => inspect_etopo(&source_snapshot, &artifact_root),
         },
     }
+}
+
+#[derive(Serialize)]
+struct EtopoInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+    variables: Vec<EtopoVariableInspection>,
+}
+
+#[derive(Serialize)]
+struct EtopoVariableInspection {
+    name: String,
+    shape: Vec<u64>,
+}
+
+fn inspect_etopo(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .context("source snapshot has no ETOPO NetCDF data artifact")?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified ETOPO NetCDF through the pure-Rust reader")?;
+    let mut variables = file
+        .variables()
+        .context("enumerate ETOPO variables")?
+        .iter()
+        .map(|variable| EtopoVariableInspection {
+            name: variable.name().to_owned(),
+            shape: variable.shape().to_vec(),
+        })
+        .collect::<Vec<_>>();
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoInspection {
+            inspection_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_hash: artifact.content_hash,
+            artifact_byte_length: artifact.byte_length,
+            variables,
+        })?
+    );
+    Ok(())
 }
 
 #[derive(Serialize)]
