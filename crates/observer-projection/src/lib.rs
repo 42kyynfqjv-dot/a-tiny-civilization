@@ -18,6 +18,8 @@ pub const PUBLIC_TIMELINE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_TIMELINE_PROJECTION_NAME: &str = "public-timeline-v1";
 pub const PUBLIC_ORGANISM_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ORGANISM_PROJECTION_NAME: &str = "public-organism-v1";
+pub const PUBLIC_FINDING_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_FINDING_PROJECTION_NAME: &str = "public-finding-v1";
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -179,6 +181,50 @@ pub struct PublicWorld {
 #[async_trait]
 pub trait ObserverWorldStore: Send + Sync {
     async fn list_public_worlds(&self) -> Result<Vec<PublicWorld>, ObserverProjectionStoreError>;
+}
+
+/// A deterministic observer finding. It points to evidence rather than narrating a
+/// world. `Streak` is reserved until canonical events can establish persistence.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicFindingKind {
+    First,
+    Record,
+    Streak,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicFinding {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub source_event_id: EventId,
+    pub source_sequence: EventSequence,
+    pub source_tick: SimTick,
+    pub kind: PublicFindingKind,
+    pub finding_key: String,
+    pub provenance: ClaimProvenance,
+    pub title: String,
+    pub summary: String,
+}
+
+#[async_trait]
+pub trait ObserverFindingStore: Send + Sync {
+    /// Atomically derives findings from one checksum-verified committed batch.
+    async fn apply_public_finding_batch(
+        &self,
+        batch: &EventBatch,
+    ) -> Result<bool, ObserverProjectionStoreError>;
+
+    async fn public_finding_cursor(
+        &self,
+        world_id: WorldId,
+    ) -> Result<EventSequence, ObserverProjectionStoreError>;
+
+    async fn list_public_findings(
+        &self,
+        world_id: WorldId,
+        limit: u16,
+    ) -> Result<Vec<PublicFinding>, ObserverProjectionStoreError>;
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,

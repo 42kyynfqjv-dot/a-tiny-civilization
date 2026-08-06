@@ -24,11 +24,13 @@ type Organism = {
   ended_event_id: string | null;
 };
 
+type Finding = { finding_key: string; title: string; summary: string; kind: "first" | "record" | "streak" };
+
 type RecordState =
   | { state: "loading" }
   | { state: "empty" }
   | { state: "error" }
-  | { state: "ready"; world: World; timeline: TimelineItem[]; organisms: Organism[] };
+  | { state: "ready"; world: World; timeline: TimelineItem[]; organisms: Organism[]; findings: Finding[] };
 
 export function LiveRecord() {
   const [record, setRecord] = useState<RecordState>({ state: "loading" });
@@ -46,14 +48,16 @@ export function LiveRecord() {
           return;
         }
         const encoded = encodeURIComponent(world.world_id);
-        const [timelineResponse, organismsResponse] = await Promise.all([
+        const [timelineResponse, organismsResponse, findingsResponse] = await Promise.all([
           fetch(`/api/v1/worlds/${encoded}/timeline?limit=5`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${encoded}/organisms?limit=8`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${encoded}/findings?limit=4`, { cache: "no-store" }),
         ]);
-        if (!timelineResponse.ok || !organismsResponse.ok) throw new Error("world data unavailable");
+        if (!timelineResponse.ok || !organismsResponse.ok || !findingsResponse.ok) throw new Error("world data unavailable");
         const timeline = (await timelineResponse.json()) as { items: TimelineItem[] };
         const organisms = (await organismsResponse.json()) as { organisms: Organism[] };
-        if (active) setRecord({ state: "ready", world, timeline: timeline.items, organisms: organisms.organisms });
+        const findings = (await findingsResponse.json()) as { findings: Finding[] };
+        if (active) setRecord({ state: "ready", world, timeline: timeline.items, organisms: organisms.organisms, findings: findings.findings });
       } catch {
         if (active) setRecord({ state: "error" });
       }
@@ -70,7 +74,7 @@ export function LiveRecord() {
   if (record.state === "empty") return <section className="live-record empty">No world has been committed yet. Genesis will appear here from its first recorded event.</section>;
   if (record.state === "error") return <section className="live-record empty">Live records are temporarily unavailable. The static observatory remains available.</section>;
 
-  const { world, timeline, organisms } = record;
+  const { world, timeline, organisms, findings } = record;
   return (
     <section className="live-record" aria-labelledby="live-record-title">
       <div className="live-record-heading">
@@ -84,6 +88,7 @@ export function LiveRecord() {
         <article>
           <h3>Recent facts</h3>
           {timeline.length === 0 ? <p>No public events are available yet.</p> : <ol>{timeline.map((item) => <li key={item.source_event_id}><strong>{item.title}</strong><span>{item.summary} <em>Event {item.source_sequence}, tick {item.source_tick}</em></span></li>)}</ol>}
+          {findings.length > 0 && <><h3 className="finding-heading">Finding aids</h3><ul>{findings.map((finding) => <li key={finding.finding_key}><strong>{finding.title}</strong><span>{finding.summary}</span></li>)}</ul></>}
         </article>
         <article>
           <h3>Lives in record</h3>

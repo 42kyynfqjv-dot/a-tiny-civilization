@@ -8,6 +8,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
 mod memory_outbox;
+mod observer_findings;
 mod observer_organisms;
 mod observer_timeline;
 mod observer_worlds;

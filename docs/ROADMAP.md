@@ -141,7 +141,9 @@ the foundation does not invent placeholder experiences.
   event provenance; public records omit reproductive, parentage, location, mortality,
   and supporter-alias detail;
 - generated observer wiki and conditional artifact archive;
-- versioned deterministic first/record/streak finding aids with replay tests;
+- versioned deterministic first/record finding aids are implemented with committed-batch
+  replay tests; streaks remain intentionally absent until behavior events can establish
+  persistence without observer inference;
 - downloadable event ranges and visible state-hash verification.
 
 ### 5. Supporter participation

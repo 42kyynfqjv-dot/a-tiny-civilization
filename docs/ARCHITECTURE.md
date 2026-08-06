@@ -84,6 +84,11 @@ select a current world without receiving a simulation write capability. It polls
 index, then the safe timeline and organism projections; unavailable or empty history is
 shown as such rather than replaced with invented content.
 
+`public-finding-v1` independently projects auditable first occurrences and population
+records. Its `streak` vocabulary intentionally has no output until canonical behavior
+events can prove persistence rather than merely suggest it. See
+[ADR 0020](adr/0020-deterministic-observer-findings.md).
+
 Snapshots are caches. A complete replay from durable events, or a snapshot plus its
 tail, must produce the same state hash.
 

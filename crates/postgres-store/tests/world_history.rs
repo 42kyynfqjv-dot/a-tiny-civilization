@@ -4,8 +4,9 @@ use application::{
     WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
-    CommittedBirth, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
-    ReservationRequest, ReservationState, ReservationTarget, SupporterReservationStore,
+    CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
+    ObserverWorldStore, ReservationRequest, ReservationState, ReservationTarget,
+    SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
@@ -549,5 +550,46 @@ async fn observer_organisms_are_committed_safe_and_append_only(pool: PgPool) -> 
         .execute(&pool)
         .await;
     assert!(deletion.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(508);
+    let created = store.create_world(&manifest, None).await?;
+    let (_, batch, snapshot) = genesis(&manifest, vec![initial_person(manifest.world_id)])?;
+    store
+        .commit_transition(
+            created.cursor,
+            &batch,
+            &snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    assert!(store.apply_public_finding_batch(&batch).await?);
+    assert!(!store.apply_public_finding_batch(&batch).await?);
+    let findings = store.list_public_findings(manifest.world_id, 20).await?;
+    let keys = findings
+        .iter()
+        .map(|finding| finding.finding_key.as_str())
+        .collect::<Vec<_>>();
+    assert!(keys.contains(&"world_began"));
+    assert!(keys.contains(&"first_person_recorded"));
+    assert!(keys.contains(&"people_population_record_1"));
+    assert!(
+        findings
+            .iter()
+            .all(|finding| !matches!(finding.kind, observer_projection::PublicFindingKind::Streak))
+    );
+    assert_eq!(
+        store.public_finding_cursor(manifest.world_id).await?,
+        EventSequence::new(1)
+    );
+    let mutation = sqlx::query("UPDATE observer_findings SET title = title WHERE world_id = $1")
+        .bind(manifest.world_id.as_uuid())
+        .execute(&pool)
+        .await;
+    assert!(mutation.is_err());
     Ok(())
 }

@@ -12,8 +12,8 @@ use axum::{
 };
 use chrono::{DateTime, Utc};
 use observer_projection::{
-    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicOrganism,
-    PublicTimelineItem, PublicWorld,
+    ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
+    PublicFinding, PublicOrganism, PublicTimelineItem, PublicWorld,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -22,12 +22,20 @@ use world_domain::{EntityId, WorldId};
 
 /// Read-only observer composition. The simulation runner does not import this port.
 pub trait ObserverReadStore:
-    FoundationStore + ObserverTimelineStore + ObserverOrganismStore + ObserverWorldStore
+    FoundationStore
+    + ObserverTimelineStore
+    + ObserverOrganismStore
+    + ObserverWorldStore
+    + ObserverFindingStore
 {
 }
 
 impl<T> ObserverReadStore for T where
-    T: FoundationStore + ObserverTimelineStore + ObserverOrganismStore + ObserverWorldStore
+    T: FoundationStore
+        + ObserverTimelineStore
+        + ObserverOrganismStore
+        + ObserverWorldStore
+        + ObserverFindingStore
 {
 }
 
@@ -56,6 +64,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/status", get(status))
         .route("/api/v1/worlds", get(public_worlds))
         .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
+        .route("/api/v1/worlds/{world_id}/findings", get(public_findings))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
@@ -155,6 +164,31 @@ struct TimelineQuery {
 struct TimelineResponse {
     projection_version: u16,
     items: Vec<PublicTimelineItem>,
+}
+
+#[derive(Serialize)]
+struct FindingsResponse {
+    projection_version: u16,
+    findings: Vec<PublicFinding>,
+}
+
+async fn public_findings(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<FindingsResponse>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let findings = state
+        .store
+        .list_public_findings(world_id, query.limit.unwrap_or(50))
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(FindingsResponse {
+        projection_version: observer_projection::PUBLIC_FINDING_PROJECTION_VERSION,
+        findings,
+    }))
 }
 
 async fn public_timeline(
