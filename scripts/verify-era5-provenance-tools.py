@@ -90,6 +90,28 @@ def main() -> int:
         ).hexdigest()
         assert int(first["byte_length"]) > 0
 
+        validated = subprocess.run(
+            [
+                "cargo",
+                "run",
+                "--locked",
+                "-p",
+                "civilization-data",
+                "--",
+                "source",
+                "validate",
+                str(output),
+                "--artifact-root",
+                str(root),
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=ROOT,
+            env=dict(os.environ, PYTHONDONTWRITEBYTECODE="1"),
+        )
+        assert validated.returncode == 0, validated.stderr
+
         duplicate = invoke(
             MANIFEST,
             "--artifact-root",
