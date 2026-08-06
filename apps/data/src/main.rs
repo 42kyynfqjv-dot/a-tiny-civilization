@@ -130,6 +130,19 @@ enum InspectCommand {
         #[arg(long)]
         column: u64,
     },
+    /// Resolve an exact WGS 84 coordinate to its nearest retained CHELSA source cell.
+    ChelsaNearestCell {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Latitude in exact 10^-7 degrees.
+        #[arg(long)]
+        latitude_e7: i32,
+        /// Longitude in exact 10^-7 degrees.
+        #[arg(long)]
+        longitude_e7: i32,
+    },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
         /// Latitude in exact 10^-7 degrees, within [-900000000, 900000000].
@@ -372,6 +385,17 @@ async fn main() -> Result<()> {
                 row,
                 column,
             } => inspect_chelsa_january_cell(&source_snapshot, &artifact_root, row, column),
+            InspectCommand::ChelsaNearestCell {
+                source_snapshot,
+                artifact_root,
+                latitude_e7,
+                longitude_e7,
+            } => inspect_chelsa_nearest_cell(
+                &source_snapshot,
+                &artifact_root,
+                latitude_e7,
+                longitude_e7,
+            ),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -2642,6 +2666,32 @@ struct ChelsaJanuaryCellInspection {
     documented_temperature_millicelsius: i64,
 }
 
+#[derive(Serialize)]
+struct ChelsaNearestCellInspection {
+    inspection_schema_version: u16,
+    source_snapshot_digest: Digest,
+    requested_latitude_e7: i32,
+    requested_longitude_e7: i32,
+    row: u64,
+    column: u64,
+    source_latitude_e7: i32,
+    source_longitude_e7: i32,
+}
+
+#[derive(Debug)]
+struct ChelsaGridAxes {
+    latitudes_e7: Vec<i32>,
+    longitudes_e7: Vec<i32>,
+}
+
+impl ChelsaGridAxes {
+    fn nearest_cell(&self, coordinate: GeographicCoordinateE7) -> Result<(u64, u64)> {
+        let row = nearest_sorted_e7_index(&self.latitudes_e7, coordinate.latitude_e7())?;
+        let column = nearest_sorted_e7_index(&self.longitudes_e7, coordinate.longitude_e7())?;
+        Ok((u64::try_from(row)?, u64::try_from(column)?))
+    }
+}
+
 fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
     let snapshot = load_source_manifest(manifest_path)?;
     verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
@@ -2841,6 +2891,101 @@ fn inspect_chelsa_january_cell(
         })?
     );
     Ok(())
+}
+
+/// Resolve a geography coordinate through the retained axis coordinates themselves.
+/// No assumed origin or floating-point increment is permitted: the NetCDF coordinate
+/// vectors are the source contract, converted from their IEEE bits to the E7 lattice.
+fn inspect_chelsa_nearest_cell(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    latitude_e7: i32,
+    longitude_e7: i32,
+) -> Result<()> {
+    let coordinate = GeographicCoordinateE7::new(latitude_e7, longitude_e7)?;
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .context("source snapshot has no CHELSA NetCDF data artifact")?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified CHELSA NetCDF through the pure-Rust reader")?;
+    let axes = read_chelsa_grid_axes(&file)?;
+    let (row, column) = axes.nearest_cell(coordinate)?;
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaNearestCellInspection {
+            inspection_schema_version: 1,
+            source_snapshot_digest: snapshot.content_digest()?,
+            requested_latitude_e7: latitude_e7,
+            requested_longitude_e7: longitude_e7,
+            row,
+            column,
+            source_latitude_e7: axes.latitudes_e7[usize::try_from(row)?],
+            source_longitude_e7: axes.longitudes_e7[usize::try_from(column)?],
+        })?
+    );
+    Ok(())
+}
+
+fn read_chelsa_grid_axes(file: &NcFile) -> Result<ChelsaGridAxes> {
+    validate_chelsa_january_temperature_schema(file)?;
+    let read_axis = |variable: &str, expected: u64| -> Result<Vec<i32>> {
+        let values = file
+            .read_variable_slice::<f64>(variable, &NcSliceInfo::all(1))
+            .with_context(|| format!("read complete CHELSA {variable} axis"))?;
+        let values = values
+            .as_slice()
+            .context("CHELSA axis selection is not contiguous")?;
+        if u64::try_from(values.len())? != expected {
+            bail!("CHELSA axis length disagrees with declared shape");
+        }
+        values
+            .iter()
+            .map(|value| {
+                i32::try_from(ieee754_degrees_bits_to_e7(value.to_bits())?)
+                    .context("CHELSA E7 coordinate does not fit i32")
+            })
+            .collect()
+    };
+    let latitudes_e7 = read_axis("lat", CHELSA_LATITUDE_CELLS)?;
+    let longitudes_e7 = read_axis("lon", CHELSA_LONGITUDE_CELLS)?;
+    if !latitudes_e7.windows(2).all(|pair| pair[0] < pair[1])
+        || !longitudes_e7.windows(2).all(|pair| pair[0] < pair[1])
+    {
+        bail!("CHELSA coordinate axes are not strictly increasing on the E7 lattice");
+    }
+    Ok(ChelsaGridAxes {
+        latitudes_e7,
+        longitudes_e7,
+    })
+}
+
+fn nearest_sorted_e7_index(axis: &[i32], value: i32) -> Result<usize> {
+    if axis.is_empty() || value < axis[0] || value > *axis.last().context("empty CHELSA axis")? {
+        bail!("requested coordinate lies outside retained CHELSA source coverage");
+    }
+    match axis.binary_search(&value) {
+        Ok(index) => Ok(index),
+        Err(upper) => {
+            let lower = upper
+                .checked_sub(1)
+                .context("CHELSA axis lower bound underflow")?;
+            let lower_distance = i64::from(value) - i64::from(axis[lower]);
+            let upper_distance = i64::from(axis[upper]) - i64::from(value);
+            // Ties choose the smaller raw index, a declared deterministic policy.
+            Ok(if lower_distance <= upper_distance {
+                lower
+            } else {
+                upper
+            })
+        }
+    }
 }
 
 /// The retained CHELSA technical specification defines `tas_01` through `tas_12`
@@ -4030,6 +4175,17 @@ mod tests {
             .expect("last CHELSA cell");
         assert!(validate_chelsa_cell_address(CHELSA_LATITUDE_CELLS, 0).is_err());
         assert!(validate_chelsa_cell_address(0, CHELSA_LONGITUDE_CELLS).is_err());
+    }
+
+    #[test]
+    fn nearest_chelsa_axis_cell_uses_exact_lattice_and_lower_index_ties() {
+        let axis = [-100, 0, 100];
+        assert_eq!(nearest_sorted_e7_index(&axis, -100).expect("first"), 0);
+        assert_eq!(nearest_sorted_e7_index(&axis, 100).expect("last"), 2);
+        assert_eq!(nearest_sorted_e7_index(&axis, 49).expect("near lower"), 1);
+        assert_eq!(nearest_sorted_e7_index(&axis, 50).expect("tie"), 1);
+        assert!(nearest_sorted_e7_index(&axis, -101).is_err());
+        assert!(nearest_sorted_e7_index(&axis, 101).is_err());
     }
 
     #[test]
