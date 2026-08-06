@@ -42,4 +42,6 @@ if rg --ignore-case --line-number \
   exit 1
 fi
 
+./scripts/check-production-boundaries.sh
+
 echo "Architecture boundary checks passed."
