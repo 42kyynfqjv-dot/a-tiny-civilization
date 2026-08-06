@@ -90,6 +90,12 @@ Legacy bounded schema-v1 bytes remain supported. The current engine deliberately
 full-Earth genesis until partition execution exists. No canonical seed has been
 selected.
 
+Full-Earth organism state now has a schema-v4 durable S2 embodied-patch position and
+conditional movement fact. Full-Earth initialization/birth requires the configured
+L23 patch level; replay, snapshots, and state hashes enforce it while public
+projections omit it. This is the location boundary, not yet locomotion physics or
+partitioned causal execution.
+
 Canonical tile-index bytes and exhaustive offline tree traversal are now implemented.
 The validator rejects missing or tampered leaves, cycles, repeated cells and paths,
 false leaf counts, invalid S2 identities/parentage, and noncanonical indexes. A shared
