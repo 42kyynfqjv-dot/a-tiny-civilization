@@ -24,12 +24,26 @@ and sea-ice-cover fields needed to distinguish land, open ocean, and ice evidenc
 
 Put the key directly in the host's protected scientific-acquisition environment (not
 the running observatory environment), then report only `CDS API access ready`. Do not
-paste the key into chat or Git. The acquisition code and exact request are not ready
-yet, so this is an account-preparation handoff rather than permission to download a
-moving dataset today. ERA5's monthly single-level product is globally complete at a
-declared 0.25-degree regridded resolution and is distributed under CC-BY; see the
-[ERA5 dataset record](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation)
+paste the key into chat or Git. ERA5's monthly single-level product is globally
+complete at a declared 0.25-degree regridded resolution and is distributed under CC-BY;
+see the [ERA5 dataset record](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation)
 and [CDS API setup guidance](https://cds.climate.copernicus.eu/how-to-api).
+
+The request contract is now checked in but remains an operator action. From the
+protected acquisition environment, install `cdsapi>=0.7.7`, review the exact request
+without network access, then run the same command without `--dry-run` only after the
+dataset terms have been accepted:
+
+```bash
+python3 scripts/acquire-era5-monthly-climate.py \
+  --output-directory data/source-cache/era5-monthly-1981-2010 \
+  --dry-run
+```
+
+It requests separate, no-replacement yearly NetCDF files for global near-surface
+temperature, precipitation, 10-metre wind, sea-surface temperature, and sea ice. The
+raw downloads remain outside Git and are admitted only after exact hashes, terms
+evidence, and retrieval metadata are frozen in a source snapshot.
 
 ## Required before a public deployment
 
