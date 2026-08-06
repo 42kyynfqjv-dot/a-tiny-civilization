@@ -43,6 +43,21 @@ structured memory behind a Hindsight adapter, an observer API, and a public site
 
 No LLM key is required for the deterministic foundation.
 
+## Verify the core claim
+
+The repository includes a non-production history bundle grounded to the real GBIF
+`Homo sapiens` taxon. Verify its event hash chain, replay from genesis, replay from a
+snapshot plus its tail, final state hash, and mechanical extinction entirely offline:
+
+```bash
+cargo run --locked -p civilization-verify -- \
+  verify verification/demo-bundle.json
+```
+
+Regenerate the same bytes and compare them with the committed bundle using
+`./scripts/verify-demo.sh`. Neither command contacts PostgreSQL, Hindsight, an LLM, or
+the network.
+
 ## Repository layout
 
 The intended modular-monolith layout is:

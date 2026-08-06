@@ -291,6 +291,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "civilization-verify"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde",
+ "serde_json",
+ "sim-engine",
+ "uuid",
+ "world-domain",
+]
+
+[[package]]
 name = "clap"
 version = "4.6.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"

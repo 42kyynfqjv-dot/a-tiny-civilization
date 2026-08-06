@@ -10,6 +10,7 @@ cargo fmt --all --check
 cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace --locked
 ./scripts/check-boundaries.sh
+./scripts/verify-demo.sh
 
 cd web
 npm run lint

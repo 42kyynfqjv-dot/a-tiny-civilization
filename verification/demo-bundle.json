@@ -1,0 +1,173 @@
+{
+  "bundle_schema_version": 1,
+  "description": "Non-production deterministic proof using the real GBIF Homo sapiens taxon; it is not a public-world seed or biome.",
+  "manifest": {
+    "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+    "seed": "7640891576956012809",
+    "ruleset_version": 1,
+    "identity_policy_version": 1,
+    "scientific_datasets": {
+      "gbif_taxon_2436436": "accessed_2026-08-06"
+    }
+  },
+  "event_batches": [
+    {
+      "event_schema_version": 1,
+      "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+      "sequence": "1",
+      "tick": "0",
+      "ruleset_version": 1,
+      "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "events": [
+        {
+          "event_id": "c256ee86-a445-5c5c-8fde-7a7838f72dac",
+          "index": 0,
+          "event": {
+            "type": "world_started",
+            "data": {
+              "manifest": {
+                "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+                "seed": "7640891576956012809",
+                "ruleset_version": 1,
+                "identity_policy_version": 1,
+                "scientific_datasets": {
+                  "gbif_taxon_2436436": "accessed_2026-08-06"
+                }
+              }
+            }
+          }
+        },
+        {
+          "event_id": "e154fb5b-2159-5d78-8b94-90f3b328334d",
+          "index": 1,
+          "event": {
+            "type": "organism_initialized",
+            "data": {
+              "organism_id": "56be425d-1ed5-52e9-b2c9-7f9a5303f116",
+              "species": {
+                "catalog": "gbif",
+                "identifier": "2436436",
+                "scientific_name": "Homo sapiens",
+                "source_url": "https://www.gbif.org/species/2436436"
+              },
+              "role": "person",
+              "birth_category": "female",
+              "initial_age_ticks": 0,
+              "location_id": null
+            }
+          }
+        }
+      ],
+      "post_state_hash": "421f3e912d5a6827da434ed098da140b1b0c31d3e7adfaa825c909afa9593514",
+      "batch_hash": "27cf4adcbfc35c89e0d97e0060ad2d932375d3462cd827649502e587611daeec"
+    },
+    {
+      "event_schema_version": 1,
+      "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+      "sequence": "2",
+      "tick": "1",
+      "ruleset_version": 1,
+      "previous_hash": "27cf4adcbfc35c89e0d97e0060ad2d932375d3462cd827649502e587611daeec",
+      "events": [
+        {
+          "event_id": "618223aa-0f1f-509f-8479-a6efd802a246",
+          "index": 0,
+          "event": {
+            "type": "tick_advanced",
+            "data": {
+              "from": "0",
+              "to": "1"
+            }
+          }
+        }
+      ],
+      "post_state_hash": "de44226d427a51d7d77713b62ef7179be63390f87529dc6de521d8e43ee5361a",
+      "batch_hash": "37cca90cb2fd9e35a784ca8c64e26aa3bb32a8afae3759dd0a06dd16f597afc6"
+    },
+    {
+      "event_schema_version": 1,
+      "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+      "sequence": "3",
+      "tick": "1",
+      "ruleset_version": 1,
+      "previous_hash": "37cca90cb2fd9e35a784ca8c64e26aa3bb32a8afae3759dd0a06dd16f597afc6",
+      "events": [
+        {
+          "event_id": "0b7dd3fe-034c-5f82-be98-d858b5870b1b",
+          "index": 0,
+          "event": {
+            "type": "organism_died",
+            "data": {
+              "organism_id": "56be425d-1ed5-52e9-b2c9-7f9a5303f116",
+              "cause": {
+                "mechanism": "verification_fixture"
+              }
+            }
+          }
+        },
+        {
+          "event_id": "30a6e5e9-e0b8-5b3b-8f0f-d43f13894343",
+          "index": 1,
+          "event": {
+            "type": "world_extinct"
+          }
+        },
+        {
+          "event_id": "3223eace-4bb4-5174-9e00-46e5cd04c57a",
+          "index": 2,
+          "event": {
+            "type": "world_archived"
+          }
+        }
+      ],
+      "post_state_hash": "995c42881bbac668c11d8b15052f151ac3b4261d967c6d70f2e8a01d3b21bba1",
+      "batch_hash": "5d6a3f3461b3f9332bae90cebba819324ef2d07f1a4e404a67fbe8e35a85bcc9"
+    }
+  ],
+  "snapshot": {
+    "snapshot_schema_version": 1,
+    "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+    "through_sequence": "2",
+    "last_event_hash": "37cca90cb2fd9e35a784ca8c64e26aa3bb32a8afae3759dd0a06dd16f597afc6",
+    "state_hash": "de44226d427a51d7d77713b62ef7179be63390f87529dc6de521d8e43ee5361a",
+    "state": {
+      "manifest": {
+        "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
+        "seed": "7640891576956012809",
+        "ruleset_version": 1,
+        "identity_policy_version": 1,
+        "scientific_datasets": {
+          "gbif_taxon_2436436": "accessed_2026-08-06"
+        }
+      },
+      "status": "running",
+      "tick": "1",
+      "organisms": {
+        "56be425d-1ed5-52e9-b2c9-7f9a5303f116": {
+          "organism_id": "56be425d-1ed5-52e9-b2c9-7f9a5303f116",
+          "species": {
+            "catalog": "gbif",
+            "identifier": "2436436",
+            "scientific_name": "Homo sapiens",
+            "source_url": "https://www.gbif.org/species/2436436"
+          },
+          "role": "person",
+          "birth_category": "female",
+          "parent_ids": [],
+          "initialized_at": "0",
+          "born_at": null,
+          "initial_age_ticks": 0,
+          "location_id": null,
+          "death": null
+        }
+      }
+    }
+  },
+  "expected": {
+    "through_sequence": "3",
+    "tick": "1",
+    "status": "archived",
+    "last_event_hash": "5d6a3f3461b3f9332bae90cebba819324ef2d07f1a4e404a67fbe8e35a85bcc9",
+    "state_hash": "995c42881bbac668c11d8b15052f151ac3b4261d967c6d70f2e8a01d3b21bba1"
+  }
+}

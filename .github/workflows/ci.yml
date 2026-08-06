@@ -43,6 +43,7 @@ jobs:
       - run: cargo clippy --workspace --all-targets -- -D warnings
       - run: cargo test --workspace --locked
       - run: ./scripts/check-boundaries.sh
+      - run: ./scripts/verify-demo.sh
 
   web:
     name: Observatory
