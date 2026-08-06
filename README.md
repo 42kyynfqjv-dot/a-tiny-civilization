@@ -3,7 +3,8 @@
 A persistent, scientifically grounded civilization simulation in which history is
 an outcome, not a script.
 
-The project models an Earth-like physical and ecological world while simulated
+The project models the actual materials, organisms, and ecological relationships of
+Earth while simulated
 people begin without our scientific categories, technologies, institutions, or
 historical destination. They can only learn from perception, memory, action,
 conversation, experiment, error, and cultural transmission.
@@ -16,7 +17,8 @@ the observer system.
 ## Non-negotiable principles
 
 - No technology tree, required milestones, historical eras, or guaranteed survival.
-- Real-world-inspired materials, biology, ecology, weather, and causal processes.
+- Actual real-world materials, species, biology, ecology, weather, and causal
+  processes, represented through documented scientific approximations.
 - Agents perceive properties and effects, never privileged database labels.
 - Objective truth, subjective memory, cultural belief, and observer inference are
   separate data domains.

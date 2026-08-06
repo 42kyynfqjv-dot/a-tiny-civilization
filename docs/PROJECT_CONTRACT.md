@@ -6,8 +6,14 @@ architecture decision and project-owner approval.
 
 ## 1. World ontology and knowledge
 
-The engine may know scientifically grounded identities and properties for world
-entities. Simulated people do not receive those identities.
+World entities are actual real-world materials, chemical substances, organisms,
+species, and ecological relationships—not fictional substitutes or merely inspired
+analogs. Their engine properties derive from documented measurements or explicitly
+labeled scientific approximations. Sources, units, uncertainty, provenance, and the
+ruleset version that transformed source data are retained alongside the model.
+
+The engine may know the scientific identities and properties of those world entities.
+Simulated people do not receive those identities.
 
 For example, the engine may model a piece of flint using grounded fracture and
 hardness parameters. A person can perceive its color, weight, resistance, shape,
@@ -43,6 +49,11 @@ The engine must not contain:
 Physical affordances are allowed and necessary. Clay may have moisture-dependent
 plasticity and heat-dependent material changes. Whether anyone notices, explains,
 uses, teaches, loses, or mythologizes those effects is historical contingency.
+
+Real-world fidelity does not mean molecular or cellular simulation at every scale.
+It means abstractions preserve the relevant measured causal behavior and never replace
+real materials or organisms with convenient fantasy equivalents. Any unsupported
+parameter is visibly marked as an assumption until an authoritative source replaces it.
 
 ## 3. Cognition
 

@@ -81,6 +81,14 @@ Random streams derive from world seed, ruleset version, subsystem, tick, and ent
 Recorded external cognition is an input event during replay; replay never invokes a
 remote model.
 
+## Scientific data boundary
+
+Catalog records identify actual Earth materials and species using stable external
+identifiers where available. Raw sourced facts, citations, units, ranges, uncertainty,
+and licenses remain separate from ruleset-specific normalized parameters. The engine
+may approximate a process at an appropriate scale, but every approximation is explicit
+and testable; it must not silently substitute an invented material, animal, or ecology.
+
 ## Deployment boundary
 
 Only the web origin is publicly reachable. It proxies `/api` and live observer
