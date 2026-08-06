@@ -61,9 +61,12 @@ including exhaustive content-hash traversal of global tile indexes and leaves.
 The pure single-worker L10 scheduler kernel now pins ordering, barrier, and capacity
 semantics and matches a synthetic dense reference history. A private integer-only
 EPSG:4978-to-S2 reference also pins all six faces, exact projection boundaries, and
-L10/L14/L18/L23 ancestor routing without changing durable schemas. Persistent
-full-Earth execution remains intentionally disabled until that reference is integrated
-with durable embodied state, conserved refinement, scheduling, and persistence.
+L10/L14/L18/L23 ancestor routing. A private L10-to-L14 refinement proof now allocates
+all 256 descendants with exact integer conservation, deterministic residual streams,
+canonical reaggregation, and an explicit Alabama-paradox guard. Neither reference
+changes durable schemas. Persistent full-Earth execution remains intentionally
+disabled until exact source bundles, coupled ecological quantities, retained refined
+state, durable embodied movement, scheduling, and persistence are integrated.
 
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never

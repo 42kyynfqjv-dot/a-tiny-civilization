@@ -75,13 +75,21 @@ remaining honest about what current data can and cannot reconstruct.
 
 Each planet-level cell carries conserved extensive quantities such as water, nutrients,
 living/dead biomass, and declared abundance cohorts. Refinement allocates those totals
-to child cells using only pinned evidence and a stream key derived from world seed,
-manifest digest, cell ID, process ID, and simulation epoch. A deterministic residual
-allocation makes child totals equal the parent exactly.
+to child cells using only pinned evidence and a stream key derived from policy version,
+world seed, exact normalized bundle content digest, parent cell, process, retained
+refinement generation, quantity, and child cell. Exact Hamilton residual allocation
+makes child totals equal the parent. The synthesis is retained and causal changes are
+applied as deltas; it is never recalculated when a parent total changes because
+Hamilton allocation is not population monotone.
 
 Crossing organisms and physical flows are ordered boundary events. Coarsening exactly
 re-aggregates children and retains the causal delta. A browser request may read a
-projection but cannot materialize a canonical child.
+projection but cannot materialize a canonical child. The current private proof covers
+one caller-supplied scalar-evidence vector at a time; it does not yet prove that the
+weights came from the claimed bundle or retain its synthesis context. Verified evidence
+binding, coupled ecological vector constraints, and durable retained state remain
+required before genesis. See
+[ADR 0014](../adr/0014-conserved-ecology-refinement.md).
 
 ## Unpreviewed genesis placement
 
@@ -105,7 +113,9 @@ Lower Buffalo participates under exactly the same rule as every other eligible c
 3. ~~Implement the private fixed-point ECEF-to-S2 address reference and cross-language
    golden verification.~~ Complete.
 4. Freeze license-compatible global source artifacts and construct L10 layer roots.
-5. Implement conserved L10↔L14 refinement and conservation equivalence tests.
+5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
+   Complete. Couple sourced ecological quantities and retain refinements/deltas after
+   step 4 establishes their real bundle semantics.
 6. Normalize the Lower Buffalo L18/L23 reference window and verify local physics.
 7. Add global viability enumeration and the unpreviewed placement dry run.
 8. Run a multi-year disposable world twice to identical hashes before any public seed.

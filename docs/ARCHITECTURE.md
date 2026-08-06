@@ -124,7 +124,8 @@ scientific bundle at tick zero. The application verifies locally archived bundle
 before genesis; live execution and
 replay never fetch scientific inputs from the network. See
 [ADR 0009](adr/0009-tick-zero-world-configuration.md),
-[ADR 0010](adr/0010-full-earth-causal-refinement.md), and the
+[ADR 0010](adr/0010-full-earth-causal-refinement.md),
+[ADR 0014](adr/0014-conserved-ecology-refinement.md), and the
 [full-Earth scientific data plan](science/FULL_EARTH.md). The
 [Lower Buffalo reference tile](science/FIRST_BIOME.md) exercises that global contract.
 The [bundle release contract](science/DATA_BUNDLES.md) rejects incomplete provenance,
@@ -136,6 +137,15 @@ embodied detail refines only when causal activity approaches it. Refinement cons
 parent totals, is stream-seeded and order-independent, and cannot be triggered by an
 observer request. Fine simulation geometry is always marked as measured, transformed,
 or inferred; resolution is never presented as evidence quality.
+
+The private initial-refinement reference allocates one sourced extensive scalar from
+one L10 parent to all 256 L14 descendants using checked integer Hamilton
+apportionment. It commits the exact normalized world-data bundle digest and all stream
+dimensions, then validates exact canonical reaggregation. Its output is a one-time
+synthesis that must eventually be retained: Hamilton allocation is not population
+monotone, and independently allocated scalars do not yet enforce coupled ecological
+constraints. No refined value is stored in an event, snapshot, engine state, or
+database record. See [ADR 0014](adr/0014-conserved-ecology-refinement.md).
 
 The private embodied-address reference uses signed integer-millimetre EPSG:4978
 coordinates and routes their geocentric ray through the exact quadratic S2 projection.
@@ -156,10 +166,11 @@ be included before production configuration is required.
 Do not introduce Redis, Kafka, Kubernetes, or independent microservices before
 measurement demonstrates a need. The single-process engine remains the deterministic
 reference implementation. Its pure L10 ordering/barrier kernel, synthetic
-dense-equivalence proof, and private exact ECEF-to-S2 address router are implemented,
-but canonical full-Earth genesis remains blocked until durable embodied positions,
-conserved refinement, durable scheduling state, and the persistence barrier are
-integrated. Every person remains an individual;
+dense-equivalence proof, private exact ECEF-to-S2 address router, and exact conserved
+L10-to-L14 scalar-refinement proof are implemented, but canonical full-Earth genesis
+remains blocked until exact source bundles, coupled ecological state, retained
+refinements and deltas, durable embodied positions, durable scheduling state, and the
+persistence barrier are integrated. Every person remains an individual;
 infrastructure pressure may slow or pause wall-clock advancement at a committed hash
 boundary but cannot change causal rules or discard lives. See
 [ADR 0011](adr/0011-population-scale-and-capacity.md) and

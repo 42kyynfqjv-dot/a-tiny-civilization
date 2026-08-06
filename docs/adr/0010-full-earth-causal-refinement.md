@@ -45,10 +45,14 @@ measurements do not have.
   triggered only by organisms or physical effects entering a causal neighborhood.
   Observer traffic, follows, supporter activity, and camera position cannot load or
   refine canonical state.
-- Refinement uses stream-scoped seed material derived from the world seed, data-manifest
-  hash, cell identity, process identity, and simulation epoch. Child allocations use a
+- Refinement uses stream-scoped seed material derived from policy version, world seed,
+  exact normalized world-data bundle content digest, parent cell, process, retained
+  refinement generation, quantity, and child cell. Child allocations use a
   deterministic residual rule so conserved child totals exactly equal their parent.
-  Coarsening aggregates exactly and retains the content-addressed causal delta.
+  Initial allocations and their generation are retained; later changes are causal
+  deltas rather than recalculation. Coarsening aggregates exactly and retains the
+  content-addressed causal delta. The private scalar proof and its coupled-quantity
+  limitations are frozen in [ADR 0014](0014-conserved-ecology-refinement.md).
 - Genesis placement uses a preregistered viability predicate over global cells. The
   data release, predicate, code revision, and seed procedure are published before the
   unpreviewed seed is combined with a recorded public randomness input. There are no

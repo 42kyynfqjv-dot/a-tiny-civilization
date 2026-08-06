@@ -5,6 +5,8 @@
 #[allow(dead_code)]
 mod partition;
 #[allow(dead_code)]
+mod refinement;
+#[allow(dead_code)]
 mod spatial;
 
 use std::collections::BTreeMap;

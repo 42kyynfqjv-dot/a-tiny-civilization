@@ -100,9 +100,14 @@ synthetic dense-versus-queued equivalence without changing persistent event sche
 A private fixed-point routing reference now maps bounded integer-millimetre EPSG:4978
 positions through an explicitly geocentric, integer-only S2 bridge. Shared Rust/Python
 goldens pin all faces, ties, exact boundaries, and causal-level ancestors without
-changing events, snapshots, configuration, or PostgreSQL. The next checkpoints are the
-first exact global source snapshots, conserved L10↔L14 refinement, and durable embodied
-position/movement integration.
+changing events, snapshots, configuration, or PostgreSQL. A private conserved
+L10-to-L14 reference now enumerates all 256 children, allocates generic sourced
+extensive totals with exact order-independent integer arithmetic, and reaggregates them
+without loss. It explicitly proves why a synthesis generation must be retained rather
+than recalculated. It likewise changes no durable boundary. The next checkpoints are
+the first exact global source snapshots, a coupled ecological quantity policy with
+retained refinement state and deltas, and durable embodied position/movement
+integration.
 
 ### 3. Situated memory and bounded cognition
 
