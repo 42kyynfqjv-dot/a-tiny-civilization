@@ -169,6 +169,12 @@ requires the owner-controlled CDS account handoff in
 [External handoffs](../operations/EXTERNAL_HANDOFFS.md#copernicus-climate-data-store--era5).
 Precipitation, wind, ocean forcing, and weather dynamics remain separate required
 work.
+
+ERA5 now retains the matching global 1981–2010 source period as thirty annual ZIP
+containers. Its normal-year aggregation and precipitation-unit contract is pinned in
+[ADR 0033](../adr/0033-era5-normal-year-aggregation.md). This is climate evidence,
+not historical weather replay or a released S2 climate layer: source-grid support and
+the spatial normalizer remain required work.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.
