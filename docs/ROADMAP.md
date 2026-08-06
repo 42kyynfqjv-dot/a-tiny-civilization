@@ -79,6 +79,12 @@ explicit world identifier and seed.
 - simulated-time cognition allocation and recorded wall-cost circuit breaker;
 - request an LLM key only for the first explicit model-backed integration test.
 
+The project-owned retain/recall contracts, deterministic per-life bank and request
+identities, atomic PostgreSQL delivery outbox, lease/retry worker, keyless Hindsight
+HTTP adapter, no-op fallback, and recorded-replay adapter are implemented. Actual
+perception memories and canonical recall-result events begin with embodied cognition;
+the foundation does not invent placeholder experiences.
+
 ### 4. Evidence observatory
 
 - project canonical maps, events, people, animals, lineages, and provenance;

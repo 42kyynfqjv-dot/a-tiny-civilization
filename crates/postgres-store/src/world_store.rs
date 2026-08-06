@@ -1,4 +1,4 @@
-use application::{StoreError, StoredWorld, WorldCursor, WorldStore};
+use application::{StoreError, StoredWorld, TransitionEffects, WorldCursor, WorldStore};
 use async_trait::async_trait;
 use serde_json::{Value, json};
 use sim_engine::{EngineState, Snapshot};
@@ -206,10 +206,26 @@ impl WorldStore for PostgresStore {
         expected: WorldCursor,
         batch: &EventBatch,
         snapshot: &Snapshot,
+        effects: &TransitionEffects,
     ) -> Result<StoredWorld, StoreError> {
         batch.verify_integrity().map_err(corrupt)?;
         snapshot.verify_integrity().map_err(corrupt)?;
         validate_transition(expected, batch, snapshot)?;
+        effects
+            .validate_for(batch.world_id, batch.sequence, batch.tick)
+            .map_err(corrupt)?;
+        for memory in &effects.memory_retains {
+            if !snapshot
+                .state
+                .organisms()
+                .any(|organism| organism.organism_id() == memory.agent_id)
+            {
+                return Err(StoreError::Conflict(format!(
+                    "memory operation {} refers to an unknown agent",
+                    memory.operation_id
+                )));
+            }
+        }
 
         let sequence = to_i64(batch.sequence.get(), "event sequence")?;
         let tick = to_i64(batch.tick.get(), "simulation tick")?;
@@ -350,6 +366,39 @@ impl WorldStore for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(operation_error)?;
+
+        for memory in &effects.memory_retains {
+            let payload = serde_json::to_value(memory).map_err(corrupt)?;
+            sqlx::query(
+                r#"
+                INSERT INTO memory_outbox (
+                    operation_id,
+                    document_id,
+                    world_id,
+                    agent_id,
+                    source_sequence,
+                    bank_id,
+                    payload_version,
+                    payload
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+                "#,
+            )
+            .bind(memory.operation_id)
+            .bind(memory.document_id)
+            .bind(memory.world_id.as_uuid())
+            .bind(memory.agent_id.as_uuid())
+            .bind(to_i64(
+                memory.source_sequence.get(),
+                "memory source sequence",
+            )?)
+            .bind(&memory.bank_id)
+            .bind(i32::from(memory.payload_version))
+            .bind(payload)
+            .execute(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+        }
 
         transaction.commit().await.map_err(operation_error)?;
 

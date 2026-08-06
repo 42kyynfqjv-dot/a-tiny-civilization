@@ -1,6 +1,7 @@
 use anyhow::Result;
 use application::{
-    StoreError, WorldStore, advance_world, initialize_or_resume_world, resume_world,
+    MemoryOutboxStore, MemoryRetain, MemoryRetainReceipt, StoreError, TransitionEffects,
+    WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
@@ -56,7 +57,12 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
         genesis(&manifest, vec![initial_person(manifest.world_id)])?;
 
     let persisted = store
-        .commit_transition(created.cursor, &genesis_batch, &genesis_snapshot)
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
         .await?;
     assert_eq!(persisted.status, WorldStatus::Running);
     assert_eq!(persisted.cursor.sequence, EventSequence::new(1));
@@ -70,7 +76,12 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
         tick_batch.batch_hash,
     )?;
     let persisted = store
-        .commit_transition(persisted.cursor, &tick_batch, &tick_snapshot)
+        .commit_transition(
+            persisted.cursor,
+            &tick_batch,
+            &tick_snapshot,
+            &TransitionEffects::default(),
+        )
         .await?;
 
     let batches = store
@@ -155,17 +166,107 @@ async fn runtime_replays_and_resumes_at_the_exact_next_sequence(pool: PgPool) ->
 }
 
 #[sqlx::test(migrations = "../../db/migrations")]
+async fn subjective_memory_delivery_is_atomic_leased_and_immutable(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(181);
+    let person = initial_person(manifest.world_id);
+    let person_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let (_, genesis_batch, genesis_snapshot) = genesis(&manifest, vec![person])?;
+    let retain = MemoryRetain::new(
+        manifest.world_id,
+        person_id,
+        genesis_batch.sequence,
+        genesis_batch.tick,
+        0,
+        "A cold gust was followed by discomfort.",
+        "direct perception",
+    )?;
+    let effects = TransitionEffects {
+        memory_retains: vec![retain.clone()],
+    };
+    store
+        .commit_transition(created.cursor, &genesis_batch, &genesis_snapshot, &effects)
+        .await?;
+
+    let claimed = store
+        .claim_next_memory("memory-worker-a", 60)
+        .await?
+        .expect("committed memory is claimable");
+    assert_eq!(claimed.retain, retain);
+    assert_eq!(claimed.attempt_count, 1);
+    assert!(
+        store
+            .claim_next_memory("memory-worker-b", 60)
+            .await?
+            .is_none()
+    );
+
+    let receipt = MemoryRetainReceipt {
+        operation_id: retain.operation_id,
+        remote_operation_id: retain.operation_id.to_string(),
+        adapter_version: "test-hindsight-adapter".to_owned(),
+    };
+    store
+        .mark_memory_accepted("memory-worker-a", &claimed, &receipt)
+        .await?;
+    assert!(
+        store
+            .claim_next_memory("memory-worker-b", 60)
+            .await?
+            .is_none()
+    );
+
+    let accepted: (
+        Option<String>,
+        Option<String>,
+        Option<chrono::DateTime<chrono::Utc>>,
+    ) = sqlx::query_as(
+        "SELECT remote_operation_id, adapter_version, completed_at FROM memory_outbox WHERE operation_id = $1",
+    )
+    .bind(retain.operation_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(accepted.0, Some(retain.operation_id.to_string()));
+    assert_eq!(accepted.1.as_deref(), Some("test-hindsight-adapter"));
+    assert!(accepted.2.is_some());
+
+    let mutation =
+        sqlx::query("UPDATE memory_outbox SET payload = payload WHERE operation_id = $1")
+            .bind(retain.operation_id)
+            .execute(&pool)
+            .await;
+    assert!(mutation.is_err());
+    let deletion = sqlx::query("DELETE FROM memory_outbox WHERE operation_id = $1")
+        .bind(retain.operation_id)
+        .execute(&pool)
+        .await;
+    assert!(deletion.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
 async fn rejects_stale_writer_and_event_mutation(pool: PgPool) -> Result<()> {
     let store = PostgresStore::from_pool(pool.clone());
     let manifest = manifest(202);
     let created = store.create_world(&manifest, None).await?;
     let (_, batch, snapshot) = genesis(&manifest, vec![initial_person(manifest.world_id)])?;
     store
-        .commit_transition(created.cursor, &batch, &snapshot)
+        .commit_transition(
+            created.cursor,
+            &batch,
+            &snapshot,
+            &TransitionEffects::default(),
+        )
         .await?;
 
     let stale = store
-        .commit_transition(created.cursor, &batch, &snapshot)
+        .commit_transition(
+            created.cursor,
+            &batch,
+            &snapshot,
+            &TransitionEffects::default(),
+        )
         .await;
     assert!(matches!(stale, Err(StoreError::Conflict(_))));
 
@@ -199,7 +300,12 @@ async fn successor_requires_an_immutable_archived_predecessor(pool: PgPool) -> R
     let created = store.create_world(&first_manifest, None).await?;
     let (running, genesis_batch, genesis_snapshot) = genesis(&first_manifest, Vec::new())?;
     let running_world = store
-        .commit_transition(created.cursor, &genesis_batch, &genesis_snapshot)
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
         .await?;
 
     let premature_manifest = manifest(304);
@@ -217,7 +323,12 @@ async fn successor_requires_an_immutable_archived_predecessor(pool: PgPool) -> R
     let archive_snapshot =
         Snapshot::new(archived, archive_batch.sequence, archive_batch.batch_hash)?;
     let archived_world = store
-        .commit_transition(running_world.cursor, &archive_batch, &archive_snapshot)
+        .commit_transition(
+            running_world.cursor,
+            &archive_batch,
+            &archive_snapshot,
+            &TransitionEffects::default(),
+        )
         .await?;
     assert_eq!(archived_world.status, WorldStatus::Archived);
 

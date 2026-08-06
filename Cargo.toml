@@ -4,6 +4,7 @@ members = [
     "apps/verify",
     "apps/runner",
     "crates/application",
+    "crates/hindsight-adapter",
     "crates/observer-api",
     "crates/postgres-store",
     "crates/sim-engine",
@@ -26,6 +27,7 @@ chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 hex = "0.4.3"
+reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1.0.145"
 sha2 = "0.10.9"

@@ -15,6 +15,8 @@ source of world truth or a dependency of the simulation tick.
 - Integrate Hindsight through its HTTP API behind a project-owned `AgentMemory` port.
 - Pin the initial development image to `ghcr.io/vectorize-io/hindsight:0.8.6`.
 - Begin with `HINDSIGHT_API_LLM_PROVIDER=none`; no model key is required.
+- Make keyless behavior explicit with `HINDSIGHT_API_RETAIN_EXTRACTION_MODE=chunks`;
+  retain stores searchable chunks without calling an LLM.
 - Use one isolated memory bank per character life and world.
 - Commit a memory-outbox item in the same PostgreSQL transaction as its source event,
   then retain it asynchronously with deterministic operation/document identifiers.
@@ -33,8 +35,8 @@ source of world truth or a dependency of the simulation tick.
 - `HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS=true` prevents silent partial extraction.
 - A stable worker identifier prevents in-flight work being stranded on container
   replacement.
-- Raw document storage is an explicit privacy decision rather than an inherited
-  default.
+- Development sets `HINDSIGHT_API_STORE_DOCUMENT_TEXT=false`; normalized memory units
+  remain searchable while duplicate raw document storage is disabled.
 
 ## Consequences
 

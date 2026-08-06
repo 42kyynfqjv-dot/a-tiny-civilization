@@ -5,10 +5,11 @@ use std::{
 
 use anyhow::{Context, Result};
 use application::{
-    FoundationStore, ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore, advance_world,
-    initialize_or_resume_world, resume_world,
+    AgentMemory, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
+    WorldSession, WorldStore, advance_world, initialize_or_resume_world, resume_world,
 };
 use clap::{Parser, Subcommand};
+use hindsight_adapter::HindsightMemory;
 use postgres_store::PostgresStore;
 use serde_json::json;
 use sim_engine::{InitialOrganism, RULESET_VERSION};
@@ -53,6 +54,26 @@ enum Command {
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
     },
+    /// Deliver committed subjective-memory records without blocking simulation ticks.
+    MemoryWorker {
+        #[arg(long, env = "HINDSIGHT_BASE_URL")]
+        hindsight_base_url: String,
+
+        #[arg(long, env = "HINDSIGHT_API_KEY", hide_env_values = true)]
+        hindsight_api_key: Option<String>,
+
+        #[arg(long, env = "MEMORY_WORKER_ID", default_value = "local-memory-worker")]
+        worker_id: String,
+
+        #[arg(long, env = "MEMORY_POLL_MILLISECONDS", default_value_t = 500)]
+        poll_milliseconds: u64,
+
+        #[arg(long, env = "MEMORY_CLAIM_LEASE_SECONDS", default_value_t = 60)]
+        claim_lease_seconds: u32,
+
+        #[arg(long, env = "HINDSIGHT_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
+        request_timeout_seconds: u64,
+    },
 }
 
 #[tokio::main]
@@ -77,6 +98,29 @@ async fn main() -> Result<()> {
             seed,
             predecessor_world_id,
         } => init_proof_world(&store, world_id, seed, predecessor_world_id).await,
+        Command::MemoryWorker {
+            hindsight_base_url,
+            hindsight_api_key,
+            worker_id,
+            poll_milliseconds,
+            claim_lease_seconds,
+            request_timeout_seconds,
+        } => {
+            let memory = HindsightMemory::new(
+                &hindsight_base_url,
+                hindsight_api_key,
+                Duration::from_secs(request_timeout_seconds.max(1)),
+            )
+            .context("configure Hindsight memory adapter")?;
+            serve_memory_worker(
+                &store,
+                &memory,
+                &worker_id,
+                poll_milliseconds,
+                claim_lease_seconds,
+            )
+            .await
+        }
     }
 }
 
@@ -223,6 +267,94 @@ async fn init_proof_world(
         session.world.cursor.sequence, session.world.cursor.tick, session.world.cursor.state_hash
     );
     Ok(())
+}
+
+async fn serve_memory_worker(
+    store: &PostgresStore,
+    memory: &HindsightMemory,
+    worker_id: &str,
+    poll_milliseconds: u64,
+    claim_lease_seconds: u32,
+) -> Result<()> {
+    let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(1)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tracing::info!(
+        worker_id,
+        poll_milliseconds = poll_milliseconds.max(1),
+        claim_lease_seconds = claim_lease_seconds.max(1),
+        "subjective-memory delivery worker started"
+    );
+
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                match store.claim_next_memory(worker_id, claim_lease_seconds).await {
+                    Ok(Some(entry)) => {
+                        let operation_id = entry.retain.operation_id;
+                        match memory.retain(&entry.retain).await {
+                            Ok(receipt) => {
+                                if let Err(error) = store
+                                    .mark_memory_accepted(worker_id, &entry, &receipt)
+                                    .await
+                                {
+                                    tracing::warn!(%operation_id, %error, "could not record Hindsight acknowledgement");
+                                } else {
+                                    tracing::info!(
+                                        %operation_id,
+                                        remote_operation_id = receipt.remote_operation_id,
+                                        attempt = entry.attempt_count,
+                                        "Hindsight accepted subjective memory"
+                                    );
+                                }
+                            }
+                            Err(error) => {
+                                let retry_seconds = retry_delay_seconds(entry.attempt_count);
+                                tracing::warn!(
+                                    %operation_id,
+                                    %error,
+                                    retry_seconds,
+                                    "Hindsight delivery failed; simulation history is unaffected"
+                                );
+                                if let Err(store_error) = store
+                                    .reschedule_memory(
+                                        worker_id,
+                                        &entry,
+                                        &error.to_string(),
+                                        retry_seconds,
+                                    )
+                                    .await
+                                {
+                                    tracing::warn!(
+                                        %operation_id,
+                                        %store_error,
+                                        "could not reschedule subjective-memory delivery"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                    Ok(None) => {}
+                    Err(error) => {
+                        tracing::warn!(%error, "memory outbox unavailable; will retry");
+                    }
+                }
+            }
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result {
+                    tracing::error!(%error, "failed to listen for memory-worker shutdown signal");
+                }
+                tracing::info!(worker_id, "subjective-memory delivery worker stopping");
+                break;
+            }
+        }
+    }
+
+    Ok(())
+}
+
+fn retry_delay_seconds(attempt_count: u32) -> u32 {
+    let shift = attempt_count.saturating_sub(1).min(8);
+    (1_u32 << shift).min(300)
 }
 
 fn init_tracing() {

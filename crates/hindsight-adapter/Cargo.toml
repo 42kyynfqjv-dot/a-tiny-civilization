@@ -1,5 +1,5 @@
 [package]
-name = "application"
+name = "hindsight-adapter"
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -7,17 +7,18 @@ license.workspace = true
 repository.workspace = true
 
 [dependencies]
+application = { path = "../application" }
 async-trait.workspace = true
-chrono.workspace = true
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
-sim-engine = { path = "../sim-engine" }
 thiserror.workspace = true
 uuid.workspace = true
 world-domain = { path = "../world-domain" }
 
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+
 [lints]
 workspace = true
-
-[dev-dependencies]
-tokio.workspace = true

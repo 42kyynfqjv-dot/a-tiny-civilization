@@ -1,5 +1,9 @@
 //! Application use cases and infrastructure ports.
 
+mod memory;
+
+pub use memory::*;
+
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
@@ -94,6 +98,7 @@ pub trait WorldStore: Send + Sync {
         expected: WorldCursor,
         batch: &EventBatch,
         snapshot: &Snapshot,
+        effects: &TransitionEffects,
     ) -> Result<StoredWorld, StoreError>;
 }
 
@@ -171,7 +176,12 @@ pub async fn initialize_or_resume_world<S: WorldStore + ?Sized>(
             )));
         }
         let world = store
-            .commit_transition(stored.cursor, &genesis_batch, &genesis_snapshot)
+            .commit_transition(
+                stored.cursor,
+                &genesis_batch,
+                &genesis_snapshot,
+                &TransitionEffects::default(),
+            )
             .await?;
         return Ok(WorldSession {
             world,
@@ -260,7 +270,12 @@ pub async fn advance_world<S: WorldStore + ?Sized>(
             .commit(sequence, current.world.cursor.last_event_hash, events)?;
     let snapshot = Snapshot::new(next_state.clone(), batch.sequence, batch.batch_hash)?;
     let world = store
-        .commit_transition(current.world.cursor, &batch, &snapshot)
+        .commit_transition(
+            current.world.cursor,
+            &batch,
+            &snapshot,
+            &TransitionEffects::default(),
+        )
         .await?;
 
     if world.cursor.sequence != batch.sequence

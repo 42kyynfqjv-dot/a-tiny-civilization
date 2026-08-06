@@ -15,10 +15,10 @@ check_tree_excludes() {
 
 check_tree_excludes \
   world-domain \
-  '^(application|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
+  '^(application|hindsight-adapter|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
 check_tree_excludes \
   sim-engine \
-  '^(application|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
+  '^(application|hindsight-adapter|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
 check_tree_excludes \
   civilization-runner \
   '^(observer-api|supporter-|payment-|auth-) '

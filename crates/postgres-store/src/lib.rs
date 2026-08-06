@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
+mod memory_outbox;
 mod world_store;
 
 #[derive(Clone, Debug)]

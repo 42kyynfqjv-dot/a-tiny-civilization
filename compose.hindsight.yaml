@@ -5,13 +5,23 @@ services:
     image: ghcr.io/vectorize-io/hindsight:0.8.6
     environment:
       HINDSIGHT_API_LLM_PROVIDER: none
+      HINDSIGHT_API_RETAIN_EXTRACTION_MODE: chunks
       HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS: "true"
-      HINDSIGHT_API_STORE_DOCUMENT_TEXT: "true"
+      HINDSIGHT_API_STORE_DOCUMENT_TEXT: "false"
       HINDSIGHT_API_WORKER_ID: local-development-worker
+      HF_HUB_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-0}
+      TRANSFORMERS_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-0}
     expose:
       - "8888"
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "--silent", "http://127.0.0.1:8888/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 180s
     volumes:
       - hindsight-data:/home/hindsight/.pg0
+      - hindsight-model-cache:/home/hindsight/.cache
     networks:
       - backend
     restart: unless-stopped
@@ -21,7 +31,29 @@ services:
       HINDSIGHT_BASE_URL: http://hindsight:8888
     depends_on:
       hindsight:
-        condition: service_started
+        condition: service_healthy
+
+  memory-worker:
+    image: a-tiny-civilization-app:local
+    command: ["/app/civilization-runner", "memory-worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
+      RUST_LOG: ${RUST_LOG:-info}
+      HINDSIGHT_BASE_URL: http://hindsight:8888
+      MEMORY_WORKER_ID: ${MEMORY_WORKER_ID:-local-memory-worker}
+      MEMORY_POLL_MILLISECONDS: ${MEMORY_POLL_MILLISECONDS:-500}
+      MEMORY_CLAIM_LEASE_SECONDS: ${MEMORY_CLAIM_LEASE_SECONDS:-60}
+      HINDSIGHT_REQUEST_TIMEOUT_SECONDS: ${HINDSIGHT_REQUEST_TIMEOUT_SECONDS:-15}
+    depends_on:
+      migrate:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+    networks:
+      - backend
+    init: true
+    restart: unless-stopped
 
 volumes:
   hindsight-data:
+  hindsight-model-cache:

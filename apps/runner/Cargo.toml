@@ -11,6 +11,7 @@ anyhow.workspace = true
 application = { path = "../../crates/application" }
 clap.workspace = true
 dotenvy.workspace = true
+hindsight-adapter = { path = "../../crates/hindsight-adapter" }
 postgres-store = { path = "../../crates/postgres-store" }
 serde_json.workspace = true
 sim-engine = { path = "../../crates/sim-engine" }
