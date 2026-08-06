@@ -15,7 +15,7 @@ use world_data::{SourceSnapshotArtifact, SourceSnapshotManifest, WorldDataBundle
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
-use world_domain::{Digest, WorldConfiguration};
+use world_domain::{Digest, GeographicCoordinateE7, WorldConfiguration, route_geographic_to_s2};
 
 #[derive(Debug, Parser)]
 #[command(name = "civilization-data")]
@@ -82,6 +82,17 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
+    GeographicRoute {
+        /// Latitude in exact 10^-7 degrees, within [-900000000, 900000000].
+        #[arg(long)]
+        latitude_e7: i32,
+        /// Longitude in exact 10^-7 degrees, within [-1800000000, 1800000000).
+        #[arg(long)]
+        longitude_e7: i32,
+        #[arg(long, default_value_t = 10)]
+        s2_level: u8,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -131,6 +142,11 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_etopo(&source_snapshot, &artifact_root),
+            InspectCommand::GeographicRoute {
+                latitude_e7,
+                longitude_e7,
+                s2_level,
+            } => inspect_geographic_route(latitude_e7, longitude_e7, s2_level),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -146,6 +162,35 @@ async fn main() -> Result<()> {
             ),
         },
     }
+}
+
+#[derive(Serialize)]
+struct GeographicRouteInspection {
+    inspection_schema_version: u16,
+    coordinate_frame: &'static str,
+    latitude_e7: i32,
+    longitude_e7: i32,
+    s2_level: u8,
+    s2_cell_id: String,
+}
+
+fn inspect_geographic_route(latitude_e7: i32, longitude_e7: i32, s2_level: u8) -> Result<()> {
+    let coordinate = GeographicCoordinateE7::new(latitude_e7, longitude_e7)
+        .context("validate WGS 84 geographic coordinate")?;
+    let cell = route_geographic_to_s2(coordinate, s2_level)
+        .context("route geographic coordinate to S2")?;
+    println!(
+        "{}",
+        serde_json::to_string(&GeographicRouteInspection {
+            inspection_schema_version: 1,
+            coordinate_frame: "WGS 84 geodetic coordinates routed through a WGS 84 ECEF ray",
+            latitude_e7,
+            longitude_e7,
+            s2_level,
+            s2_cell_id: cell.to_string(),
+        })?
+    );
+    Ok(())
 }
 
 const ETOPO_GRID_MAGIC: &[u8; 8] = b"ATCETOP1";

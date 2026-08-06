@@ -184,6 +184,18 @@ is deliberately not a substitute for an S2 tile-tree root, a coastline, or a com
 canonical world-data bundle. Generated intermediates are local operator artifacts and
 are not committed to the source repository.
 
+The geographic input boundary used by that future normalizer is independently
+inspectable. Coordinates are exact E7-degree WGS 84 values and route through a
+fixed-point WGS 84 ECEF ray into the shared S2 contract:
+
+```bash
+cargo run --locked -p civilization-data -- inspect geographic-route \
+  --latitude-e7 387000000 --longitude-e7=-903000000 --s2-level 10
+```
+
+This is a route inspection, not an elevation tile. Its remaining normalizer
+requirements are recorded in [ADR 0021](../adr/0021-geographic-source-to-s2-normalization.md).
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index

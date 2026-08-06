@@ -42,6 +42,16 @@ conversion is not yet an exported, verified deterministic boundary.
   its private status is intentional until the geographic input conversion is specified
   and verified at the same rigor.
 
+## Current implementation state
+
+`world-domain` now exposes the first fixed-point reference for exact E7-degree WGS 84
+coordinates: runtime CORDIC uses checked integer arithmetic and retained Q62 angle
+constants, derives a WGS 84 ellipsoidal ECEF ray from the exact flattening rational,
+and then uses the existing exact S2 bridge. The data CLI can inspect that route through
+`inspect geographic-route`. This is intentionally still short of an elevation layer:
+the source-grid sampling/support geometry and independent cross-language golden suite
+remain required before the route is eligible for canonical normalizer output.
+
 ## Consequences
 
 The project does not gain a deceptively plausible elevation tile tree just because an
