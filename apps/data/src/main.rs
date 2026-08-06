@@ -2084,6 +2084,13 @@ struct EtopoInspection {
 }
 
 #[derive(Serialize)]
+struct ChelsaAttributeInspection {
+    name: String,
+    string_value: Option<String>,
+    first_numeric_value: Option<String>,
+}
+
+#[derive(Serialize)]
 struct EtopoVariableInspection {
     name: String,
     shape: Vec<u64>,
@@ -2104,6 +2111,7 @@ struct ChelsaJanuaryTemperatureInspection {
     data_shape: Vec<u64>,
     latitude_endpoint_ieee754_le_hex: [String; 2],
     longitude_endpoint_ieee754_le_hex: [String; 2],
+    data_attributes: Vec<ChelsaAttributeInspection>,
     variables: Vec<EtopoVariableInspection>,
 }
 
@@ -2136,6 +2144,17 @@ fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path
     let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
         .context("parse verified CHELSA NetCDF through the pure-Rust reader")?;
     validate_chelsa_january_temperature_schema(&file)?;
+    let data_attributes = file
+        .variable("Band1")
+        .context("CHELSA has no January-temperature data variable")?
+        .attributes()
+        .iter()
+        .map(|attribute| ChelsaAttributeInspection {
+            name: attribute.name.clone(),
+            string_value: attribute.value.as_string(),
+            first_numeric_value: attribute.value.as_f64().map(|value| value.to_string()),
+        })
+        .collect::<Vec<_>>();
     let latitude_endpoint_ieee754_le_hex =
         inspect_etopo_axis_endpoints(&file, "lat", CHELSA_LATITUDE_CELLS, "CHELSA latitude")?;
     let longitude_endpoint_ieee754_le_hex =
@@ -2163,6 +2182,7 @@ fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path
             data_shape: vec![CHELSA_LATITUDE_CELLS, CHELSA_LONGITUDE_CELLS],
             latitude_endpoint_ieee754_le_hex,
             longitude_endpoint_ieee754_le_hex,
+            data_attributes,
             variables,
         })?
     );

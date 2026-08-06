@@ -4,8 +4,8 @@ mod scalar_field;
 mod terrain;
 
 pub use scalar_field::{
-    PackedScalarFieldTile, ScalarFieldCell, ScalarFieldTileError,
     PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_SCHEMA_VERSION,
+    PackedScalarFieldTile, ScalarFieldCell, ScalarFieldTileError,
 };
 
 pub use terrain::{

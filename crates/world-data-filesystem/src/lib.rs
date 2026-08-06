@@ -10,10 +10,10 @@ use std::{
 use anyhow::{Context, Result, bail};
 use sha2::{Digest as _, Sha256};
 use world_data::{
-    PackedScalarFieldTile, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
-    BundleArtifact, BundleArtifactKind, DataLayerStorage, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PackedScalarTerrainTile, SourceSnapshotArtifact, SourceSnapshotManifest, TileTreeEntry,
-    TileTreeEntryKind, TileTreeIndex, TileTreeReference, WorldDataBundle,
+    BundleArtifact, BundleArtifactKind, DataLayerStorage, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PackedScalarFieldTile, PackedScalarTerrainTile,
+    SourceSnapshotArtifact, SourceSnapshotManifest, TileTreeEntry, TileTreeEntryKind,
+    TileTreeIndex, TileTreeReference, WorldDataBundle,
 };
 use world_domain::{Digest, S2CellId};
 
@@ -363,15 +363,30 @@ where
 fn validate_known_tile_payload(layer_id: &str, entry: &TileTreeEntry, bytes: &[u8]) -> Result<()> {
     if entry.artifact.media_type == PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE {
         let tile = PackedScalarFieldTile::from_canonical_slice(bytes).with_context(|| {
-            format!("packed scalar field tile {:?} is invalid", entry.artifact.path)
+            format!(
+                "packed scalar field tile {:?} is invalid",
+                entry.artifact.path
+            )
         })?;
         if tile.layer_id != layer_id {
-            bail!("packed scalar field tile {:?} declares layer {:?}, expected {:?}", entry.artifact.path, tile.layer_id, layer_id);
+            bail!(
+                "packed scalar field tile {:?} declares layer {:?}, expected {:?}",
+                entry.artifact.path,
+                tile.layer_id,
+                layer_id
+            );
         }
-        let declared_container = entry.s2_cell_id.parse::<S2CellId>()
+        let declared_container = entry
+            .s2_cell_id
+            .parse::<S2CellId>()
             .with_context(|| format!("invalid tile S2 CellId {}", entry.s2_cell_id))?;
         if tile.container_s2_cell_id != declared_container {
-            bail!("packed scalar field tile {:?} declares container {}, expected {}", entry.artifact.path, tile.container_s2_cell_id, declared_container);
+            bail!(
+                "packed scalar field tile {:?} declares container {}, expected {}",
+                entry.artifact.path,
+                tile.container_s2_cell_id,
+                declared_container
+            );
         }
         return Ok(());
     }
