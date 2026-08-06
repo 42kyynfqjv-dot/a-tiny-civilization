@@ -50,6 +50,15 @@ Physical affordances are allowed and necessary. Clay may have moisture-dependent
 plasticity and heat-dependent material changes. Whether anyone notices, explains,
 uses, teaches, loses, or mythologizes those effects is historical contingency.
 
+Organisms are embodied products of evolution, not blank-slate random walkers. The
+engine may provide species-appropriate physiological regulation and reflexive
+capabilities such as hunger, thirst, swallowing, pain avoidance, locomotion,
+reproductive physiology, and infant attachment. It must not provide culturally
+contingent conclusions: which objects are edible, how to obtain or prepare them,
+courtship strategies, partner choice, childcare practice, kinship, inheritance, or
+explanations of reproduction must be learned from situated experience if they arise.
+Primitive bodily capability is not privileged conceptual knowledge.
+
 Real-world fidelity does not mean molecular or cellular simulation at every scale.
 It means abstractions preserve the relevant measured causal behavior and never replace
 real materials or organisms with convenient fantasy equivalents. Any unsupported
@@ -180,6 +189,13 @@ contemporary claim, later interpretation, observer inference, or disputed.
 Observer summaries, firsts, records, streaks, charts, and digests are deterministic,
 versioned projections with links to their source events. They are finding aids rather
 than inputs to history. The core observer experience does not use an LLM narrator.
+
+Public presentation is restrained and non-explicit. The observatory and wiki never
+depict, animate, or narrate sexual acts or violence. Reproduction, injury, predation,
+and mortality may exist as abstract canonical mechanics, while public projections show
+only necessary, age-appropriate outcomes such as pregnancy state, birth, injury,
+death, and population change. Raw mechanism codes are not public copy. Presentation
+policy never changes what agents perceive or what causally occurs.
 
 ## 9. Deployment and secrets
 
