@@ -85,6 +85,13 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Inspect the pinned CHELSA January-temperature NetCDF schema through the portable Rust reader.
+    ChelsaJanuaryTemperature {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+    },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
         /// Latitude in exact 10^-7 degrees, within [-900000000, 900000000].
@@ -188,6 +195,10 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_etopo(&source_snapshot, &artifact_root),
+            InspectCommand::ChelsaJanuaryTemperature {
+                source_snapshot,
+                artifact_root,
+            } => inspect_chelsa_january_temperature(&source_snapshot, &artifact_root),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -1088,6 +1099,87 @@ struct EtopoInspection {
 struct EtopoVariableInspection {
     name: String,
     shape: Vec<u64>,
+}
+
+const CHELSA_LATITUDE_CELLS: u64 = 20_880;
+const CHELSA_LONGITUDE_CELLS: u64 = 43_200;
+
+#[derive(Serialize)]
+struct ChelsaJanuaryTemperatureInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+    data_variable: String,
+    data_shape: Vec<u64>,
+    latitude_endpoint_ieee754_le_hex: [String; 2],
+    longitude_endpoint_ieee754_le_hex: [String; 2],
+    variables: Vec<EtopoVariableInspection>,
+}
+
+fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .context("source snapshot has no CHELSA NetCDF data artifact")?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+        .context("parse verified CHELSA NetCDF through the pure-Rust reader")?;
+    validate_chelsa_january_temperature_schema(&file)?;
+    let latitude_endpoint_ieee754_le_hex =
+        inspect_etopo_axis_endpoints(&file, "lat", CHELSA_LATITUDE_CELLS, "CHELSA latitude")?;
+    let longitude_endpoint_ieee754_le_hex =
+        inspect_etopo_axis_endpoints(&file, "lon", CHELSA_LONGITUDE_CELLS, "CHELSA longitude")?;
+    let mut variables = file
+        .variables()
+        .context("enumerate CHELSA variables")?
+        .iter()
+        .map(|variable| EtopoVariableInspection {
+            name: variable.name().to_owned(),
+            shape: variable.shape().to_vec(),
+        })
+        .collect::<Vec<_>>();
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaJanuaryTemperatureInspection {
+            inspection_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_hash: artifact.content_hash,
+            artifact_byte_length: artifact.byte_length,
+            data_variable: "Band1".to_owned(),
+            data_shape: vec![CHELSA_LATITUDE_CELLS, CHELSA_LONGITUDE_CELLS],
+            latitude_endpoint_ieee754_le_hex,
+            longitude_endpoint_ieee754_le_hex,
+            variables,
+        })?
+    );
+    Ok(())
+}
+
+fn validate_chelsa_january_temperature_schema(file: &NcFile) -> Result<()> {
+    let latitude = file.variable("lat").context("CHELSA has no lat variable")?;
+    let longitude = file.variable("lon").context("CHELSA has no lon variable")?;
+    let temperature = file
+        .variable("Band1")
+        .context("CHELSA has no January-temperature data variable")?;
+    if latitude.shape() != [CHELSA_LATITUDE_CELLS]
+        || longitude.shape() != [CHELSA_LONGITUDE_CELLS]
+        || temperature.shape() != [CHELSA_LATITUDE_CELLS, CHELSA_LONGITUDE_CELLS]
+    {
+        bail!("CHELSA variables do not have the pinned January-temperature grid shape");
+    }
+    Ok(())
 }
 
 fn inspect_etopo(manifest_path: &Path, artifact_root: &Path) -> Result<()> {

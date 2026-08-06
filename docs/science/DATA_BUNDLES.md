@@ -173,6 +173,19 @@ cargo run --locked -p civilization-data -- inspect etopo \
   --artifact-root data/source-cache
 ```
 
+The first CHELSA artifact is inspected by the same portable reader. This command
+verifies the complete evidence-bound snapshot, checks the pinned 20,880 × 43,200
+January `Band1` grid shape, and emits the raw IEEE-754 coordinate endpoints and
+source hashes. It establishes exactly what has been retained; it does not assign
+units or semantics beyond the source metadata, aggregate the raster to S2, or make
+it a canonical climate layer:
+
+```bash
+cargo run --locked -p civilization-data -- inspect chelsa-january-temperature \
+  --source-snapshot data/source-snapshots/chelsa-bioclim-plus-v2.1-tas-january-1981-2010.json \
+  --artifact-root data/source-cache
+```
+
 The first reproducible elevation intermediate is a regular sampling of the verified
 source's `z` values. It retains the source `f32` IEEE-754 bits in source row order,
 includes both source digests and the selected spacing in an 84-byte binary header, and
@@ -262,7 +275,8 @@ bedrock relief, and one CC0 CHELSA-BIOCLIM+ v2.1 January 1981–2010 temperature
 with official release, license, and version evidence. The ETOPO
 pipeline can now derive a portable, hash-bound global elevation intermediate and a
 separately checked source-centre quadrature summary from that evidence. No normalized
-S2 layer root or canonical seed is claimed yet. Lower Buffalo
-remains only the first high-resolution conformance tile. The next data work is
-deterministic S2 normalization and planet-level roots, then reference-tile
-normalization without placeholder values.
+S2 layer root or canonical seed is claimed yet. The CHELSA inspector verifies the
+retained January grid without turning it into climate semantics. Lower Buffalo remains
+only the first high-resolution conformance tile. The next data work is deterministic
+S2 normalization and planet-level roots, then reference-tile normalization without
+placeholder values.
