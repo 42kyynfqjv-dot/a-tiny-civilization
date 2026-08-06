@@ -70,7 +70,9 @@ all 256 descendants with exact integer conservation, deterministic residual stre
 canonical reaggregation, and an explicit Alabama-paradox guard. Neither reference
 changes durable schemas. Persistent full-Earth execution remains intentionally
 disabled until exact source bundles, coupled ecological quantities, retained refined
-state, durable embodied movement, scheduling, and persistence are integrated.
+state, locomotion physics, scheduling, and persistence are integrated. Schema-v4
+state now retains and replays a full-Earth organism's durable S2 embodied-patch
+position and resolved movement, while public projections intentionally omit both.
 
 Exact upstream snapshots now pin both Natural Earth v5.1.2 generalized global land
 polygons and NOAA ETOPO 2022 v1 global 60 arc-second bedrock relief. The latter is
@@ -79,6 +81,11 @@ it brings real global elevation and bathymetry evidence without mistaking it for
 ecological bundle. HTTPS acquisition streams into an ignored cache, never replaces an
 existing file, and finishes with complete offline verification. See
 [ADR 0015](docs/adr/0015-exact-upstream-source-snapshots.md).
+
+All twelve CHELSA-BIOCLIM+ v2.1 monthly 1981–2010 land-temperature normals are also
+pinned with exact hashes and a shared-grid inspection gate. They are annual climate
+evidence, not a weather model or a complete climate layer; ocean forcing,
+precipitation, wind, and ecological coupling remain required.
 
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never
