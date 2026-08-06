@@ -2,13 +2,15 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHashError, Digest, EntityId, EventId, EventSequence, PrimitiveAction, SimTick,
-    SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    CanonicalHashError, Digest, EntityId, EventId, EventSequence, PrimitiveAction, S2CellId,
+    SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
 pub const CONFIGURED_EVENT_SCHEMA_VERSION: u16 = 2;
 pub const EVENT_SCHEMA_VERSION: u16 = 3;
+/// Adds durable S2 embodied-patch positions and movement facts for full-Earth worlds.
+pub const EMBODIED_POSITION_EVENT_SCHEMA_VERSION: u16 = 4;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -79,6 +81,8 @@ pub enum DomainEvent {
         birth_category: BirthCategory,
         initial_age_ticks: u64,
         location_id: Option<EntityId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        embodied_patch: Option<S2CellId>,
     },
     TickAdvanced {
         from: SimTick,
@@ -91,6 +95,8 @@ pub enum DomainEvent {
         birth_category: BirthCategory,
         parent_ids: Vec<EntityId>,
         location_id: Option<EntityId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        embodied_patch: Option<S2CellId>,
     },
     OrganismDied {
         organism_id: EntityId,
@@ -105,6 +111,12 @@ pub enum DomainEvent {
     OrganismActed {
         organism_id: EntityId,
         action: PrimitiveAction,
+    },
+    /// A resolved physical relocation between discrete full-Earth embodied patches.
+    OrganismMoved {
+        organism_id: EntityId,
+        from_patch: S2CellId,
+        to_patch: S2CellId,
     },
     WorldExtinct,
     WorldArchived,
@@ -240,7 +252,10 @@ impl EventBatch {
 fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchError> {
     if !matches!(
         event_schema_version,
-        LEGACY_EVENT_SCHEMA_VERSION | CONFIGURED_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
+        LEGACY_EVENT_SCHEMA_VERSION
+            | CONFIGURED_EVENT_SCHEMA_VERSION
+            | EVENT_SCHEMA_VERSION
+            | EMBODIED_POSITION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -260,6 +275,22 @@ fn validate_event_for_schema(
         && matches!(
             event,
             DomainEvent::OrganismPerceived { .. } | DomainEvent::OrganismActed { .. }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismMoved { .. }
+                | DomainEvent::OrganismInitialized {
+                    embodied_patch: Some(_),
+                    ..
+                }
+                | DomainEvent::OrganismBorn {
+                    embodied_patch: Some(_),
+                    ..
+                }
         )
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
@@ -485,6 +516,43 @@ mod tests {
                 manifest.ruleset_version,
                 Digest::ZERO,
                 vec![action],
+                Digest::sha256(b"post-state"),
+            )
+            .is_ok()
+        );
+    }
+
+    #[test]
+    fn durable_patch_movements_require_schema_four() {
+        let manifest = manifest();
+        let patch = S2CellId::new(1_u64 << 60).expect("face root");
+        let movement = DomainEvent::OrganismMoved {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(4)),
+            from_patch: patch,
+            to_patch: patch.children().expect("children")[0],
+        };
+        assert!(matches!(
+            EventBatch::new(
+                EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![movement.clone()],
+                Digest::sha256(b"post-state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        assert!(
+            EventBatch::new(
+                EMBODIED_POSITION_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![movement],
                 Digest::sha256(b"post-state"),
             )
             .is_ok()

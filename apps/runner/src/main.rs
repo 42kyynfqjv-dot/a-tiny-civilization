@@ -246,6 +246,7 @@ async fn init_proof_world(
             birth_category: BirthCategory::new("female")?,
             initial_age_ticks: 0,
             location_id: None,
+            embodied_patch: None,
         },
         InitialOrganism {
             organism_id: EntityId::deterministic(world_id, b"proof-person-male"),
@@ -254,6 +255,7 @@ async fn init_proof_world(
             birth_category: BirthCategory::new("male")?,
             initial_age_ticks: 0,
             location_id: None,
+            embodied_patch: None,
         },
     ];
     let session =

@@ -121,7 +121,8 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 DomainEvent::WorldConfigured { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
-                | DomainEvent::OrganismActed { .. } => {
+                | DomainEvent::OrganismActed { .. }
+                | DomainEvent::OrganismMoved { .. } => {
                     return None;
                 }
             };
@@ -292,6 +293,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::OrganismPerceived { .. }
             | DomainEvent::OrganismActed { .. }
+            | DomainEvent::OrganismMoved { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
             | DomainEvent::WorldArchived => None,
@@ -597,6 +599,7 @@ mod tests {
                 birth_category: BirthCategory::new("female").expect("valid category"),
                 parent_ids: vec![EntityId::from_uuid(Uuid::from_u128(13))],
                 location_id: Some(EntityId::from_uuid(Uuid::from_u128(14))),
+                embodied_patch: None,
             },
             DomainEvent::OrganismDied {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
@@ -655,6 +658,7 @@ mod tests {
                 birth_category: BirthCategory::new("female").expect("valid category"),
                 parent_ids: vec![EntityId::from_uuid(Uuid::from_u128(23))],
                 location_id: Some(EntityId::from_uuid(Uuid::from_u128(24))),
+                embodied_patch: None,
             }],
             Digest::sha256(b"organism projection state"),
         )

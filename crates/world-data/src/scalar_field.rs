@@ -166,7 +166,7 @@ mod tests {
     use super::*;
     #[test]
     fn unit_declared_tile_round_trips_canonically() {
-        let container: S2CellId = "1000010000000000".parse().unwrap();
+        let container: S2CellId = "1000010000000000".parse().expect("valid S2 cell");
         let tile = PackedScalarFieldTile {
             tile_schema_version: 1,
             layer_id: "january-air-temperature".to_owned(),
@@ -179,7 +179,7 @@ mod tests {
             target_s2_level: 11,
             cells: container
                 .children()
-                .unwrap()
+                .expect("S2 children")
                 .into_iter()
                 .map(|s2_cell_id| ScalarFieldCell {
                     s2_cell_id,
@@ -190,7 +190,7 @@ mod tests {
                 })
                 .collect(),
         };
-        let bytes = tile.canonical_bytes().unwrap();
+        let bytes = tile.canonical_bytes().expect("canonical tile");
         assert_eq!(
             PackedScalarFieldTile::from_canonical_slice(&bytes),
             Ok(tile)

@@ -39,6 +39,7 @@ fn initial_person(world_id: WorldId) -> InitialOrganism {
         birth_category: BirthCategory::new("female").expect("valid birth category"),
         initial_age_ticks: 0,
         location_id: None,
+        embodied_patch: None,
     }
 }
 

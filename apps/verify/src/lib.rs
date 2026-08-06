@@ -72,6 +72,7 @@ impl VerificationBundle {
             birth_category: BirthCategory::new("female")?,
             initial_age_ticks: 0,
             location_id: None,
+            embodied_patch: None,
         }])?;
         let (running, genesis_batch) =
             initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;

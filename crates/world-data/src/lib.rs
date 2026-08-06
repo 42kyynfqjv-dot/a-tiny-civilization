@@ -4,6 +4,11 @@ mod boolean_field;
 mod scalar_field;
 mod terrain;
 
+pub use boolean_field::{
+    BooleanFieldCell, BooleanFieldTileError, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_BOOLEAN_FIELD_TILE_SCHEMA_VERSION, PackedBooleanFieldTile,
+};
+
 pub use scalar_field::{
     PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_SCHEMA_VERSION,
     PackedScalarFieldTile, ScalarFieldCell, ScalarFieldTileError,
@@ -2681,7 +2686,3 @@ mod tests {
         ));
     }
 }
-pub use boolean_field::{
-    BooleanFieldCell, BooleanFieldTileError, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
-    PACKED_BOOLEAN_FIELD_TILE_SCHEMA_VERSION, PackedBooleanFieldTile,
-};

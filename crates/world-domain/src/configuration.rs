@@ -336,6 +336,18 @@ impl WorldConfiguration {
         Ok(configuration)
     }
 
+    /// The only admissible durable organism-position level for a full-Earth world.
+    /// Legacy bounded configurations deliberately have no S2 embodied-patch address.
+    #[must_use]
+    pub fn embodied_patch_s2_level(&self) -> Option<u8> {
+        match &self.geometry {
+            WorldGeometry::BoundedRaster { .. } => None,
+            WorldGeometry::FullEarth { full_earth_grid } => {
+                Some(full_earth_grid.levels.embodied_patch)
+            }
+        }
+    }
+
     /// Construct the schema-v2 full-Earth configuration required for a public world.
     pub fn new_full_earth(
         tick_duration_seconds: u32,

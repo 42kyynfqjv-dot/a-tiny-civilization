@@ -15,18 +15,21 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
     BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, DeathCause, Digest,
-    DomainEvent, EVENT_SCHEMA_VERSION, EntityId, EventBatch, EventBatchError, EventSequence,
-    ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, PrimitiveAction, SequenceOverflow,
-    SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow,
-    WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
+    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
+    EventBatch, EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION,
+    OrganismRole, PrimitiveAction, S2CellId, SequenceOverflow, SimTick, SituatedPerception,
+    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
 };
 
 /// Version pinned to each world so old histories are never silently reinterpreted.
 pub const RULESET_VERSION: u32 = 1;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
+pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
 const LEGACY_STATE_HASH_SCHEMA_VERSION: u16 = 1;
 const STATE_HASH_SCHEMA_VERSION: u16 = 2;
+const EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION: u16 = 3;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -36,6 +39,7 @@ pub struct InitialOrganism {
     pub birth_category: BirthCategory,
     pub initial_age_ticks: u64,
     pub location_id: Option<EntityId>,
+    pub embodied_patch: Option<S2CellId>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -55,6 +59,8 @@ pub struct OrganismState {
     born_at: Option<SimTick>,
     initial_age_ticks: u64,
     location_id: Option<EntityId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    embodied_patch: Option<S2CellId>,
     death: Option<DeathRecord>,
 }
 
@@ -82,6 +88,11 @@ impl OrganismState {
     #[must_use]
     pub const fn species(&self) -> &SpeciesIdentity {
         &self.species
+    }
+
+    #[must_use]
+    pub const fn embodied_patch(&self) -> Option<S2CellId> {
+        self.embodied_patch
     }
 }
 
@@ -206,6 +217,7 @@ impl EngineState {
                 birth_category: organism.birth_category,
                 initial_age_ticks: organism.initial_age_ticks,
                 location_id: organism.location_id,
+                embodied_patch: organism.embodied_patch,
             }
         }));
         Ok(events)
@@ -283,6 +295,27 @@ impl EngineState {
         }])
     }
 
+    /// Record a resolved relocation between two full-Earth embodied patches. The
+    /// primitive bodily action that caused it remains a separate event.
+    pub fn plan_movement(
+        &self,
+        organism_id: EntityId,
+        to_patch: S2CellId,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.require_living_organism(organism_id)?;
+        self.validate_embodied_patch(to_patch)?;
+        let from_patch = self
+            .organisms
+            .get(&organism_id)
+            .and_then(|organism| organism.embodied_patch)
+            .ok_or(EngineError::MissingEmbodiedPatch(organism_id))?;
+        Ok(vec![DomainEvent::OrganismMoved {
+            organism_id,
+            from_patch,
+            to_patch,
+        }])
+    }
+
     pub fn commit(
         &self,
         sequence: EventSequence,
@@ -300,11 +333,7 @@ impl EngineState {
             }
         }
         let state_hash = next.state_hash()?;
-        let event_schema_version = if next.configuration.is_some() {
-            EVENT_SCHEMA_VERSION
-        } else {
-            LEGACY_EVENT_SCHEMA_VERSION
-        };
+        let event_schema_version = next.event_schema_version();
         let batch = EventBatch::new(
             event_schema_version,
             self.world_id(),
@@ -319,11 +348,7 @@ impl EngineState {
     }
 
     pub fn state_hash(&self) -> Result<Digest, CanonicalHashError> {
-        let state_hash_schema_version = if self.configuration.is_some() {
-            STATE_HASH_SCHEMA_VERSION
-        } else {
-            LEGACY_STATE_HASH_SCHEMA_VERSION
-        };
+        let state_hash_schema_version = self.state_hash_schema_version();
         Digest::canonical(&StateHashMaterial {
             state_hash_schema_version,
             manifest: &self.manifest,
@@ -339,6 +364,36 @@ impl EngineState {
             self.apply_event(event)?;
         }
         Ok(())
+    }
+
+    fn event_schema_version(&self) -> u16 {
+        if self
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+        {
+            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        } else if self.configuration.is_some() {
+            EVENT_SCHEMA_VERSION
+        } else {
+            LEGACY_EVENT_SCHEMA_VERSION
+        }
+    }
+
+    fn state_hash_schema_version(&self) -> u16 {
+        if self
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+        {
+            EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION
+        } else if self.configuration.is_some() {
+            STATE_HASH_SCHEMA_VERSION
+        } else {
+            LEGACY_STATE_HASH_SCHEMA_VERSION
+        }
     }
 
     fn apply_event(&mut self, event: &DomainEvent) -> Result<(), EngineError> {
@@ -371,9 +426,11 @@ impl EngineState {
                 birth_category,
                 initial_age_ticks,
                 location_id,
+                embodied_patch,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
+                self.validate_initial_embodied_patch(*embodied_patch)?;
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
                     species: species.clone(),
@@ -384,6 +441,7 @@ impl EngineState {
                     born_at: None,
                     initial_age_ticks: *initial_age_ticks,
                     location_id: *location_id,
+                    embodied_patch: *embodied_patch,
                     death: None,
                 })?;
             }
@@ -406,9 +464,11 @@ impl EngineState {
                 birth_category,
                 parent_ids,
                 location_id,
+                embodied_patch,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
+                self.validate_initial_embodied_patch(*embodied_patch)?;
                 if parent_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
                     return Err(EngineError::NonCanonicalParentOrder);
                 }
@@ -428,6 +488,7 @@ impl EngineState {
                     born_at: Some(self.tick),
                     initial_age_ticks: 0,
                     location_id: *location_id,
+                    embodied_patch: *embodied_patch,
                     death: None,
                 })?;
             }
@@ -462,6 +523,22 @@ impl EngineState {
                 action
                     .validate()
                     .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+            DomainEvent::OrganismMoved {
+                organism_id,
+                from_patch,
+                to_patch,
+            } => {
+                self.require_living_organism(*organism_id)?;
+                self.validate_embodied_patch(*to_patch)?;
+                let organism = self
+                    .organisms
+                    .get_mut(organism_id)
+                    .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                if organism.embodied_patch != Some(*from_patch) {
+                    return Err(EngineError::UnexpectedEmbodiedPatch(*organism_id));
+                }
+                organism.embodied_patch = Some(*to_patch);
             }
             DomainEvent::WorldExtinct => {
                 self.require_status(WorldStatus::Running)?;
@@ -509,6 +586,47 @@ impl EngineState {
         }
     }
 
+    fn validate_initial_embodied_patch(
+        &self,
+        embodied_patch: Option<S2CellId>,
+    ) -> Result<(), EngineError> {
+        match self
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+        {
+            Some(level) => {
+                let patch = embodied_patch.ok_or(EngineError::MissingInitialEmbodiedPatch)?;
+                if patch.level() != level {
+                    return Err(EngineError::EmbodiedPatchLevelMismatch {
+                        expected: level,
+                        actual: patch.level(),
+                    });
+                }
+            }
+            None if embodied_patch.is_some() => {
+                return Err(EngineError::EmbodiedPatchRequiresFullEarthConfiguration);
+            }
+            None => {}
+        }
+        Ok(())
+    }
+
+    fn validate_embodied_patch(&self, patch: S2CellId) -> Result<(), EngineError> {
+        let expected = self
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .ok_or(EngineError::EmbodiedPatchRequiresFullEarthConfiguration)?;
+        if patch.level() != expected {
+            return Err(EngineError::EmbodiedPatchLevelMismatch {
+                expected,
+                actual: patch.level(),
+            });
+        }
+        Ok(())
+    }
+
     fn validate(&self) -> Result<(), EngineError> {
         if self.manifest.ruleset_version == 0 {
             return Err(EngineError::ZeroRulesetVersion);
@@ -531,6 +649,7 @@ impl EngineState {
                 return Err(EngineError::OrganismKeyMismatch(*id));
             }
             organism.species.validate()?;
+            self.validate_initial_embodied_patch(organism.embodied_patch)?;
             if organism
                 .parent_ids
                 .windows(2)
@@ -572,7 +691,14 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.configuration.is_some() {
+        let snapshot_schema_version = if state
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+        {
+            EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.configuration.is_some() {
             SNAPSHOT_SCHEMA_VERSION
         } else {
             LEGACY_SNAPSHOT_SCHEMA_VERSION
@@ -590,13 +716,23 @@ impl Snapshot {
     pub fn verify_integrity(&self) -> Result<(), EngineError> {
         if !matches!(
             self.snapshot_schema_version,
-            LEGACY_SNAPSHOT_SCHEMA_VERSION | SNAPSHOT_SCHEMA_VERSION
+            LEGACY_SNAPSHOT_SCHEMA_VERSION
+                | SNAPSHOT_SCHEMA_VERSION
+                | EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.configuration.is_some() {
+        let expected_schema_version = if self
+            .state
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+        {
+            EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.configuration.is_some() {
             SNAPSHOT_SCHEMA_VERSION
         } else {
             LEGACY_SNAPSHOT_SCHEMA_VERSION
@@ -697,7 +833,27 @@ fn replay_from_cursor(
             .iter()
             .any(|record| matches!(&record.event, DomainEvent::WorldConfigured { .. }));
         let is_configured = state.configuration.is_some() || configures_world;
-        let valid_schema = if is_configured {
+        let expected_schema = if state
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+            || batch.events.iter().any(|record| {
+                matches!(
+                    &record.event,
+                    DomainEvent::WorldConfigured { configuration }
+                        if configuration.embodied_patch_s2_level().is_some()
+                )
+            }) {
+            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        } else if is_configured {
+            EVENT_SCHEMA_VERSION
+        } else {
+            LEGACY_EVENT_SCHEMA_VERSION
+        };
+        let valid_schema = if expected_schema == EMBODIED_POSITION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == EVENT_SCHEMA_VERSION {
             matches!(
                 batch.event_schema_version,
                 CONFIGURED_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
@@ -707,11 +863,7 @@ fn replay_from_cursor(
         };
         if !valid_schema {
             return Err(EngineError::BatchEventSchemaMismatch {
-                expected: if is_configured {
-                    EVENT_SCHEMA_VERSION
-                } else {
-                    LEGACY_EVENT_SCHEMA_VERSION
-                },
+                expected: expected_schema,
                 actual: batch.event_schema_version,
             });
         }
@@ -773,6 +925,16 @@ pub enum EngineError {
     TooManyEvents,
     #[error("full-Earth genesis is blocked until deterministic partition execution is implemented")]
     PartitionedExecutionNotImplemented,
+    #[error("a durable embodied patch requires a full-Earth configuration")]
+    EmbodiedPatchRequiresFullEarthConfiguration,
+    #[error("full-Earth initial organisms require an embodied patch")]
+    MissingInitialEmbodiedPatch,
+    #[error("organism {0} has no durable embodied patch")]
+    MissingEmbodiedPatch(EntityId),
+    #[error("embodied patch level must be {expected}, found {actual}")]
+    EmbodiedPatchLevelMismatch { expected: u8, actual: u8 },
+    #[error("organism {0} is not located at the movement event's declared source patch")]
+    UnexpectedEmbodiedPatch(EntityId),
     #[error("organism {0} already exists")]
     DuplicateOrganism(EntityId),
     #[error("organism map key {0} does not match its value")]
@@ -877,6 +1039,7 @@ mod tests {
             birth_category: BirthCategory::new("female").expect("valid category"),
             initial_age_ticks: 0,
             location_id: None,
+            embodied_patch: None,
         }
     }
 
@@ -943,6 +1106,15 @@ mod tests {
             },
         )
         .expect("valid full-Earth configuration")
+    }
+
+    fn face_zero_patch(path: &[usize]) -> S2CellId {
+        let mut cell = S2CellId::new(1_u64 << 60).expect("face root");
+        for child_index in path {
+            cell = cell.children().expect("children")[*child_index];
+        }
+        assert_eq!(cell.level(), 23);
+        cell
     }
 
     fn committed_history() -> Vec<EventBatch> {
@@ -1149,6 +1321,61 @@ mod tests {
             initial.plan_configured_genesis(full_earth_configuration(), Vec::new()),
             Err(EngineError::PartitionedExecutionNotImplemented)
         ));
+    }
+
+    #[test]
+    fn full_earth_positions_and_movements_are_schema_gated_and_replayable() {
+        let manifest = manifest();
+        let person_id = initial_person(manifest.world_id).organism_id;
+        let start = face_zero_patch(&[0; 23]);
+        let end = face_zero_patch(&[
+            0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+        ]);
+        let initial = EngineState::new(manifest.clone());
+        let events = vec![
+            DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            },
+            DomainEvent::WorldConfigured {
+                configuration: full_earth_configuration(),
+            },
+            DomainEvent::OrganismInitialized {
+                organism_id: person_id,
+                species: human(),
+                role: OrganismRole::Person,
+                birth_category: BirthCategory::new("female").expect("category"),
+                initial_age_ticks: 0,
+                location_id: None,
+                embodied_patch: Some(start),
+            },
+        ];
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, events)
+            .expect("full-Earth positioned genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.organisms().next().expect("person").embodied_patch(),
+            Some(start)
+        );
+        let movement = running.plan_movement(person_id, end).expect("movement");
+        let (moved, batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, movement)
+            .expect("commit movement");
+        assert_eq!(
+            moved.organisms().next().expect("person").embodied_patch(),
+            Some(end)
+        );
+        assert_eq!(
+            Snapshot::new(moved.clone(), EventSequence::new(2), batch.batch_hash)
+                .expect("positioned snapshot")
+                .snapshot_schema_version,
+            EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
+        );
+        let replayed = replay(manifest, &[genesis, batch]).expect("replay positioned history");
+        assert_eq!(replayed.state, moved);
     }
 
     #[test]
