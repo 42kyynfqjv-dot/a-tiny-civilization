@@ -954,49 +954,18 @@ fn derive_etopo_terrain_layer(
             output_directory.display()
         )
     })?;
-    let layer_directory = output_directory.join("layers").join(layer_id);
-    let tile_directory = layer_directory.join("l6");
-    fs::create_dir_all(&tile_directory).with_context(|| {
-        format!(
-            "create ETOPO terrain tile directory {}",
-            tile_directory.display()
-        )
-    })?;
-
-    let mut entries = Vec::new();
-    for container in global_s2_cells_at_level(container_s2_level)? {
-        let tile = pack_etopo_terrain_tile(
+    let (root_relative_path, root_bytes) = write_packed_etopo_terrain_layer(
+        output_directory,
+        EtopoTerrainPackingProfile {
             layer_id,
             source_snapshot_digest,
-            artifact.content_hash,
+            source_artifact_digest: artifact.content_hash,
             points_per_axis,
-            container,
+            container_s2_level,
             target_s2_level,
-            &summaries,
-        )?;
-        let bytes = tile.canonical_bytes()?;
-        let relative_path = format!("layers/{layer_id}/l6/{container}.tile");
-        write_new_artifact(&output_directory.join(&relative_path), &bytes)?;
-        entries.push(TileTreeEntry {
-            kind: TileTreeEntryKind::Tile,
-            s2_cell_id: container.to_string(),
-            s2_level: container_s2_level,
-            artifact: TileArtifactReference {
-                path: relative_path,
-                media_type: PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE.to_owned(),
-                content_hash: Digest::sha256(&bytes),
-                byte_length: u64::try_from(bytes.len())?,
-            },
-        });
-    }
-    let root = TileTreeIndex {
-        index_schema_version: 1,
-        layer_id: layer_id.to_owned(),
-        entries,
-    };
-    let root_bytes = root.canonical_bytes()?;
-    let root_relative_path = format!("layers/{layer_id}/root.index");
-    write_new_artifact(&output_directory.join(&root_relative_path), &root_bytes)?;
+        },
+        &summaries,
+    )?;
     println!(
         "{}",
         serde_json::to_string(&EtopoTerrainLayerDerivation {
@@ -1017,6 +986,71 @@ fn derive_etopo_terrain_layer(
         })?
     );
     Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct EtopoTerrainPackingProfile<'a> {
+    layer_id: &'a str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    points_per_axis: u8,
+    container_s2_level: u8,
+    target_s2_level: u8,
+}
+
+fn write_packed_etopo_terrain_layer(
+    output_directory: &Path,
+    profile: EtopoTerrainPackingProfile<'_>,
+    summaries: &std::collections::BTreeMap<S2CellId, EtopoCentreSummaryStats>,
+) -> Result<(String, Vec<u8>)> {
+    let level_directory = format!("l{}", profile.container_s2_level);
+    let layer_directory = output_directory.join("layers").join(profile.layer_id);
+    let tile_directory = layer_directory.join(&level_directory);
+    fs::create_dir_all(&tile_directory).with_context(|| {
+        format!(
+            "create ETOPO terrain tile directory {}",
+            tile_directory.display()
+        )
+    })?;
+
+    let mut entries = Vec::new();
+    for container in global_s2_cells_at_level(profile.container_s2_level)? {
+        let tile = pack_etopo_terrain_tile(
+            profile.layer_id,
+            profile.source_snapshot_digest,
+            profile.source_artifact_digest,
+            profile.points_per_axis,
+            container,
+            profile.target_s2_level,
+            summaries,
+        )?;
+        let bytes = tile.canonical_bytes()?;
+        let relative_path = format!(
+            "layers/{}/{level_directory}/{container}.tile",
+            profile.layer_id
+        );
+        write_new_artifact(&output_directory.join(&relative_path), &bytes)?;
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: profile.container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: profile.layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{}/root.index", profile.layer_id);
+    write_new_artifact(&output_directory.join(&root_relative_path), &root_bytes)?;
+    Ok((root_relative_path, root_bytes))
 }
 
 fn global_s2_cells_at_level(target_s2_level: u8) -> Result<Vec<S2CellId>> {
@@ -2784,5 +2818,44 @@ mod tests {
         assert_eq!(cells.len(), 24);
         assert!(cells.windows(2).all(|pair| pair[0] < pair[1]));
         assert_eq!(cells.iter().filter(|cell| cell.face() == 0).count(), 4);
+    }
+
+    #[test]
+    fn miniature_terrain_layer_writes_and_reloads_every_packed_tile() {
+        let root = temporary_root("terrain-layer");
+        let mut summaries = std::collections::BTreeMap::new();
+        for cell in global_s2_cells_at_level(1).expect("global target cells") {
+            let mut stats = EtopoCentreSummaryStats::default();
+            stats.add_weighted(42, 4).expect("support");
+            summaries.insert(cell, stats);
+        }
+        let (root_path, root_bytes) = write_packed_etopo_terrain_layer(
+            &root,
+            EtopoTerrainPackingProfile {
+                layer_id: "bedrock-relief",
+                source_snapshot_digest: Digest::sha256(b"snapshot"),
+                source_artifact_digest: Digest::sha256(b"artifact"),
+                points_per_axis: 4,
+                container_s2_level: 0,
+                target_s2_level: 1,
+            },
+            &summaries,
+        )
+        .expect("write miniature terrain layer");
+        let index = TileTreeIndex::from_canonical_slice(&root_bytes).expect("root index");
+        assert_eq!(index.entries.len(), 6);
+        assert_eq!(
+            fs::read(root.join(&root_path)).expect("root bytes"),
+            root_bytes
+        );
+        for entry in index.entries {
+            let tile = PackedScalarTerrainTile::from_canonical_slice(
+                &fs::read(root.join(entry.artifact.path)).expect("tile bytes"),
+            )
+            .expect("packed terrain tile");
+            assert_eq!(tile.cells.len(), 4);
+            assert!(tile.cells.iter().all(|cell| cell.mean_millimetres == 42));
+        }
+        fs::remove_dir_all(root).expect("remove miniature terrain layer");
     }
 }
