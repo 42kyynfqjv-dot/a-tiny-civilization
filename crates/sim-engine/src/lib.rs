@@ -1,5 +1,10 @@
 //! Pure deterministic planning, state transitions, snapshots, and replay.
 
+// Compiled as a reference implementation, but deliberately hidden until embodied
+// scheduling defines a stable crate API and persistent representation.
+#[allow(dead_code)]
+mod partition;
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};

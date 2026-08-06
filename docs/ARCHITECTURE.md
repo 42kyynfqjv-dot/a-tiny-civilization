@@ -46,7 +46,9 @@ world-domain <- sim-engine <- application
 - `world-data-filesystem`: exhaustive offline source/tile-tree traversal and safe local
   artifact resolution; no simulation, database, network, or async dependency.
 - `sim-engine`: pure deterministic state transitions; no database, wall clock,
-  network, ambient randomness, or unordered iteration.
+  network, ambient randomness, or unordered iteration. Its partition reference kernel
+  plans one next tick from immutable input and resolves worker proposals at a sorted,
+  all-or-nothing barrier.
 - `application`: use cases and ports for persistence, memory, cognition, clocks,
   and projections.
 - adapters: PostgreSQL, Hindsight, HTTP, model providers, and later payments/auth.
@@ -146,11 +148,14 @@ be included before production configuration is required.
 
 Do not introduce Redis, Kafka, Kubernetes, or independent microservices before
 measurement demonstrates a need. The single-process engine remains the deterministic
-reference implementation, but canonical full-Earth genesis is blocked until the same
-history can execute through deterministic S2 partitions. Every person remains an
-individual; infrastructure pressure may slow or pause wall-clock advancement at a
-committed hash boundary but cannot change causal rules or discard lives. See
-[ADR 0011](adr/0011-population-scale-and-capacity.md).
+reference implementation. Its pure L10 ordering/barrier kernel and a synthetic
+dense-equivalence proof are implemented, but canonical full-Earth genesis remains
+blocked until embodied positions, conserved refinement, durable scheduling state, and
+the persistence barrier are integrated. Every person remains an individual;
+infrastructure pressure may slow or pause wall-clock advancement at a committed hash
+boundary but cannot change causal rules or discard lives. See
+[ADR 0011](adr/0011-population-scale-and-capacity.md) and
+[ADR 0012](adr/0012-deterministic-partition-barrier.md).
 
 The first scaling metrics are active individuals, scheduled transitions, cross-cell
 messages, event bytes per simulated day, replay duration, snapshot size, projection

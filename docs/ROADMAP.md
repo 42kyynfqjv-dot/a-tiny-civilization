@@ -92,9 +92,13 @@ selected.
 
 Canonical tile-index bytes and exhaustive offline tree traversal are now implemented.
 The validator rejects missing or tampered leaves, cycles, repeated cells and paths,
-false leaf counts, invalid S2 identities/parentage, and noncanonical indexes. The next
-checkpoint is the partition scheduler's single-worker reference path, followed by the
-first exact global source snapshots.
+false leaf counts, invalid S2 identities/parentage, and noncanonical indexes. A shared
+strict S2 identity type and the partition scheduler's pure single-worker reference
+kernel are also implemented. Its tests pin active-L10 ordering, deterministic barriers,
+deferred cross-partition work, per-partition capacity rejection, empty ticks, and
+synthetic dense-versus-queued equivalence without changing persistent event schemas.
+The next checkpoints are the first exact global source snapshots, embodied fixed-point
+position/routing, and conserved L10↔L14 refinement.
 
 ### 3. Situated memory and bounded cognition
 

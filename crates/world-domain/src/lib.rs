@@ -5,6 +5,7 @@ mod event;
 mod hash;
 mod identity;
 mod manifest;
+mod spatial;
 mod time;
 
 pub use configuration::{
@@ -20,6 +21,7 @@ pub use event::{
 pub use hash::{CanonicalHashError, Digest};
 pub use identity::{EntityId, EventId, WorldId};
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
+pub use spatial::{MAX_S2_LEVEL, S2CellId, S2CellIdError};
 pub use time::{EventSequence, SequenceOverflow, SimTick, TimeOverflow, WorldSeed};
 
 use serde::{Deserialize, Serialize};

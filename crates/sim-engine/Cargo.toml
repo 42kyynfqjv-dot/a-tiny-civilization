@@ -12,6 +12,7 @@ thiserror.workspace = true
 world-domain = { path = "../world-domain" }
 
 [dev-dependencies]
+serde_json.workspace = true
 uuid.workspace = true
 
 [lints]

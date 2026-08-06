@@ -11,6 +11,7 @@ use world_data::{
     BundleArtifact, BundleArtifactKind, DataLayerStorage, TileTreeEntry, TileTreeEntryKind,
     TileTreeIndex, TileTreeReference, WorldDataBundle,
 };
+use world_domain::S2CellId;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub struct VerificationStats {
@@ -269,23 +270,20 @@ where
 }
 
 fn entry_contains(parent: &TileTreeEntry, descendant: &TileTreeEntry) -> Result<bool> {
-    let parent_id = u64::from_str_radix(&parent.s2_cell_id, 16)
+    let parent_id = parent
+        .s2_cell_id
+        .parse::<S2CellId>()
         .with_context(|| format!("invalid parent S2 CellId {}", parent.s2_cell_id))?;
-    let descendant_id = u64::from_str_radix(&descendant.s2_cell_id, 16)
+    let descendant_id = descendant
+        .s2_cell_id
+        .parse::<S2CellId>()
         .with_context(|| format!("invalid descendant S2 CellId {}", descendant.s2_cell_id))?;
     if descendant.s2_level < parent.s2_level
         || (descendant.kind == TileTreeEntryKind::Index && descendant.s2_level == parent.s2_level)
     {
         return Ok(false);
     }
-    let shift = 2_u32
-        .checked_mul(30_u32.saturating_sub(u32::from(parent.s2_level)))
-        .context("S2 parent level overflow")?;
-    let sentinel = 1_u64
-        .checked_shl(shift)
-        .context("S2 parent sentinel overflow")?;
-    let normalized_parent = (descendant_id & !(sentinel - 1)) | sentinel;
-    Ok(normalized_parent == parent_id)
+    Ok(parent_id.contains(descendant_id))
 }
 
 #[cfg(test)]

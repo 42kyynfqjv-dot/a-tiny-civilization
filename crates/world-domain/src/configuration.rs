@@ -1,7 +1,7 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::Digest;
+use crate::{Digest, MAX_S2_LEVEL};
 
 pub const LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 1;
 pub const WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 2;
@@ -10,7 +10,6 @@ const MAX_V1_GRID_CELLS: u64 = 1_000_000;
 const WGS_84_ECEF_EPSG: u32 = 4_978;
 const WGS_84_3D_EPSG: u32 = 4_979;
 const EGM_2008_HEIGHT_EPSG: u32 = 3_855;
-const MAX_S2_LEVEL: u8 = 30;
 
 /// Content-addressed normalized inputs used by a configured world.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

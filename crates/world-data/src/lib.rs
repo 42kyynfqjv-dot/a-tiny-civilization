@@ -6,7 +6,9 @@ use chrono::NaiveDate;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use url::Url;
-use world_domain::{Digest, FullEarthGrid, SpatialGrid, WorldConfiguration, WorldGeometry};
+use world_domain::{
+    Digest, FullEarthGrid, S2CellId, SpatialGrid, WorldConfiguration, WorldGeometry,
+};
 
 pub const LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 1;
 pub const WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 2;
@@ -1072,21 +1074,9 @@ impl TileArtifactReference {
 }
 
 fn s2_level_from_cell_id(value: &str) -> Result<u8, BundleError> {
-    if value.len() != 16
-        || !value
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
-    {
-        return Err(BundleError::InvalidS2CellId(value.to_owned()));
-    }
-    let cell_id = u64::from_str_radix(value, 16)
-        .map_err(|_| BundleError::InvalidS2CellId(value.to_owned()))?;
-    let face = cell_id >> 61;
-    let trailing_zeros = cell_id.trailing_zeros();
-    if face >= 6 || trailing_zeros > 60 || !trailing_zeros.is_multiple_of(2) {
-        return Err(BundleError::InvalidS2CellId(value.to_owned()));
-    }
-    u8::try_from(30 - trailing_zeros / 2)
+    value
+        .parse::<S2CellId>()
+        .map(S2CellId::level)
         .map_err(|_| BundleError::InvalidS2CellId(value.to_owned()))
 }
 

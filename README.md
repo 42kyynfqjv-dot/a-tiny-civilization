@@ -58,6 +58,10 @@ causal refinement, and deterministic partition scheduler pass their published ga
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network,
 including exhaustive content-hash traversal of global tile indexes and leaves.
+The pure single-worker L10 scheduler kernel now pins ordering, barrier, and capacity
+semantics and matches a synthetic dense reference history, while persistent full-Earth
+execution remains intentionally disabled until embodied position and conserved
+refinement exist.
 
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never

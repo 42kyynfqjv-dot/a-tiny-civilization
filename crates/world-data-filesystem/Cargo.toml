@@ -9,8 +9,6 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 world-data = { path = "../world-data" }
-
-[dev-dependencies]
 world-domain = { path = "../world-domain" }
 
 [lints]

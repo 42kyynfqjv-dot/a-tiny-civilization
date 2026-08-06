@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted on 2026-08-06 as a canonical-genesis gate. The partition scheduler described
-here is not yet implemented; the current engine rejects a schema-v2 full-Earth genesis
-instead of pretending its single-transition prototype satisfies this decision.
+Accepted on 2026-08-06 as a canonical-genesis gate. The pure single-worker ordering and
+barrier kernel is implemented under [ADR 0012](0012-deterministic-partition-barrier.md),
+but durable scheduled state and embodied integration are not. The current engine still
+rejects schema-v2 full-Earth genesis instead of overstating that partial foundation.
 
 ## Context
 
