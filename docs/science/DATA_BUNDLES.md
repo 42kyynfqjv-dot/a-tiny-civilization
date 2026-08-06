@@ -34,6 +34,14 @@ content-addressed tile-tree root with declared S2 level coverage and leaf count.
 Traversed child indexes and tiles are verified against the path from that root; a
 fine simulation level never implies that its source was measured at that resolution.
 
+Every tile-index node is canonical compact JSON containing one layer identity and a
+nonempty, sorted list of child-index or tile references. Each entry carries a real
+structurally valid 64-bit S2 CellId, its matching level, media type, safe relative path,
+decimal byte length, and SHA-256 digest. A child index must contain only cells inside
+the S2 scope that referenced it and must strictly refine another index scope. Tile cells
+may exist at several levels because source/aggregate and refined representations are
+distinct data products.
+
 Schema v2 also records a manifest cutoff date, explicitly per-source epoch composite,
 mean-sea-level definition, direct-human-feature exclusion/inference policy, and
 sensitive-location policy. A source retrieved after the manifest cutoff is rejected.
@@ -83,11 +91,13 @@ Validate a release with:
 cargo run --locked -p civilization-data -- validate path/to/bundle.json
 ```
 
-The command resolves root artifact paths relative to the manifest, rejects path
-traversal, reads every declared source and layer-root artifact, and checks its exact
-byte length and digest. It does not report a release as valid when only the JSON
-manifest is available. Schema-v2 child traversal is a separate materialization gate;
-the root hash prevents an unrecorded child from entering history.
+The command resolves artifact paths relative to the manifest, rejects path traversal,
+outside-root resolution and symbolic-link leaf files, then reads every declared source,
+index node, and tile. It checks canonical index bytes, S2 parentage, unique index scopes,
+unique `(level, cell)` tiles, globally unique artifact paths, exact byte lengths,
+digests, cycle absence, a depth-derived index bound, and the declared leaf count. It
+does not report a release as valid when any branch or leaf is absent. This is
+intentionally an expensive release/genesis gate, not a per-tick operation.
 
 Also prove that schema, bundle identity/version, license, coverage geometry, and content
 digest match a proposed tick-zero configuration:
@@ -104,9 +114,11 @@ artifact and digest.
 
 ## Current state
 
-The schema-v1 compatibility path, schema-v2 full-Earth contract, pure validator, CLI,
-and adversarial unit tests are implemented. No global scientific release or canonical
-seed is claimed yet. Lower Buffalo is now only the first high-resolution conformance
-tile. The next data work is to implement and verify tile-tree traversal, archive the
-first global source snapshots and exact licenses, build planet-level layers, and then
-normalize the reference tile without inventing placeholder values.
+The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index
+format, exhaustive offline tree traversal, CLI, and adversarial tests are implemented.
+The tests cover tampered leaves, false counts, cycles, malformed S2 identities,
+duplicate/unsorted entries, noncanonical index bytes, wrong layer/level metadata, and
+cross-face parentage. No global scientific release or canonical seed is claimed yet.
+Lower Buffalo remains only the first high-resolution conformance tile. The next data
+work is to archive the first global source snapshots and exact licenses, construct
+planet-level roots, and normalize the reference tile without placeholder values.

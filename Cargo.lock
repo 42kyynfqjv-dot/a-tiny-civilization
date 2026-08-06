@@ -324,6 +324,7 @@ dependencies = [
  "clap",
  "serde_json",
  "world-data",
+ "world-data-filesystem",
  "world-domain",
 ]
 
@@ -3030,6 +3031,15 @@ dependencies = [
  "serde_json",
  "thiserror",
  "url",
+ "world-domain",
+]
+
+[[package]]
+name = "world-data-filesystem"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "world-data",
  "world-domain",
 ]
 

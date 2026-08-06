@@ -10,6 +10,7 @@ members = [
     "crates/postgres-store",
     "crates/sim-engine",
     "crates/world-data",
+    "crates/world-data-filesystem",
     "crates/world-domain",
 ]
 resolver = "3"

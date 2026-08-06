@@ -3,6 +3,7 @@ use std::{fs, path::PathBuf};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use world_data::WorldDataBundle;
+use world_data_filesystem::verify_release_artifacts;
 use world_domain::WorldConfiguration;
 
 #[derive(Debug, Parser)]
@@ -42,19 +43,7 @@ fn validate(bundle_path: PathBuf, configuration_path: Option<&PathBuf>) -> Resul
     let artifact_root = bundle_path
         .parent()
         .context("bundle path has no parent directory")?;
-    let artifacts = bundle.artifacts()?;
-    let mut artifact_bytes = 0_u64;
-    for artifact in &artifacts {
-        let path = artifact_root.join(artifact.relative_path);
-        let bytes = fs::read(&path)
-            .with_context(|| format!("failed to read bundle artifact {}", path.display()))?;
-        artifact
-            .verify_bytes(&bytes)
-            .with_context(|| format!("bundle artifact {} is invalid", path.display()))?;
-        artifact_bytes = artifact_bytes
-            .checked_add(artifact.byte_length)
-            .context("bundle artifact byte total overflow")?;
-    }
+    let stats = verify_release_artifacts(&bundle, artifact_root)?;
 
     if let Some(path) = configuration_path {
         let config_bytes = fs::read(path)
@@ -74,9 +63,11 @@ fn validate(bundle_path: PathBuf, configuration_path: Option<&PathBuf>) -> Resul
     println!("entities: {}", bundle.entities.len());
     println!("parameters: {}", bundle.parameters.len());
     println!("layers: {}", bundle.layers.len());
+    println!("tile indexes: {}", stats.tile_indexes);
+    println!("tiles: {}", stats.tiles);
     println!(
-        "artifacts: {} ({artifact_bytes} bytes verified)",
-        artifacts.len()
+        "artifacts: {} ({} bytes verified)",
+        stats.artifacts, stats.bytes
     );
     Ok(())
 }

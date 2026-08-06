@@ -23,6 +23,9 @@ check_tree_excludes \
   world-data \
   '^(application|sim-engine|hindsight-adapter|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
 check_tree_excludes \
+  world-data-filesystem \
+  '^(application|sim-engine|hindsight-adapter|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
+check_tree_excludes \
   civilization-runner \
   '^(observer-api|supporter-|payment-|auth-) '
 

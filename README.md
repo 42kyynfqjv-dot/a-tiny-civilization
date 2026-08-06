@@ -56,7 +56,8 @@ high-resolution conformance tile, not a world boundary or selected starting site
 Canonical genesis remains blocked until the complete content-addressed global bundle,
 causal refinement, and deterministic partition scheduler pass their published gates.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
-`civilization-data` validator enforce those gates without fetching from the network.
+`civilization-data` validator enforce those gates without fetching from the network,
+including exhaustive content-hash traversal of global tile indexes and leaves.
 
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never

@@ -90,8 +90,11 @@ Legacy bounded schema-v1 bytes remain supported. The current engine deliberately
 full-Earth genesis until partition execution exists. No canonical seed has been
 selected.
 
-The next checkpoint implements tile-tree traversal and the partition scheduler's
-single-worker reference path, then archives the first exact global source snapshots.
+Canonical tile-index bytes and exhaustive offline tree traversal are now implemented.
+The validator rejects missing or tampered leaves, cycles, repeated cells and paths,
+false leaf counts, invalid S2 identities/parentage, and noncanonical indexes. The next
+checkpoint is the partition scheduler's single-worker reference path, followed by the
+first exact global source snapshots.
 
 ### 3. Situated memory and bounded cognition
 

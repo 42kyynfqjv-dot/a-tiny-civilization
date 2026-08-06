@@ -11,6 +11,7 @@ anyhow.workspace = true
 clap.workspace = true
 serde_json.workspace = true
 world-data = { path = "../../crates/world-data" }
+world-data-filesystem = { path = "../../crates/world-data-filesystem" }
 world-domain = { path = "../../crates/world-domain" }
 
 [lints]

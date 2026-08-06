@@ -43,6 +43,8 @@ world-domain <- sim-engine <- application
   no I/O or async runtime.
 - `world-data`: pure scientific release schemas, provenance validation, canonical
   bytes, and configuration binding; no network or async runtime.
+- `world-data-filesystem`: exhaustive offline source/tile-tree traversal and safe local
+  artifact resolution; no simulation, database, network, or async dependency.
 - `sim-engine`: pure deterministic state transitions; no database, wall clock,
   network, ambient randomness, or unordered iteration.
 - `application`: use cases and ports for persistence, memory, cognition, clocks,

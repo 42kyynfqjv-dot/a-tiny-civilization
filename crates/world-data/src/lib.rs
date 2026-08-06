@@ -10,6 +10,7 @@ use world_domain::{Digest, FullEarthGrid, SpatialGrid, WorldConfiguration, World
 
 pub const LEGACY_WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 1;
 pub const WORLD_DATA_BUNDLE_SCHEMA_VERSION: u16 = 2;
+pub const TILE_TREE_INDEX_SCHEMA_VERSION: u16 = 1;
 const MAX_DECIMAL_PLACES: u8 = 9;
 const FORBIDDEN_AFFORDANCE_CODES: &[&str] = &[
     "building",
@@ -277,10 +278,45 @@ pub struct TileTreeReference {
     pub maximum_s2_level: u8,
 }
 
+/// One canonical content-addressed index node in a normalized layer tile tree.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TileTreeIndex {
+    pub index_schema_version: u16,
+    pub layer_id: String,
+    pub entries: Vec<TileTreeEntry>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TileTreeEntry {
+    pub kind: TileTreeEntryKind,
+    /// Fixed-width lowercase hexadecimal S2 CellId.
+    pub s2_cell_id: String,
+    pub s2_level: u8,
+    pub artifact: TileArtifactReference,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TileTreeEntryKind {
+    Index,
+    Tile,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct TileArtifactReference {
+    pub path: String,
+    pub media_type: String,
+    pub content_hash: Digest,
+    #[serde(with = "u64_decimal")]
+    pub byte_length: u64,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum BundleArtifactKind {
     Source,
     NormalizedLayer,
+    TileTreeIndex,
+    Tile,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -805,7 +841,7 @@ impl DataLayer {
                 byte_length: *byte_length,
             },
             DataLayerStorage::FullEarthTileTree { tile_tree } => BundleArtifact {
-                kind: BundleArtifactKind::NormalizedLayer,
+                kind: BundleArtifactKind::TileTreeIndex,
                 relative_path: &tile_tree.root_index_path,
                 content_hash: tile_tree.root_index_hash,
                 byte_length: tile_tree.root_index_byte_length,
@@ -858,8 +894,10 @@ impl DataLayerStorage {
 
 impl TileTreeReference {
     fn validate(&self, grid: &FullEarthGrid) -> Result<(), BundleError> {
-        if self.index_schema_version == 0 {
-            return Err(BundleError::ZeroTileIndexSchemaVersion);
+        if self.index_schema_version != TILE_TREE_INDEX_SCHEMA_VERSION {
+            return Err(BundleError::UnsupportedTileIndexSchema(
+                self.index_schema_version,
+            ));
         }
         validate_artifact_path(&self.root_index_path, "tile_tree.root_index_path")?;
         validate_media_type(&self.root_index_media_type)?;
@@ -883,6 +921,173 @@ impl TileTreeReference {
         }
         Ok(())
     }
+}
+
+impl TileTreeIndex {
+    pub fn validate(&self) -> Result<(), BundleError> {
+        if self.index_schema_version != TILE_TREE_INDEX_SCHEMA_VERSION {
+            return Err(BundleError::UnsupportedTileIndexSchema(
+                self.index_schema_version,
+            ));
+        }
+        validate_slug(&self.layer_id, "tile_index.layer_id")?;
+        require_nonempty(&self.entries, "tile_index.entries")?;
+
+        let mut previous: Option<(u8, &str, TileTreeEntryKind)> = None;
+        let mut artifact_paths = BTreeSet::new();
+        for entry in &self.entries {
+            entry.validate()?;
+            let key = (entry.s2_level, entry.s2_cell_id.as_str(), entry.kind);
+            if let Some(last) = previous {
+                if key == last {
+                    return Err(BundleError::DuplicateTileTreeEntry {
+                        s2_cell_id: entry.s2_cell_id.clone(),
+                        s2_level: entry.s2_level,
+                        kind: entry.kind,
+                    });
+                }
+                if key < last {
+                    return Err(BundleError::UnsortedTileTreeEntries);
+                }
+            }
+            previous = Some(key);
+
+            if !artifact_paths.insert(entry.artifact.path.as_str()) {
+                return Err(BundleError::DuplicateIdentifier {
+                    field: "tile_index.artifact_paths",
+                    value: entry.artifact.path.clone(),
+                });
+            }
+        }
+        Ok(())
+    }
+
+    pub fn validate_for_tree(
+        &self,
+        expected_layer_id: &str,
+        tree: &TileTreeReference,
+    ) -> Result<(), BundleError> {
+        self.validate()?;
+        if self.index_schema_version != tree.index_schema_version {
+            return Err(BundleError::TileIndexSchemaMismatch {
+                expected: tree.index_schema_version,
+                actual: self.index_schema_version,
+            });
+        }
+        if self.layer_id != expected_layer_id {
+            return Err(BundleError::TileIndexLayerMismatch {
+                expected: expected_layer_id.to_owned(),
+                actual: self.layer_id.clone(),
+            });
+        }
+        for entry in &self.entries {
+            entry.validate_for_tree(tree)?;
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, BundleError> {
+        self.validate()?;
+        serde_json::to_vec(self).map_err(|error| BundleError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, BundleError> {
+        let index: Self = serde_json::from_slice(bytes)
+            .map_err(|error| BundleError::TileIndexDecode(error.to_string()))?;
+        index.validate()?;
+        if index.canonical_bytes()? != bytes {
+            return Err(BundleError::NonCanonicalTileIndexEncoding);
+        }
+        Ok(index)
+    }
+}
+
+impl TileTreeEntry {
+    fn validate(&self) -> Result<(), BundleError> {
+        let actual_level = s2_level_from_cell_id(&self.s2_cell_id)?;
+        if actual_level != self.s2_level {
+            return Err(BundleError::S2CellLevelMismatch {
+                cell_id: self.s2_cell_id.clone(),
+                declared: self.s2_level,
+                actual: actual_level,
+            });
+        }
+        self.artifact.validate()
+    }
+
+    fn validate_for_tree(&self, tree: &TileTreeReference) -> Result<(), BundleError> {
+        let level_is_valid = match self.kind {
+            TileTreeEntryKind::Index => self.s2_level <= tree.maximum_s2_level,
+            TileTreeEntryKind::Tile => {
+                self.s2_level >= tree.minimum_s2_level && self.s2_level <= tree.maximum_s2_level
+            }
+        };
+        if !level_is_valid {
+            return Err(BundleError::TileEntryOutsideTreeLevels {
+                cell_id: self.s2_cell_id.clone(),
+                level: self.s2_level,
+                minimum: tree.minimum_s2_level,
+                maximum: tree.maximum_s2_level,
+            });
+        }
+        if self.kind == TileTreeEntryKind::Index
+            && self.artifact.media_type != tree.root_index_media_type
+        {
+            return Err(BundleError::TileIndexMediaTypeMismatch {
+                expected: tree.root_index_media_type.clone(),
+                actual: self.artifact.media_type.clone(),
+            });
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn artifact(&self) -> BundleArtifact<'_> {
+        BundleArtifact {
+            kind: match self.kind {
+                TileTreeEntryKind::Index => BundleArtifactKind::TileTreeIndex,
+                TileTreeEntryKind::Tile => BundleArtifactKind::Tile,
+            },
+            relative_path: &self.artifact.path,
+            content_hash: self.artifact.content_hash,
+            byte_length: self.artifact.byte_length,
+        }
+    }
+}
+
+impl TileArtifactReference {
+    fn validate(&self) -> Result<(), BundleError> {
+        validate_artifact_path(&self.path, "tile_entry.artifact.path")?;
+        validate_media_type(&self.media_type)?;
+        if self.content_hash == Digest::ZERO {
+            return Err(BundleError::ZeroDigest("tile_entry.artifact.content_hash"));
+        }
+        if self.byte_length == 0 {
+            return Err(BundleError::ZeroByteLength(
+                "tile_entry.artifact.byte_length",
+            ));
+        }
+        Ok(())
+    }
+}
+
+fn s2_level_from_cell_id(value: &str) -> Result<u8, BundleError> {
+    if value.len() != 16
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err(BundleError::InvalidS2CellId(value.to_owned()));
+    }
+    let cell_id = u64::from_str_radix(value, 16)
+        .map_err(|_| BundleError::InvalidS2CellId(value.to_owned()))?;
+    let face = cell_id >> 61;
+    let trailing_zeros = cell_id.trailing_zeros();
+    if face >= 6 || trailing_zeros > 60 || !trailing_zeros.is_multiple_of(2) {
+        return Err(BundleError::InvalidS2CellId(value.to_owned()));
+    }
+    u8::try_from(30 - trailing_zeros / 2)
+        .map_err(|_| BundleError::InvalidS2CellId(value.to_owned()))
 }
 
 fn validate_references(
@@ -1139,12 +1344,51 @@ pub enum BundleError {
     LayerShapeMismatch(String),
     #[error("layer {0:?} storage does not match the bundle coverage")]
     LayerStorageCoverageMismatch(String),
-    #[error("tile-tree index schema version must be greater than zero")]
-    ZeroTileIndexSchemaVersion,
+    #[error("tile-tree index schema version {0} is unsupported")]
+    UnsupportedTileIndexSchema(u16),
     #[error("tile-tree leaf count must be greater than zero")]
     ZeroTileCount,
     #[error("tile-tree S2 levels must include the planetary tier and not exceed the patch tier")]
     InvalidTileLevelRange,
+    #[error("tile index entries must use ascending (level, cell, kind) order")]
+    UnsortedTileTreeEntries,
+    #[error(
+        "tile index contains duplicate {kind:?} entry for S2 cell {s2_cell_id} at level {s2_level}"
+    )]
+    DuplicateTileTreeEntry {
+        s2_cell_id: String,
+        s2_level: u8,
+        kind: TileTreeEntryKind,
+    },
+    #[error("invalid fixed-width S2 CellId {0:?}")]
+    InvalidS2CellId(String),
+    #[error(
+        "S2 cell {cell_id} declares level {declared}, but its CellId sentinel encodes level {actual}"
+    )]
+    S2CellLevelMismatch {
+        cell_id: String,
+        declared: u8,
+        actual: u8,
+    },
+    #[error(
+        "tile entry {cell_id} level {level} is outside tree tile range {minimum} through {maximum}"
+    )]
+    TileEntryOutsideTreeLevels {
+        cell_id: String,
+        level: u8,
+        minimum: u8,
+        maximum: u8,
+    },
+    #[error("tile index schema mismatch: expected {expected}, found {actual}")]
+    TileIndexSchemaMismatch { expected: u16, actual: u16 },
+    #[error("tile index layer mismatch: expected {expected:?}, found {actual:?}")]
+    TileIndexLayerMismatch { expected: String, actual: String },
+    #[error("child tile-index media type mismatch: expected {expected:?}, found {actual:?}")]
+    TileIndexMediaTypeMismatch { expected: String, actual: String },
+    #[error("tile index JSON could not be decoded: {0}")]
+    TileIndexDecode(String),
+    #[error("tile index bytes are valid JSON but not the canonical schema encoding")]
+    NonCanonicalTileIndexEncoding,
     #[error("invalid media type {0:?}")]
     InvalidMediaType(String),
     #[error("{field} must be a safe portable relative path, found {value:?}")]
@@ -1365,6 +1609,66 @@ mod tests {
         }
     }
 
+    fn tile_tree_reference() -> TileTreeReference {
+        TileTreeReference {
+            index_schema_version: TILE_TREE_INDEX_SCHEMA_VERSION,
+            root_index_path: "layers/elevation/root.index".to_owned(),
+            root_index_media_type: "application/vnd.atinycivilization.tile-index+json".to_owned(),
+            root_index_hash: Digest::sha256(b"root index fixture"),
+            root_index_byte_length: 512,
+            leaf_tile_count: 1,
+            minimum_s2_level: 10,
+            maximum_s2_level: 23,
+        }
+    }
+
+    fn tile_entry(
+        kind: TileTreeEntryKind,
+        s2_cell_id: &str,
+        s2_level: u8,
+        path: &str,
+        bytes: &[u8],
+    ) -> TileTreeEntry {
+        TileTreeEntry {
+            kind,
+            s2_cell_id: s2_cell_id.to_owned(),
+            s2_level,
+            artifact: TileArtifactReference {
+                path: path.to_owned(),
+                media_type: match kind {
+                    TileTreeEntryKind::Index => "application/vnd.atinycivilization.tile-index+json",
+                    TileTreeEntryKind::Tile => "application/vnd.atinycivilization.tile+i32",
+                }
+                .to_owned(),
+                content_hash: Digest::sha256(bytes),
+                byte_length: u64::try_from(bytes.len()).expect("fixture length fits u64"),
+            },
+        }
+    }
+
+    fn tile_index() -> TileTreeIndex {
+        TileTreeIndex {
+            index_schema_version: TILE_TREE_INDEX_SCHEMA_VERSION,
+            layer_id: "elevation".to_owned(),
+            entries: vec![
+                tile_entry(
+                    TileTreeEntryKind::Index,
+                    "1000000000000000",
+                    0,
+                    "layers/elevation/face-0.index",
+                    b"child index fixture",
+                ),
+                tile_entry(
+                    TileTreeEntryKind::Tile,
+                    "0000010000000000",
+                    10,
+                    "layers/elevation/l10/0000010000000000.tile",
+                    b"tile fixture",
+                ),
+            ],
+        }
+    }
+
     fn full_earth_bundle() -> WorldDataBundle {
         let mut bundle = bundle();
         bundle.bundle_schema_version = WORLD_DATA_BUNDLE_SCHEMA_VERSION;
@@ -1544,6 +1848,93 @@ mod tests {
         assert!(matches!(
             missing_coastline.validate(),
             Err(BundleError::MissingRequiredLayer(DataLayerKind::Coastline))
+        ));
+    }
+
+    #[test]
+    fn tile_index_has_canonical_bytes_and_structural_s2_validation() {
+        let index = tile_index();
+        index
+            .validate_for_tree("elevation", &tile_tree_reference())
+            .expect("valid index fixture");
+        let bytes = index.canonical_bytes().expect("canonical index bytes");
+        assert_eq!(
+            TileTreeIndex::from_canonical_slice(&bytes).expect("canonical index decodes"),
+            index
+        );
+
+        let tile = index
+            .entries
+            .iter()
+            .find(|entry| entry.kind == TileTreeEntryKind::Tile)
+            .expect("tile entry");
+        tile.artifact()
+            .verify_bytes(b"tile fixture")
+            .expect("tile digest matches");
+
+        let pretty = serde_json::to_vec_pretty(&index).expect("pretty index JSON");
+        assert!(matches!(
+            TileTreeIndex::from_canonical_slice(&pretty),
+            Err(BundleError::NonCanonicalTileIndexEncoding)
+        ));
+
+        assert!(matches!(
+            index.validate_for_tree("soil", &tile_tree_reference()),
+            Err(BundleError::TileIndexLayerMismatch { .. })
+        ));
+
+        let mut wrong_index_media_type = index;
+        wrong_index_media_type.entries[0].artifact.media_type =
+            "application/vnd.atinycivilization.tile+i32".to_owned();
+        assert!(matches!(
+            wrong_index_media_type.validate_for_tree("elevation", &tile_tree_reference()),
+            Err(BundleError::TileIndexMediaTypeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn malformed_duplicate_and_out_of_range_tile_entries_are_rejected() {
+        let mut bad_cell = tile_index();
+        bad_cell.entries[1].s2_cell_id = "D000000000000000".to_owned();
+        assert!(matches!(
+            bad_cell.validate(),
+            Err(BundleError::InvalidS2CellId(_))
+        ));
+
+        let mut wrong_level = tile_index();
+        wrong_level.entries[1].s2_level = 11;
+        assert!(matches!(
+            wrong_level.validate(),
+            Err(BundleError::S2CellLevelMismatch { .. })
+        ));
+
+        let mut duplicate = tile_index();
+        duplicate.entries.push(duplicate.entries[1].clone());
+        assert!(matches!(
+            duplicate.validate(),
+            Err(BundleError::DuplicateTileTreeEntry { .. })
+        ));
+
+        let mut unsorted = tile_index();
+        unsorted.entries.reverse();
+        assert!(matches!(
+            unsorted.validate(),
+            Err(BundleError::UnsortedTileTreeEntries)
+        ));
+
+        let mut outside = tile_index();
+        outside.entries[1] = tile_entry(
+            TileTreeEntryKind::Tile,
+            "0000000100000000",
+            14,
+            "layers/elevation/l14/0000000100000000.tile",
+            b"tile fixture",
+        );
+        let mut tree = tile_tree_reference();
+        tree.maximum_s2_level = 10;
+        assert!(matches!(
+            outside.validate_for_tree("elevation", &tree),
+            Err(BundleError::TileEntryOutsideTreeLevels { .. })
         ));
     }
 }

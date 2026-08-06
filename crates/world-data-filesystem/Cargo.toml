@@ -1,0 +1,17 @@
+[package]
+name = "world-data-filesystem"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+world-data = { path = "../world-data" }
+
+[dev-dependencies]
+world-domain = { path = "../world-domain" }
+
+[lints]
+workspace = true
