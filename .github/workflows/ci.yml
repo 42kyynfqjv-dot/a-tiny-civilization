@@ -10,7 +10,9 @@ permissions:
 
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  # A pushed checkpoint must finish its verification once it starts. GitHub still
+  # coalesces superseded pending runs, but never aborts the only active evidence.
+  cancel-in-progress: false
 
 jobs:
   rust:
