@@ -41,6 +41,8 @@ world-domain <- sim-engine <- application
 
 - `world-domain`: durable identifiers, value objects, events, and lifecycle rules;
   no I/O or async runtime.
+- `world-data`: pure scientific release schemas, provenance validation, canonical
+  bytes, and configuration binding; no network or async runtime.
 - `sim-engine`: pure deterministic state transitions; no database, wall clock,
   network, ambient randomness, or unordered iteration.
 - `application`: use cases and ports for persistence, memory, cognition, clocks,
@@ -116,7 +118,10 @@ SHA-256 digest of its complete normalized scientific bundle at tick zero. The
 application verifies locally archived bundle bytes before genesis; live execution and
 replay never fetch scientific inputs from the network. See
 [ADR 0009](adr/0009-tick-zero-world-configuration.md) and the
-[first-biome source plan](science/FIRST_BIOME.md).
+[first-biome source plan](science/FIRST_BIOME.md). The
+[bundle release contract](science/DATA_BUNDLES.md) rejects incomplete provenance,
+floating-point parameters, dangling assumptions, mismatched grids, and noncanonical
+bytes before configured genesis.
 
 ## Deployment boundary
 

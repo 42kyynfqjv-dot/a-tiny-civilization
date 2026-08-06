@@ -1,6 +1,7 @@
 [workspace]
 members = [
     "apps/api",
+    "apps/data",
     "apps/verify",
     "apps/runner",
     "crates/application",
@@ -8,6 +9,7 @@ members = [
     "crates/observer-api",
     "crates/postgres-store",
     "crates/sim-engine",
+    "crates/world-data",
     "crates/world-domain",
 ]
 resolver = "3"
@@ -46,6 +48,7 @@ tower-http = { version = "0.6.8", features = ["trace"] }
 tracing = "0.1.41"
 tracing-subscriber = { version = "0.3.20", features = ["env-filter", "fmt", "json"] }
 uuid = { version = "1.18.1", features = ["serde", "v4", "v5"] }
+url = "2.5.8"
 
 [workspace.lints.rust]
 unsafe_code = "forbid"

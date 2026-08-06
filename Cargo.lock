@@ -317,6 +317,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "civilization-data"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "world-data",
+ "world-domain",
+]
+
+[[package]]
 name = "civilization-runner"
 version = "0.1.0"
 dependencies = [
@@ -3009,6 +3020,18 @@ name = "windows_x86_64_msvc"
 version = "0.52.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "589f6da84c646204747d1270a2a5661ea66ed1cced2631d546fdfb155959f9ec"
+
+[[package]]
+name = "world-data"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "url",
+ "world-domain",
+]
 
 [[package]]
 name = "world-domain"

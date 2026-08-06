@@ -75,8 +75,11 @@ visibly non-production and requires an explicit world identifier and seed.
 The Lower Buffalo–Ozark river valley is selected as the bounded data-pipeline target.
 Event schema v2 now pins immutable tick duration, integer spatial geometry,
 content-addressed scientific inputs, and transition volume at configured genesis while
-leaving published v1 proof hashes unchanged. Building and validating the actual
-scientific bundle is the next checkpoint; no canonical seed has been selected.
+leaving published v1 proof hashes unchanged. The scientific bundle schema and offline
+release validator now enforce canonical bytes, source/entity/evidence integrity,
+fixed-decimal parameters, required ecological layers, and configuration matching.
+Archiving and normalizing the actual Lower Buffalo source data is the next checkpoint;
+no canonical seed has been selected.
 
 ### 3. Situated memory and bounded cognition
 

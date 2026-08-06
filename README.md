@@ -47,6 +47,8 @@ The first bounded scientific target is the
 [Lower Buffalo–Ozark river valley](docs/science/FIRST_BIOME.md). It is a sourced
 data-pipeline target, not a launched or previewed world; canonical genesis remains
 blocked until the complete content-addressed biome bundle passes its published gates.
+The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
+`civilization-data` validator enforce those gates without fetching from the network.
 
 ## Verify the core claim
 
