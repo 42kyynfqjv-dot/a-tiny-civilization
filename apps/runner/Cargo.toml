@@ -18,6 +18,7 @@ tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 uuid.workspace = true
+world-domain = { path = "../../crates/world-domain" }
 
 [lints]
 workspace = true

@@ -87,6 +87,23 @@ loopback and are not publicly exposed.
 
 Inspect the stack with `make ps` or `make logs`, and stop it with `make down`.
 
+The runner deliberately does not invent a seed or silently create a world. To exercise
+durable ticks without claiming to launch the eventual real-biome world, explicitly
+initialize the built-in non-production proof fixture:
+
+```bash
+make proof-world \
+  WORLD_ID=019fd4a9-b7f9-7891-ab51-cdf71d2b7701 \
+  WORLD_SEED=101
+```
+
+The already-running runner detects that committed genesis, verifies its complete event
+history against the latest snapshot, and advances one simulation transition per wall
+interval without skipping simulation steps. Restarting the runner causes another full
+verification and resumes at the exact next sequence. Repeating `init-proof` is
+idempotent only when the immutable manifest and genesis inputs match. The proof command
+is never used to select or initialize a canonical public-world seed.
+
 Hindsight is optional and intentionally excluded from the default startup because its
 full development image is large. Start the pinned keyless service with:
 

@@ -1,7 +1,7 @@
 COMPOSE ?= docker-compose
 COMPOSE_FILES := -f compose.yaml
 
-.PHONY: up down logs ps smoke check hindsight-up
+.PHONY: up down logs ps smoke check proof-world hindsight-up
 
 up:
 	$(COMPOSE) $(COMPOSE_FILES) up --build -d
@@ -20,6 +20,11 @@ smoke:
 
 check:
 	./scripts/check.sh
+
+proof-world:
+	@test -n "$(WORLD_ID)" || (echo "WORLD_ID is required" >&2; exit 2)
+	@test -n "$(WORLD_SEED)" || (echo "WORLD_SEED is required" >&2; exit 2)
+	$(COMPOSE) $(COMPOSE_FILES) exec -T runner /app/civilization-runner init-proof --world-id "$(WORLD_ID)" --seed "$(WORLD_SEED)"
 
 hindsight-up:
 	$(COMPOSE) $(COMPOSE_FILES) -f compose.hindsight.yaml up --build -d

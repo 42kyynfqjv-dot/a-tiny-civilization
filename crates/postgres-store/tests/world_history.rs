@@ -1,5 +1,7 @@
 use anyhow::Result;
-use application::{StoreError, WorldStore};
+use application::{
+    StoreError, WorldStore, advance_world, initialize_or_resume_world, resume_world,
+};
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
 use sqlx::PgPool;
@@ -84,6 +86,71 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
     assert_eq!(loaded_world, persisted);
     assert_eq!(replayed.last_event_hash, persisted.cursor.last_event_hash);
     assert_eq!(replayed.state.state_hash()?, persisted.cursor.state_hash);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn runtime_replays_and_resumes_at_the_exact_next_sequence(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(151);
+    let initialized = initialize_or_resume_world(
+        &store,
+        manifest.clone(),
+        None,
+        vec![initial_person(manifest.world_id)],
+    )
+    .await?;
+    assert_eq!(initialized.world.cursor.sequence, EventSequence::new(1));
+
+    let after_first_tick = advance_world(&store, &initialized).await?;
+    assert_eq!(
+        after_first_tick.world.cursor.sequence,
+        EventSequence::new(2)
+    );
+    assert_eq!(
+        after_first_tick.world.cursor.tick,
+        world_domain::SimTick::new(1)
+    );
+
+    let resumed = resume_world(&store, manifest.world_id).await?;
+    assert_eq!(resumed, after_first_tick);
+    let after_restart_tick = advance_world(&store, &resumed).await?;
+    assert_eq!(
+        after_restart_tick.world.cursor.sequence,
+        EventSequence::new(3)
+    );
+    assert_eq!(
+        after_restart_tick.world.cursor.tick,
+        world_domain::SimTick::new(2)
+    );
+
+    let idempotent_initialization = initialize_or_resume_world(
+        &store,
+        manifest.clone(),
+        None,
+        vec![initial_person(manifest.world_id)],
+    )
+    .await?;
+    assert_eq!(idempotent_initialization, after_restart_tick);
+    assert_eq!(
+        store.list_running_world_ids().await?,
+        vec![manifest.world_id]
+    );
+
+    let batches = store
+        .load_event_batches(manifest.world_id, EventSequence::ZERO)
+        .await?;
+    assert_eq!(
+        batches
+            .iter()
+            .map(|batch| batch.sequence)
+            .collect::<Vec<_>>(),
+        vec![
+            EventSequence::new(1),
+            EventSequence::new(2),
+            EventSequence::new(3)
+        ]
+    );
     Ok(())
 }
 

@@ -79,11 +79,11 @@ services:
 
   runner:
     <<: *rust-service
-    command: ["/app/civilization-runner"]
+    command: ["/app/civilization-runner", "serve"]
     environment:
       <<: *app-environment
       RUNNER_HEARTBEAT_SECONDS: ${RUNNER_HEARTBEAT_SECONDS:-5}
-      WORLD_SEED: ${WORLD_SEED:-7640891576956012809}
+      RUNNER_TICK_MILLISECONDS: ${RUNNER_TICK_MILLISECONDS:-1000}
     depends_on:
       migrate:
         condition: service_healthy

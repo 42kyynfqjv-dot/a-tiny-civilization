@@ -59,6 +59,11 @@ rebuilt without changing a world.
 - a downloadable verification bundle and a five-minute verification command;
 - restart/resume and tamper-detection tests against PostgreSQL.
 
+The offline bundle and restart-safe PostgreSQL runtime are implemented. Canonical
+world initialization remains intentionally blocked on the first real-biome manifest;
+the available initialization command is visibly non-production and requires an
+explicit world identifier and seed.
+
 ### 2. First real biome and embodied lives
 
 - select a bounded, documented real biome and publish its source/assumption ledger;

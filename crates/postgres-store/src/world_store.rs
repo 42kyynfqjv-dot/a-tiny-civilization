@@ -127,6 +127,21 @@ impl WorldStore for PostgresStore {
         parse_world(row)
     }
 
+    async fn list_running_world_ids(&self) -> Result<Vec<WorldId>, StoreError> {
+        let ids = sqlx::query_scalar::<_, Uuid>(
+            r#"
+            SELECT id
+            FROM worlds
+            WHERE status = 'running'
+            ORDER BY id ASC
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        Ok(ids.into_iter().map(WorldId::from_uuid).collect())
+    }
+
     async fn load_event_batches(
         &self,
         world_id: WorldId,
