@@ -16,6 +16,22 @@ jobs:
   rust:
     name: Rust workspace
     runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgres://civilization:ci-only@127.0.0.1:5432/civilization
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: civilization
+          POSTGRES_USER: civilization
+          POSTGRES_PASSWORD: ci-only
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U civilization -d civilization"
+          --health-interval 3s
+          --health-timeout 3s
+          --health-retries 20
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@master

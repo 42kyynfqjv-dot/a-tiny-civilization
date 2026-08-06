@@ -90,8 +90,10 @@ dependencies = [
  "chrono",
  "serde",
  "serde_json",
+ "sim-engine",
  "thiserror",
  "uuid",
+ "world-domain",
 ]
 
 [[package]]
@@ -1199,10 +1201,15 @@ checksum = "b4596b6d070b27117e987119b4dac604f3c58cfb0b191112e24771b2faeac1a6"
 name = "postgres-store"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "application",
  "async-trait",
  "chrono",
+ "serde_json",
+ "sim-engine",
  "sqlx",
+ "uuid",
+ "world-domain",
 ]
 
 [[package]]

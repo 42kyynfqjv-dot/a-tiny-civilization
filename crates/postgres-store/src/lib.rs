@@ -7,6 +7,8 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
+mod world_store;
+
 #[derive(Clone, Debug)]
 pub struct PostgresStore {
     pool: PgPool,
@@ -29,6 +31,11 @@ impl PostgresStore {
             .run(&self.pool)
             .await
             .map_err(|error| StoreError::Migration(error.to_string()))
+    }
+
+    #[must_use]
+    pub const fn from_pool(pool: PgPool) -> Self {
+        Self { pool }
     }
 
     #[must_use]

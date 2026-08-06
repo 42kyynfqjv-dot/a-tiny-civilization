@@ -82,7 +82,8 @@ make hindsight-up
 No LLM key is needed in provider-`none` mode. The project will request one only when
 model-backed extraction and reflection are ready for an explicit integration test.
 
-To run all code checks outside containers:
+With the local stack running, execute all unit, PostgreSQL integration, architecture,
+and web checks outside containers with:
 
 ```bash
 make check

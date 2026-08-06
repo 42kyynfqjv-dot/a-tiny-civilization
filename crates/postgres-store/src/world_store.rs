@@ -1,0 +1,606 @@
+use application::{StoreError, StoredWorld, WorldCursor, WorldStore};
+use async_trait::async_trait;
+use serde_json::{Value, json};
+use sim_engine::{EngineState, Snapshot};
+use sqlx::{FromRow, Postgres, Transaction};
+use uuid::Uuid;
+use world_domain::{
+    Digest, DomainEvent, EventBatch, EventSequence, SimTick, WorldId, WorldManifest, WorldStatus,
+};
+
+use crate::PostgresStore;
+
+#[derive(FromRow)]
+struct WorldRow {
+    id: Uuid,
+    seed: String,
+    status: String,
+    ruleset_version: i32,
+    current_tick: i64,
+    current_sequence: i64,
+    predecessor_world_id: Option<Uuid>,
+    manifest: Value,
+    manifest_checksum: Vec<u8>,
+    last_event_checksum: Vec<u8>,
+    current_state_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct EventBatchRow {
+    world_id: Uuid,
+    sequence: i64,
+    tick: i64,
+    event_schema_version: i32,
+    ruleset_version: i32,
+    payload: Value,
+    checksum: Vec<u8>,
+    previous_checksum: Vec<u8>,
+    post_state_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct SnapshotRow {
+    world_id: Uuid,
+    through_sequence: i64,
+    tick: i64,
+    snapshot_schema_version: i32,
+    ruleset_version: i32,
+    state: Value,
+    checksum: Vec<u8>,
+    last_event_checksum: Vec<u8>,
+}
+
+#[async_trait]
+impl WorldStore for PostgresStore {
+    async fn create_world(
+        &self,
+        manifest: &WorldManifest,
+        predecessor_world_id: Option<WorldId>,
+    ) -> Result<StoredWorld, StoreError> {
+        if manifest.ruleset_version == 0 {
+            return Err(StoreError::Conflict(
+                "ruleset version must be greater than zero".to_owned(),
+            ));
+        }
+
+        let initial_state = EngineState::new(manifest.clone());
+        let snapshot =
+            Snapshot::new(initial_state, EventSequence::ZERO, Digest::ZERO).map_err(corrupt)?;
+        let manifest_hash = Digest::canonical(manifest).map_err(corrupt)?;
+        let manifest_json = serde_json::to_value(manifest).map_err(corrupt)?;
+        let snapshot_json = serde_json::to_value(&snapshot).map_err(corrupt)?;
+        let ruleset_version = i32::try_from(manifest.ruleset_version).map_err(|_| {
+            StoreError::Conflict("ruleset version exceeds PostgreSQL integer range".to_owned())
+        })?;
+
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        sqlx::query(
+            r#"
+            INSERT INTO worlds (
+                id,
+                seed,
+                status,
+                ruleset_version,
+                current_tick,
+                current_sequence,
+                predecessor_world_id,
+                manifest,
+                manifest_checksum,
+                last_event_checksum,
+                current_state_checksum
+            )
+            VALUES ($1, $2, 'initializing', $3, 0, 0, $4, $5, $6, $7, $8)
+            "#,
+        )
+        .bind(manifest.world_id.as_uuid())
+        .bind(manifest.seed.to_string())
+        .bind(ruleset_version)
+        .bind(predecessor_world_id.map(WorldId::as_uuid))
+        .bind(manifest_json)
+        .bind(manifest_hash.as_bytes().as_slice())
+        .bind(Digest::ZERO.as_bytes().as_slice())
+        .bind(snapshot.state_hash.as_bytes().as_slice())
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+
+        insert_snapshot(&mut transaction, &snapshot, ruleset_version, snapshot_json).await?;
+        transaction.commit().await.map_err(operation_error)?;
+
+        Ok(StoredWorld {
+            manifest: manifest.clone(),
+            status: WorldStatus::Initializing,
+            cursor: WorldCursor {
+                sequence: EventSequence::ZERO,
+                tick: SimTick::ZERO,
+                last_event_hash: Digest::ZERO,
+                state_hash: snapshot.state_hash,
+            },
+            predecessor_world_id,
+        })
+    }
+
+    async fn load_world(&self, world_id: WorldId) -> Result<StoredWorld, StoreError> {
+        let row = fetch_world(self.pool(), world_id)
+            .await?
+            .ok_or_else(|| StoreError::NotFound(format!("world {world_id}")))?;
+        parse_world(row)
+    }
+
+    async fn load_event_batches(
+        &self,
+        world_id: WorldId,
+        after_sequence: EventSequence,
+    ) -> Result<Vec<EventBatch>, StoreError> {
+        let after_sequence = to_i64(after_sequence.get(), "event sequence")?;
+        let rows = sqlx::query_as::<_, EventBatchRow>(
+            r#"
+            SELECT
+                world_id,
+                sequence,
+                tick,
+                event_schema_version,
+                ruleset_version,
+                payload,
+                checksum,
+                previous_checksum,
+                post_state_checksum
+            FROM event_batches
+            WHERE world_id = $1 AND sequence > $2
+            ORDER BY sequence ASC
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(after_sequence)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+
+        rows.into_iter().map(parse_event_batch).collect()
+    }
+
+    async fn load_latest_snapshot(&self, world_id: WorldId) -> Result<Snapshot, StoreError> {
+        let row = sqlx::query_as::<_, SnapshotRow>(
+            r#"
+            SELECT
+                world_id,
+                through_sequence,
+                tick,
+                snapshot_schema_version,
+                ruleset_version,
+                state,
+                checksum,
+                last_event_checksum
+            FROM snapshots
+            WHERE world_id = $1
+            ORDER BY through_sequence DESC
+            LIMIT 1
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?
+        .ok_or_else(|| StoreError::NotFound(format!("snapshot for world {world_id}")))?;
+
+        parse_snapshot(row)
+    }
+
+    async fn commit_transition(
+        &self,
+        expected: WorldCursor,
+        batch: &EventBatch,
+        snapshot: &Snapshot,
+    ) -> Result<StoredWorld, StoreError> {
+        batch.verify_integrity().map_err(corrupt)?;
+        snapshot.verify_integrity().map_err(corrupt)?;
+        validate_transition(expected, batch, snapshot)?;
+
+        let sequence = to_i64(batch.sequence.get(), "event sequence")?;
+        let tick = to_i64(batch.tick.get(), "simulation tick")?;
+        let event_schema_version = i32::from(batch.event_schema_version);
+        let ruleset_version = i32::try_from(batch.ruleset_version).map_err(|_| {
+            StoreError::Conflict("ruleset version exceeds PostgreSQL integer range".to_owned())
+        })?;
+        let batch_json = serde_json::to_value(batch).map_err(corrupt)?;
+        let snapshot_json = serde_json::to_value(snapshot).map_err(corrupt)?;
+
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        let persisted = fetch_world_for_update(&mut transaction, batch.world_id)
+            .await?
+            .ok_or_else(|| StoreError::NotFound(format!("world {}", batch.world_id)))?;
+        let persisted = parse_world(persisted)?;
+        if persisted.cursor != expected {
+            return Err(StoreError::Conflict(format!(
+                "world {} cursor changed before sequence {}",
+                batch.world_id, batch.sequence
+            )));
+        }
+        if persisted.status == WorldStatus::Archived {
+            return Err(StoreError::Conflict(format!(
+                "world {} is already archived",
+                batch.world_id
+            )));
+        }
+        if persisted.manifest.world_id != batch.world_id
+            || persisted.manifest.ruleset_version != batch.ruleset_version
+        {
+            return Err(StoreError::Conflict(
+                "batch does not match the persisted world manifest".to_owned(),
+            ));
+        }
+
+        sqlx::query(
+            r#"
+            INSERT INTO event_batches (
+                world_id,
+                sequence,
+                tick,
+                event_schema_version,
+                ruleset_version,
+                payload,
+                checksum,
+                previous_checksum,
+                post_state_checksum
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            "#,
+        )
+        .bind(batch.world_id.as_uuid())
+        .bind(sequence)
+        .bind(tick)
+        .bind(event_schema_version)
+        .bind(ruleset_version)
+        .bind(batch_json)
+        .bind(batch.batch_hash.as_bytes().as_slice())
+        .bind(batch.previous_hash.as_bytes().as_slice())
+        .bind(batch.post_state_hash.as_bytes().as_slice())
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+
+        insert_snapshot(&mut transaction, snapshot, ruleset_version, snapshot_json).await?;
+
+        let contains_started = batch
+            .events
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldStarted { .. }));
+        let contains_extinct = batch
+            .events
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldExtinct));
+        let contains_archived = batch
+            .events
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldArchived));
+        let status = status_text(snapshot.state.status());
+
+        let updated = sqlx::query(
+            r#"
+            UPDATE worlds
+            SET
+                status = $2,
+                current_tick = $3,
+                current_sequence = $4,
+                last_event_checksum = $5,
+                current_state_checksum = $6,
+                started_at = CASE WHEN $7 THEN COALESCE(started_at, NOW()) ELSE started_at END,
+                extinct_at = CASE WHEN $8 THEN COALESCE(extinct_at, NOW()) ELSE extinct_at END,
+                archived_at = CASE WHEN $9 THEN COALESCE(archived_at, NOW()) ELSE archived_at END
+            WHERE id = $1
+              AND current_sequence = $10
+              AND last_event_checksum = $11
+              AND status <> 'archived'
+            "#,
+        )
+        .bind(batch.world_id.as_uuid())
+        .bind(status)
+        .bind(tick)
+        .bind(sequence)
+        .bind(batch.batch_hash.as_bytes().as_slice())
+        .bind(snapshot.state_hash.as_bytes().as_slice())
+        .bind(contains_started)
+        .bind(contains_extinct)
+        .bind(contains_archived)
+        .bind(to_i64(expected.sequence.get(), "expected event sequence")?)
+        .bind(expected.last_event_hash.as_bytes().as_slice())
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        if updated.rows_affected() != 1 {
+            return Err(StoreError::Conflict(format!(
+                "world {} cursor update lost a race",
+                batch.world_id
+            )));
+        }
+
+        let outbox_id = deterministic_outbox_id(batch.world_id, batch.sequence);
+        sqlx::query(
+            r#"
+            INSERT INTO outbox (id, world_id, source_sequence, topic, payload)
+            VALUES ($1, $2, $3, 'canonical.transition.committed', $4)
+            "#,
+        )
+        .bind(outbox_id)
+        .bind(batch.world_id.as_uuid())
+        .bind(sequence)
+        .bind(json!({
+            "world_id": batch.world_id,
+            "sequence": batch.sequence,
+            "tick": batch.tick,
+            "batch_hash": batch.batch_hash,
+            "state_hash": snapshot.state_hash,
+            "status": snapshot.state.status(),
+        }))
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+
+        transaction.commit().await.map_err(operation_error)?;
+
+        Ok(StoredWorld {
+            manifest: persisted.manifest,
+            status: snapshot.state.status(),
+            cursor: WorldCursor {
+                sequence: batch.sequence,
+                tick: batch.tick,
+                last_event_hash: batch.batch_hash,
+                state_hash: snapshot.state_hash,
+            },
+            predecessor_world_id: persisted.predecessor_world_id,
+        })
+    }
+}
+
+async fn fetch_world(
+    pool: &sqlx::PgPool,
+    world_id: WorldId,
+) -> Result<Option<WorldRow>, StoreError> {
+    sqlx::query_as::<_, WorldRow>(world_select(false))
+        .bind(world_id.as_uuid())
+        .fetch_optional(pool)
+        .await
+        .map_err(operation_error)
+}
+
+async fn fetch_world_for_update(
+    transaction: &mut Transaction<'_, Postgres>,
+    world_id: WorldId,
+) -> Result<Option<WorldRow>, StoreError> {
+    sqlx::query_as::<_, WorldRow>(world_select(true))
+        .bind(world_id.as_uuid())
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(operation_error)
+}
+
+fn world_select(for_update: bool) -> &'static str {
+    if for_update {
+        r#"
+        SELECT
+            id,
+            seed,
+            status,
+            ruleset_version,
+            current_tick,
+            current_sequence,
+            predecessor_world_id,
+            manifest,
+            manifest_checksum,
+            last_event_checksum,
+            current_state_checksum
+        FROM worlds
+        WHERE id = $1
+        FOR UPDATE
+        "#
+    } else {
+        r#"
+        SELECT
+            id,
+            seed,
+            status,
+            ruleset_version,
+            current_tick,
+            current_sequence,
+            predecessor_world_id,
+            manifest,
+            manifest_checksum,
+            last_event_checksum,
+            current_state_checksum
+        FROM worlds
+        WHERE id = $1
+        "#
+    }
+}
+
+async fn insert_snapshot(
+    transaction: &mut Transaction<'_, Postgres>,
+    snapshot: &Snapshot,
+    ruleset_version: i32,
+    snapshot_json: Value,
+) -> Result<(), StoreError> {
+    sqlx::query(
+        r#"
+        INSERT INTO snapshots (
+            world_id,
+            through_sequence,
+            tick,
+            snapshot_schema_version,
+            ruleset_version,
+            state,
+            checksum,
+            last_event_checksum
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+        "#,
+    )
+    .bind(snapshot.world_id.as_uuid())
+    .bind(to_i64(
+        snapshot.through_sequence.get(),
+        "snapshot sequence",
+    )?)
+    .bind(to_i64(snapshot.state.tick().get(), "snapshot tick")?)
+    .bind(i32::from(snapshot.snapshot_schema_version))
+    .bind(ruleset_version)
+    .bind(snapshot_json)
+    .bind(snapshot.state_hash.as_bytes().as_slice())
+    .bind(snapshot.last_event_hash.as_bytes().as_slice())
+    .execute(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    Ok(())
+}
+
+fn parse_world(row: WorldRow) -> Result<StoredWorld, StoreError> {
+    let manifest: WorldManifest = serde_json::from_value(row.manifest).map_err(corrupt)?;
+    let world_id = WorldId::from_uuid(row.id);
+    if manifest.world_id != world_id
+        || manifest.seed.to_string() != row.seed
+        || i32::try_from(manifest.ruleset_version).ok() != Some(row.ruleset_version)
+    {
+        return Err(StoreError::Corrupt(format!(
+            "world {world_id} columns disagree with its manifest"
+        )));
+    }
+    let manifest_hash = Digest::canonical(&manifest).map_err(corrupt)?;
+    let stored_manifest_hash = digest_from_db(&row.manifest_checksum, "manifest checksum")?;
+    if manifest_hash != stored_manifest_hash {
+        return Err(StoreError::Corrupt(format!(
+            "world {world_id} manifest checksum mismatch"
+        )));
+    }
+
+    Ok(StoredWorld {
+        manifest,
+        status: parse_status(&row.status)?,
+        cursor: WorldCursor {
+            sequence: EventSequence::new(from_i64(row.current_sequence, "event sequence")?),
+            tick: SimTick::new(from_i64(row.current_tick, "simulation tick")?),
+            last_event_hash: digest_from_db(&row.last_event_checksum, "last event checksum")?,
+            state_hash: digest_from_db(&row.current_state_checksum, "state checksum")?,
+        },
+        predecessor_world_id: row.predecessor_world_id.map(WorldId::from_uuid),
+    })
+}
+
+fn parse_event_batch(row: EventBatchRow) -> Result<EventBatch, StoreError> {
+    let batch: EventBatch = serde_json::from_value(row.payload).map_err(corrupt)?;
+    batch.verify_integrity().map_err(corrupt)?;
+    if batch.world_id.as_uuid() != row.world_id
+        || to_i64(batch.sequence.get(), "event sequence")? != row.sequence
+        || to_i64(batch.tick.get(), "simulation tick")? != row.tick
+        || i32::from(batch.event_schema_version) != row.event_schema_version
+        || i32::try_from(batch.ruleset_version).ok() != Some(row.ruleset_version)
+        || digest_from_db(&row.checksum, "batch checksum")? != batch.batch_hash
+        || digest_from_db(&row.previous_checksum, "previous checksum")? != batch.previous_hash
+        || digest_from_db(&row.post_state_checksum, "post-state checksum")? != batch.post_state_hash
+    {
+        return Err(StoreError::Corrupt(format!(
+            "event batch {} indexed columns disagree with its payload",
+            batch.sequence
+        )));
+    }
+    Ok(batch)
+}
+
+fn parse_snapshot(row: SnapshotRow) -> Result<Snapshot, StoreError> {
+    let snapshot: Snapshot = serde_json::from_value(row.state).map_err(corrupt)?;
+    snapshot.verify_integrity().map_err(corrupt)?;
+    if snapshot.world_id.as_uuid() != row.world_id
+        || to_i64(snapshot.through_sequence.get(), "snapshot sequence")? != row.through_sequence
+        || to_i64(snapshot.state.tick().get(), "snapshot tick")? != row.tick
+        || i32::from(snapshot.snapshot_schema_version) != row.snapshot_schema_version
+        || i32::try_from(snapshot.state.ruleset_version()).ok() != Some(row.ruleset_version)
+        || digest_from_db(&row.checksum, "snapshot checksum")? != snapshot.state_hash
+        || digest_from_db(&row.last_event_checksum, "snapshot event checksum")?
+            != snapshot.last_event_hash
+    {
+        return Err(StoreError::Corrupt(format!(
+            "snapshot at sequence {} disagrees with its indexed columns",
+            snapshot.through_sequence
+        )));
+    }
+    Ok(snapshot)
+}
+
+fn validate_transition(
+    expected: WorldCursor,
+    batch: &EventBatch,
+    snapshot: &Snapshot,
+) -> Result<(), StoreError> {
+    let expected_sequence = expected
+        .sequence
+        .checked_next()
+        .map_err(|error| StoreError::Conflict(error.to_string()))?;
+    if batch.sequence != expected_sequence
+        || batch.previous_hash != expected.last_event_hash
+        || snapshot.world_id != batch.world_id
+        || snapshot.through_sequence != batch.sequence
+        || snapshot.last_event_hash != batch.batch_hash
+        || snapshot.state_hash != batch.post_state_hash
+        || snapshot.state.tick() != batch.tick
+        || snapshot.state.ruleset_version() != batch.ruleset_version
+    {
+        return Err(StoreError::Conflict(
+            "batch, snapshot, and expected cursor do not describe one transition".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn deterministic_outbox_id(world_id: WorldId, sequence: EventSequence) -> Uuid {
+    Uuid::new_v5(
+        &world_id.as_uuid(),
+        format!("projection:{}", sequence.get()).as_bytes(),
+    )
+}
+
+fn status_text(status: WorldStatus) -> &'static str {
+    match status {
+        WorldStatus::Initializing => "initializing",
+        WorldStatus::Running => "running",
+        WorldStatus::Extinct => "extinct",
+        WorldStatus::Archived => "archived",
+    }
+}
+
+fn parse_status(status: &str) -> Result<WorldStatus, StoreError> {
+    match status {
+        "initializing" => Ok(WorldStatus::Initializing),
+        "running" => Ok(WorldStatus::Running),
+        "extinct" => Ok(WorldStatus::Extinct),
+        "archived" => Ok(WorldStatus::Archived),
+        other => Err(StoreError::Corrupt(format!("unknown world status {other}"))),
+    }
+}
+
+fn digest_from_db(bytes: &[u8], field: &str) -> Result<Digest, StoreError> {
+    let bytes: [u8; 32] = bytes.try_into().map_err(|_| {
+        StoreError::Corrupt(format!("{field} has {} bytes instead of 32", bytes.len()))
+    })?;
+    Ok(Digest::from_bytes(bytes))
+}
+
+fn to_i64(value: u64, field: &str) -> Result<i64, StoreError> {
+    i64::try_from(value)
+        .map_err(|_| StoreError::Conflict(format!("{field} exceeds PostgreSQL bigint range")))
+}
+
+fn from_i64(value: i64, field: &str) -> Result<u64, StoreError> {
+    u64::try_from(value)
+        .map_err(|_| StoreError::Corrupt(format!("{field} is unexpectedly negative")))
+}
+
+fn operation_error(error: sqlx::Error) -> StoreError {
+    if let sqlx::Error::Database(database) = &error {
+        let code = database.code().as_deref().map(str::to_owned);
+        if matches!(code.as_deref(), Some("23505" | "23514" | "40001" | "P0001")) {
+            return StoreError::Conflict(database.message().to_owned());
+        }
+    }
+    StoreError::Unavailable(error.to_string())
+}
+
+fn corrupt(error: impl std::fmt::Display) -> StoreError {
+    StoreError::Corrupt(error.to_string())
+}

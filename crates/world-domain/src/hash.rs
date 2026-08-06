@@ -12,6 +12,11 @@ impl Digest {
     pub const ZERO: Self = Self([0; 32]);
 
     #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    #[must_use]
     pub fn sha256(bytes: &[u8]) -> Self {
         Self(Sha256::digest(bytes).into())
     }
