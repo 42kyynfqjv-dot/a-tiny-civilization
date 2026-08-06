@@ -13,16 +13,18 @@ use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{
-    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PackedScalarTerrainTile, ScalarTerrainCell,
-    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
-    TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
+    BooleanFieldCell, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+    PackedBooleanFieldTile, PackedScalarTerrainTile, ScalarTerrainCell, SourceSnapshotArtifact,
+    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
+    WorldDataBundle,
 };
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
     Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId,
-    WorldConfiguration, route_geographic_to_s2, route_half_arcsecond_to_s2,
+    WorldConfiguration, decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
+    s2_face_ij_center_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -184,6 +186,18 @@ enum InspectCommand {
         #[arg(long, default_value_t = 4)]
         points_per_axis: u8,
     },
+    /// Verify every artifact in a standalone packed Natural Earth land-reference release.
+    NaturalEarthLandReferenceLayer {
+        /// Directory emitted by `derive natural-earth-land-reference-layer`.
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value = "land-reference")]
+        layer_id: String,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -279,6 +293,24 @@ enum DeriveCommand {
         #[arg(long, default_value_t = 4)]
         points_per_axis: u8,
     },
+    /// Classify every L10 centre against pinned Natural Earth land polygons.
+    ///
+    /// The source is a generalized land reference, so this creates a clearly named
+    /// reference layer, never a claim of a measurement-resolution coastline.
+    NaturalEarthLandReferenceLayer {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long, default_value = "land-reference")]
+        layer_id: String,
+        #[arg(long)]
+        output_directory: PathBuf,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+    },
 }
 
 #[tokio::main]
@@ -369,6 +401,17 @@ async fn main() -> Result<()> {
                 target_s2_level,
                 points_per_axis,
             ),
+            InspectCommand::NaturalEarthLandReferenceLayer {
+                input_directory,
+                layer_id,
+                container_s2_level,
+                target_s2_level,
+            } => inspect_natural_earth_land_reference_layer(
+                &input_directory,
+                &layer_id,
+                container_s2_level,
+                target_s2_level,
+            ),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -431,6 +474,21 @@ async fn main() -> Result<()> {
                 container_s2_level,
                 target_s2_level,
                 points_per_axis,
+            ),
+            DeriveCommand::NaturalEarthLandReferenceLayer {
+                source_snapshot,
+                artifact_root,
+                layer_id,
+                output_directory,
+                container_s2_level,
+                target_s2_level,
+            } => derive_natural_earth_land_reference_layer(
+                &source_snapshot,
+                &artifact_root,
+                &layer_id,
+                &output_directory,
+                container_s2_level,
+                target_s2_level,
             ),
         },
     }
@@ -802,6 +860,124 @@ fn inspect_etopo_terrain_layer(
                 .context("ETOPO terrain root is empty")?,
             source_artifact_digest: source_artifact_digest
                 .context("ETOPO terrain root is empty")?,
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+            tile_count: u64::try_from(root.entries.len())?,
+            target_cell_count,
+            tile_byte_length,
+        })?
+    );
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct NaturalEarthLandReferenceLayerInspection {
+    inspection_schema_version: u16,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    sample_policy: String,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+    tile_count: u64,
+    target_cell_count: u64,
+    tile_byte_length: u64,
+}
+
+/// Independently validate a complete generalized-land reference release.
+fn inspect_natural_earth_land_reference_layer(
+    input_directory: &Path,
+    layer_id: &str,
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<()> {
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_bytes = read_release_file(input_directory, &root_relative_path)?;
+    let root = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical Natural Earth land-reference root index")?;
+    if root.layer_id != layer_id {
+        bail!("land-reference root declares an unexpected layer identifier");
+    }
+    let expected_containers = global_s2_cells_at_level(container_s2_level)?;
+    if root.entries.len() != expected_containers.len() {
+        bail!("land-reference root does not cover every expected container");
+    }
+    let mut source_snapshot_digest = None;
+    let mut source_artifact_digest = None;
+    let mut sample_policy = None;
+    let mut tile_byte_length = 0_u64;
+    let mut target_cell_count = 0_u64;
+    for (entry, expected_container) in root.entries.iter().zip(expected_containers) {
+        if entry.kind != TileTreeEntryKind::Tile
+            || entry.s2_level != container_s2_level
+            || entry.s2_cell_id != expected_container.to_string()
+            || entry.artifact.media_type != PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE
+        {
+            bail!("land-reference root has an invalid tile entry");
+        }
+        let bytes = read_release_file(input_directory, &entry.artifact.path)?;
+        if u64::try_from(bytes.len())? != entry.artifact.byte_length
+            || Digest::sha256(&bytes) != entry.artifact.content_hash
+        {
+            bail!("land-reference tile fails its root reference");
+        }
+        let tile = PackedBooleanFieldTile::from_canonical_slice(&bytes)
+            .context("decode canonical land-reference tile")?;
+        if tile.layer_id != layer_id
+            || tile.container_s2_cell_id != expected_container
+            || tile.target_s2_level != target_s2_level
+        {
+            bail!("land-reference tile has inconsistent packing metadata");
+        }
+        for (name, observed, expected) in [
+            (
+                "source snapshot",
+                tile.source_snapshot_digest,
+                source_snapshot_digest,
+            ),
+            (
+                "source artifact",
+                tile.source_artifact_digest,
+                source_artifact_digest,
+            ),
+        ] {
+            if let Some(expected) = expected
+                && observed != expected
+            {
+                bail!("land-reference tiles disagree on {name} provenance");
+            }
+        }
+        if let Some(expected) = sample_policy.as_ref()
+            && &tile.sample_policy != expected
+        {
+            bail!("land-reference tiles disagree on sample policy");
+        }
+        source_snapshot_digest.get_or_insert(tile.source_snapshot_digest);
+        source_artifact_digest.get_or_insert(tile.source_artifact_digest);
+        sample_policy.get_or_insert(tile.sample_policy);
+        tile_byte_length = tile_byte_length
+            .checked_add(u64::try_from(bytes.len())?)
+            .context("land-reference tile byte total overflow")?;
+        target_cell_count = target_cell_count
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("land-reference target cell total overflow")?;
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&NaturalEarthLandReferenceLayerInspection {
+            inspection_schema_version: 1,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            sample_policy: sample_policy.context("land-reference root is empty")?,
+            source_snapshot_digest: source_snapshot_digest
+                .context("land-reference root is empty")?,
+            source_artifact_digest: source_artifact_digest
+                .context("land-reference root is empty")?,
             root_index_path: root_relative_path,
             root_index_hash: Digest::sha256(&root_bytes),
             root_index_byte_length: u64::try_from(root_bytes.len())?,
@@ -1315,6 +1491,195 @@ fn derive_etopo_terrain_layer(
         })?
     );
     Ok(())
+}
+
+#[derive(Serialize)]
+struct NaturalEarthLandReferenceLayerDerivation {
+    derivation_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_path: String,
+    source_artifact_hash: Digest,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    sample_policy: &'static str,
+    target_cells: u64,
+    output_directory: String,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+}
+
+/// Create a full global, centre-classified Natural Earth land-reference layer.
+///
+/// This is deliberately distinct from a coastline layer: source vertices are
+/// generalized cartography. The Boolean payload says only whether the exact centre
+/// of each target S2 cell is inside the pinned polygon stream.
+fn derive_natural_earth_land_reference_layer(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    layer_id: &str,
+    output_directory: &Path,
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<()> {
+    if container_s2_level != 6 || target_s2_level != 10 {
+        bail!("Natural Earth land-reference v1 requires L6 containers and L10 target values");
+    }
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!("land-reference output directory already exists");
+    }
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".shp")
+        })
+        .context("source snapshot has no Natural Earth .shp data artifact")?;
+    let bytes = fs::read(artifact_root.join(&artifact.artifact_path))?;
+    parse_polygon_shapefile(&bytes).context("validate Natural Earth polygon stream")?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let staging_directory = prepare_terrain_layer_staging_directory(output_directory)?;
+    let (root_relative_path, root_bytes) = write_packed_natural_earth_land_reference_layer(
+        &staging_directory,
+        layer_id,
+        source_snapshot_digest,
+        artifact.content_hash,
+        &bytes,
+        container_s2_level,
+        target_s2_level,
+    )?;
+    fs::rename(&staging_directory, output_directory).with_context(|| {
+        format!(
+            "atomically publish land-reference directory {}",
+            output_directory.display()
+        )
+    })?;
+    let target_cells = u64::try_from(global_s2_cells_at_level(target_s2_level)?.len())?;
+    println!(
+        "{}",
+        serde_json::to_string(&NaturalEarthLandReferenceLayerDerivation {
+            derivation_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            source_artifact_path: artifact.artifact_path.clone(),
+            source_artifact_hash: artifact.content_hash,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            sample_policy: "s2-cell-centre-e7-v1",
+            target_cells,
+            output_directory: output_directory.display().to_string(),
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+fn write_packed_natural_earth_land_reference_layer(
+    output_directory: &Path,
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    source_bytes: &[u8],
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<(String, Vec<u8>)> {
+    let level_directory = format!("l{container_s2_level}");
+    let tile_directory = output_directory
+        .join("layers")
+        .join(layer_id)
+        .join(&level_directory);
+    fs::create_dir_all(&tile_directory)?;
+    let mut entries = Vec::new();
+    for (position, container) in global_s2_cells_at_level(container_s2_level)?
+        .into_iter()
+        .enumerate()
+    {
+        let tile = pack_natural_earth_land_reference_tile(
+            layer_id,
+            source_snapshot_digest,
+            source_artifact_digest,
+            source_bytes,
+            container,
+            target_s2_level,
+        )?;
+        let bytes = tile.canonical_bytes()?;
+        let relative_path = format!("layers/{layer_id}/{level_directory}/{container}.tile");
+        write_new_artifact(&output_directory.join(&relative_path), &bytes)?;
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+        if (position + 1) % 1_024 == 0 {
+            eprintln!(
+                "Natural Earth land-reference normalization progress: {}/24576 containers",
+                position + 1
+            );
+        }
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    write_new_artifact(&output_directory.join(&root_relative_path), &root_bytes)?;
+    Ok((root_relative_path, root_bytes))
+}
+
+fn pack_natural_earth_land_reference_tile(
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    source_bytes: &[u8],
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+) -> Result<PackedBooleanFieldTile> {
+    let cells = enumerate_s2_descendants(container_s2_cell_id, target_s2_level)?
+        .into_iter()
+        .map(|s2_cell_id| {
+            let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(s2_face_ij_center_uv(
+                decode_s2_face_ij(s2_cell_id),
+            )?)?)?;
+            Ok(BooleanFieldCell {
+                s2_cell_id,
+                support_samples: 1,
+                true_samples: u64::from(natural_earth_contains_point_unvalidated(
+                    source_bytes,
+                    coordinate.longitude_e7(),
+                    coordinate.latitude_e7(),
+                )?),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tile = PackedBooleanFieldTile {
+        tile_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        source_snapshot_digest,
+        source_artifact_digest,
+        sample_policy: "s2-cell-centre-e7-v1".to_owned(),
+        container_s2_cell_id,
+        target_s2_level,
+        cells,
+    };
+    tile.validate()
+        .context("packed land-reference tile is invalid")?;
+    Ok(tile)
 }
 
 /// Reserve a same-parent hidden staging directory. The final rename is atomic on the
@@ -2493,6 +2858,16 @@ fn inspect_natural_earth_land_point(
 /// floating-point behavior from becoming a normalization input.
 fn natural_earth_contains_point(bytes: &[u8], longitude_e7: i32, latitude_e7: i32) -> Result<bool> {
     parse_polygon_shapefile(bytes)?;
+    natural_earth_contains_point_unvalidated(bytes, longitude_e7, latitude_e7)
+}
+
+/// The caller has already validated the complete polygon stream with
+/// `parse_polygon_shapefile`; this avoids a full source traversal per target cell.
+fn natural_earth_contains_point_unvalidated(
+    bytes: &[u8],
+    longitude_e7: i32,
+    latitude_e7: i32,
+) -> Result<bool> {
     let mut inside = false;
     let mut offset = 100_usize;
     while offset < bytes.len() {
@@ -3072,6 +3447,16 @@ mod tests {
         assert_eq!(summary.polygons, 0);
     }
 
+    fn minimal_null_polygon_shapefile() -> Vec<u8> {
+        let mut bytes = vec![0_u8; 112];
+        bytes[0..4].copy_from_slice(&9994_u32.to_be_bytes());
+        bytes[24..28].copy_from_slice(&56_u32.to_be_bytes());
+        bytes[28..32].copy_from_slice(&1000_u32.to_le_bytes());
+        bytes[32..36].copy_from_slice(&5_u32.to_le_bytes());
+        bytes[104..108].copy_from_slice(&2_u32.to_be_bytes());
+        bytes
+    }
+
     #[test]
     fn rejects_a_header_with_a_wrong_declared_length() {
         let mut bytes = vec![0_u8; 100];
@@ -3497,6 +3882,40 @@ mod tests {
             assert!(tile.cells.iter().all(|cell| cell.mean_millimetres == 42));
         }
         fs::remove_dir_all(root).expect("remove miniature terrain layer");
+    }
+
+    #[test]
+    fn miniature_land_reference_layer_writes_and_reloads_every_packed_tile() {
+        let root = temporary_root("land-reference-layer");
+        let source = minimal_null_polygon_shapefile();
+        parse_polygon_shapefile(&source).expect("validated empty source");
+        let (root_path, root_bytes) = write_packed_natural_earth_land_reference_layer(
+            &root,
+            "land-reference",
+            Digest::sha256(b"snapshot"),
+            Digest::sha256(b"artifact"),
+            &source,
+            0,
+            1,
+        )
+        .expect("write miniature land-reference layer");
+        let index = TileTreeIndex::from_canonical_slice(&root_bytes).expect("root index");
+        assert_eq!(index.entries.len(), 6);
+        assert_eq!(
+            fs::read(root.join(&root_path)).expect("root bytes"),
+            root_bytes
+        );
+        inspect_natural_earth_land_reference_layer(&root, "land-reference", 0, 1)
+            .expect("independently inspect miniature land-reference layer");
+        for entry in index.entries {
+            let tile = PackedBooleanFieldTile::from_canonical_slice(
+                &fs::read(root.join(entry.artifact.path)).expect("tile bytes"),
+            )
+            .expect("packed Boolean tile");
+            assert_eq!(tile.cells.len(), 4);
+            assert!(tile.cells.iter().all(|cell| cell.true_samples == 0));
+        }
+        fs::remove_dir_all(root).expect("remove test root");
     }
 
     #[test]

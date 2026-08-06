@@ -141,6 +141,15 @@ derivations produced the same root-index SHA-256
 This proves the one terrain layer only; it is not a complete scientific bundle or a
 canonical world. Climate, coastline, hydrography, habitat, soil, and ecological
 evidence remain required.
+
+The pinned Natural Earth polygons also have a deterministic L6→L10 Boolean release
+path. It classifies each exact S2-cell centre on the E7 lattice using integer-only
+IEEE-754 source conversion and an even-odd polygon test, then independently validates
+every root reference and packed tile. Its identifier is deliberately
+`land-reference`, not `coastline`: Natural Earth's generalized cartography supplies a
+global reference and coarse cross-check, not a scientific-resolution coastal boundary.
+The batch is offline evidence only; a stronger coastline source and every other
+required layer remain necessary before bundle or genesis claims.
 5. ~~Implement a private conserved L10↔L14 scalar-refinement and reaggregation proof.~~
    Complete. Couple sourced ecological quantities and retain refinements/deltas after
    step 4 establishes their real bundle semantics.

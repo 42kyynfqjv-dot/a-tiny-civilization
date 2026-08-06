@@ -270,6 +270,58 @@ pub fn s2_face_ij_center_uv(ij: S2FaceIj) -> Result<S2FaceUv, GeographicRoutingE
     })
 }
 
+/// Apply S2's quadratic projection to an exact decoded-cell vertex. Vertex indices
+/// use the closed range 0..=2^level, so callers can construct conservative cell
+/// bounds without host floating point.
+pub fn s2_face_ij_vertex_uv(
+    ij: S2FaceIj,
+    i_vertex: u32,
+    j_vertex: u32,
+) -> Result<S2FaceUv, GeographicRoutingError> {
+    let size = 1_i128
+        .checked_shl(u32::from(ij.level))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    if i128::from(i_vertex) > size || i128::from(j_vertex) > size {
+        return Err(GeographicRoutingError::Overflow);
+    }
+    let denominator = size
+        .checked_mul(size)
+        .and_then(|value| value.checked_mul(3))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    let coordinate = |vertex: u32| -> Result<i128, GeographicRoutingError> {
+        let doubled = i128::from(vertex)
+            .checked_mul(2)
+            .ok_or(GeographicRoutingError::Overflow)?;
+        let squared_size = size
+            .checked_mul(size)
+            .ok_or(GeographicRoutingError::Overflow)?;
+        if doubled >= size {
+            doubled
+                .checked_mul(doubled)
+                .and_then(|value| value.checked_sub(squared_size))
+                .ok_or(GeographicRoutingError::Overflow)
+        } else {
+            let complement = size
+                .checked_mul(2)
+                .and_then(|value| value.checked_sub(doubled))
+                .ok_or(GeographicRoutingError::Overflow)?;
+            squared_size
+                .checked_sub(
+                    complement
+                        .checked_mul(complement)
+                        .ok_or(GeographicRoutingError::Overflow)?,
+                )
+                .ok_or(GeographicRoutingError::Overflow)
+        }
+    };
+    Ok(S2FaceUv {
+        face: ij.face,
+        u_numerator: coordinate(i_vertex)?,
+        v_numerator: coordinate(j_vertex)?,
+        denominator,
+    })
+}
+
 /// Convert an S2 face coordinate into its exact unnormalised 3D direction.
 pub fn s2_face_uv_to_ray(uv: S2FaceUv) -> Result<S2FaceRay, GeographicRoutingError> {
     let (u, v, d) = (uv.u_numerator, uv.v_numerator, uv.denominator);
@@ -772,6 +824,35 @@ mod tests {
                 denominator: 12
             })
         );
+    }
+
+    #[test]
+    fn ij_cell_vertices_use_exact_quadratic_face_coordinates() {
+        let cell = S2FaceIj {
+            face: 0,
+            i: 0,
+            j: 0,
+            level: 1,
+        };
+        assert_eq!(
+            s2_face_ij_vertex_uv(cell, 0, 0),
+            Ok(S2FaceUv {
+                face: 0,
+                u_numerator: -12,
+                v_numerator: -12,
+                denominator: 12,
+            })
+        );
+        assert_eq!(
+            s2_face_ij_vertex_uv(cell, 1, 1),
+            Ok(S2FaceUv {
+                face: 0,
+                u_numerator: 0,
+                v_numerator: 0,
+                denominator: 12,
+            })
+        );
+        assert!(s2_face_ij_vertex_uv(cell, 3, 0).is_err());
     }
 
     #[test]
