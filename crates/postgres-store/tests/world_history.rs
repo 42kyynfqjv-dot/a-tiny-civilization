@@ -62,6 +62,12 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
     assert_eq!(public_worlds.len(), 1);
     assert_eq!(public_worlds[0].world_id, manifest.world_id);
     assert_eq!(public_worlds[0].status, WorldStatus::Initializing);
+    assert_eq!(
+        public_worlds[0].manifest_hash,
+        Digest::canonical(&manifest).expect("canonical manifest hash")
+    );
+    assert_eq!(public_worlds[0].event_hash, Digest::ZERO);
+    assert_eq!(public_worlds[0].state_hash, created.cursor.state_hash);
     let (running, genesis_batch, genesis_snapshot) =
         genesis(&manifest, vec![initial_person(manifest.world_id)])?;
 
@@ -106,6 +112,13 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
     assert_eq!(loaded_world, persisted);
     assert_eq!(replayed.last_event_hash, persisted.cursor.last_event_hash);
     assert_eq!(replayed.state.state_hash()?, persisted.cursor.state_hash);
+    let public_worlds = store.list_public_worlds().await?;
+    assert_eq!(public_worlds[0].through_sequence, persisted.cursor.sequence);
+    assert_eq!(
+        public_worlds[0].event_hash,
+        persisted.cursor.last_event_hash
+    );
+    assert_eq!(public_worlds[0].state_hash, persisted.cursor.state_hash);
     Ok(())
 }
 

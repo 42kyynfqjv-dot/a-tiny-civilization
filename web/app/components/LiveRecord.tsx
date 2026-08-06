@@ -7,6 +7,9 @@ type World = {
   status: "initializing" | "running" | "extinct" | "archived";
   through_sequence: string | number;
   tick: string | number;
+  manifest_hash: string;
+  event_hash: string;
+  state_hash: string;
 };
 
 type TimelineItem = {
@@ -84,6 +87,11 @@ export function LiveRecord() {
         </div>
         <p>Through event {world.through_sequence} · tick {world.tick}</p>
       </div>
+      <dl className="audit-hashes" aria-label="Public verification hashes">
+        <div><dt>Manifest</dt><dd title={world.manifest_hash}>{shortHash(world.manifest_hash)}</dd></div>
+        <div><dt>Event head</dt><dd title={world.event_hash}>{shortHash(world.event_hash)}</dd></div>
+        <div><dt>State</dt><dd title={world.state_hash}>{shortHash(world.state_hash)}</dd></div>
+      </dl>
       <div className="live-record-grid">
         <article>
           <h3>Recent facts</h3>
@@ -97,4 +105,8 @@ export function LiveRecord() {
       </div>
     </section>
   );
+}
+
+function shortHash(hash: string) {
+  return `${hash.slice(0, 12)}…${hash.slice(-8)}`;
 }

@@ -19,6 +19,10 @@ Accepted on 2026-08-06.
 - The observer API exposes a bounded read-only timeline endpoint. Projection rows are
   append-only; correcting presentation requires a new projection version, never a
   rewrite of public historical evidence.
+- The public world index includes its manifest hash, canonical event-chain head, and
+  state hash at the displayed cursor. These are copied from the committed world cursor,
+  not calculated by the browser or an observer projection. They make the displayed
+  history independently auditable without releasing sensitive event payloads.
 
 ## Consequences
 

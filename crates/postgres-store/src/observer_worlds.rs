@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use observer_projection::{ObserverProjectionStoreError, ObserverWorldStore, PublicWorld};
 use sqlx::FromRow;
-use world_domain::{EventSequence, SimTick, WorldId, WorldStatus};
+use world_domain::{Digest, EventSequence, SimTick, WorldId, WorldStatus};
 
 use crate::PostgresStore;
 
@@ -11,6 +11,9 @@ struct PublicWorldRow {
     status: String,
     current_sequence: i64,
     current_tick: i64,
+    manifest_checksum: Vec<u8>,
+    last_event_checksum: Vec<u8>,
+    current_state_checksum: Vec<u8>,
     predecessor_world_id: Option<uuid::Uuid>,
 }
 
@@ -19,7 +22,8 @@ impl ObserverWorldStore for PostgresStore {
     async fn list_public_worlds(&self) -> Result<Vec<PublicWorld>, ObserverProjectionStoreError> {
         let rows = sqlx::query_as::<_, PublicWorldRow>(
             r#"
-            SELECT id, status, current_sequence, current_tick, predecessor_world_id
+            SELECT id, status, current_sequence, current_tick, manifest_checksum,
+                   last_event_checksum, current_state_checksum, predecessor_world_id
             FROM worlds
             ORDER BY current_sequence DESC, id ASC
             "#,
@@ -46,8 +50,16 @@ fn parse_row(row: PublicWorldRow) -> Result<PublicWorld, ObserverProjectionStore
         status,
         through_sequence: EventSequence::new(sequence),
         tick: SimTick::new(tick),
+        manifest_hash: parse_digest(row.manifest_checksum, "world manifest checksum")?,
+        event_hash: parse_digest(row.last_event_checksum, "world event checksum")?,
+        state_hash: parse_digest(row.current_state_checksum, "world state checksum")?,
         predecessor_world_id: row.predecessor_world_id.map(WorldId::from_uuid),
     })
+}
+
+fn parse_digest(bytes: Vec<u8>, field: &str) -> Result<Digest, ObserverProjectionStoreError> {
+    let bytes: [u8; 32] = bytes.try_into().map_err(|_| corrupt(field))?;
+    Ok(Digest::from_bytes(bytes))
 }
 
 fn corrupt(field: &str) -> ObserverProjectionStoreError {

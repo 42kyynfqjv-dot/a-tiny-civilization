@@ -80,9 +80,11 @@ citations and event provenance. It omits reproductive category, parentage, locat
 mortality mechanism, and supporter aliases. See [ADR 0019](adr/0019-public-organism-index.md).
 
 The API also exposes a bounded read-only world index so the public web client can
-select a current world without receiving a simulation write capability. It polls this
-index, then the safe timeline and organism projections; unavailable or empty history is
-shown as such rather than replaced with invented content.
+select a current world without receiving a simulation write capability. Each public
+cursor includes its manifest hash, event-chain head, and state hash so the observatory
+can visibly identify the exact committed history it displays. It polls this index, then
+the safe timeline and organism projections; unavailable or empty history is shown as
+such rather than replaced with invented content.
 
 `public-finding-v1` independently projects auditable first occurrences and population
 records. Its `streak` vocabulary intentionally has no output until canonical behavior

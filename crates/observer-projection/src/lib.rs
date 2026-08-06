@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, DomainEvent, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
+    BirthCategory, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
     SimTick, SpeciesIdentity, WorldId, WorldStatus,
 };
 
@@ -175,6 +175,12 @@ pub struct PublicWorld {
     pub status: WorldStatus,
     pub through_sequence: EventSequence,
     pub tick: SimTick,
+    /// Hash of the immutable world manifest; it contains no observer information.
+    pub manifest_hash: Digest,
+    /// Hash head of all committed canonical event batches through `through_sequence`.
+    pub event_hash: Digest,
+    /// Replayable canonical state hash at the public cursor.
+    pub state_hash: Digest,
     pub predecessor_world_id: Option<WorldId>,
 }
 

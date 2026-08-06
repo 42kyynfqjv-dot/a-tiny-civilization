@@ -567,6 +567,11 @@ input {
 .live-record-heading { align-items: end; display: flex; gap: 24px; justify-content: space-between; }
 .live-record-heading h2 { font-size: 22px; letter-spacing: -0.045em; margin: 7px 0 0; }
 .live-record-heading > p { color: #657067; font-family: var(--font-geist-mono), monospace; font-size: 10px; margin: 0; }
+.audit-hashes { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; gap: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 22px 0; }
+.audit-hashes > div { min-width: 0; padding: 11px 12px; }
+.audit-hashes > div + div { border-left: 1px solid var(--line); }
+.audit-hashes dt { color: #657067; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
+.audit-hashes dd { font-family: var(--font-geist-mono), monospace; font-size: 10px; margin: 6px 0 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .live-record-grid { display: grid; gap: 18px; grid-template-columns: 1.15fr 0.85fr; margin-top: 20px; }
 .live-record-grid article { border-top: 1px solid var(--line); padding-top: 14px; }
 .live-record-grid h3 { font-size: 12px; letter-spacing: -0.02em; margin: 0 0 11px; }
@@ -615,6 +620,8 @@ input {
 
 @media (max-width: 720px) {
   .live-record-heading, .live-record-grid { display: grid; grid-template-columns: 1fr; }
+  .audit-hashes { grid-template-columns: 1fr; }
+  .audit-hashes > div + div { border-left: 0; border-top: 1px solid var(--line); }
   .wiki-topbar { gap: 12px; grid-template-columns: 1fr auto; padding: 14px 20px; }
   .wiki-topbar nav { grid-column: 1 / -1; grid-row: 2; }
   .wiki-topbar .foundation-pulse { display: none; }
