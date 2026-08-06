@@ -74,11 +74,19 @@ Model responses:
 Unsupported conceptual leaps may become low-confidence fantasies. They do not become
 discoveries or facts.
 
-Paid cognition has a civilization-wide monthly treasury independent of population:
+Paid cognition is allocated in versioned units per simulated time, independent of
+population and wall-clock execution speed. A separate wall-clock cost circuit breaker
+protects the operator:
 
-- target: USD 7.50;
-- hard stop: USD 9.50;
-- reserve below the hard stop for rare, high-value cognition.
+- target operating spend: USD 7.50 per calendar month;
+- hard stop: USD 9.50 per calendar month;
+- deterministic scheduling and reserve policy expressed per simulated year;
+- a circuit-breaker trip is recorded as an unavailable external input and invokes the
+  deterministic fallback.
+
+Requests are selected at a deterministic tick and have a deterministic deadline tick.
+Late responses cannot enter history. Exact model and memory-retrieval results—or their
+recorded absence—are replay inputs.
 
 Provider unavailability, malformed output, timeouts, missing credentials, or an
 exhausted budget must degrade to deterministic behavior without stopping time.
@@ -115,12 +123,18 @@ Every artifact page separates:
 
 ## 6. Worlds, extinction, and replay
 
-Every durable record is scoped to a `world_id`. When no viable people remain:
+Every durable record is scoped to a `world_id`. When the versioned mechanical
+extinction condition is satisfied:
 
 1. the world transitions exactly once to an immutable archived state;
 2. its timeline, wiki, genealogy, artifacts, and final state remain browseable;
-3. a successor world is created with a new explicit seed;
-4. no records are overwritten or silently reinterpreted under new rules.
+3. no records are overwritten or silently reinterpreted under new rules;
+4. an authorized operator may later create a successor with a new, explicit,
+   unpreviewed seed.
+
+Extinction never creates a successor automatically. Humans may authorize a new world
+after archival, but may not terminate a live world early, reroll an unattractive seed,
+or rescue a doomed population.
 
 Worlds pin a ruleset version. Random choices derive from explicit, independent streams
 so unrelated implementation changes do not consume a shared random sequence.
@@ -128,12 +142,14 @@ so unrelated implementation changes do not consume a shared random sequence.
 ## 7. Supporter participation
 
 The public site is free to observe. A supporter may purchase an observer-label
-reservation for the next naturally occurring eligible human or animal birth, choosing
-an observer name and an available sex category (and species for animals).
+reservation for the next naturally occurring eligible human or animal birth after the
+reservation becomes valid, choosing an observer name and an available birth category
+(and species for animals).
 
 Payment and naming:
 
 - never cause a birth or choose its biological outcome;
+- attach only after the canonical birth event has committed;
 - never alter behavior, cognition, status, health, reproduction, or survival;
 - remain separate from names and identities developed inside the civilization;
 - are moderated for abuse, harassment, personal data, impersonation, advertising,
@@ -160,6 +176,10 @@ The public site eventually provides:
 
 Wiki claims carry provenance labels such as world fact, observed evidence,
 contemporary claim, later interpretation, observer inference, or disputed.
+
+Observer summaries, firsts, records, streaks, charts, and digests are deterministic,
+versioned projections with links to their source events. They are finding aids rather
+than inputs to history. The core observer experience does not use an LLM narrator.
 
 ## 9. Deployment and secrets
 

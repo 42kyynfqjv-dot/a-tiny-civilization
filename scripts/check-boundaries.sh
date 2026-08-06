@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+check_tree_excludes() {
+  local package="$1"
+  local forbidden="$2"
+  local tree
+
+  tree="$(cargo tree --locked --edges normal --prefix none -p "$package")"
+  if printf '%s\n' "$tree" | rg --line-number "$forbidden"; then
+    echo "Architecture boundary violation in dependency tree for $package." >&2
+    exit 1
+  fi
+}
+
+check_tree_excludes \
+  world-domain \
+  '^(application|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
+check_tree_excludes \
+  sim-engine \
+  '^(application|observer-|supporter-|payment-|auth-|postgres-store|axum|sqlx|tokio|reqwest) '
+check_tree_excludes \
+  civilization-runner \
+  '^(observer-api|supporter-|payment-|auth-) '
+
+if rg --ignore-case --line-number \
+  '\b(update[[:space:]]+event_batches|delete[[:space:]]+from[[:space:]]+event_batches|truncate([[:space:]]+table)?[[:space:]]+event_batches)\b' \
+  db/migrations; then
+  echo "Canonical event migrations must not rewrite or delete event batches." >&2
+  exit 1
+fi
+
+echo "Architecture boundary checks passed."

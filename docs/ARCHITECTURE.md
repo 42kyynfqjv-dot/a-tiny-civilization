@@ -78,8 +78,30 @@ Simulation time and wall time use distinct types. Quantities that influence repl
 prefer integers or fixed-point representations. Entity iteration is stably ordered.
 Random streams derive from world seed, ruleset version, subsystem, tick, and entity.
 
-Recorded external cognition is an input event during replay; replay never invokes a
-remote model.
+External cognition and Hindsight recall are selected at deterministic ticks and may be
+accepted only by a deterministic deadline tick. Their exact result, validation status,
+or absence is recorded as an input event. Replay never invokes a remote model or
+memory service.
+
+Wall-clock throughput changes how quickly observers receive ticks, not which state
+transitions occur. The primary cognition allocation is denominated in simulated time;
+a separate hard currency circuit breaker can force a recorded unavailable result.
+
+## Irreversible facts and rebuildable views
+
+The event log preserves facts that later projections cannot reconstruct: durable
+organism identity, real species identity, birth/death/lineage, situated perceptions,
+communications, external inputs, ruleset activation, and the mechanical extinction
+transition. These are tick-zero commitments.
+
+Wiki pages, biographies, maps, digests, archive navigation, and supporter dashboards
+are rebuildable read models. They may ship later and project the complete retained
+history. A deterministic finding aid may rank generic firsts, records, and streaks,
+but significance never controls causal recording.
+
+Supporter reservations and observer aliases live outside the simulation dependency
+graph. A committed birth can cause an observer-side matcher to attach an approved
+alias; the runner cannot wait for or query accounts, payments, reservations, or names.
 
 ## Scientific data boundary
 

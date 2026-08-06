@@ -32,7 +32,8 @@ the observer system.
 
 See [the project contract](docs/PROJECT_CONTRACT.md) and
 [architecture overview](docs/ARCHITECTURE.md) for the boundaries that enforce these
-principles.
+principles. The [public roadmap](docs/ROADMAP.md) separates facts that must exist from
+tick zero from observer features that can be projected later.
 
 ## Status
 
