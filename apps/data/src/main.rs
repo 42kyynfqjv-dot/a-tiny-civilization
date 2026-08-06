@@ -143,6 +143,19 @@ enum InspectCommand {
         #[arg(long)]
         longitude_e7: i32,
     },
+    /// Read all twelve retained CHELSA normal-month samples at one exact coordinate.
+    ChelsaAnnualCell {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Latitude in exact 10^-7 degrees.
+        #[arg(long)]
+        latitude_e7: i32,
+        /// Longitude in exact 10^-7 degrees.
+        #[arg(long)]
+        longitude_e7: i32,
+    },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
         /// Latitude in exact 10^-7 degrees, within [-900000000, 900000000].
@@ -391,6 +404,17 @@ async fn main() -> Result<()> {
                 latitude_e7,
                 longitude_e7,
             } => inspect_chelsa_nearest_cell(
+                &source_snapshot,
+                &artifact_root,
+                latitude_e7,
+                longitude_e7,
+            ),
+            InspectCommand::ChelsaAnnualCell {
+                source_snapshot,
+                artifact_root,
+                latitude_e7,
+                longitude_e7,
+            } => inspect_chelsa_annual_cell(
                 &source_snapshot,
                 &artifact_root,
                 latitude_e7,
@@ -2678,6 +2702,21 @@ struct ChelsaNearestCellInspection {
     source_longitude_e7: i32,
 }
 
+#[derive(Serialize)]
+struct ChelsaAnnualCellInspection {
+    inspection_schema_version: u16,
+    source_snapshot_digest: Digest,
+    requested_latitude_e7: i32,
+    requested_longitude_e7: i32,
+    row: u64,
+    column: u64,
+    source_latitude_e7: i32,
+    source_longitude_e7: i32,
+    monthly_raw_ieee754_le_hex: Vec<String>,
+    monthly_millicelsius: Vec<i64>,
+    monthly_artifact_digests: Vec<Digest>,
+}
+
 #[derive(Debug)]
 struct ChelsaGridAxes {
     latitudes_e7: Vec<i32>,
@@ -2759,27 +2798,12 @@ fn inspect_chelsa_annual_temperature(manifest_path: &Path, artifact_root: &Path)
     let snapshot = load_source_manifest(manifest_path)?;
     verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
     let source_snapshot_digest = snapshot.content_digest()?;
-    let mut artifacts = snapshot
-        .artifacts
-        .iter()
-        .filter(|artifact| {
-            artifact.role == world_data::SourceSnapshotArtifactRole::Data
-                && artifact.artifact_path.ends_with(".nc")
-        })
-        .collect::<Vec<_>>();
-    artifacts.sort_by(|left, right| left.artifact_path.cmp(&right.artifact_path));
-    if artifacts.len() != 12 {
-        bail!("annual CHELSA snapshot must retain exactly twelve monthly NetCDF artifacts");
-    }
+    let artifacts = chelsa_annual_temperature_artifacts(&snapshot)?;
     let mut shared_latitude = None;
     let mut shared_longitude = None;
     let mut monthly_normals = Vec::with_capacity(12);
     for (offset, artifact) in artifacts.into_iter().enumerate() {
         let expected_month = u8::try_from(offset + 1)?;
-        let expected_suffix = format!("tas_{expected_month:02}_1981-2010_v.2.1.nc");
-        if !artifact.artifact_path.ends_with(&expected_suffix) {
-            bail!("annual CHELSA artifacts are not canonical January-through-December order");
-        }
         let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
             .context("parse verified CHELSA NetCDF through the pure-Rust reader")?;
         validate_chelsa_january_temperature_schema(&file)?;
@@ -2931,6 +2955,94 @@ fn inspect_chelsa_nearest_cell(
         })?
     );
     Ok(())
+}
+
+/// Read the retained January-through-December normal vector for one mapped source
+/// location. This is an auditable source inspection, not a climate-layer derivation:
+/// it deliberately exposes exact stored samples and phase provenance before any
+/// spatial aggregation can summarize them.
+fn inspect_chelsa_annual_cell(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    latitude_e7: i32,
+    longitude_e7: i32,
+) -> Result<()> {
+    let coordinate = GeographicCoordinateE7::new(latitude_e7, longitude_e7)?;
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifacts = chelsa_annual_temperature_artifacts(&snapshot)?;
+    let first = artifacts
+        .first()
+        .context("annual CHELSA snapshot is empty")?;
+    let first_file = NcFile::open(artifact_root.join(&first.artifact_path))
+        .context("parse first verified CHELSA monthly NetCDF")?;
+    let axes = read_chelsa_grid_axes(&first_file)?;
+    let (row, column) = axes.nearest_cell(coordinate)?;
+    let selection = NcSliceInfo {
+        selections: vec![NcSliceInfoElem::Index(row), NcSliceInfoElem::Index(column)],
+    };
+    let mut monthly_raw_ieee754_le_hex = Vec::with_capacity(12);
+    let mut monthly_millicelsius = Vec::with_capacity(12);
+    let mut monthly_artifact_digests = Vec::with_capacity(12);
+    for artifact in artifacts {
+        let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+            .context("parse verified CHELSA monthly NetCDF")?;
+        validate_chelsa_january_temperature_schema(&file)?;
+        let values = file
+            .read_variable_slice::<f32>("Band1", &selection)
+            .context("read CHELSA monthly sample")?;
+        let value = values
+            .as_slice()
+            .context("CHELSA sample selection is not contiguous")?
+            .first()
+            .copied()
+            .context("CHELSA sample selection is empty")?;
+        monthly_raw_ieee754_le_hex.push(format!("{:08x}", value.to_bits()));
+        monthly_millicelsius.push(chelsa_raw_tas_to_millicelsius(value)?);
+        monthly_artifact_digests.push(artifact.content_hash);
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaAnnualCellInspection {
+            inspection_schema_version: 1,
+            source_snapshot_digest: snapshot.content_digest()?,
+            requested_latitude_e7: latitude_e7,
+            requested_longitude_e7: longitude_e7,
+            row,
+            column,
+            source_latitude_e7: axes.latitudes_e7[usize::try_from(row)?],
+            source_longitude_e7: axes.longitudes_e7[usize::try_from(column)?],
+            monthly_raw_ieee754_le_hex,
+            monthly_millicelsius,
+            monthly_artifact_digests,
+        })?
+    );
+    Ok(())
+}
+
+fn chelsa_annual_temperature_artifacts(
+    snapshot: &SourceSnapshotManifest,
+) -> Result<Vec<&SourceSnapshotArtifact>> {
+    let mut artifacts = snapshot
+        .artifacts
+        .iter()
+        .filter(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".nc")
+        })
+        .collect::<Vec<_>>();
+    artifacts.sort_by(|left, right| left.artifact_path.cmp(&right.artifact_path));
+    if artifacts.len() != 12 {
+        bail!("annual CHELSA snapshot must retain exactly twelve monthly NetCDF artifacts");
+    }
+    for (offset, artifact) in artifacts.iter().enumerate() {
+        let expected_month = u8::try_from(offset + 1)?;
+        let expected_suffix = format!("tas_{expected_month:02}_1981-2010_v.2.1.nc");
+        if !artifact.artifact_path.ends_with(&expected_suffix) {
+            bail!("annual CHELSA artifacts are not canonical January-through-December order");
+        }
+    }
+    Ok(artifacts)
 }
 
 fn read_chelsa_grid_axes(file: &NcFile) -> Result<ChelsaGridAxes> {
