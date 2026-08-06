@@ -1,14 +1,19 @@
 //! Durable, replay-safe domain primitives shared by the engine and its adapters.
 
+mod configuration;
 mod event;
 mod hash;
 mod identity;
 mod manifest;
 mod time;
 
+pub use configuration::{
+    SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION, WorldConfiguration, WorldConfigurationError,
+    WorldDataBundleReference,
+};
 pub use event::{
     BirthCategory, CategoryError, DeathCause, DomainEvent, EVENT_SCHEMA_VERSION, EventBatch,
-    EventBatchError, EventRecord, OrganismRole,
+    EventBatchError, EventRecord, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
 };
 pub use hash::{CanonicalHashError, Digest};
 pub use identity::{EntityId, EventId, WorldId};

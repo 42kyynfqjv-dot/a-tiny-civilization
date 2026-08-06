@@ -49,7 +49,7 @@ rebuilt without changing a world.
 - public observatory shell and generated wiki/artifact/supporter surfaces;
 - local Compose stack, keyless Hindsight profile, smoke checks, and CI.
 
-### 1. Deterministic history proof — in progress
+### 1. Deterministic history proof — complete
 
 - versioned world manifest, event envelope, deterministic event hashing, and state
   hashing;
@@ -59,10 +59,11 @@ rebuilt without changing a world.
 - a downloadable verification bundle and a five-minute verification command;
 - restart/resume and tamper-detection tests against PostgreSQL.
 
-The offline bundle and restart-safe PostgreSQL runtime are implemented. Canonical
-world initialization remains intentionally blocked on the first real-biome manifest;
-the available initialization command is visibly non-production and requires an
-explicit world identifier and seed.
+The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction transition,
+authorized successor operation, and tamper detection are implemented and covered by
+the full repository checks. Canonical world initialization remains intentionally
+blocked on the first real-biome bundle; the available initialization command is
+visibly non-production and requires an explicit world identifier and seed.
 
 ### 2. First real biome and embodied lives
 
@@ -70,6 +71,12 @@ explicit world identifier and seed.
 - implement space/time scale, energetics, mortality, perception, primitive action,
   communication, heredity, and versioned fauna identity tiers;
 - demonstrate that agents receive properties and effects, never scientific labels.
+
+The Lower Buffalo–Ozark river valley is selected as the bounded data-pipeline target.
+Event schema v2 now pins immutable tick duration, integer spatial geometry,
+content-addressed scientific inputs, and transition volume at configured genesis while
+leaving published v1 proof hashes unchanged. Building and validating the actual
+scientific bundle is the next checkpoint; no canonical seed has been selected.
 
 ### 3. Situated memory and bounded cognition
 

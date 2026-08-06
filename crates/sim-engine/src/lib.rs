@@ -5,15 +5,18 @@ use std::collections::BTreeMap;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    BirthCategory, CanonicalHashError, DeathCause, Digest, DomainEvent, EntityId, EventBatch,
-    EventBatchError, EventSequence, OrganismRole, SequenceOverflow, SimTick, SpeciesIdentity,
-    SpeciesIdentityError, TimeOverflow, WorldId, WorldManifest, WorldStatus,
+    BirthCategory, CanonicalHashError, DeathCause, Digest, DomainEvent, EVENT_SCHEMA_VERSION,
+    EntityId, EventBatch, EventBatchError, EventSequence, LEGACY_EVENT_SCHEMA_VERSION,
+    OrganismRole, SequenceOverflow, SimTick, SpeciesIdentity, SpeciesIdentityError, TimeOverflow,
+    WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
 };
 
 /// Version pinned to each world so old histories are never silently reinterpreted.
 pub const RULESET_VERSION: u32 = 1;
-pub const SNAPSHOT_SCHEMA_VERSION: u16 = 1;
-const STATE_HASH_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
+pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
+const LEGACY_STATE_HASH_SCHEMA_VERSION: u16 = 1;
+const STATE_HASH_SCHEMA_VERSION: u16 = 2;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -75,6 +78,8 @@ impl OrganismState {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EngineState {
     manifest: WorldManifest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    configuration: Option<WorldConfiguration>,
     status: WorldStatus,
     tick: SimTick,
     organisms: BTreeMap<EntityId, OrganismState>,
@@ -85,6 +90,7 @@ impl EngineState {
     pub fn new(manifest: WorldManifest) -> Self {
         Self {
             manifest,
+            configuration: None,
             status: WorldStatus::Initializing,
             tick: SimTick::ZERO,
             organisms: BTreeMap::new(),
@@ -94,6 +100,11 @@ impl EngineState {
     #[must_use]
     pub const fn manifest(&self) -> &WorldManifest {
         &self.manifest
+    }
+
+    #[must_use]
+    pub const fn configuration(&self) -> Option<&WorldConfiguration> {
+        self.configuration.as_ref()
     }
 
     #[must_use]
@@ -131,6 +142,23 @@ impl EngineState {
 
     pub fn plan_genesis(
         &self,
+        initial_organisms: Vec<InitialOrganism>,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.plan_genesis_internal(None, initial_organisms)
+    }
+
+    pub fn plan_configured_genesis(
+        &self,
+        configuration: WorldConfiguration,
+        initial_organisms: Vec<InitialOrganism>,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        configuration.validate()?;
+        self.plan_genesis_internal(Some(configuration), initial_organisms)
+    }
+
+    fn plan_genesis_internal(
+        &self,
+        configuration: Option<WorldConfiguration>,
         mut initial_organisms: Vec<InitialOrganism>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_status(WorldStatus::Initializing)?;
@@ -146,10 +174,17 @@ impl EngineState {
             return Err(EngineError::DuplicateInitialOrganism);
         }
 
-        let mut events = Vec::with_capacity(initial_organisms.len().saturating_add(1));
+        let mut events = Vec::with_capacity(
+            initial_organisms
+                .len()
+                .saturating_add(1 + usize::from(configuration.is_some())),
+        );
         events.push(DomainEvent::WorldStarted {
             manifest: self.manifest.clone(),
         });
+        if let Some(configuration) = configuration {
+            events.push(DomainEvent::WorldConfigured { configuration });
+        }
         events.extend(initial_organisms.into_iter().map(|organism| {
             DomainEvent::OrganismInitialized {
                 organism_id: organism.organism_id,
@@ -210,8 +245,21 @@ impl EngineState {
         let mut next = self.clone();
         next.apply_events(&events)?;
         next.validate()?;
+        if let Some(configuration) = &next.configuration {
+            let actual = u64::try_from(events.len()).map_err(|_| EngineError::TooManyEvents)?;
+            let maximum = u64::from(configuration.max_events_per_transition);
+            if actual > maximum {
+                return Err(EngineError::EventBudgetExceeded { actual, maximum });
+            }
+        }
         let state_hash = next.state_hash()?;
+        let event_schema_version = if next.configuration.is_some() {
+            EVENT_SCHEMA_VERSION
+        } else {
+            LEGACY_EVENT_SCHEMA_VERSION
+        };
         let batch = EventBatch::new(
+            event_schema_version,
             self.world_id(),
             sequence,
             next.tick,
@@ -224,9 +272,15 @@ impl EngineState {
     }
 
     pub fn state_hash(&self) -> Result<Digest, CanonicalHashError> {
+        let state_hash_schema_version = if self.configuration.is_some() {
+            STATE_HASH_SCHEMA_VERSION
+        } else {
+            LEGACY_STATE_HASH_SCHEMA_VERSION
+        };
         Digest::canonical(&StateHashMaterial {
-            state_hash_schema_version: STATE_HASH_SCHEMA_VERSION,
+            state_hash_schema_version,
             manifest: &self.manifest,
+            configuration: self.configuration.as_ref(),
             status: self.status,
             tick: self.tick,
             organisms: self.organisms.values().collect(),
@@ -251,6 +305,17 @@ impl EngineState {
                     return Err(EngineError::InvalidGenesisState);
                 }
                 self.status = WorldStatus::Running;
+            }
+            DomainEvent::WorldConfigured { configuration } => {
+                self.require_status(WorldStatus::Running)?;
+                if self.configuration.is_some() {
+                    return Err(EngineError::WorldAlreadyConfigured);
+                }
+                if self.tick != SimTick::ZERO || !self.organisms.is_empty() {
+                    return Err(EngineError::ConfigurationAfterOrganisms);
+                }
+                configuration.validate()?;
+                self.configuration = Some(configuration.clone());
             }
             DomainEvent::OrganismInitialized {
                 organism_id,
@@ -371,6 +436,9 @@ impl EngineState {
         if self.manifest.ruleset_version == 0 {
             return Err(EngineError::ZeroRulesetVersion);
         }
+        if let Some(configuration) = &self.configuration {
+            configuration.validate()?;
+        }
         if self.status == WorldStatus::Initializing
             && (self.tick != SimTick::ZERO || !self.organisms.is_empty())
         {
@@ -402,6 +470,8 @@ impl EngineState {
 struct StateHashMaterial<'a> {
     state_hash_schema_version: u16,
     manifest: &'a WorldManifest,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    configuration: Option<&'a WorldConfiguration>,
     status: WorldStatus,
     tick: SimTick,
     organisms: Vec<&'a OrganismState>,
@@ -425,8 +495,13 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
+        let snapshot_schema_version = if state.configuration.is_some() {
+            SNAPSHOT_SCHEMA_VERSION
+        } else {
+            LEGACY_SNAPSHOT_SCHEMA_VERSION
+        };
         Ok(Self {
-            snapshot_schema_version: SNAPSHOT_SCHEMA_VERSION,
+            snapshot_schema_version,
             world_id: state.world_id(),
             through_sequence,
             last_event_hash,
@@ -436,10 +511,24 @@ impl Snapshot {
     }
 
     pub fn verify_integrity(&self) -> Result<(), EngineError> {
-        if self.snapshot_schema_version != SNAPSHOT_SCHEMA_VERSION {
+        if !matches!(
+            self.snapshot_schema_version,
+            LEGACY_SNAPSHOT_SCHEMA_VERSION | SNAPSHOT_SCHEMA_VERSION
+        ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
+        }
+        let expected_schema_version = if self.state.configuration.is_some() {
+            SNAPSHOT_SCHEMA_VERSION
+        } else {
+            LEGACY_SNAPSHOT_SCHEMA_VERSION
+        };
+        if self.snapshot_schema_version != expected_schema_version {
+            return Err(EngineError::SnapshotSchemaMismatch {
+                expected: expected_schema_version,
+                actual: self.snapshot_schema_version,
+            });
         }
         if self.world_id != self.state.world_id() {
             return Err(EngineError::SnapshotWorldMismatch);
@@ -526,6 +615,22 @@ fn replay_from_cursor(
             });
         }
 
+        let configures_world = batch
+            .events
+            .iter()
+            .any(|record| matches!(&record.event, DomainEvent::WorldConfigured { .. }));
+        let expected_event_schema = if state.configuration.is_some() || configures_world {
+            EVENT_SCHEMA_VERSION
+        } else {
+            LEGACY_EVENT_SCHEMA_VERSION
+        };
+        if batch.event_schema_version != expected_event_schema {
+            return Err(EngineError::BatchEventSchemaMismatch {
+                expected: expected_event_schema,
+                actual: batch.event_schema_version,
+            });
+        }
+
         let events = batch
             .events
             .iter()
@@ -573,6 +678,14 @@ pub enum EngineError {
     InvalidGenesisState,
     #[error("initial organism list contains a duplicate identity")]
     DuplicateInitialOrganism,
+    #[error("world configuration must be committed before initial organisms")]
+    ConfigurationAfterOrganisms,
+    #[error("world configuration was already committed")]
+    WorldAlreadyConfigured,
+    #[error("transition planned {actual} events; configured maximum is {maximum}")]
+    EventBudgetExceeded { actual: u64, maximum: u64 },
+    #[error("transition contains more events than the host can count")]
+    TooManyEvents,
     #[error("organism {0} already exists")]
     DuplicateOrganism(EntityId),
     #[error("organism map key {0} does not match its value")]
@@ -597,6 +710,8 @@ pub enum EngineError {
     BatchWorldMismatch,
     #[error("event batch ruleset does not match the world manifest")]
     BatchRulesetMismatch,
+    #[error("event schema mismatch: world expects {expected}, batch uses {actual}")]
+    BatchEventSchemaMismatch { expected: u16, actual: u16 },
     #[error("event sequence mismatch: expected {expected}, found {actual}")]
     BatchSequenceMismatch {
         expected: EventSequence,
@@ -613,6 +728,8 @@ pub enum EngineError {
     },
     #[error("snapshot schema version {0} is unsupported")]
     UnsupportedSnapshotSchema(u16),
+    #[error("snapshot schema mismatch: state expects {expected}, snapshot uses {actual}")]
+    SnapshotSchemaMismatch { expected: u16, actual: u16 },
     #[error("snapshot world does not match its state")]
     SnapshotWorldMismatch,
     #[error("snapshot hash mismatch: stored {expected}, calculated {calculated}")]
@@ -622,6 +739,8 @@ pub enum EngineError {
     },
     #[error(transparent)]
     SpeciesIdentity(#[from] SpeciesIdentityError),
+    #[error(transparent)]
+    WorldConfiguration(#[from] WorldConfigurationError),
     #[error(transparent)]
     TimeOverflow(#[from] TimeOverflow),
     #[error(transparent)]
@@ -636,7 +755,7 @@ pub enum EngineError {
 mod tests {
     use super::*;
     use uuid::Uuid;
-    use world_domain::{WorldSeed, WorldStatus};
+    use world_domain::{SpatialGrid, WorldDataBundleReference, WorldSeed, WorldStatus};
 
     fn manifest() -> WorldManifest {
         WorldManifest::new(
@@ -665,6 +784,31 @@ mod tests {
             initial_age_ticks: 0,
             location_id: None,
         }
+    }
+
+    fn world_configuration() -> WorldConfiguration {
+        WorldConfiguration::new(
+            300,
+            SpatialGrid {
+                epsg: 32_736,
+                origin_easting_mm: 500_000_000,
+                origin_northing_mm: 9_700_000_000,
+                cell_size_mm: 10_000,
+                width_cells: 100,
+                height_cells: 100,
+            },
+            WorldDataBundleReference::new(
+                1,
+                "configured-engine-test",
+                "0.1.0",
+                Digest::sha256(b"configured engine test data"),
+                "https://data.atinycivilization.com/configured-engine-test/0.1.0.json",
+                "CC-BY-4.0",
+            )
+            .expect("valid bundle reference"),
+            10_000,
+        )
+        .expect("valid world configuration")
     }
 
     fn committed_history() -> Vec<EventBatch> {
@@ -699,10 +843,167 @@ mod tests {
     }
 
     #[test]
+    fn configured_genesis_pins_world_data_and_event_schema() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let configuration = world_configuration();
+        let genesis_events = initial
+            .plan_configured_genesis(
+                configuration.clone(),
+                vec![initial_person(manifest.world_id)],
+            )
+            .expect("valid configured genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("valid configured genesis batch");
+
+        assert_eq!(genesis.event_schema_version, EVENT_SCHEMA_VERSION);
+        assert_eq!(running.configuration(), Some(&configuration));
+        let tick_events = running.plan_next_tick().expect("valid configured tick");
+        let (_, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("valid configured tick batch");
+        assert_eq!(tick.event_schema_version, EVENT_SCHEMA_VERSION);
+        let prefix = replay(manifest.clone(), std::slice::from_ref(&genesis))
+            .expect("valid configured prefix");
+        let snapshot = prefix.snapshot().expect("valid configured snapshot");
+        assert_eq!(snapshot.snapshot_schema_version, SNAPSHOT_SCHEMA_VERSION);
+        let complete =
+            replay(manifest.clone(), &[genesis, tick.clone()]).expect("valid configured history");
+        let from_snapshot =
+            replay_from_snapshot(&snapshot, &[tick]).expect("valid configured snapshot tail");
+        assert_eq!(from_snapshot, complete);
+
+        let mut downgraded_snapshot = snapshot;
+        downgraded_snapshot.snapshot_schema_version = LEGACY_SNAPSHOT_SCHEMA_VERSION;
+        assert!(matches!(
+            downgraded_snapshot.verify_integrity(),
+            Err(EngineError::SnapshotSchemaMismatch {
+                expected: SNAPSHOT_SCHEMA_VERSION,
+                actual: LEGACY_SNAPSHOT_SCHEMA_VERSION,
+            })
+        ));
+
+        assert!(
+            committed_history()
+                .iter()
+                .all(|batch| batch.event_schema_version == LEGACY_EVENT_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn configured_world_rejects_schema_downgrade() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                world_configuration(),
+                vec![initial_person(manifest.world_id)],
+            )
+            .expect("valid configured genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("valid configured genesis batch");
+        let tick_events = running.plan_next_tick().expect("valid configured tick");
+        let (_, canonical_tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("valid configured tick batch");
+        let downgraded_events = canonical_tick
+            .events
+            .iter()
+            .map(|record| record.event.clone())
+            .collect();
+        let downgraded_tick = EventBatch::new(
+            LEGACY_EVENT_SCHEMA_VERSION,
+            canonical_tick.world_id,
+            canonical_tick.sequence,
+            canonical_tick.tick,
+            canonical_tick.ruleset_version,
+            canonical_tick.previous_hash,
+            downgraded_events,
+            canonical_tick.post_state_hash,
+        )
+        .expect("internally valid legacy-schema batch");
+
+        assert!(matches!(
+            replay(manifest, &[genesis, downgraded_tick]),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: EVENT_SCHEMA_VERSION,
+                actual: LEGACY_EVENT_SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    #[test]
+    fn configured_event_budget_covers_genesis_and_ticks() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let mut configuration = world_configuration();
+        configuration.max_events_per_transition = 2;
+        let genesis_events = initial
+            .plan_configured_genesis(configuration, vec![initial_person(manifest.world_id)])
+            .expect("valid configured genesis plan");
+
+        assert!(matches!(
+            initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events),
+            Err(EngineError::EventBudgetExceeded {
+                actual: 3,
+                maximum: 2,
+            })
+        ));
+    }
+
+    #[test]
+    fn world_configuration_is_tick_zero_only_and_single_assignment() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let legacy_events = initial
+            .plan_genesis(vec![initial_person(manifest.world_id)])
+            .expect("valid legacy genesis");
+        let (legacy_running, legacy_genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, legacy_events)
+            .expect("valid legacy genesis batch");
+        assert!(matches!(
+            legacy_running.commit(
+                EventSequence::new(2),
+                legacy_genesis.batch_hash,
+                vec![DomainEvent::WorldConfigured {
+                    configuration: world_configuration(),
+                }],
+            ),
+            Err(EngineError::ConfigurationAfterOrganisms)
+        ));
+
+        let configured_events = initial
+            .plan_configured_genesis(
+                world_configuration(),
+                vec![initial_person(manifest.world_id)],
+            )
+            .expect("valid configured genesis");
+        let (configured_running, configured_genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, configured_events)
+            .expect("valid configured genesis batch");
+        assert!(matches!(
+            configured_running.commit(
+                EventSequence::new(2),
+                configured_genesis.batch_hash,
+                vec![DomainEvent::WorldConfigured {
+                    configuration: world_configuration(),
+                }],
+            ),
+            Err(EngineError::WorldAlreadyConfigured)
+        ));
+    }
+
+    #[test]
     fn snapshot_plus_tail_matches_genesis_replay() {
         let batches = committed_history();
         let prefix = replay(manifest(), &batches[..1]).expect("valid prefix");
         let snapshot = prefix.snapshot().expect("valid snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            LEGACY_SNAPSHOT_SCHEMA_VERSION
+        );
         let complete = replay(manifest(), &batches).expect("valid full replay");
         let from_snapshot =
             replay_from_snapshot(&snapshot, &batches[1..]).expect("valid tail replay");

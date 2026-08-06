@@ -111,6 +111,13 @@ and licenses remain separate from ruleset-specific normalized parameters. The en
 may approximate a process at an appropriate scale, but every approximation is explicit
 and testable; it must not silently substitute an invented material, animal, or ecology.
 
+A configured world commits its causal time scale, integer spatial grid, and the
+SHA-256 digest of its complete normalized scientific bundle at tick zero. The
+application verifies locally archived bundle bytes before genesis; live execution and
+replay never fetch scientific inputs from the network. See
+[ADR 0009](adr/0009-tick-zero-world-configuration.md) and the
+[first-biome source plan](science/FIRST_BIOME.md).
+
 ## Deployment boundary
 
 Only the web origin is publicly reachable. It proxies `/api` and live observer

@@ -43,6 +43,11 @@ structured memory behind a Hindsight adapter, an observer API, and a public site
 
 No LLM key is required for the deterministic foundation.
 
+The first bounded scientific target is the
+[Lower Buffalo–Ozark river valley](docs/science/FIRST_BIOME.md). It is a sourced
+data-pipeline target, not a launched or previewed world; canonical genesis remains
+blocked until the complete content-addressed biome bundle passes its published gates.
+
 ## Verify the core claim
 
 The repository includes a non-production history bundle grounded to the real GBIF

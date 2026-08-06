@@ -3,10 +3,11 @@ use thiserror::Error;
 
 use crate::{
     CanonicalHashError, Digest, EntityId, EventId, EventSequence, SimTick, SpeciesIdentity,
-    WorldId, WorldManifest,
+    WorldConfiguration, WorldId, WorldManifest,
 };
 
-pub const EVENT_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
+pub const EVENT_SCHEMA_VERSION: u16 = 2;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,6 +68,9 @@ pub enum DomainEvent {
     WorldStarted {
         manifest: WorldManifest,
     },
+    WorldConfigured {
+        configuration: WorldConfiguration,
+    },
     OrganismInitialized {
         organism_id: EntityId,
         species: SpeciesIdentity,
@@ -118,7 +122,9 @@ pub struct EventBatch {
 }
 
 impl EventBatch {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
+        event_schema_version: u16,
         world_id: WorldId,
         sequence: EventSequence,
         tick: SimTick,
@@ -127,6 +133,10 @@ impl EventBatch {
         events: Vec<DomainEvent>,
         post_state_hash: Digest,
     ) -> Result<Self, EventBatchError> {
+        validate_schema_version(event_schema_version)?;
+        for event in &events {
+            validate_event_for_schema(event_schema_version, event)?;
+        }
         if sequence == EventSequence::ZERO {
             return Err(EventBatchError::ZeroSequence);
         }
@@ -151,7 +161,7 @@ impl EventBatch {
             .collect::<Result<Vec<_>, EventBatchError>>()?;
 
         let mut batch = Self {
-            event_schema_version: EVENT_SCHEMA_VERSION,
+            event_schema_version,
             world_id,
             sequence,
             tick,
@@ -166,10 +176,9 @@ impl EventBatch {
     }
 
     pub fn verify_integrity(&self) -> Result<(), EventBatchError> {
-        if self.event_schema_version != EVENT_SCHEMA_VERSION {
-            return Err(EventBatchError::UnsupportedSchema(
-                self.event_schema_version,
-            ));
+        validate_schema_version(self.event_schema_version)?;
+        for record in &self.events {
+            validate_event_for_schema(self.event_schema_version, &record.event)?;
         }
         if self.sequence == EventSequence::ZERO {
             return Err(EventBatchError::ZeroSequence);
@@ -217,6 +226,28 @@ impl EventBatch {
     }
 }
 
+fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchError> {
+    if !matches!(
+        event_schema_version,
+        LEGACY_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
+    ) {
+        return Err(EventBatchError::UnsupportedSchema(event_schema_version));
+    }
+    Ok(())
+}
+
+fn validate_event_for_schema(
+    event_schema_version: u16,
+    event: &DomainEvent,
+) -> Result<(), EventBatchError> {
+    if event_schema_version == LEGACY_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::WorldConfigured { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct BatchHashMaterial<'a> {
     event_schema_version: u16,
@@ -241,6 +272,8 @@ pub enum EventBatchError {
     TooManyEvents,
     #[error("event schema version {0} is unsupported")]
     UnsupportedSchema(u16),
+    #[error("event requires a newer event schema version")]
+    EventRequiresNewerSchema,
     #[error("event identity at index {index} is not deterministic")]
     InvalidEventIdentity { index: u32 },
     #[error("event batch hash mismatch: stored {expected}, calculated {calculated}")]
@@ -255,7 +288,7 @@ pub enum EventBatchError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::WorldSeed;
+    use crate::{SpatialGrid, WorldConfiguration, WorldDataBundleReference, WorldSeed};
     use uuid::Uuid;
 
     fn manifest() -> WorldManifest {
@@ -266,10 +299,36 @@ mod tests {
         )
     }
 
+    fn configuration() -> WorldConfiguration {
+        WorldConfiguration::new(
+            300,
+            SpatialGrid {
+                epsg: 32_736,
+                origin_easting_mm: 500_000_000,
+                origin_northing_mm: 9_700_000_000,
+                cell_size_mm: 10_000,
+                width_cells: 100,
+                height_cells: 100,
+            },
+            WorldDataBundleReference::new(
+                1,
+                "event-schema-test",
+                "0.1.0",
+                Digest::sha256(b"event schema test data"),
+                "https://data.atinycivilization.com/event-schema-test/0.1.0.json",
+                "CC-BY-4.0",
+            )
+            .expect("valid bundle reference"),
+            10_000,
+        )
+        .expect("valid world configuration")
+    }
+
     #[test]
     fn batch_hash_covers_event_identity_payload_and_post_state() {
         let manifest = manifest();
         let batch = EventBatch::new(
+            LEGACY_EVENT_SCHEMA_VERSION,
             manifest.world_id,
             EventSequence::new(1),
             SimTick::ZERO,
@@ -292,6 +351,7 @@ mod tests {
     fn modified_event_is_detected() {
         let manifest = manifest();
         let mut batch = EventBatch::new(
+            LEGACY_EVENT_SCHEMA_VERSION,
             manifest.world_id,
             EventSequence::new(1),
             SimTick::ZERO,
@@ -308,6 +368,28 @@ mod tests {
         assert!(matches!(
             batch.verify_integrity(),
             Err(EventBatchError::HashMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn legacy_schema_rejects_world_configuration() {
+        let manifest = manifest();
+        let result = EventBatch::new(
+            LEGACY_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            manifest.ruleset_version,
+            Digest::ZERO,
+            vec![DomainEvent::WorldConfigured {
+                configuration: configuration(),
+            }],
+            Digest::sha256(b"post-state"),
+        );
+
+        assert!(matches!(
+            result,
+            Err(EventBatchError::EventRequiresNewerSchema)
         ));
     }
 }
