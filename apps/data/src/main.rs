@@ -83,6 +83,17 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Evaluate one exact coordinate against the pinned Natural Earth land polygons.
+    NaturalEarthLandPoint {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long)]
+        latitude_e7: i32,
+        #[arg(long)]
+        longitude_e7: i32,
+    },
     /// Inspect the pinned ETOPO NetCDF schema through the portable Rust reader.
     Etopo {
         #[arg(long)]
@@ -293,6 +304,17 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_natural_earth_land(&source_snapshot, &artifact_root),
+            InspectCommand::NaturalEarthLandPoint {
+                source_snapshot,
+                artifact_root,
+                latitude_e7,
+                longitude_e7,
+            } => inspect_natural_earth_land_point(
+                &source_snapshot,
+                &artifact_root,
+                latitude_e7,
+                longitude_e7,
+            ),
             InspectCommand::Etopo {
                 source_snapshot,
                 artifact_root,
@@ -2418,6 +2440,121 @@ fn inspect_natural_earth_land(manifest_path: &Path, artifact_root: &Path) -> Res
     Ok(())
 }
 
+#[derive(Serialize)]
+struct NaturalEarthLandPointInspection {
+    inspection_schema_version: u16,
+    source_snapshot_digest: Digest,
+    latitude_e7: i32,
+    longitude_e7: i32,
+    inside_land_polygon: bool,
+}
+
+fn inspect_natural_earth_land_point(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    latitude_e7: i32,
+    longitude_e7: i32,
+) -> Result<()> {
+    if !(-900_000_000..=900_000_000).contains(&latitude_e7)
+        || !(-1_800_000_000..1_800_000_000).contains(&longitude_e7)
+    {
+        bail!("Natural Earth point is outside exact WGS 84 E7 bounds");
+    }
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifact = snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(".shp")
+        })
+        .context("source snapshot has no Natural Earth .shp data artifact")?;
+    let bytes = fs::read(artifact_root.join(&artifact.artifact_path))?;
+    let inside_land_polygon = natural_earth_contains_point(
+        &bytes,
+        f64::from(longitude_e7) / 10_000_000.0,
+        f64::from(latitude_e7) / 10_000_000.0,
+    )?;
+    println!(
+        "{}",
+        serde_json::to_string(&NaturalEarthLandPointInspection {
+            inspection_schema_version: 1,
+            source_snapshot_digest: snapshot.content_digest()?,
+            latitude_e7,
+            longitude_e7,
+            inside_land_polygon,
+        })?
+    );
+    Ok(())
+}
+
+fn natural_earth_contains_point(bytes: &[u8], longitude: f64, latitude: f64) -> Result<bool> {
+    parse_polygon_shapefile(bytes)?;
+    let mut inside = false;
+    let mut offset = 100_usize;
+    while offset < bytes.len() {
+        let content_length = usize::try_from(be_u32(&bytes[offset + 4..offset + 8])?)?
+            .checked_mul(2)
+            .context("record length overflow")?;
+        let body = &bytes[offset + 8..offset + 8 + content_length];
+        if le_u32(&body[..4])? == 5 {
+            let parts = usize::try_from(le_u32(&body[36..40])?)?;
+            let points = usize::try_from(le_u32(&body[40..44])?)?;
+            let part_start = 44;
+            let point_start = part_start + parts * 4;
+            for part in 0..parts {
+                let start = usize::try_from(le_u32(
+                    &body[part_start + part * 4..part_start + part * 4 + 4],
+                )?)?;
+                let end = if part + 1 == parts {
+                    points
+                } else {
+                    usize::try_from(le_u32(
+                        &body[part_start + (part + 1) * 4..part_start + (part + 1) * 4 + 4],
+                    )?)?
+                };
+                if point_in_shapefile_ring(&body[point_start..], start, end, longitude, latitude)? {
+                    inside = !inside;
+                }
+            }
+        }
+        offset += 8 + content_length;
+    }
+    Ok(inside)
+}
+
+fn point_in_shapefile_ring(
+    points: &[u8],
+    start: usize,
+    end: usize,
+    x: f64,
+    y: f64,
+) -> Result<bool> {
+    if end <= start + 2 {
+        return Ok(false);
+    }
+    let point = |index: usize| -> Result<(f64, f64)> {
+        let offset = index.checked_mul(16).context("point offset overflow")?;
+        Ok((
+            f64::from_bits(le_u64(&points[offset..offset + 8])?),
+            f64::from_bits(le_u64(&points[offset + 8..offset + 16])?),
+        ))
+    };
+    let mut crossed = false;
+    let mut previous = point(end - 1)?;
+    for index in start..end {
+        let current = point(index)?;
+        if (current.1 > y) != (previous.1 > y)
+            && x < (previous.0 - current.0) * (y - current.1) / (previous.1 - current.1) + current.0
+        {
+            crossed = !crossed;
+        }
+        previous = current;
+    }
+    Ok(crossed)
+}
+
 #[derive(Debug, Eq, PartialEq)]
 struct PolygonShapefileSummary {
     version: u32,
@@ -3136,6 +3273,23 @@ mod tests {
             26_050
         );
         assert!(chelsa_raw_tas_to_millicelsius(2992.5).is_err());
+    }
+
+    #[test]
+    fn shapefile_ring_uses_even_odd_membership() {
+        let mut points = Vec::new();
+        for (x, y) in [
+            (0.0_f64, 0.0_f64),
+            (2.0_f64, 0.0_f64),
+            (2.0_f64, 2.0_f64),
+            (0.0_f64, 2.0_f64),
+            (0.0_f64, 0.0_f64),
+        ] {
+            points.extend_from_slice(&x.to_le_bytes());
+            points.extend_from_slice(&y.to_le_bytes());
+        }
+        assert!(point_in_shapefile_ring(&points, 0, 5, 1.0, 1.0).expect("inside"));
+        assert!(!point_in_shapefile_ring(&points, 0, 5, 3.0, 1.0).expect("outside"));
     }
 
     #[test]
