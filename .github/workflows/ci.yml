@@ -63,9 +63,17 @@ jobs:
       - run: npm test
 
   compose:
-    name: Compose validation
+    name: Deployment boundaries
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: docker compose -f compose.yaml config --quiet
       - run: docker compose -f compose.yaml -f compose.hindsight.yaml config --quiet
+      - run: ./scripts/check-production-boundaries.sh
+      - run: >-
+          APP_ENV=production
+          POSTGRES_DB=civilization
+          POSTGRES_USER=civilization
+          POSTGRES_PASSWORD=ci-production-check-only
+          CLOUDFLARE_TUNNEL_TOKEN=ci-production-check-only
+          ./scripts/production-preflight.sh
