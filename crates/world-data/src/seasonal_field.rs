@@ -3,14 +3,12 @@
 //! A seasonal tile retains every declared phase rather than reducing a normal year to
 //! an annual average. It is intentionally an evidence container, not a weather model.
 
-use std::collections::BTreeSet;
-
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{Digest, MAX_S2_LEVEL, S2CellId};
 
 pub const MONTHS_PER_NORMAL_YEAR: usize = 12;
-pub const PACKED_SEASONAL_FIELD_TILE_SCHEMA_VERSION: u16 = 1;
+pub const PACKED_SEASONAL_FIELD_TILE_SCHEMA_VERSION: u16 = 2;
 pub const PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.packed-seasonal-field-tile+json";
 const MAX_DECIMAL_PLACES: u8 = 9;
@@ -26,6 +24,18 @@ pub struct SeasonalScalarFieldCell {
     pub maximum_values: Vec<i64>,
 }
 
+/// One retained raw artifact and the normal-year phases to which it contributes.
+///
+/// Bit zero represents January and bit eleven represents December. This lets an
+/// annual archive truthfully support every phase, while a monthly normal can retain
+/// one distinct artifact per phase. It deliberately records source support rather
+/// than pretending a normal year has only twelve upstream files.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct SeasonalSourceArtifact {
+    pub digest: Digest,
+    pub phase_mask: u16,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PackedSeasonalScalarFieldTile {
     pub tile_schema_version: u16,
@@ -34,8 +44,8 @@ pub struct PackedSeasonalScalarFieldTile {
     pub decimal_places: u8,
     pub phases_per_cycle: u8,
     pub source_snapshot_digest: Digest,
-    /// Ordered January-through-December source hashes for a normal-year climate cycle.
-    pub source_artifact_digests: Vec<Digest>,
+    /// Canonically digest-ordered raw artifacts and the phases each supports.
+    pub source_artifacts: Vec<SeasonalSourceArtifact>,
     pub quadrature_points_per_axis: u8,
     pub container_s2_cell_id: S2CellId,
     pub target_s2_level: u8,
@@ -57,24 +67,31 @@ impl PackedSeasonalScalarFieldTile {
                 self.decimal_places,
             ));
         }
-        if usize::from(self.phases_per_cycle) != MONTHS_PER_NORMAL_YEAR
-            || self.source_artifact_digests.len() != MONTHS_PER_NORMAL_YEAR
-        {
+        if usize::from(self.phases_per_cycle) != MONTHS_PER_NORMAL_YEAR {
             return Err(SeasonalFieldTileError::InvalidCycle);
         }
-        if self.source_snapshot_digest == Digest::ZERO
-            || self.source_artifact_digests.contains(&Digest::ZERO)
-        {
+        if self.source_snapshot_digest == Digest::ZERO || self.source_artifacts.is_empty() {
             return Err(SeasonalFieldTileError::ZeroDigest);
         }
-        if self
-            .source_artifact_digests
-            .iter()
-            .collect::<BTreeSet<_>>()
-            .len()
-            != MONTHS_PER_NORMAL_YEAR
-        {
-            return Err(SeasonalFieldTileError::RepeatedSourceArtifact);
+        let mut previous = None;
+        let mut phase_coverage = 0_u16;
+        for artifact in &self.source_artifacts {
+            if artifact.digest == Digest::ZERO {
+                return Err(SeasonalFieldTileError::ZeroDigest);
+            }
+            if artifact.phase_mask == 0
+                || artifact.phase_mask & !normal_year_phase_mask() != 0
+            {
+                return Err(SeasonalFieldTileError::InvalidSourcePhaseCoverage);
+            }
+            if previous.is_some_and(|digest| digest >= artifact.digest) {
+                return Err(SeasonalFieldTileError::NonCanonicalSourceArtifacts);
+            }
+            previous = Some(artifact.digest);
+            phase_coverage |= artifact.phase_mask;
+        }
+        if phase_coverage != normal_year_phase_mask() {
+            return Err(SeasonalFieldTileError::IncompleteSourcePhaseCoverage);
         }
         if self.quadrature_points_per_axis == 0
             || 60 % u16::from(self.quadrature_points_per_axis) != 0
@@ -133,6 +150,10 @@ impl PackedSeasonalScalarFieldTile {
     }
 }
 
+const fn normal_year_phase_mask() -> u16 {
+    (1_u16 << MONTHS_PER_NORMAL_YEAR) - 1
+}
+
 fn descendants(root: S2CellId, target: u8) -> Result<Vec<S2CellId>, SeasonalFieldTileError> {
     let mut cells = vec![root];
     while cells.first().is_some_and(|cell| cell.level() < target) {
@@ -176,12 +197,16 @@ pub enum SeasonalFieldTileError {
     InvalidIdentifier,
     #[error("seasonal-field decimal places {0} exceeds the supported maximum")]
     InvalidDecimalPlaces(u8),
-    #[error("a normal-year seasonal tile requires exactly twelve phases and source artifacts")]
+    #[error("a normal-year seasonal tile requires exactly twelve phases")]
     InvalidCycle,
     #[error("seasonal-field digest must not be zero")]
     ZeroDigest,
-    #[error("each normal-month phase must retain a distinct source artifact")]
-    RepeatedSourceArtifact,
+    #[error("a source artifact has an invalid normal-year phase mask")]
+    InvalidSourcePhaseCoverage,
+    #[error("source artifacts must be strictly ordered by digest")]
+    NonCanonicalSourceArtifacts,
+    #[error("source artifacts do not cover every normal-year phase")]
+    IncompleteSourcePhaseCoverage,
     #[error("invalid quadrature")]
     InvalidQuadrature,
     #[error("invalid target level")]
@@ -214,14 +239,21 @@ mod tests {
 
     fn tile() -> PackedSeasonalScalarFieldTile {
         let container: S2CellId = "1000010000000000".parse().expect("valid S2 cell");
+        let mut source_artifacts: Vec<_> = (0..12)
+            .map(|month| SeasonalSourceArtifact {
+                digest: Digest::sha256(&[month]),
+                phase_mask: 1 << month,
+            })
+            .collect();
+        source_artifacts.sort_by_key(|artifact| artifact.digest);
         PackedSeasonalScalarFieldTile {
-            tile_schema_version: 1,
+            tile_schema_version: PACKED_SEASONAL_FIELD_TILE_SCHEMA_VERSION,
             layer_id: "air-temperature-normal".to_owned(),
             unit: "degC".to_owned(),
             decimal_places: 3,
             phases_per_cycle: 12,
             source_snapshot_digest: Digest::sha256(b"annual-source"),
-            source_artifact_digests: (0..12).map(|month| Digest::sha256(&[month])).collect(),
+            source_artifacts,
             quadrature_points_per_axis: 4,
             container_s2_cell_id: container,
             target_s2_level: 11,
@@ -253,10 +285,10 @@ mod tests {
     #[test]
     fn rejects_flattened_or_partial_climate_cycles() {
         let mut partial = tile();
-        partial.source_artifact_digests.pop();
+        partial.source_artifacts.pop();
         assert_eq!(
             partial.validate(),
-            Err(SeasonalFieldTileError::InvalidCycle)
+            Err(SeasonalFieldTileError::IncompleteSourcePhaseCoverage)
         );
         let mut flattened = tile();
         flattened.cells[0].mean_values.truncate(1);
@@ -264,11 +296,26 @@ mod tests {
             flattened.validate(),
             Err(SeasonalFieldTileError::InvalidPhaseValues)
         );
-        let mut repeated_source = tile();
-        repeated_source.source_artifact_digests[11] = repeated_source.source_artifact_digests[0];
+        let mut unsorted_sources = tile();
+        unsorted_sources.source_artifacts.swap(0, 1);
         assert_eq!(
-            repeated_source.validate(),
-            Err(SeasonalFieldTileError::RepeatedSourceArtifact)
+            unsorted_sources.validate(),
+            Err(SeasonalFieldTileError::NonCanonicalSourceArtifacts)
         );
+    }
+
+    #[test]
+    fn annual_sources_can_support_all_normal_months() {
+        let mut annual = tile();
+        annual.source_artifacts = (0_u8..30)
+            .map(|year| SeasonalSourceArtifact {
+                digest: Digest::sha256(&year.to_be_bytes()),
+                phase_mask: normal_year_phase_mask(),
+            })
+            .collect();
+        annual
+            .source_artifacts
+            .sort_by_key(|artifact| artifact.digest);
+        assert!(annual.validate().is_ok());
     }
 }

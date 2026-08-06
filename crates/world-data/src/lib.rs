@@ -18,7 +18,7 @@ pub use scalar_field::{
 pub use seasonal_field::{
     MONTHS_PER_NORMAL_YEAR, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SEASONAL_FIELD_TILE_SCHEMA_VERSION, PackedSeasonalScalarFieldTile,
-    SeasonalFieldTileError, SeasonalScalarFieldCell,
+    SeasonalFieldTileError, SeasonalScalarFieldCell, SeasonalSourceArtifact,
 };
 
 pub use terrain::{
