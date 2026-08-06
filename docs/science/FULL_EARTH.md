@@ -43,8 +43,8 @@ date, terms snapshot, byte length, and SHA-256 digest enter a validated bundle.
 | Land terrain | [NASADEM](https://www.earthdata.nasa.gov/data/catalog/lpcloud-nasadem-hgt-001) plus compatible national bare-earth models | Finer land elevation where coverage and terms permit; a digital surface model must not be mislabeled as bare terrain. |
 | Polar terrain | [ArcticDEM and REMA](https://www.pgc.umn.edu/guides/stereo-derived-elevation-models/pgc-dem-products-arcticdem-rema-and-earthdem/) | Higher-resolution polar terrain with its uncertainty and attribution retained. |
 | Land cover | [CDS satellite land cover v2.1.1](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=documentation) | Pin the global 2022 classification and all quality flags as the first habitat/coastline evidence; built-up/cropland classes are reconstruction inputs, not ready-made wilderness. |
-| Surface water | [JRC Global Surface Water](https://global-surface-water.appspot.com/download) | Observed water history and seasonality; not an instruction to expose dams or modern labels. |
-| Watersheds | [HydroSHEDS products](https://www.hydrosheds.org/products) | Globally consistent routing/basins/rivers/lakes; exact product-specific redistribution and commercial terms must pass review. |
+| Surface water | [JRC Global Surface Water](https://global-surface-water.appspot.com/download) | Primary observed water occurrence/seasonality evidence; reservoirs and modern alterations follow the explicit reconstruction policy. |
+| Drainage | ETOPO-derived deterministic routing plus public-domain [USGS HYDRO1K](https://www.usgs.gov/centers/eros/science/usgs-eros-archive-digital-elevation-hydro1k) validation | Derive topology from the canonical terrain and use HYDRO1K only as an independent coarse cross-check; noncommercial hydrography products are excluded. |
 | Climate | [ERA5 monthly single levels](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation) plus [CHELSA-BIOCLIM+](https://www.envidat.ch/metadata/bioclim_plus) | Freeze dated releases and derive a declared climate-normal period; never consume a moving upstream series during a world. ERA5 supplies the global atmosphere/ocean baseline; CHELSA supplies finer land-surface evidence. Neither source alone is a complete climate root. |
 | Soils | [SoilGrids](https://docs.isric.org/globaldata/soilgrids/index.html) plus [ERA5-Land](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means?tab=overview) | SoilGrids supplies composition and prediction intervals; ERA5-Land supplies modeled temperature/water state. Neither is local ground truth, and their depth semantics remain distinct. |
 | Taxonomy and occurrences | [GBIF](https://www.gbif.org/publishing-data) plus compatible taxonomic authorities | DOI-pinned downloads and stable identities; retain only records whose individual licenses permit the release. Occurrences are evidence, not species ranges. |
@@ -59,6 +59,8 @@ standalone NetCDF source artifacts. Their immutable acquisition and future
 normalization boundary are fixed in [ADR 0032](../adr/0032-era5-archive-evidence.md).
 The shared CDS/SoilGrids source composition for habitat, initial coastline evidence,
 and soil is fixed in [ADR 0034](../adr/0034-copernicus-land-and-soil-source-composition.md).
+The open-evidence composition for freshwater storage and drainage is fixed in
+[ADR 0035](../adr/0035-open-global-hydrography-composition.md).
 
 ## Removing inherited modern information
 
