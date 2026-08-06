@@ -97,6 +97,14 @@ pub struct S2FaceUv {
     pub denominator: i128,
 }
 
+/// An unnormalised rational 3D direction; scale is irrelevant to S2 face selection.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct S2FaceRay {
+    pub x: i128,
+    pub y: i128,
+    pub z: i128,
+}
+
 /// A WGS 84 coordinate in exact half-arcsecond units.
 ///
 /// ETOPO 2022's 60-arc-second `Area` cells have centers on this lattice. Keeping this
@@ -260,6 +268,21 @@ pub fn s2_face_ij_center_uv(ij: S2FaceIj) -> Result<S2FaceUv, GeographicRoutingE
         v_numerator: coordinate(ij.j)?,
         denominator,
     })
+}
+
+/// Convert an S2 face coordinate into its exact unnormalised 3D direction.
+pub fn s2_face_uv_to_ray(uv: S2FaceUv) -> Result<S2FaceRay, GeographicRoutingError> {
+    let (u, v, d) = (uv.u_numerator, uv.v_numerator, uv.denominator);
+    let [x, y, z] = match uv.face {
+        0 => [d, u, v],
+        1 => [-u, d, v],
+        2 => [-u, -v, d],
+        3 => [-d, -v, -u],
+        4 => [v, -d, -u],
+        5 => [v, u, -d],
+        _ => return Err(GeographicRoutingError::InvalidFace(uv.face)),
+    };
+    Ok(S2FaceRay { x, y, z })
 }
 
 fn route_turns_to_s2(
@@ -513,6 +536,8 @@ fn cell_id_from_face_ij(
 
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum GeographicRoutingError {
+    #[error("invalid S2 face {0}")]
+    InvalidFace(u8),
     #[error("latitude {0}e-7 degrees is outside [-90, 90]")]
     LatitudeOutOfRange(i32),
     #[error("longitude {0}e-7 degrees is outside [-180, 180)")]
@@ -625,6 +650,24 @@ mod tests {
                 u_numerator: 5,
                 v_numerator: 5,
                 denominator: 12
+            })
+        );
+    }
+
+    #[test]
+    fn face_uv_maps_to_the_pinned_s2_face_axes() {
+        let uv = S2FaceUv {
+            face: 4,
+            u_numerator: 2,
+            v_numerator: -3,
+            denominator: 7,
+        };
+        assert_eq!(
+            s2_face_uv_to_ray(uv),
+            Ok(S2FaceRay {
+                x: -3,
+                y: -7,
+                z: -2
             })
         );
     }
