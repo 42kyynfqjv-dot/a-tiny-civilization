@@ -240,6 +240,17 @@ cargo run --locked -p civilization-data -- inspect etopo-cell-route \
   --row 5399 --column 10800 --s2-level 10
 ```
 
+The first source-support approximation is inspectable before any terrain tile is
+written. It routes an equal interior lattice of points from exactly one ETOPO area cell
+to target S2 cells and reports only equal sample counts. This is a declared quadrature
+approximation, not spherical clipping or a canonical terrain layer; see
+[ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md).
+
+```bash
+cargo run --locked -p civilization-data -- inspect etopo-cell-quadrature \
+  --row 5400 --column 10800 --s2-level 10 --points-per-axis 4
+```
+
 This only proves the address and exact area support of one declared source cell. The
 support convention is specified in [ADR 0022](../adr/0022-etopo-area-cell-support.md);
 a canonical elevation layer still requires a versioned aggregation kernel.

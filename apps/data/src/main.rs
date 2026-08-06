@@ -127,6 +127,20 @@ enum InspectCommand {
         #[arg(long, default_value_t = 10)]
         s2_level: u8,
     },
+    /// Inspect a deterministic interior quadrature of one ETOPO source area cell.
+    EtopoCellQuadrature {
+        /// Zero-based source row, south to north.
+        #[arg(long)]
+        row: u32,
+        /// Zero-based source column, west to east.
+        #[arg(long)]
+        column: u32,
+        #[arg(long, default_value_t = 10)]
+        s2_level: u8,
+        /// Equal-spaced interior points per source-cell axis. Must divide 60.
+        #[arg(long, default_value_t = 4)]
+        points_per_axis: u8,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -228,6 +242,12 @@ async fn main() -> Result<()> {
                 column,
                 s2_level,
             } => inspect_etopo_cell_route(row, column, s2_level),
+            InspectCommand::EtopoCellQuadrature {
+                row,
+                column,
+                s2_level,
+                points_per_axis,
+            } => inspect_etopo_cell_quadrature(row, column, s2_level, points_per_axis),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -331,6 +351,117 @@ fn inspect_etopo_cell_route(row: u32, column: u32, s2_level: u8) -> Result<()> {
             east_boundary_half_arcseconds: support.east_boundary_half_arcseconds,
             s2_level,
             s2_cell_id: cell.to_string(),
+        })?
+    );
+    Ok(())
+}
+
+#[derive(Serialize)]
+struct EtopoCellQuadratureInspection {
+    inspection_schema_version: u16,
+    source_grid: &'static str,
+    support_policy: &'static str,
+    row: u32,
+    column: u32,
+    s2_level: u8,
+    points_per_axis: u8,
+    source_sample_count: u32,
+    target_cells: Vec<EtopoQuadratureTargetCell>,
+}
+
+#[derive(Serialize)]
+struct EtopoQuadratureTargetCell {
+    s2_cell_id: String,
+    equal_weight_samples: u32,
+}
+
+/// Returns a deterministic, equal-point quadrature of an ETOPO source area cell.
+///
+/// This is deliberately an approximation to source-cell overlap, rather than an
+/// assertion of exact spherical area intersection. Points are strictly interior, so
+/// no source sample depends on an arbitrary north/east boundary ownership rule.
+fn etopo_cell_quadrature(
+    row: u32,
+    column: u32,
+    s2_level: u8,
+    points_per_axis: u8,
+) -> Result<std::collections::BTreeMap<S2CellId, u32>> {
+    if points_per_axis == 0 || 60 % points_per_axis != 0 {
+        bail!("points_per_axis must be a non-zero divisor of 60");
+    }
+    if s2_level > MAX_S2_LEVEL {
+        bail!("s2_level must be within 0 through {MAX_S2_LEVEL}");
+    }
+    let support = etopo_cell_support(row, column)?;
+    let denominator = i32::from(points_per_axis)
+        .checked_mul(2)
+        .context("ETOPO quadrature denominator overflow")?;
+    let spacing = ETOPO_CELL_STEP_HALF_ARCSECONDS / denominator;
+    if spacing == 0 || ETOPO_CELL_STEP_HALF_ARCSECONDS % denominator != 0 {
+        bail!("points_per_axis does not produce an exact ETOPO half-arcsecond quadrature");
+    }
+    let mut cells = std::collections::BTreeMap::new();
+    for latitude_index in 0..i32::from(points_per_axis) {
+        for longitude_index in 0..i32::from(points_per_axis) {
+            let latitude_offset = latitude_index
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(1))
+                .context("ETOPO quadrature latitude index overflow")?;
+            let longitude_offset = longitude_index
+                .checked_mul(2)
+                .and_then(|value| value.checked_add(1))
+                .context("ETOPO quadrature longitude index overflow")?;
+            let latitude = support
+                .south_boundary_half_arcseconds
+                .checked_add(
+                    spacing
+                        .checked_mul(latitude_offset)
+                        .context("ETOPO quadrature latitude overflow")?,
+                )
+                .context("ETOPO quadrature latitude overflow")?;
+            let longitude = support
+                .west_boundary_half_arcseconds
+                .checked_add(
+                    spacing
+                        .checked_mul(longitude_offset)
+                        .context("ETOPO quadrature longitude overflow")?,
+                )
+                .context("ETOPO quadrature longitude overflow")?;
+            let coordinate = GeographicCoordinateHalfArcsecond::new(latitude, longitude)
+                .context("construct ETOPO quadrature coordinate")?;
+            let target = route_half_arcsecond_to_s2(coordinate, s2_level)
+                .context("route ETOPO quadrature point to S2")?;
+            *cells.entry(target).or_insert(0) += 1;
+        }
+    }
+    Ok(cells)
+}
+
+fn inspect_etopo_cell_quadrature(
+    row: u32,
+    column: u32,
+    s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    let cells = etopo_cell_quadrature(row, column, s2_level, points_per_axis)?;
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoCellQuadratureInspection {
+            inspection_schema_version: 1,
+            source_grid: "NOAA ETOPO 2022 v1 60-arc-second WGS 84 / EGM2008",
+            support_policy: "equal interior lattice points; approximate source-cell overlap, not exact spherical clipping",
+            row,
+            column,
+            s2_level,
+            points_per_axis,
+            source_sample_count: u32::from(points_per_axis) * u32::from(points_per_axis),
+            target_cells: cells
+                .into_iter()
+                .map(|(cell, equal_weight_samples)| EtopoQuadratureTargetCell {
+                    s2_cell_id: cell.to_string(),
+                    equal_weight_samples,
+                })
+                .collect(),
         })?
     );
     Ok(())
@@ -2122,5 +2253,26 @@ mod tests {
             .expect("last CHELSA cell");
         assert!(validate_chelsa_cell_address(CHELSA_LATITUDE_CELLS, 0).is_err());
         assert!(validate_chelsa_cell_address(0, CHELSA_LONGITUDE_CELLS).is_err());
+    }
+
+    #[test]
+    fn etopo_one_point_quadrature_is_the_exact_source_centre_route() {
+        let support = etopo_cell_support(5_400, 10_800).expect("ETOP0 source cell");
+        let expected = route_half_arcsecond_to_s2(support.centre, 10).expect("route centre");
+        let quadrature =
+            etopo_cell_quadrature(5_400, 10_800, 10, 1).expect("one-point source quadrature");
+        assert_eq!(
+            quadrature,
+            std::collections::BTreeMap::from([(expected, 1)])
+        );
+    }
+
+    #[test]
+    fn etopo_quadrature_uses_only_interior_exact_lattice_points() {
+        let quadrature =
+            etopo_cell_quadrature(5_400, 10_800, 10, 4).expect("four-by-four source quadrature");
+        assert_eq!(quadrature.values().copied().sum::<u32>(), 16);
+        assert!(quadrature.values().all(|count| *count > 0));
+        assert!(etopo_cell_quadrature(5_400, 10_800, 10, 7).is_err());
     }
 }
