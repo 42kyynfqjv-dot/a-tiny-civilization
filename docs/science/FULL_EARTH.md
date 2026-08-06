@@ -54,6 +54,10 @@ data terms cannot enter a public Apache-2.0 repository or supporter-funded deplo
 without a documented legal path. Raw scientific archives remain outside Git; the repo
 stores acquisition recipes, manifests, citations, hashes, and validators.
 
+The retained ERA5 annual responses are ZIP containers of NetCDF members, not
+standalone NetCDF source artifacts. Their immutable acquisition and future
+normalization boundary are fixed in [ADR 0032](../adr/0032-era5-archive-evidence.md).
+
 ## Removing inherited modern information
 
 The ingestion pipeline never imports roads, buildings, utilities, parcels,
