@@ -3,7 +3,7 @@ use std::{
     fs::{self, File, OpenOptions},
     io::Write,
     path::{Component, Path, PathBuf},
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result, bail};
@@ -142,6 +142,19 @@ enum InspectCommand {
         #[arg(long, default_value_t = 10)]
         s2_level: u8,
         /// Equal-spaced interior points per source-cell axis. Must divide 60.
+        #[arg(long, default_value_t = 4)]
+        points_per_axis: u8,
+    },
+    /// Measure the exact interior-quadrature routing workload without writing data.
+    EtopoQuadratureThroughput {
+        /// Zero-based first source row, south to north.
+        #[arg(long, default_value_t = 0)]
+        start_row: u32,
+        /// Consecutive complete source rows to route. This never creates output.
+        #[arg(long, default_value_t = 1)]
+        source_rows: u32,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
         #[arg(long, default_value_t = 4)]
         points_per_axis: u8,
     },
@@ -295,6 +308,17 @@ async fn main() -> Result<()> {
                 s2_level,
                 points_per_axis,
             } => inspect_etopo_cell_quadrature(row, column, s2_level, points_per_axis),
+            InspectCommand::EtopoQuadratureThroughput {
+                start_row,
+                source_rows,
+                target_s2_level,
+                points_per_axis,
+            } => inspect_etopo_quadrature_throughput(
+                start_row,
+                source_rows,
+                target_s2_level,
+                points_per_axis,
+            ),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -454,6 +478,18 @@ struct EtopoQuadratureTargetCell {
     equal_weight_samples: u32,
 }
 
+#[derive(Serialize)]
+struct EtopoQuadratureThroughputInspection {
+    inspection_schema_version: u16,
+    start_row: u32,
+    source_rows: u32,
+    target_s2_level: u8,
+    points_per_axis: u8,
+    source_cells_routed: u64,
+    interior_points_routed: u64,
+    elapsed_milliseconds: u128,
+}
+
 /// Returns a deterministic, equal-point quadrature of an ETOPO source area cell.
 ///
 /// This is deliberately an approximation to source-cell overlap, rather than an
@@ -541,6 +577,48 @@ fn inspect_etopo_cell_quadrature(
                     equal_weight_samples,
                 })
                 .collect(),
+        })?
+    );
+    Ok(())
+}
+
+fn inspect_etopo_quadrature_throughput(
+    start_row: u32,
+    source_rows: u32,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    if source_rows == 0
+        || u64::from(start_row)
+            .checked_add(u64::from(source_rows))
+            .is_none_or(|end| end > ETOPO_LATITUDE_CELLS)
+    {
+        bail!("requested ETOPO throughput rows are outside the source grid");
+    }
+    let started = Instant::now();
+    let mut interior_points_routed = 0_u64;
+    for row in start_row..start_row + source_rows {
+        for column in 0..u32::try_from(ETOPO_LONGITUDE_CELLS)? {
+            let samples = etopo_cell_quadrature(row, column, target_s2_level, points_per_axis)?;
+            interior_points_routed = interior_points_routed
+                .checked_add(samples.values().map(|count| u64::from(*count)).sum::<u64>())
+                .context("ETOPO throughput point count overflow")?;
+        }
+    }
+    let source_cells_routed = u64::from(source_rows)
+        .checked_mul(ETOPO_LONGITUDE_CELLS)
+        .context("ETOPO throughput source-cell count overflow")?;
+    println!(
+        "{}",
+        serde_json::to_string(&EtopoQuadratureThroughputInspection {
+            inspection_schema_version: 1,
+            start_row,
+            source_rows,
+            target_s2_level,
+            points_per_axis,
+            source_cells_routed,
+            interior_points_routed,
+            elapsed_milliseconds: started.elapsed().as_millis(),
         })?
     );
     Ok(())

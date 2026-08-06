@@ -308,6 +308,18 @@ an explicit overlap approximation rather than exact spherical clipping under
 [ADR 0028](../adr/0028-etopo-interior-quadrature-boundary.md), and its payload/storage
 contract is [ADR 0029](../adr/0029-packed-full-earth-terrain-tiles.md).
 
+Before scheduling a new machine, measure the same optimized fixed-point routing path
+without writing output:
+
+```bash
+cargo run --release --locked -p civilization-data -- inspect etopo-quadrature-throughput \
+  --start-row 0 --source-rows 1 --target-s2-level 10 --points-per-axis 4
+```
+
+On the initial eight-core development host, one full source row (21,600 cells and
+345,600 interior points) took 230 ms. This is an operational estimate only; the real
+batch also reads source data, aggregates global state, and writes verified artifacts.
+
 ## Current state
 
 The schema-v1 compatibility path, schema-v2 full-Earth contract, canonical tile-index
