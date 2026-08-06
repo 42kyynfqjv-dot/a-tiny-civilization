@@ -28,7 +28,7 @@ SNAPSHOT_ID = "era5-single-levels-monthly-means-1981-2010"
 
 
 def data_name(year: int) -> str:
-    return f"era5-monthly-single-levels-{NORMAL_START_YEAR}-{NORMAL_END_YEAR}-{year}.nc"
+    return f"era5-monthly-single-levels-{NORMAL_START_YEAR}-{NORMAL_END_YEAR}-{year}.zip"
 
 
 def observed_artifact(root: Path, relative: str, role: str, url: str, media_type: str) -> dict[str, object]:
@@ -103,7 +103,7 @@ def main() -> int:
             f"{prefix}/{data_name(year)}",
             "data",
             DATASET_URL,
-            "application/x-netcdf",
+            "application/zip",
         )
         for year in range(NORMAL_START_YEAR, NORMAL_END_YEAR + 1)
     ]
@@ -146,7 +146,7 @@ def main() -> int:
         "retrieved_on": arguments.retrieved_on,
         "license_expression": "CC-BY-4.0",
         "license_url": LICENCE_URL,
-        "scope": "Thirty global annual NetCDF requests covering every month of 1981-2010 for six fixed ERA5 monthly-mean variables, plus retained official documentation, licence, and DOI version evidence.",
+        "scope": "Thirty global annual ZIP responses containing NetCDF members for every month of 1981-2010 and six fixed ERA5 monthly-mean variables, plus retained official documentation, licence, and DOI version evidence.",
         "limitations": [
             "ERA5 is a reanalysis driven by observations and models; it is not a direct measurement at every simulation location or time.",
             "The retained 1981-2010 monthly means are climate evidence, not historical weather replay or a complete ecological state.",

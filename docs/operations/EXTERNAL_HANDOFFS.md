@@ -40,10 +40,11 @@ python3 scripts/acquire-era5-monthly-climate.py \
   --dry-run
 ```
 
-It requests separate, no-replacement yearly NetCDF files for global near-surface
-temperature, precipitation, 10-metre wind, sea-surface temperature, and sea ice. The
-raw downloads remain outside Git and are admitted only after exact hashes, terms
-evidence, and retrieval metadata are frozen in a source snapshot.
+It requests separate, no-replacement yearly ZIP responses containing NetCDF members
+for global near-surface temperature, precipitation, 10-metre wind, sea-surface
+temperature, and sea ice. The raw downloads remain outside Git and are admitted only
+after exact hashes, terms evidence, and retrieval metadata are frozen in a source
+snapshot.
 
 ## Required before a public deployment
 

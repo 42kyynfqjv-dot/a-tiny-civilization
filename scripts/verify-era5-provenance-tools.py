@@ -9,12 +9,14 @@ import os
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parent.parent
 PROVENANCE = ROOT / "scripts" / "acquire-era5-provenance.py"
 MANIFEST = ROOT / "scripts" / "create-era5-source-snapshot.py"
+MIGRATION = ROOT / "scripts" / "migrate-era5-archive-filenames.py"
 PREFIX = "era5-monthly-1981-2010"
 
 
@@ -44,9 +46,14 @@ def main() -> int:
         evidence = root / PREFIX
         evidence.mkdir(parents=True)
         for year in range(1981, 2011):
-            (evidence / f"era5-monthly-single-levels-1981-2010-{year}.nc").write_bytes(
-                f"netcdf-{year}".encode("ascii")
-            )
+            with zipfile.ZipFile(
+                evidence / f"era5-monthly-single-levels-1981-2010-{year}.nc", "w"
+            ) as archive:
+                archive.writestr(f"data-{year}.nc", f"netcdf-{year}".encode("ascii"))
+        migrated = invoke(MIGRATION, "--output-directory", str(evidence))
+        assert migrated.returncode == 0, migrated.stderr
+        assert not list(evidence.glob("*.nc"))
+        assert len(list(evidence.glob("*.zip"))) == 30
         provenance = evidence / "provenance"
         provenance.mkdir()
         for name, contents in {
@@ -76,9 +83,12 @@ def main() -> int:
         paths = [artifact["artifact_path"] for artifact in manifest["artifacts"]]
         assert paths == sorted(paths)
         first = manifest["artifacts"][0]
-        assert first["artifact_path"].endswith("1981.nc")
-        assert first["content_hash"] == hashlib.sha256(b"netcdf-1981").hexdigest()
-        assert first["byte_length"] == str(len(b"netcdf-1981"))
+        assert first["artifact_path"].endswith("1981.zip")
+        assert first["media_type"] == "application/zip"
+        assert first["content_hash"] == hashlib.sha256(
+            (evidence / "era5-monthly-single-levels-1981-2010-1981.zip").read_bytes()
+        ).hexdigest()
+        assert int(first["byte_length"]) > 0
 
         duplicate = invoke(
             MANIFEST,

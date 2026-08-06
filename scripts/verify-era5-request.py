@@ -42,6 +42,8 @@ def main() -> None:
     )
     assert all(request["year"] == [str(year)] for request, year in zip(requests, years))
     assert all(request["data_format"] == "netcdf" for request in requests)
+    assert era5.output_path(Path("/tmp"), 1981).name.endswith("1981.zip")
+    assert era5.legacy_output_path(Path("/tmp"), 1981).name.endswith("1981.nc")
     assert canonical_digest({"dataset": era5.DATASET, "requests": requests}) == (
         "546a6f02091abf2ccd320523abdeefedc7e40c924ab7298672c22ef141241a6a"
     )

@@ -13,6 +13,7 @@ import argparse
 import json
 import os
 import sys
+import zipfile
 from pathlib import Path
 
 DATASET = "reanalysis-era5-single-levels-monthly-means"
@@ -42,7 +43,29 @@ def request_for(year: int) -> dict[str, object]:
 
 
 def output_path(root: Path, year: int) -> Path:
+    return root / f"era5-monthly-single-levels-{NORMAL_START_YEAR}-{NORMAL_END_YEAR}-{year}.zip"
+
+
+def legacy_output_path(root: Path, year: int) -> Path:
+    """Pre-archive-contract filename retained only to prevent accidental duplication."""
     return root / f"era5-monthly-single-levels-{NORMAL_START_YEAR}-{NORMAL_END_YEAR}-{year}.nc"
+
+
+def validate_netcdf_archive(path: Path) -> None:
+    """Reject a response that is not a nonempty ZIP of NetCDF member files."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            members = archive.infolist()
+            if not members or any(
+                member.is_dir() or not member.filename.endswith(".nc") or member.file_size == 0
+                for member in members
+            ):
+                raise ValueError("archive must contain only nonempty NetCDF file members")
+            invalid_member = archive.testzip()
+            if invalid_member is not None:
+                raise ValueError(f"archive member failed CRC validation: {invalid_member}")
+    except zipfile.BadZipFile as error:
+        raise ValueError("CDS response was not a ZIP archive of NetCDF members") from error
 
 
 def publish_without_replacement(partial: Path, target: Path) -> None:
@@ -103,7 +126,11 @@ def main() -> int:
         print(json.dumps(records, indent=2, sort_keys=True))
         return 0
 
-    occupied = [record["target"] for record in records if (root / record["target"]).exists()]
+    occupied = [
+        record["target"]
+        for year, record in zip(years, records)
+        if (root / record["target"]).exists() or legacy_output_path(root, year).exists()
+    ]
     if occupied:
         parser().error(f"refusing to replace existing evidence: {', '.join(occupied)}")
 
@@ -119,6 +146,7 @@ def main() -> int:
         if partial.exists():
             parser().error(f"refusing to reuse partial evidence file {partial.name}")
         client.retrieve(DATASET, record["request"], str(partial))
+        validate_netcdf_archive(partial)
         with partial.open("rb") as downloaded:
             os.fsync(downloaded.fileno())
         publish_without_replacement(partial, target)
