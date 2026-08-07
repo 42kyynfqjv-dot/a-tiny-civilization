@@ -111,8 +111,9 @@ Windows-1252 files and their quoted multiline reference cells, then compares onl
 trimmed scientific names to accepted GBIF canonical names. It records every missing or
 unmatched name rather than guessing synonyms. The current retained files contain 3,580
 AnimalTraits records (1,614 exact GBIF matches), 9,995 Elton bird records (8,599 exact
-matches and two missing scientific-name cells), and 5,403 Elton mammal records (5,063
-exact matches and three missing scientific-name cells). Those counts are evidence
+matches and two structurally nonempty rows missing scientific-name cells), and 5,400
+Elton mammal records (5,063 exact matches). Completely blank trailing fixed-width
+rows are excluded as non-records. Those counts are evidence
 coverage, not a claim that the unmatched taxa are absent from Earth.
 
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),

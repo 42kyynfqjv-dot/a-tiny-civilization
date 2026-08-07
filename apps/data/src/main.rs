@@ -1603,7 +1603,11 @@ fn read_source_scientific_names(
     let mut records_without_scientific_name = 0_u64;
     let mut names = BTreeSet::new();
     for (record_index, fields) in rows.into_iter().enumerate() {
-        if fields.len() == 1 && fields[0].is_empty() {
+        // The published tab-delimited Elton files terminate with completely blank
+        // fixed-width rows. They are not source records. Preserve a structurally
+        // nonempty anonymous row for reporting, but do not manufacture a record
+        // from one whose every declared column is blank.
+        if fields.iter().all(String::is_empty) {
             continue;
         }
         if fields.len() != columns.len() {
@@ -11687,6 +11691,23 @@ mod tests {
                 vec!["Testus animalia".to_owned(), "Ref_1\n".to_owned()],
             ]
         );
+    }
+
+    #[test]
+    fn fauna_trait_inspection_excludes_completely_blank_fixed_width_rows() {
+        let root = temporary_root("fauna-trait-empty-rows");
+        let input = root.join("traits.tsv");
+        fs::write(
+            &input,
+            "Scientific\tReference\nTestus animalia\tRef_1\n\t\n",
+        )
+        .expect("write fixture");
+        assert_eq!(
+            read_source_scientific_names(&input, '\t', "Scientific", SourceTextEncoding::Utf8,)
+                .expect("inspect fixture"),
+            (1, 0, BTreeSet::from(["Testus animalia".to_owned()]),)
+        );
+        fs::remove_dir_all(root).expect("remove fixture root");
     }
 
     #[test]
