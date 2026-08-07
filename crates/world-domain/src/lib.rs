@@ -30,20 +30,23 @@ pub use configuration::{
     WorldDataBundleReference, WorldGeometry, WorldInputReference,
 };
 pub use embodiment::{
-    EmbodimentError, METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, MetabolicRateCommitment, NeedKind,
-    NeedSignal, PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading,
-    SituatedPerception,
+    BodilyNeedState, BodilyRegulationState, EmbodimentError,
+    METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, MetabolicRateCommitment, NeedKind, NeedSignal,
+    PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PerceptionChannel,
+    PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment, PrimitiveAction,
+    PrimitiveActionKind, PropertyReading, SituatedPerception,
 };
 pub use environment::{
     LocalEnvironmentError, NORMAL_YEAR_PHASE_COUNT, ProvisionalLocalEnvironmentBaseline,
 };
 pub use event::{
-    BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
-    CONFIGURED_EVENT_SCHEMA_VERSION, CategoryError, DeathCause, DomainEvent,
-    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EventBatch, EventBatchError,
-    EventRecord, LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
-    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    BODILY_REGULATION_EVENT_SCHEMA_VERSION, BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory,
+    CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION, CategoryError,
+    DeathCause, DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION,
+    EventBatch, EventBatchError, EventRecord, LEGACY_EVENT_SCHEMA_VERSION,
+    MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
+    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,

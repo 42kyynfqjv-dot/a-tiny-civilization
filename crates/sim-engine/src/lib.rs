@@ -16,18 +16,19 @@ use partition::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
+    BODILY_REGULATION_EVENT_SCHEMA_VERSION, BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory,
+    BodilyNeedState, BodilyRegulationState, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
     CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, DeathCause, Digest,
     DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
     EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
     LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity, MetabolicRateCommitment,
-    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
-    PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
-    SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
-    TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
-    s2_edge_neighbors,
+    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel,
+    PhysiologicalRegulationCommitment, PrimitiveAction, PrimitiveActionKind, PropertyReading,
+    S2CellId, S2CellIdError, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
+    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
+    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -56,6 +57,9 @@ pub const PERSISTENT_PERCEPTION_RULESET_VERSION: u32 = 7;
 pub const MATERIAL_HANDLING_RULESET_VERSION: u32 = 8;
 /// Ruleset nine delivers neutral emitted signals to living same-patch recipients.
 pub const SIGNAL_PROPAGATION_RULESET_VERSION: u32 = 9;
+/// Ruleset ten integrates committed metabolic and exposure parameters into bodily
+/// pressures and neutral mechanical mortality.
+pub const BODILY_REGULATION_RULESET_VERSION: u32 = 10;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -68,6 +72,7 @@ pub const PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION: u16 = 9;
 pub const MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 10;
 pub const MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION: u16 = 11;
 pub const SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION: u16 = 12;
+pub const BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION: u16 = 13;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -85,6 +90,7 @@ const PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION: u16 = 9;
 const MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION: u16 = 10;
 const MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION: u16 = 11;
 const SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION: u16 = 12;
+const BODILY_REGULATION_STATE_HASH_SCHEMA_VERSION: u16 = 13;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -113,6 +119,71 @@ fn normal_year_phase(tick: SimTick, tick_duration_seconds: u32) -> usize {
     ((elapsed_seconds / NORMAL_PHASE_SECONDS) % 12) as usize
 }
 
+fn normalized_pressure_intensity(load: u64, capacity: u64) -> Result<u16, EngineError> {
+    if capacity == 0 {
+        return Err(EngineError::PhysiologicalArithmetic(
+            "pressure capacity is zero".to_owned(),
+        ));
+    }
+    if load > capacity {
+        return Err(EngineError::PhysiologicalArithmetic(
+            "pressure load exceeds capacity".to_owned(),
+        ));
+    }
+    let intensity = u128::from(load)
+        .checked_mul(u128::from(u16::MAX))
+        .ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic("pressure numerator overflowed".to_owned())
+        })?
+        / u128::from(capacity);
+    u16::try_from(intensity).map_err(|_| {
+        EngineError::PhysiologicalArithmetic("pressure intensity exceeded u16".to_owned())
+    })
+}
+
+fn capacity_product(left: u64, right: u64, label: &str) -> Result<u64, EngineError> {
+    left.checked_mul(right)
+        .ok_or_else(|| EngineError::PhysiologicalArithmetic(format!("{label} capacity overflowed")))
+}
+
+fn add_load(current: u64, amount: u128, capacity: u64) -> Result<u64, EngineError> {
+    let next = u128::from(current)
+        .checked_add(amount)
+        .ok_or_else(|| EngineError::PhysiologicalArithmetic("body load overflowed".to_owned()))?
+        .min(u128::from(capacity));
+    u64::try_from(next)
+        .map_err(|_| EngineError::PhysiologicalArithmetic("body load exceeds u64".to_owned()))
+}
+
+fn subtract_load(current: u64, amount: u128) -> u64 {
+    if amount >= u128::from(current) {
+        0
+    } else {
+        current - u64::try_from(amount).expect("amount below a u64 current value")
+    }
+}
+
+fn decimal_to_millicelsius(value: i64, decimal_places: u8) -> Result<i64, EngineError> {
+    if decimal_places <= 3 {
+        let factor = 10_i128.pow(u32::from(3 - decimal_places));
+        return i64::try_from(i128::from(value).checked_mul(factor).ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic("temperature scaling overflowed".to_owned())
+        })?)
+        .map_err(|_| EngineError::PhysiologicalArithmetic("temperature exceeds i64".to_owned()));
+    }
+    let divisor = 10_i128.pow(u32::from(decimal_places - 3));
+    let value = i128::from(value);
+    let quotient = value / divisor;
+    let remainder = value % divisor;
+    let rounded = if remainder.abs().saturating_mul(2) >= divisor {
+        quotient + remainder.signum()
+    } else {
+        quotient
+    };
+    i64::try_from(rounded)
+        .map_err(|_| EngineError::PhysiologicalArithmetic("temperature exceeds i64".to_owned()))
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
     pub organism_id: EntityId,
@@ -123,6 +194,8 @@ pub struct InitialOrganism {
     pub location_id: Option<EntityId>,
     pub embodied_patch: Option<S2CellId>,
     pub metabolic_rate: Option<MetabolicRateCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub physiological_regulation: Option<PhysiologicalRegulationCommitment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -148,6 +221,12 @@ pub struct OrganismState {
     embodied_patch: Option<S2CellId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metabolic_rate: Option<MetabolicRateCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    physiological_regulation: Option<PhysiologicalRegulationCommitment>,
+    #[serde(default, skip_serializing_if = "BodilyRegulationState::is_clear")]
+    bodily_regulation: BodilyRegulationState,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    bodily_regulated_at: Option<SimTick>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     perception_memory: Vec<PerceptionMemoryEntry>,
     death: Option<DeathRecord>,
@@ -248,6 +327,16 @@ impl OrganismState {
     #[must_use]
     pub const fn embodied_patch(&self) -> Option<S2CellId> {
         self.embodied_patch
+    }
+
+    #[must_use]
+    pub const fn bodily_needs(&self) -> BodilyNeedState {
+        self.bodily_regulation.needs
+    }
+
+    #[must_use]
+    pub const fn physiological_regulation(&self) -> Option<&PhysiologicalRegulationCommitment> {
+        self.physiological_regulation.as_ref()
     }
 
     fn age_ticks(&self) -> Option<u64> {
@@ -395,14 +484,58 @@ impl EngineState {
                 .len()
                 .saturating_add(1 + usize::from(configuration.is_some())),
         );
+        if self.uses_bodily_regulation_driver() {
+            let baseline = configuration
+                .as_ref()
+                .and_then(WorldConfiguration::local_environment_baseline)
+                .ok_or(EngineError::MissingLocalEnvironmentForRegulation)?;
+            if baseline.air_temperature_unit != "degC" {
+                return Err(EngineError::UnsupportedTemperatureUnit(
+                    baseline.air_temperature_unit.clone(),
+                ));
+            }
+        }
         events.push(DomainEvent::WorldStarted {
             manifest: self.manifest.clone(),
         });
         if let Some(configuration) = configuration {
             events.push(DomainEvent::WorldConfigured { configuration });
         }
-        events.extend(initial_organisms.into_iter().map(|organism| {
-            DomainEvent::OrganismInitialized {
+        for organism in initial_organisms {
+            if let Some(metabolic_rate) = &organism.metabolic_rate {
+                metabolic_rate
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if metabolic_rate.observed_species != organism.species {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "metabolic-rate commitment species does not match organism".to_owned(),
+                    ));
+                }
+            }
+            if let Some(regulation) = &organism.physiological_regulation {
+                regulation
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if regulation.species != organism.species {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "physiological-regulation commitment species does not match organism"
+                            .to_owned(),
+                    ));
+                }
+            }
+            if self.uses_bodily_regulation_driver()
+                && (organism.metabolic_rate.is_none()
+                    || organism.physiological_regulation.is_none())
+            {
+                return Err(EngineError::MissingPhysiologicalCommitment(
+                    organism.organism_id,
+                ));
+            }
+            if !self.uses_bodily_regulation_driver() && organism.physiological_regulation.is_some()
+            {
+                return Err(EngineError::PhysiologicalCommitmentUnsupported);
+            }
+            events.push(DomainEvent::OrganismInitialized {
                 organism_id: organism.organism_id,
                 species: organism.species,
                 role: organism.role,
@@ -411,8 +544,9 @@ impl EngineState {
                 location_id: organism.location_id,
                 embodied_patch: organism.embodied_patch,
                 metabolic_rate: organism.metabolic_rate,
-            }
-        }));
+                physiological_regulation: organism.physiological_regulation,
+            });
+        }
         Ok(events)
     }
 
@@ -452,7 +586,9 @@ impl EngineState {
         if let Some(state) = celestial_state {
             events.push(DomainEvent::CelestialStateRecorded { state });
         }
-        if self.living_people() == 0 {
+        let mut preview = self.clone();
+        preview.apply_events(&events)?;
+        if preview.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
         }
@@ -576,6 +712,248 @@ impl EngineState {
                 },
             })
             .collect())
+    }
+
+    fn next_bodily_regulation(
+        &self,
+        organism: &OrganismState,
+        action_kind: PrimitiveActionKind,
+    ) -> Result<BodilyRegulationState, EngineError> {
+        let configuration = self.configuration.as_ref().ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic(
+                "bodily regulation requires a world configuration".to_owned(),
+            )
+        })?;
+        let metabolic_rate =
+            organism
+                .metabolic_rate
+                .as_ref()
+                .ok_or(EngineError::MissingPhysiologicalCommitment(
+                    organism.organism_id,
+                ))?;
+        let regulation = organism.physiological_regulation.as_ref().ok_or(
+            EngineError::MissingPhysiologicalCommitment(organism.organism_id),
+        )?;
+        metabolic_rate
+            .validate()
+            .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+        regulation
+            .validate()
+            .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+
+        let tick_seconds = u128::from(configuration.tick_duration_seconds);
+        let power_value = u128::try_from(metabolic_rate.measured_power_value).map_err(|_| {
+            EngineError::PhysiologicalArithmetic(
+                "metabolic power must be a positive integer".to_owned(),
+            )
+        })?;
+        let power_scale = 10_u64.pow(u32::from(metabolic_rate.measured_power_decimal_places));
+        let energy_capacity = capacity_product(
+            power_scale,
+            regulation.usable_energy_reserve_joules,
+            "energy",
+        )?;
+        let energy_consumed = power_value.checked_mul(tick_seconds).ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic("energy consumption overflowed".to_owned())
+        })?;
+        let energy_load = add_load(
+            organism.bodily_regulation.energy_load_scaled_joules,
+            energy_consumed,
+            energy_capacity,
+        )?;
+        let hydration_load = add_load(
+            organism.bodily_regulation.hydration_load_seconds,
+            tick_seconds,
+            regulation.hydration_failure_seconds,
+        )?;
+        let fatigue_capacity = capacity_product(
+            regulation.fatigue_failure_seconds,
+            regulation.fatigue_recovery_seconds,
+            "fatigue",
+        )?;
+        let fatigue_load = if action_kind == PrimitiveActionKind::Rest {
+            subtract_load(
+                organism.bodily_regulation.fatigue_load_second_squared,
+                tick_seconds
+                    .checked_mul(u128::from(regulation.fatigue_failure_seconds))
+                    .ok_or_else(|| {
+                        EngineError::PhysiologicalArithmetic(
+                            "fatigue recovery overflowed".to_owned(),
+                        )
+                    })?,
+            )
+        } else {
+            add_load(
+                organism.bodily_regulation.fatigue_load_second_squared,
+                tick_seconds
+                    .checked_mul(u128::from(regulation.fatigue_recovery_seconds))
+                    .ok_or_else(|| {
+                        EngineError::PhysiologicalArithmetic(
+                            "fatigue exposure overflowed".to_owned(),
+                        )
+                    })?,
+                fatigue_capacity,
+            )?
+        };
+
+        let baseline = configuration.local_environment_baseline().ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic(
+                "bodily regulation requires a local temperature baseline".to_owned(),
+            )
+        })?;
+        if baseline.air_temperature_unit != "degC" {
+            return Err(EngineError::UnsupportedTemperatureUnit(
+                baseline.air_temperature_unit.clone(),
+            ));
+        }
+        let temperature = baseline
+            .mean_at_normal_phase(normal_year_phase(
+                self.tick,
+                configuration.tick_duration_seconds,
+            ))
+            .map_err(|error| EngineError::PhysiologicalArithmetic(error.to_string()))?;
+        let temperature =
+            decimal_to_millicelsius(temperature, baseline.air_temperature_decimal_places)?;
+        let temperature = i128::from(temperature);
+        let minimum = i128::from(regulation.thermoneutral_min_millicelsius);
+        let maximum = i128::from(regulation.thermoneutral_max_millicelsius);
+        let thermal_excess = if temperature < minimum {
+            minimum - temperature
+        } else if temperature > maximum {
+            temperature - maximum
+        } else {
+            0
+        };
+        let thermal_capacity = capacity_product(
+            regulation.thermal_failure_millicelsius_seconds,
+            regulation.thermal_recovery_seconds,
+            "thermal",
+        )?;
+        let thermal_load = if thermal_excess == 0 {
+            subtract_load(
+                organism
+                    .bodily_regulation
+                    .thermal_load_millicelsius_second_squared,
+                tick_seconds
+                    .checked_mul(u128::from(regulation.thermal_failure_millicelsius_seconds))
+                    .ok_or_else(|| {
+                        EngineError::PhysiologicalArithmetic(
+                            "thermal recovery overflowed".to_owned(),
+                        )
+                    })?,
+            )
+        } else {
+            let thermal_excess = u128::try_from(thermal_excess).map_err(|_| {
+                EngineError::PhysiologicalArithmetic(
+                    "thermal exposure cannot be negative".to_owned(),
+                )
+            })?;
+            add_load(
+                organism
+                    .bodily_regulation
+                    .thermal_load_millicelsius_second_squared,
+                thermal_excess
+                    .checked_mul(tick_seconds)
+                    .and_then(|value| {
+                        value.checked_mul(u128::from(regulation.thermal_recovery_seconds))
+                    })
+                    .ok_or_else(|| {
+                        EngineError::PhysiologicalArithmetic(
+                            "thermal exposure overflowed".to_owned(),
+                        )
+                    })?,
+                thermal_capacity,
+            )?
+        };
+
+        Ok(BodilyRegulationState {
+            energy_load_scaled_joules: energy_load,
+            hydration_load_seconds: hydration_load,
+            fatigue_load_second_squared: fatigue_load,
+            thermal_load_millicelsius_second_squared: thermal_load,
+            needs: BodilyNeedState {
+                energy_deficit: normalized_pressure_intensity(energy_load, energy_capacity)?,
+                hydration_deficit: normalized_pressure_intensity(
+                    hydration_load,
+                    regulation.hydration_failure_seconds,
+                )?,
+                thermal_discomfort: normalized_pressure_intensity(thermal_load, thermal_capacity)?,
+                pain: organism.bodily_regulation.needs.pain,
+                fatigue: normalized_pressure_intensity(fatigue_load, fatigue_capacity)?,
+            },
+        })
+    }
+
+    fn validate_bodily_regulation_state(
+        organism: &OrganismState,
+        state: BodilyRegulationState,
+    ) -> Result<(), EngineError> {
+        let metabolic_rate =
+            organism
+                .metabolic_rate
+                .as_ref()
+                .ok_or(EngineError::MissingPhysiologicalCommitment(
+                    organism.organism_id,
+                ))?;
+        let regulation = organism.physiological_regulation.as_ref().ok_or(
+            EngineError::MissingPhysiologicalCommitment(organism.organism_id),
+        )?;
+        let power_scale = 10_u64.pow(u32::from(metabolic_rate.measured_power_decimal_places));
+        let energy_capacity = capacity_product(
+            power_scale,
+            regulation.usable_energy_reserve_joules,
+            "energy",
+        )?;
+        let fatigue_capacity = capacity_product(
+            regulation.fatigue_failure_seconds,
+            regulation.fatigue_recovery_seconds,
+            "fatigue",
+        )?;
+        let thermal_capacity = capacity_product(
+            regulation.thermal_failure_millicelsius_seconds,
+            regulation.thermal_recovery_seconds,
+            "thermal",
+        )?;
+        let expected = BodilyNeedState {
+            energy_deficit: normalized_pressure_intensity(
+                state.energy_load_scaled_joules,
+                energy_capacity,
+            )?,
+            hydration_deficit: normalized_pressure_intensity(
+                state.hydration_load_seconds,
+                regulation.hydration_failure_seconds,
+            )?,
+            thermal_discomfort: normalized_pressure_intensity(
+                state.thermal_load_millicelsius_second_squared,
+                thermal_capacity,
+            )?,
+            pain: state.needs.pain,
+            fatigue: normalized_pressure_intensity(
+                state.fatigue_load_second_squared,
+                fatigue_capacity,
+            )?,
+        };
+        if state.needs != expected {
+            return Err(EngineError::InvalidBodilyRegulationState(
+                organism.organism_id,
+            ));
+        }
+        Ok(())
+    }
+
+    fn regulation_death_cause(needs: BodilyNeedState) -> Option<DeathCause> {
+        let mechanism = if needs.hydration_deficit == u16::MAX {
+            "bodily_regulation_v1_hydration_failure"
+        } else if needs.energy_deficit == u16::MAX {
+            "bodily_regulation_v1_energy_failure"
+        } else if needs.thermal_discomfort == u16::MAX {
+            "bodily_regulation_v1_thermal_failure"
+        } else {
+            return None;
+        };
+        Some(DeathCause {
+            mechanism: mechanism.to_owned(),
+        })
     }
 
     /// Record a resolved relocation between two full-Earth embodied patches. The
@@ -852,11 +1230,49 @@ impl EngineState {
             })
             .collect::<Result<Vec<_>, EngineError>>()?;
         let resolved = plan.complete(outputs, maximum_events)?;
-        Ok(resolved
+        let mut events = resolved
             .emissions()
             .iter()
             .map(|emission| emission.event().clone())
-            .collect())
+            .collect::<Vec<_>>();
+        if self.uses_bodily_regulation_driver() {
+            // Regulation is a final causal phase after every organism's sensory and
+            // motor emissions. This prevents arbitrary subject-key ordering from
+            // making a same-tick signal target appear dead before the signal arrives.
+            let mut deaths = Vec::new();
+            for organism in self
+                .organisms
+                .values()
+                .filter(|organism| organism.is_alive())
+            {
+                let to_age_ticks = organism
+                    .age_ticks()
+                    .and_then(|age| age.checked_add(1))
+                    .ok_or(EngineError::AgeOverflow(organism.organism_id))?;
+                let phase = motor_phase(organism.organism_id, to_age_ticks);
+                let action_kind = if self.uses_signal_propagation_driver() && phase == 2 {
+                    PrimitiveActionKind::EmitSignal
+                } else if self.uses_resolved_movement_driver() && phase == 3 {
+                    PrimitiveActionKind::Move
+                } else {
+                    motor_action_for_phase(phase)
+                };
+                let to = self.next_bodily_regulation(organism, action_kind)?;
+                events.push(DomainEvent::OrganismNeedsChanged {
+                    organism_id: organism.organism_id,
+                    from: organism.bodily_regulation,
+                    to,
+                });
+                if let Some(cause) = Self::regulation_death_cause(to.needs) {
+                    deaths.push(DomainEvent::OrganismDied {
+                        organism_id: organism.organism_id,
+                        cause,
+                    });
+                }
+            }
+            events.extend(deaths);
+        }
+        Ok(events)
     }
 
     fn resolve_partition_tick(&self) -> Result<Option<PartitionSchedule>, EngineError> {
@@ -974,6 +1390,10 @@ impl EngineState {
         self.manifest.ruleset_version >= SIGNAL_PROPAGATION_RULESET_VERSION
     }
 
+    fn uses_bodily_regulation_driver(&self) -> bool {
+        self.manifest.ruleset_version >= BODILY_REGULATION_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -1036,6 +1456,7 @@ impl EngineState {
             DomainEvent::OrganismMoved { to_patch, .. } => Some(*to_patch),
             DomainEvent::OrganismDied { organism_id, .. }
             | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
+            | DomainEvent::OrganismNeedsChanged { organism_id, .. }
             | DomainEvent::OrganismPerceived { organism_id, .. }
             | DomainEvent::OrganismActed { organism_id, .. } => self
                 .organisms
@@ -1062,7 +1483,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_signal_propagation_driver() {
+        if self.uses_bodily_regulation_driver() {
+            BODILY_REGULATION_EVENT_SCHEMA_VERSION
+        } else if self.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
         } else if self.uses_material_handling_driver() {
             MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
@@ -1113,7 +1536,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_signal_propagation_driver() {
+        if self.uses_bodily_regulation_driver() {
+            BODILY_REGULATION_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_material_handling_driver() {
             MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION
@@ -1193,6 +1618,7 @@ impl EngineState {
                 location_id,
                 embodied_patch,
                 metabolic_rate,
+                physiological_regulation,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
@@ -1204,6 +1630,25 @@ impl EngineState {
                     if metabolic_rate.observed_species != *species {
                         return Err(EngineError::InvalidEmbodiedEvent(
                             "metabolic-rate commitment species does not match organism".to_owned(),
+                        ));
+                    }
+                }
+                if self.uses_bodily_regulation_driver()
+                    && (metabolic_rate.is_none() || physiological_regulation.is_none())
+                {
+                    return Err(EngineError::MissingPhysiologicalCommitment(*organism_id));
+                }
+                if !self.uses_bodily_regulation_driver() && physiological_regulation.is_some() {
+                    return Err(EngineError::PhysiologicalCommitmentUnsupported);
+                }
+                if let Some(regulation) = physiological_regulation {
+                    regulation
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if regulation.species != *species {
+                        return Err(EngineError::InvalidEmbodiedEvent(
+                            "physiological-regulation commitment species does not match organism"
+                                .to_owned(),
                         ));
                     }
                 }
@@ -1222,6 +1667,9 @@ impl EngineState {
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
+                    physiological_regulation: physiological_regulation.clone(),
+                    bodily_regulation: BodilyRegulationState::default(),
+                    bodily_regulated_at: None,
                     perception_memory: Vec::new(),
                     death: None,
                 })?;
@@ -1304,6 +1752,7 @@ impl EngineState {
                 location_id,
                 embodied_patch,
                 metabolic_rate,
+                physiological_regulation,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
@@ -1315,6 +1764,25 @@ impl EngineState {
                     if metabolic_rate.observed_species != *species {
                         return Err(EngineError::InvalidEmbodiedEvent(
                             "metabolic-rate commitment species does not match organism".to_owned(),
+                        ));
+                    }
+                }
+                if self.uses_bodily_regulation_driver()
+                    && (metabolic_rate.is_none() || physiological_regulation.is_none())
+                {
+                    return Err(EngineError::MissingPhysiologicalCommitment(*organism_id));
+                }
+                if !self.uses_bodily_regulation_driver() && physiological_regulation.is_some() {
+                    return Err(EngineError::PhysiologicalCommitmentUnsupported);
+                }
+                if let Some(regulation) = physiological_regulation {
+                    regulation
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if regulation.species != *species {
+                        return Err(EngineError::InvalidEmbodiedEvent(
+                            "physiological-regulation commitment species does not match organism"
+                                .to_owned(),
                         ));
                     }
                 }
@@ -1352,6 +1820,9 @@ impl EngineState {
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
+                    physiological_regulation: physiological_regulation.clone(),
+                    bodily_regulation: BodilyRegulationState::default(),
+                    bodily_regulated_at: None,
                     perception_memory: Vec::new(),
                     death: None,
                 })?;
@@ -1471,6 +1942,35 @@ impl EngineState {
                     return Err(EngineError::InvalidAgeTransition(*organism_id));
                 }
                 organism.age_ticks = Some(*to_age_ticks);
+            }
+            DomainEvent::OrganismNeedsChanged {
+                organism_id,
+                from,
+                to,
+            } => {
+                if !self.uses_bodily_regulation_driver() {
+                    return Err(EngineError::PhysiologicalCommitmentUnsupported);
+                }
+                self.require_living_organism(*organism_id)?;
+                if from == to {
+                    return Err(EngineError::InvalidBodilyRegulationState(*organism_id));
+                }
+                let organism = self
+                    .organisms
+                    .get(organism_id)
+                    .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                if organism.bodily_regulation != *from
+                    || organism.bodily_regulated_at == Some(self.tick)
+                {
+                    return Err(EngineError::InvalidBodilyRegulationTransition(*organism_id));
+                }
+                Self::validate_bodily_regulation_state(organism, *to)?;
+                let organism = self
+                    .organisms
+                    .get_mut(organism_id)
+                    .expect("body presence checked above");
+                organism.bodily_regulation = *to;
+                organism.bodily_regulated_at = Some(self.tick);
             }
             DomainEvent::CelestialStateRecorded { state } => {
                 if !self.uses_celestial_driver() {
@@ -1638,12 +2138,77 @@ impl EngineState {
         {
             return Err(EngineError::MissingCelestialState(self.tick));
         }
+        if self.uses_bodily_regulation_driver() {
+            let baseline = self
+                .configuration
+                .as_ref()
+                .and_then(WorldConfiguration::local_environment_baseline)
+                .ok_or(EngineError::MissingLocalEnvironmentForRegulation)?;
+            if baseline.air_temperature_unit != "degC" {
+                return Err(EngineError::UnsupportedTemperatureUnit(
+                    baseline.air_temperature_unit.clone(),
+                ));
+            }
+        }
         for (id, organism) in &self.organisms {
             if id != &organism.organism_id {
                 return Err(EngineError::OrganismKeyMismatch(*id));
             }
             organism.species.validate()?;
             self.validate_initial_embodied_patch(organism.embodied_patch)?;
+            if let Some(metabolic_rate) = &organism.metabolic_rate {
+                metabolic_rate
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if metabolic_rate.observed_species != organism.species {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "metabolic-rate commitment species does not match organism".to_owned(),
+                    ));
+                }
+            }
+            if self.uses_bodily_regulation_driver() {
+                let regulation = organism.physiological_regulation.as_ref().ok_or(
+                    EngineError::MissingPhysiologicalCommitment(organism.organism_id),
+                )?;
+                regulation
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if regulation.species != organism.species || organism.metabolic_rate.is_none() {
+                    return Err(EngineError::MissingPhysiologicalCommitment(
+                        organism.organism_id,
+                    ));
+                }
+                Self::validate_bodily_regulation_state(organism, organism.bodily_regulation)?;
+                if organism.is_alive()
+                    && self.tick != SimTick::ZERO
+                    && organism.born_at != Some(self.tick)
+                    && organism.bodily_regulated_at != Some(self.tick)
+                {
+                    return Err(EngineError::MissingBodilyRegulationTransition(
+                        organism.organism_id,
+                    ));
+                }
+                if organism.is_alive()
+                    && Self::regulation_death_cause(organism.bodily_regulation.needs).is_some()
+                {
+                    return Err(EngineError::FatalBodilyRegulationState(
+                        organism.organism_id,
+                    ));
+                }
+                if let Some(expected) =
+                    Self::regulation_death_cause(organism.bodily_regulation.needs)
+                    && organism.death.as_ref().map(|death| &death.cause) != Some(&expected)
+                {
+                    return Err(EngineError::InvalidRegulationDeathCause(
+                        organism.organism_id,
+                    ));
+                }
+            } else if organism.physiological_regulation.is_some()
+                || !organism.bodily_regulation.is_clear()
+                || organism.bodily_regulated_at.is_some()
+            {
+                return Err(EngineError::PhysiologicalCommitmentUnsupported);
+            }
             if organism.perception_memory.len() > MAX_PERCEPTION_MEMORY_ENTRIES
                 || organism
                     .perception_memory
@@ -1733,7 +2298,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_signal_propagation_driver() {
+        let snapshot_schema_version = if state.uses_bodily_regulation_driver() {
+            BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_material_handling_driver() {
             MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
@@ -1792,12 +2359,15 @@ impl Snapshot {
                 | MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
                 | SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
+                | BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_signal_propagation_driver() {
+        let expected_schema_version = if self.state.uses_bodily_regulation_driver() {
+            BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_material_handling_driver() {
             MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
@@ -1970,7 +2540,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_signal_propagation_driver() {
+        let expected_schema = if state.uses_bodily_regulation_driver() {
+            BODILY_REGULATION_EVENT_SCHEMA_VERSION
+        } else if state.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
         } else if state.uses_material_handling_driver() || batch_has_material_handling {
             MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
@@ -2009,7 +2581,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == BODILY_REGULATION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == BODILY_REGULATION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
         } else if expected_schema == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
@@ -2147,6 +2721,26 @@ pub enum EngineError {
     InvalidPerceptionMemory(EntityId),
     #[error("organism {0} perception memory has reached its fixed capacity")]
     PerceptionMemoryCapacity(EntityId),
+    #[error("organism {0} lacks its atomic metabolic or physiological commitment")]
+    MissingPhysiologicalCommitment(EntityId),
+    #[error("physiological regulation is unsupported by this ruleset")]
+    PhysiologicalCommitmentUnsupported,
+    #[error("bodily regulation requires a tick-zero local environment baseline")]
+    MissingLocalEnvironmentForRegulation,
+    #[error("bodily regulation does not support temperature unit {0:?}")]
+    UnsupportedTemperatureUnit(String),
+    #[error("physiological arithmetic failed: {0}")]
+    PhysiologicalArithmetic(String),
+    #[error("organism {0} has an invalid bodily-regulation state")]
+    InvalidBodilyRegulationState(EntityId),
+    #[error("organism {0} has an invalid or duplicate bodily-regulation transition")]
+    InvalidBodilyRegulationTransition(EntityId),
+    #[error("organism {0} is missing its bodily-regulation transition for this tick")]
+    MissingBodilyRegulationTransition(EntityId),
+    #[error("living organism {0} exhausted a fatal regulation budget without dying")]
+    FatalBodilyRegulationState(EntityId),
+    #[error("organism {0} has a mortality cause inconsistent with its regulation limit")]
+    InvalidRegulationDeathCause(EntityId),
     #[error("ruleset-three ticks require one source-backed celestial state")]
     CelestialStateRequired,
     #[error("this ruleset does not accept source-backed celestial states")]
@@ -2264,6 +2858,7 @@ mod tests {
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            physiological_regulation: None,
         }
     }
 
@@ -2386,6 +2981,42 @@ mod tests {
         let patch: S2CellId = "0000000000004000".parse().expect("valid L23 S2 cell");
         assert_eq!(patch.level(), 23);
         person.embodied_patch = Some(patch);
+        person
+    }
+
+    fn regulated_full_earth_person(
+        world_id: WorldId,
+        organism_id: u128,
+        usable_energy_reserve_joules: u64,
+        hydration_failure_seconds: u64,
+    ) -> InitialOrganism {
+        let mut person = full_earth_person(world_id);
+        person.organism_id = EntityId::from_uuid(Uuid::from_u128(organism_id));
+        person.metabolic_rate = Some(MetabolicRateCommitment {
+            commitment_schema_version: world_domain::METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+            profile_set_digest: Digest::sha256(b"regulated fixture metabolic profiles"),
+            observed_species: person.species.clone(),
+            source_record_id: "fixture-rate".to_owned(),
+            source_record_digest: Digest::sha256(b"regulated fixture metabolic row"),
+            measured_power_value: 1,
+            measured_power_decimal_places: 0,
+        });
+        person.physiological_regulation = Some(PhysiologicalRegulationCommitment {
+            commitment_schema_version:
+                world_domain::PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "regulated-fixture-v1".to_owned(),
+            profile_digest: Digest::sha256(b"explicit regulated fixture assumptions"),
+            species: person.species.clone(),
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+            usable_energy_reserve_joules,
+            hydration_failure_seconds,
+            fatigue_failure_seconds: 600,
+            fatigue_recovery_seconds: 600,
+            thermoneutral_min_millicelsius: -1_000,
+            thermoneutral_max_millicelsius: 1_000,
+            thermal_failure_millicelsius_seconds: 600_000,
+            thermal_recovery_seconds: 600,
+        });
         person
     }
 
@@ -2670,6 +3301,7 @@ mod tests {
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            physiological_regulation: None,
         };
         assert!(matches!(
             running.commit(EventSequence::new(2), genesis.batch_hash, vec![birth]),
@@ -3059,6 +3691,328 @@ mod tests {
     }
 
     #[test]
+    fn bodily_regulation_requires_atomic_commitments_and_a_supported_environment() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x110));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012818),
+            BODILY_REGULATION_RULESET_VERSION,
+        );
+        let initial = EngineState::new(manifest.clone());
+        assert!(matches!(
+            initial.plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![full_earth_person(world_id)]
+            ),
+            Err(EngineError::MissingPhysiologicalCommitment(_))
+        ));
+
+        let person = regulated_full_earth_person(world_id, 0x201, 600, 600);
+        assert!(matches!(
+            initial.plan_configured_genesis(
+                provisional_full_earth_configuration(),
+                vec![person.clone()]
+            ),
+            Err(EngineError::MissingLocalEnvironmentForRegulation)
+        ));
+        let mut unsupported_environment = environmental_provisional_full_earth_configuration();
+        unsupported_environment
+            .local_environment_baseline
+            .as_mut()
+            .expect("environment baseline")
+            .air_temperature_unit = "K".to_owned();
+        assert!(matches!(
+            initial.plan_configured_genesis(unsupported_environment, vec![person.clone()]),
+            Err(EngineError::UnsupportedTemperatureUnit(unit)) if unit == "K"
+        ));
+
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("atomic regulation genesis");
+        assert!(matches!(
+            genesis_events.last(),
+            Some(DomainEvent::OrganismInitialized {
+                metabolic_rate: Some(_),
+                physiological_regulation: Some(_),
+                ..
+            })
+        ));
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("regulated genesis commit");
+        let unsupported_birth = DomainEvent::OrganismBorn {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0x202)),
+            species: person.species.clone(),
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("female").expect("category"),
+            parent_ids: vec![person.organism_id],
+            location_id: None,
+            embodied_patch: person.embodied_patch,
+            metabolic_rate: None,
+            physiological_regulation: None,
+        };
+        assert!(matches!(
+            running.commit(
+                EventSequence::new(2),
+                genesis.batch_hash,
+                vec![unsupported_birth]
+            ),
+            Err(EngineError::MissingPhysiologicalCommitment(_))
+        ));
+    }
+
+    #[test]
+    fn bodily_regulation_uses_exact_loads_and_archives_on_the_fatal_tick() {
+        assert_eq!(
+            normalized_pressure_intensity(300, 100_000_000).expect("small exact load"),
+            0,
+            "small loads must not round up once per tick"
+        );
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x111));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012818),
+            BODILY_REGULATION_RULESET_VERSION,
+        );
+        let person = regulated_full_earth_person(world_id, 0x201, 600, 600);
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("regulated genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("regulated genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            BODILY_REGULATION_EVENT_SCHEMA_VERSION
+        );
+
+        let celestial_one = CelestialState::new(
+            TdbSecondsSinceJ2000::new(300),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        );
+        let tick_one_events = running
+            .plan_next_tick_with_celestial(celestial_one)
+            .expect("first regulated tick");
+        let first_transition = tick_one_events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::OrganismNeedsChanged {
+                    organism_id, to, ..
+                } if *organism_id == person.organism_id => Some(*to),
+                _ => None,
+            })
+            .expect("first body transition");
+        assert_eq!(first_transition.energy_load_scaled_joules, 300);
+        assert_eq!(first_transition.hydration_load_seconds, 300);
+        assert_eq!(first_transition.needs.energy_deficit, 32_767);
+        assert_eq!(first_transition.needs.hydration_deficit, 32_767);
+        assert!(
+            !tick_one_events
+                .iter()
+                .any(|event| matches!(event, DomainEvent::OrganismDied { .. }))
+        );
+        let (after_one, tick_one) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_one_events)
+            .expect("first regulated commit");
+        let snapshot = Snapshot::new(after_one.clone(), tick_one.sequence, tick_one.batch_hash)
+            .expect("regulated snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot.verify_integrity().expect("regulated snapshot");
+
+        let celestial_two = CelestialState::new(
+            TdbSecondsSinceJ2000::new(600),
+            CartesianMillimetres::new(2, 3, 4),
+            CartesianMillimetres::new(5, 6, 7),
+        );
+        let tick_two_events = after_one
+            .plan_next_tick_with_celestial(celestial_two)
+            .expect("fatal regulated tick");
+        let first_death = tick_two_events
+            .iter()
+            .position(|event| matches!(event, DomainEvent::OrganismDied { .. }))
+            .expect("automatic death");
+        assert!(tick_two_events[..first_death].iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismNeedsChanged { organism_id, to, .. }
+                if *organism_id == person.organism_id
+                    && to.needs.energy_deficit == u16::MAX
+                    && to.needs.hydration_deficit == u16::MAX
+        )));
+        assert!(matches!(
+            &tick_two_events[first_death],
+            DomainEvent::OrganismDied { organism_id, cause }
+                if *organism_id == person.organism_id
+                    && cause.mechanism == "bodily_regulation_v1_hydration_failure"
+        ));
+        assert!(matches!(
+            tick_two_events.as_slice(),
+            [.., DomainEvent::WorldExtinct, DomainEvent::WorldArchived]
+        ));
+        let (archived, tick_two) = after_one
+            .commit(EventSequence::new(3), tick_one.batch_hash, tick_two_events)
+            .expect("fatal regulated commit");
+        assert_eq!(archived.status(), WorldStatus::Archived);
+        assert_eq!(archived.living_people(), 0);
+        assert_eq!(archived.scheduled_work_count(), 0);
+        assert_eq!(
+            replay(
+                manifest.clone(),
+                &[genesis.clone(), tick_one.clone(), tick_two]
+            )
+            .expect("regulated replay")
+            .state,
+            archived
+        );
+
+        let downgraded = EventBatch::new(
+            SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            BODILY_REGULATION_RULESET_VERSION,
+            Digest::ZERO,
+            vec![DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            }],
+            Digest::sha256(b"downgraded body state"),
+        )
+        .expect("internally valid pre-regulation batch");
+        assert!(matches!(
+            replay(manifest, &[downgraded]),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+                actual: SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    #[test]
+    fn rest_recovers_exact_fatigue_load_without_erasing_other_needs() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x112));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012818),
+            BODILY_REGULATION_RULESET_VERSION,
+        );
+        // 0x202 executes phase 3 at age one, then phase 0 (rest) at age two.
+        let person = regulated_full_earth_person(world_id, 0x202, 10_000_000, 1_000_000);
+        let initial = EngineState::new(manifest);
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("fatigue genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("fatigue genesis");
+        let first_events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(300),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("active tick");
+        let (after_active, first_batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, first_events)
+            .expect("active tick commit");
+        let active_needs = after_active
+            .organisms()
+            .find(|organism| organism.organism_id() == person.organism_id)
+            .expect("person")
+            .bodily_needs();
+        assert_eq!(active_needs.fatigue, 32_767);
+        assert!(active_needs.energy_deficit > 0);
+
+        let rest_events = after_active
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(600),
+                CartesianMillimetres::new(2, 3, 4),
+                CartesianMillimetres::new(5, 6, 7),
+            ))
+            .expect("rest tick");
+        assert!(rest_events.iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismActed { organism_id, action }
+                if *organism_id == person.organism_id
+                    && action.kind == PrimitiveActionKind::Rest
+        )));
+        let (after_rest, _) = after_active
+            .commit(EventSequence::new(3), first_batch.batch_hash, rest_events)
+            .expect("rest tick commit");
+        let rested_needs = after_rest
+            .organisms()
+            .find(|organism| organism.organism_id() == person.organism_id)
+            .expect("person")
+            .bodily_needs();
+        assert_eq!(rested_needs.fatigue, 0);
+        assert!(rested_needs.energy_deficit > active_needs.energy_deficit);
+    }
+
+    #[test]
+    fn fatal_tick_delivers_all_local_signals_before_any_automatic_death() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x113));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012818),
+            BODILY_REGULATION_RULESET_VERSION,
+        );
+        let source = regulated_full_earth_person(world_id, 0x201, 300, 300);
+        let recipient = regulated_full_earth_person(world_id, 0x204, 300, 300);
+        let initial = EngineState::new(manifest);
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![source.clone(), recipient.clone()],
+            )
+            .expect("fatal signal genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("fatal signal genesis commit");
+        let events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(300),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("fatal signal tick");
+        let first_death = events
+            .iter()
+            .position(|event| matches!(event, DomainEvent::OrganismDied { .. }))
+            .expect("automatic death");
+        assert!(events[..first_death].iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismPerceived { organism_id, perception }
+                if *organism_id == recipient.organism_id
+                    && perception.subject_id == Some(source.organism_id)
+                    && perception.readings[0].property_code == "signal_amplitude"
+        )));
+        assert_eq!(
+            events[..first_death]
+                .iter()
+                .filter(|event| matches!(event, DomainEvent::OrganismNeedsChanged { .. }))
+                .count(),
+            2
+        );
+        let (archived, _) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, events)
+            .expect("fatal signals commit atomically");
+        assert_eq!(archived.status(), WorldStatus::Archived);
+        assert_eq!(archived.living_people(), 0);
+    }
+
+    #[test]
     fn configured_event_budget_covers_genesis_and_ticks() {
         let manifest = manifest();
         let initial = EngineState::new(manifest.clone());
@@ -3411,6 +4365,7 @@ mod tests {
                         location_id: person.location_id,
                         embodied_patch: None,
                         metabolic_rate: None,
+                        physiological_regulation: None,
                     },
                 ],
             ),

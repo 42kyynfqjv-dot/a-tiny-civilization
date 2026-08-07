@@ -144,6 +144,17 @@ worlds; it is an integration checkpoint, not a scientific behavioural claim. The
 engine checkpoints are a coupled ecological quantity policy with retained refinement
 state and deltas, physical movement resolution, and source-backed causal effects.
 
+Rulesets five through ten now extend that integration path with source-bound local
+temperature readings, resolved adjacent-patch movement, bounded persistent perception,
+citable real-material instances, neutral grasp/release and carried-object movement,
+same-patch physical signal propagation, and canonical bodily regulation. The bodily
+regulator retains exact energy, hydration, fatigue, and thermal load accumulators,
+derives label-free need pressure without per-tick rounding drift, and emits restrained
+mechanical mortality and same-tick extinction when a fatal budget is exhausted. Every
+ruleset-ten body atomically pins measured metabolic power and a species-matching
+regulation profile. Engineering-assumption profiles exercise the implementation but
+remain ineligible for public genesis until their scientific evidence is reviewed.
+
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one
 content-addressed manifest. Its only status is

@@ -127,6 +127,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismActed { .. }
                 | DomainEvent::OrganismMoved { .. }
                 | DomainEvent::OrganismAgeAdvanced { .. }
+                | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::CelestialStateRecorded { .. } => {
                     return None;
                 }
@@ -319,6 +320,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismActed { .. }
             | DomainEvent::OrganismMoved { .. }
             | DomainEvent::OrganismAgeAdvanced { .. }
+            | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
@@ -545,7 +547,10 @@ pub enum ReservationStoreError {
 mod tests {
     use super::*;
     use uuid::Uuid;
-    use world_domain::{Digest, EVENT_SCHEMA_VERSION, WorldManifest, WorldSeed};
+    use world_domain::{
+        BODILY_REGULATION_EVENT_SCHEMA_VERSION, BodilyNeedState, BodilyRegulationState, Digest,
+        EVENT_SCHEMA_VERSION, WorldManifest, WorldSeed,
+    };
 
     fn species() -> SpeciesIdentity {
         SpeciesIdentity::new(
@@ -627,6 +632,7 @@ mod tests {
                 location_id: Some(EntityId::from_uuid(Uuid::from_u128(14))),
                 embodied_patch: None,
                 metabolic_rate: None,
+                physiological_regulation: None,
             },
             DomainEvent::OrganismDied {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
@@ -687,6 +693,7 @@ mod tests {
                 location_id: Some(EntityId::from_uuid(Uuid::from_u128(24))),
                 embodied_patch: None,
                 metabolic_rate: None,
+                physiological_regulation: None,
             }],
             Digest::sha256(b"organism projection state"),
         )
@@ -699,6 +706,35 @@ mod tests {
         for withheld in ["female", "parent", "location", "birth_category"] {
             assert!(!rendered.contains(withheld), "must withhold {withheld}");
         }
+    }
+
+    #[test]
+    fn bodily_regulation_state_is_never_a_public_projection() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(31));
+        let batch = EventBatch::new(
+            BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(4),
+            SimTick::new(3),
+            10,
+            Digest::ZERO,
+            vec![DomainEvent::OrganismNeedsChanged {
+                organism_id: EntityId::from_uuid(Uuid::from_u128(32)),
+                from: BodilyRegulationState::default(),
+                to: BodilyRegulationState {
+                    energy_load_scaled_joules: 300,
+                    needs: BodilyNeedState {
+                        energy_deficit: 7,
+                        ..BodilyNeedState::default()
+                    },
+                    ..BodilyRegulationState::default()
+                },
+            }],
+            Digest::sha256(b"private bodily state"),
+        )
+        .expect("valid internal body event");
+        assert!(project_public_timeline(&batch).is_empty());
+        assert!(project_public_organisms(&batch).is_empty());
     }
 
     #[test]

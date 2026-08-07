@@ -481,6 +481,7 @@ mod tests {
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            physiological_regulation: None,
         }
     }
 

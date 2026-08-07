@@ -2,9 +2,10 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHashError, CelestialState, Digest, EntityId, EventId, EventSequence, MaterialIdentity,
-    MetabolicRateCommitment, PrimitiveAction, S2CellId, SimTick, SituatedPerception,
-    SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId, EventId,
+    EventSequence, MaterialIdentity, MetabolicRateCommitment, PhysiologicalRegulationCommitment,
+    PrimitiveAction, S2CellId, SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration,
+    WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -30,6 +31,8 @@ pub const MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION: u16 = 9;
 pub const MATERIAL_HANDLING_EVENT_SCHEMA_VERSION: u16 = 10;
 /// Adds deterministic same-patch propagation of neutral emitted signals.
 pub const SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION: u16 = 11;
+/// Adds source-addressed bodily regulation and exact pressure transitions.
+pub const BODILY_REGULATION_EVENT_SCHEMA_VERSION: u16 = 12;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -104,6 +107,8 @@ pub enum DomainEvent {
         embodied_patch: Option<S2CellId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metabolic_rate: Option<MetabolicRateCommitment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        physiological_regulation: Option<PhysiologicalRegulationCommitment>,
     },
     /// A physical material instance. Its identity is citable, but its affordances
     /// and effects are intentionally not inferred by this event.
@@ -138,6 +143,8 @@ pub enum DomainEvent {
         embodied_patch: Option<S2CellId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metabolic_rate: Option<MetabolicRateCommitment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        physiological_regulation: Option<PhysiologicalRegulationCommitment>,
     },
     OrganismDied {
         organism_id: EntityId,
@@ -165,6 +172,13 @@ pub enum DomainEvent {
         organism_id: EntityId,
         from_age_ticks: u64,
         to_age_ticks: u64,
+    },
+    /// One exact, replayable bodily-pressure transition. These normalized internal
+    /// values are never an observer narrative or a label for a solution.
+    OrganismNeedsChanged {
+        organism_id: EntityId,
+        from: BodilyRegulationState,
+        to: BodilyRegulationState,
     },
     /// A source-backed Sun/Moon state for the current simulation tick. This is a
     /// physical input only; observer projections must not expose its mechanism.
@@ -316,6 +330,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
             | MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
             | SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
+            | BODILY_REGULATION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -401,11 +416,40 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < BODILY_REGULATION_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismNeedsChanged { .. }
+                | DomainEvent::OrganismInitialized {
+                    physiological_regulation: Some(_),
+                    ..
+                }
+                | DomainEvent::OrganismBorn {
+                    physiological_regulation: Some(_),
+                    ..
+                }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
-        DomainEvent::OrganismInitialized { metabolic_rate, .. }
-        | DomainEvent::OrganismBorn { metabolic_rate, .. } => {
+        DomainEvent::OrganismInitialized {
+            metabolic_rate,
+            physiological_regulation,
+            ..
+        }
+        | DomainEvent::OrganismBorn {
+            metabolic_rate,
+            physiological_regulation,
+            ..
+        } => {
             if let Some(metabolic_rate) = metabolic_rate {
                 metabolic_rate
+                    .validate()
+                    .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+            if let Some(regulation) = physiological_regulation {
+                regulation
                     .validate()
                     .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
             }
@@ -419,6 +463,11 @@ fn validate_event_for_schema(
         DomainEvent::MaterialInstanceInitialized { material, .. } => material
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::OrganismNeedsChanged { from, to, .. } if from == to => {
+            return Err(EventBatchError::InvalidEmbodiedEvent(
+                "bodily-need transition must change state".to_owned(),
+            ));
+        }
         _ => {}
     }
     Ok(())
@@ -772,5 +821,42 @@ mod tests {
             Digest::sha256(b"admitted post-state"),
         );
         assert!(matches!(batch, Ok(value) if value.verify_integrity().is_ok()));
+    }
+
+    #[test]
+    fn bodily_regulation_requires_schema_twelve() {
+        let manifest = manifest();
+        let event = DomainEvent::OrganismNeedsChanged {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0xB0D1)),
+            from: BodilyRegulationState::default(),
+            to: BodilyRegulationState {
+                energy_load_scaled_joules: 1,
+                ..BodilyRegulationState::default()
+            },
+        };
+        assert!(matches!(
+            EventBatch::new(
+                SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                10,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"body state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::new(1),
+            10,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"body state"),
+        )
+        .expect("schema twelve accepts an exact body transition");
     }
 }

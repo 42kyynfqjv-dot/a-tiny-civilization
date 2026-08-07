@@ -27,6 +27,7 @@ pub struct MetabolicRateCommitment {
 }
 
 pub const METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION: u16 = 1;
 
 impl MetabolicRateCommitment {
     pub fn validate(&self) -> Result<(), EmbodimentError> {
@@ -44,6 +45,65 @@ impl MetabolicRateCommitment {
         self.observed_species
             .validate()
             .map_err(|_| EmbodimentError::InvalidMetabolicCommitment)?;
+        Ok(())
+    }
+}
+
+/// The weakest evidence class used by any parameter in a committed regulation
+/// profile. This makes an engineering placeholder impossible to present as a sourced
+/// measurement merely because the same profile also contains measured values.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PhysiologicalEvidenceBasis {
+    SourceMeasurement,
+    LiteratureApproximation,
+    EngineeringAssumption,
+}
+
+/// Immutable species-specific parameters for the first canonical bodily regulator.
+///
+/// The profile digest addresses the independently reviewable evidence/assumption
+/// artifact. Values are physical durations, temperatures, energy, and exposure—not
+/// agent-facing conclusions about how a pressure can be relieved.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PhysiologicalRegulationCommitment {
+    pub commitment_schema_version: u16,
+    pub profile_id: String,
+    pub profile_digest: Digest,
+    pub species: SpeciesIdentity,
+    pub evidence_basis: PhysiologicalEvidenceBasis,
+    pub usable_energy_reserve_joules: u64,
+    pub hydration_failure_seconds: u64,
+    pub fatigue_failure_seconds: u64,
+    pub fatigue_recovery_seconds: u64,
+    pub thermoneutral_min_millicelsius: i32,
+    pub thermoneutral_max_millicelsius: i32,
+    /// Integrated temperature distance outside the thermoneutral range. For
+    /// example, 1,000 millicelsius of excess for 60 seconds consumes 60,000 units.
+    pub thermal_failure_millicelsius_seconds: u64,
+    pub thermal_recovery_seconds: u64,
+}
+
+impl PhysiologicalRegulationCommitment {
+    pub fn validate(&self) -> Result<(), EmbodimentError> {
+        if self.commitment_schema_version != PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION {
+            return Err(EmbodimentError::UnsupportedPhysiologicalRegulationSchema);
+        }
+        self.species
+            .validate()
+            .map_err(|_| EmbodimentError::InvalidPhysiologicalRegulationCommitment)?;
+        if !is_technical(&self.profile_id)
+            || self.profile_digest == Digest::ZERO
+            || self.usable_energy_reserve_joules == 0
+            || self.hydration_failure_seconds == 0
+            || self.fatigue_failure_seconds == 0
+            || self.fatigue_recovery_seconds == 0
+            || self.thermoneutral_min_millicelsius >= self.thermoneutral_max_millicelsius
+            || self.thermal_failure_millicelsius_seconds == 0
+            || self.thermal_recovery_seconds == 0
+        {
+            return Err(EmbodimentError::InvalidPhysiologicalRegulationCommitment);
+        }
         Ok(())
     }
 }
@@ -88,6 +148,80 @@ impl NeedSignal {
             return Err(EmbodimentError::ZeroNeedIntensity);
         }
         Ok(())
+    }
+}
+
+/// Canonical bounded bodily pressures. Intensities are normalized regulator state,
+/// not physical measurements or instructions. Zero means absent and `u16::MAX`
+/// means that the corresponding regulation budget has been exhausted.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BodilyNeedState {
+    pub energy_deficit: u16,
+    pub hydration_deficit: u16,
+    pub thermal_discomfort: u16,
+    pub pain: u16,
+    pub fatigue: u16,
+}
+
+impl BodilyNeedState {
+    #[must_use]
+    pub const fn intensity(self, kind: NeedKind) -> u16 {
+        match kind {
+            NeedKind::EnergyDeficit => self.energy_deficit,
+            NeedKind::HydrationDeficit => self.hydration_deficit,
+            NeedKind::ThermalDiscomfort => self.thermal_discomfort,
+            NeedKind::Pain => self.pain,
+            NeedKind::Fatigue => self.fatigue,
+        }
+    }
+
+    #[must_use]
+    pub const fn signal(self, kind: NeedKind) -> Option<NeedSignal> {
+        let intensity = self.intensity(kind);
+        if intensity == 0 {
+            None
+        } else {
+            Some(NeedSignal { kind, intensity })
+        }
+    }
+
+    #[must_use]
+    pub const fn is_clear(&self) -> bool {
+        self.energy_deficit == 0
+            && self.hydration_deficit == 0
+            && self.thermal_discomfort == 0
+            && self.pain == 0
+            && self.fatigue == 0
+    }
+}
+
+/// Exact causal load retained beneath the normalized need signals. These accumulators
+/// prevent repeated quantization from turning a tiny per-tick exposure into a whole
+/// pressure unit. The corresponding need state is stored so replay can audit both the
+/// physical integration and the internal signal that was available to policy.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct BodilyRegulationState {
+    /// `measured_power_value * seconds`; the metabolic commitment supplies the
+    /// decimal scale and the profile supplies the reserve in joules.
+    pub energy_load_scaled_joules: u64,
+    pub hydration_load_seconds: u64,
+    /// Common units whose capacity is
+    /// `fatigue_failure_seconds * fatigue_recovery_seconds`.
+    pub fatigue_load_second_squared: u64,
+    /// Common units whose capacity is `thermal_failure_millicelsius_seconds *
+    /// thermal_recovery_seconds`.
+    pub thermal_load_millicelsius_second_squared: u64,
+    pub needs: BodilyNeedState,
+}
+
+impl BodilyRegulationState {
+    #[must_use]
+    pub const fn is_clear(&self) -> bool {
+        self.energy_load_scaled_joules == 0
+            && self.hydration_load_seconds == 0
+            && self.fatigue_load_second_squared == 0
+            && self.thermal_load_millicelsius_second_squared == 0
+            && self.needs.is_clear()
     }
 }
 
@@ -213,6 +347,10 @@ pub enum EmbodimentError {
     UnsupportedMetabolicCommitmentSchema,
     #[error("invalid metabolic-rate commitment")]
     InvalidMetabolicCommitment,
+    #[error("unsupported physiological-regulation commitment schema")]
+    UnsupportedPhysiologicalRegulationSchema,
+    #[error("invalid physiological-regulation commitment")]
+    InvalidPhysiologicalRegulationCommitment,
     #[error("need signal intensity must be greater than zero")]
     ZeroNeedIntensity,
     #[error("perception property code {0:?} is invalid")]
@@ -280,5 +418,52 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn physiological_profiles_are_species_bound_and_assumptions_stay_explicit() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("real taxon");
+        let profile = PhysiologicalRegulationCommitment {
+            commitment_schema_version: PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "provisional-human-v1".to_owned(),
+            profile_digest: Digest::sha256(b"explicit engineering assumptions"),
+            species,
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            usable_energy_reserve_joules: 1_000_000,
+            hydration_failure_seconds: 259_200,
+            fatigue_failure_seconds: 86_400,
+            fatigue_recovery_seconds: 28_800,
+            thermoneutral_min_millicelsius: 10_000,
+            thermoneutral_max_millicelsius: 30_000,
+            thermal_failure_millicelsius_seconds: 86_400_000,
+            thermal_recovery_seconds: 43_200,
+        };
+        profile.validate().expect("valid explicit profile");
+
+        let mut invalid = profile;
+        invalid.thermoneutral_min_millicelsius = invalid.thermoneutral_max_millicelsius;
+        assert!(matches!(
+            invalid.validate(),
+            Err(EmbodimentError::InvalidPhysiologicalRegulationCommitment)
+        ));
+
+        let needs = BodilyNeedState {
+            energy_deficit: 7,
+            ..BodilyNeedState::default()
+        };
+        assert_eq!(
+            needs.signal(NeedKind::EnergyDeficit),
+            Some(NeedSignal {
+                kind: NeedKind::EnergyDeficit,
+                intensity: 7,
+            })
+        );
+        assert_eq!(needs.signal(NeedKind::Pain), None);
     }
 }

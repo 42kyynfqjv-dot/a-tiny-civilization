@@ -481,6 +481,7 @@ async fn init_proof_world(
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            physiological_regulation: None,
         },
         InitialOrganism {
             organism_id: EntityId::deterministic(world_id, b"proof-person-male"),
@@ -491,6 +492,7 @@ async fn init_proof_world(
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            physiological_regulation: None,
         },
     ];
     let session =
@@ -610,6 +612,7 @@ async fn init_provisional_full_earth_world(
             location_id: None,
             embodied_patch: Some(initial_patch),
             metabolic_rate: None,
+            physiological_regulation: None,
         })
     })
     .collect::<Result<Vec<_>>>()?;
@@ -980,6 +983,7 @@ fn load_provisional_fauna_initial_organisms(
                 location_id: None,
                 embodied_patch: Some(initial_patch),
                 metabolic_rate: metabolic_rate.clone(),
+                physiological_regulation: None,
             });
         }
     }

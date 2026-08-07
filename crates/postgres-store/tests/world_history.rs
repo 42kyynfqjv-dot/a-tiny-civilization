@@ -45,6 +45,7 @@ fn initial_person(world_id: WorldId) -> InitialOrganism {
         location_id: None,
         embodied_patch: None,
         metabolic_rate: None,
+        physiological_regulation: None,
     }
 }
 
