@@ -2,6 +2,7 @@
 
 mod boolean_field;
 mod fauna;
+mod fauna_evidence;
 mod land_cover;
 mod scalar_field;
 mod seasonal_field;
@@ -16,6 +17,13 @@ pub use boolean_field::{
 pub use fauna::{
     FAUNA_CATALOG_MEDIA_TYPE, FAUNA_CATALOG_SCHEMA_VERSION, FaunaCatalog, FaunaCatalogEntry,
     FaunaCatalogError, FaunaIdentityPolicy, FaunaIdentityTier,
+};
+
+pub use fauna_evidence::{
+    FAUNA_EVIDENCE_MANIFEST_MEDIA_TYPE, FAUNA_EVIDENCE_MANIFEST_SCHEMA_VERSION,
+    FaunaAssumptionBasis, FaunaEvidenceBasis, FaunaEvidenceLicense, FaunaEvidenceManifest,
+    FaunaEvidenceManifestError, FaunaEvidenceSource, FaunaEvidenceSourceManifest,
+    FaunaEvidenceStatus, FaunaTraitAssumption, ObservedFaunaTrait, ScaledFaunaTraitValue,
 };
 
 pub use land_cover::{

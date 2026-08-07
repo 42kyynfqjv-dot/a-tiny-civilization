@@ -216,7 +216,10 @@ EltonTraits artifacts (67,009,045 bytes) under inventory SHA-256
 `b03ce7a3bf08188ba756e256f353f11b6f5d651b652e132a829a60bb844e0499`.
 Its acquisition rechecks upstream MD5s, SHA-256s, schemas, complete row shapes, and
 published record counts. Inferred EltonTraits values remain distinguishable from
-species-level evidence; taxonomic crosswalk and parameter admission are still pending.
+species-level evidence. A canonical provisional manifest now pins the three-source
+composition and structurally separates retained observations from assumptions; its
+wire status cannot claim scientific admission. Taxonomic crosswalk and parameter
+admission are still pending.
 
 The heavens now have an account-free long-range source path, retained bytes, and a
 causal contract. Both JPL DE441 ephemeris halves and their technical/orientation

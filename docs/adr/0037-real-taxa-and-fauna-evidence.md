@@ -58,7 +58,10 @@ The first trait evidence set is acquired and content-checked with
 `scripts/acquire-fauna-traits.py --download`; its compact inventory retains exact
 SHA-256 and upstream MD5 evidence for twelve official artifacts. Scientific admission
 still requires taxonomic crosswalks, per-field observation filtering, unit review, and
-the separately DOI-pinned occurrence evidence.
+the separately DOI-pinned occurrence evidence. The provisional fauna-evidence manifest
+pins this three-source composition and uses disjoint wire types for retained evidence
+and assumptions; it has no admitted status and rejects an assumption that shadows an
+evidenced species trait.
 
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
