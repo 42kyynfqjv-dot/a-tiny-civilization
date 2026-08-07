@@ -20,9 +20,10 @@ pub use celestial::{
 };
 pub use configuration::{
     CapacityExhaustionPolicy, EarthResolutionLevels, ExecutionScale, FullEarthGrid,
-    LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION, PartitionedExecution, PersonRepresentation,
-    S2Projection, SchedulerKind, SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION,
-    WorldConfiguration, WorldConfigurationError, WorldDataBundleReference, WorldGeometry,
+    LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION, PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION,
+    PartitionedExecution, PersonRepresentation, ProvisionalWorldCompositionReference, S2Projection,
+    SchedulerKind, SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION, WorldConfiguration,
+    WorldConfigurationError, WorldDataBundleReference, WorldGeometry, WorldInputReference,
 };
 pub use embodiment::{
     EmbodimentError, NeedKind, NeedSignal, PerceptionChannel, PrimitiveAction, PrimitiveActionKind,
@@ -31,7 +32,7 @@ pub use embodiment::{
 pub use event::{
     BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CategoryError, DeathCause, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EventBatch, EventBatchError,
-    EventRecord, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
+    EventRecord, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,

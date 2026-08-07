@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use world_domain::{Digest, FullEarthGrid};
+use world_domain::{Digest, FullEarthGrid, ProvisionalWorldCompositionReference};
 
 use crate::DataLayerKind;
 
@@ -180,6 +180,24 @@ impl ProvisionalWorldComposition {
         Ok(Digest::sha256(&self.canonical_bytes()?))
     }
 
+    /// Produce the only domain reference that provisional execution is allowed to
+    /// commit. The distinct type prevents this composition from being mistaken for
+    /// a scientifically admitted world-data bundle.
+    pub fn execution_reference(
+        &self,
+    ) -> Result<ProvisionalWorldCompositionReference, ProvisionalWorldCompositionError> {
+        self.validate()?;
+        ProvisionalWorldCompositionReference::new(
+            self.composition_schema_version,
+            self.composition_id.clone(),
+            self.composition_version.clone(),
+            self.content_digest()?,
+        )
+        .map_err(|error| {
+            ProvisionalWorldCompositionError::InvalidExecutionReference(error.to_string())
+        })
+    }
+
     pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, ProvisionalWorldCompositionError> {
         let composition: Self = serde_json::from_slice(bytes)
             .map_err(|error| ProvisionalWorldCompositionError::Decode(error.to_string()))?;
@@ -297,6 +315,8 @@ pub enum ProvisionalWorldCompositionError {
     Encoding(String),
     #[error("noncanonical encoding")]
     NonCanonicalEncoding,
+    #[error("invalid provisional execution reference: {0}")]
+    InvalidExecutionReference(String),
 }
 
 #[cfg(test)]
@@ -376,6 +396,14 @@ mod tests {
     #[test]
     fn complete_provisional_composition_round_trips_but_is_not_a_world_bundle() {
         let composition = composition();
+        let reference = composition
+            .execution_reference()
+            .expect("valid execution reference");
+        assert_eq!(reference.composition_id, composition.composition_id);
+        assert_eq!(
+            reference.content_hash,
+            composition.content_digest().expect("composition digest")
+        );
         let bytes = composition
             .canonical_bytes()
             .expect("canonical composition");

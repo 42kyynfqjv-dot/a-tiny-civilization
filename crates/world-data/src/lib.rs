@@ -860,7 +860,9 @@ impl WorldDataBundle {
         configuration
             .validate()
             .map_err(|error| BundleError::InvalidConfiguration(error.to_string()))?;
-        let reference = &configuration.world_data;
+        let reference = configuration
+            .world_data()
+            .ok_or(BundleError::ConfigurationMismatch("input_class"))?;
         if reference.bundle_schema_version != self.bundle_schema_version {
             return Err(BundleError::ConfigurationMismatch("bundle_schema_version"));
         }

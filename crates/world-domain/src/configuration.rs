@@ -4,7 +4,10 @@ use thiserror::Error;
 use crate::{Digest, MAX_S2_LEVEL};
 
 pub const LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 1;
+/// Scientifically admitted full-Earth configuration schema.
 pub const WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 2;
+/// Full-Earth execution proof whose inputs are explicitly not scientifically admitted.
+pub const PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 3;
 const SECONDS_PER_DAY: u32 = 86_400;
 const MAX_V1_GRID_CELLS: u64 = 1_000_000;
 const WGS_84_ECEF_EPSG: u32 = 4_978;
@@ -63,6 +66,134 @@ impl WorldDataBundleReference {
             return Err(WorldConfigurationError::MissingLicenseExpression);
         }
         Ok(())
+    }
+}
+
+/// Content address for a complete provisional composition used by an execution proof.
+///
+/// This is deliberately not a [`WorldDataBundleReference`]. A caller cannot obtain an
+/// admitted-bundle reference by changing a status bit or reusing these fields.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionalWorldCompositionReference {
+    pub composition_schema_version: u16,
+    pub composition_id: String,
+    pub composition_version: String,
+    pub content_hash: Digest,
+}
+
+impl ProvisionalWorldCompositionReference {
+    pub fn new(
+        composition_schema_version: u16,
+        composition_id: impl Into<String>,
+        composition_version: impl Into<String>,
+        content_hash: Digest,
+    ) -> Result<Self, WorldConfigurationError> {
+        let reference = Self {
+            composition_schema_version,
+            composition_id: composition_id.into(),
+            composition_version: composition_version.into(),
+            content_hash,
+        };
+        reference.validate()?;
+        Ok(reference)
+    }
+
+    pub fn validate(&self) -> Result<(), WorldConfigurationError> {
+        if self.composition_schema_version == 0 {
+            return Err(WorldConfigurationError::ZeroCompositionSchemaVersion);
+        }
+        if !is_slug(&self.composition_id) {
+            return Err(WorldConfigurationError::InvalidCompositionId);
+        }
+        if !is_semantic_version(&self.composition_version) {
+            return Err(WorldConfigurationError::InvalidCompositionVersion);
+        }
+        if self.content_hash == Digest::ZERO {
+            return Err(WorldConfigurationError::ZeroCompositionHash);
+        }
+        Ok(())
+    }
+}
+
+/// Mutually exclusive scientific input classes committed at tick zero.
+///
+/// The distinct field names are part of the wire contract: provisional input cannot
+/// decode through the admitted `world_data` path.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+pub enum WorldInputReference {
+    ScientificallyAdmitted {
+        world_data: WorldDataBundleReference,
+    },
+    ProvisionalExecution {
+        provisional_world_composition: ProvisionalWorldCompositionReference,
+    },
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdmittedWorldInputWire {
+    world_data: WorldDataBundleReference,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionalWorldInputWire {
+    provisional_world_composition: ProvisionalWorldCompositionReference,
+}
+
+#[derive(Deserialize)]
+#[serde(untagged)]
+enum WorldInputReferenceWire {
+    ScientificallyAdmitted(AdmittedWorldInputWire),
+    ProvisionalExecution(ProvisionalWorldInputWire),
+}
+
+impl<'de> Deserialize<'de> for WorldInputReference {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        Ok(match WorldInputReferenceWire::deserialize(deserializer)? {
+            WorldInputReferenceWire::ScientificallyAdmitted(wire) => Self::ScientificallyAdmitted {
+                world_data: wire.world_data,
+            },
+            WorldInputReferenceWire::ProvisionalExecution(wire) => Self::ProvisionalExecution {
+                provisional_world_composition: wire.provisional_world_composition,
+            },
+        })
+    }
+}
+
+impl WorldInputReference {
+    fn validate(&self) -> Result<(), WorldConfigurationError> {
+        match self {
+            Self::ScientificallyAdmitted { world_data } => world_data.validate(),
+            Self::ProvisionalExecution {
+                provisional_world_composition,
+            } => provisional_world_composition.validate(),
+        }
+    }
+
+    #[must_use]
+    pub const fn world_data(&self) -> Option<&WorldDataBundleReference> {
+        match self {
+            Self::ScientificallyAdmitted { world_data } => Some(world_data),
+            Self::ProvisionalExecution { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn provisional_world_composition(
+        &self,
+    ) -> Option<&ProvisionalWorldCompositionReference> {
+        match self {
+            Self::ScientificallyAdmitted { .. } => None,
+            Self::ProvisionalExecution {
+                provisional_world_composition,
+            } => Some(provisional_world_composition),
+        }
     }
 }
 
@@ -251,7 +382,8 @@ pub struct WorldConfiguration {
     pub tick_duration_seconds: u32,
     #[serde(flatten)]
     pub geometry: WorldGeometry,
-    pub world_data: WorldDataBundleReference,
+    #[serde(flatten)]
+    pub input: WorldInputReference,
     #[serde(flatten)]
     pub execution: ExecutionScale,
 }
@@ -277,10 +409,21 @@ struct FullEarthWorldConfigurationWire {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionalFullEarthWorldConfigurationWire {
+    configuration_schema_version: u16,
+    tick_duration_seconds: u32,
+    full_earth_grid: FullEarthGrid,
+    provisional_world_composition: ProvisionalWorldCompositionReference,
+    partitioned_execution: PartitionedExecution,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum WorldConfigurationWire {
     Legacy(LegacyWorldConfigurationWire),
     FullEarth(FullEarthWorldConfigurationWire),
+    ProvisionalFullEarth(ProvisionalFullEarthWorldConfigurationWire),
 }
 
 impl<'de> Deserialize<'de> for WorldConfiguration {
@@ -288,14 +431,16 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
     where
         D: Deserializer<'de>,
     {
-        Ok(match WorldConfigurationWire::deserialize(deserializer)? {
+        let configuration = match WorldConfigurationWire::deserialize(deserializer)? {
             WorldConfigurationWire::Legacy(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
                 tick_duration_seconds: wire.tick_duration_seconds,
                 geometry: WorldGeometry::BoundedRaster {
                     spatial_grid: wire.spatial_grid,
                 },
-                world_data: wire.world_data,
+                input: WorldInputReference::ScientificallyAdmitted {
+                    world_data: wire.world_data,
+                },
                 execution: ExecutionScale::SingleTransition {
                     max_events_per_transition: wire.max_events_per_transition,
                 },
@@ -306,12 +451,29 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 geometry: WorldGeometry::FullEarth {
                     full_earth_grid: wire.full_earth_grid,
                 },
-                world_data: wire.world_data,
+                input: WorldInputReference::ScientificallyAdmitted {
+                    world_data: wire.world_data,
+                },
                 execution: ExecutionScale::Partitioned {
                     partitioned_execution: wire.partitioned_execution,
                 },
             },
-        })
+            WorldConfigurationWire::ProvisionalFullEarth(wire) => Self {
+                configuration_schema_version: wire.configuration_schema_version,
+                tick_duration_seconds: wire.tick_duration_seconds,
+                geometry: WorldGeometry::FullEarth {
+                    full_earth_grid: wire.full_earth_grid,
+                },
+                input: WorldInputReference::ProvisionalExecution {
+                    provisional_world_composition: wire.provisional_world_composition,
+                },
+                execution: ExecutionScale::Partitioned {
+                    partitioned_execution: wire.partitioned_execution,
+                },
+            },
+        };
+        configuration.validate().map_err(serde::de::Error::custom)?;
+        Ok(configuration)
     }
 }
 
@@ -327,7 +489,7 @@ impl WorldConfiguration {
             configuration_schema_version: LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION,
             tick_duration_seconds,
             geometry: WorldGeometry::BoundedRaster { spatial_grid },
-            world_data,
+            input: WorldInputReference::ScientificallyAdmitted { world_data },
             execution: ExecutionScale::SingleTransition {
                 max_events_per_transition,
             },
@@ -359,7 +521,30 @@ impl WorldConfiguration {
             configuration_schema_version: WORLD_CONFIGURATION_SCHEMA_VERSION,
             tick_duration_seconds,
             geometry: WorldGeometry::FullEarth { full_earth_grid },
-            world_data,
+            input: WorldInputReference::ScientificallyAdmitted { world_data },
+            execution: ExecutionScale::Partitioned {
+                partitioned_execution,
+            },
+        };
+        configuration.validate()?;
+        Ok(configuration)
+    }
+
+    /// Construct a schema-v3 full-Earth execution proof over explicitly provisional
+    /// composition inputs. This never converts those inputs into an admitted bundle.
+    pub fn new_provisional_full_earth(
+        tick_duration_seconds: u32,
+        full_earth_grid: FullEarthGrid,
+        provisional_world_composition: ProvisionalWorldCompositionReference,
+        partitioned_execution: PartitionedExecution,
+    ) -> Result<Self, WorldConfigurationError> {
+        let configuration = Self {
+            configuration_schema_version: PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION,
+            tick_duration_seconds,
+            geometry: WorldGeometry::FullEarth { full_earth_grid },
+            input: WorldInputReference::ProvisionalExecution {
+                provisional_world_composition,
+            },
             execution: ExecutionScale::Partitioned {
                 partitioned_execution,
             },
@@ -374,18 +559,17 @@ impl WorldConfiguration {
         {
             return Err(WorldConfigurationError::InvalidTickDuration);
         }
-        self.world_data.validate()?;
+        self.input.validate()?;
 
-        match (&self.geometry, &self.execution) {
+        match (&self.geometry, &self.input, &self.execution) {
             (
                 WorldGeometry::BoundedRaster { spatial_grid },
+                WorldInputReference::ScientificallyAdmitted { world_data },
                 ExecutionScale::SingleTransition {
                     max_events_per_transition,
                 },
             ) if self.configuration_schema_version == LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION => {
-                if self.world_data.bundle_schema_version
-                    != LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION
-                {
+                if world_data.bundle_schema_version != LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION {
                     return Err(WorldConfigurationError::BundleSchemaMismatch);
                 }
                 spatial_grid.validate()?;
@@ -395,13 +579,26 @@ impl WorldConfiguration {
             }
             (
                 WorldGeometry::FullEarth { full_earth_grid },
+                WorldInputReference::ScientificallyAdmitted { world_data },
                 ExecutionScale::Partitioned {
                     partitioned_execution,
                 },
             ) if self.configuration_schema_version == WORLD_CONFIGURATION_SCHEMA_VERSION => {
-                if self.world_data.bundle_schema_version != WORLD_CONFIGURATION_SCHEMA_VERSION {
+                if world_data.bundle_schema_version != WORLD_CONFIGURATION_SCHEMA_VERSION {
                     return Err(WorldConfigurationError::BundleSchemaMismatch);
                 }
+                full_earth_grid.validate()?;
+                partitioned_execution.validate(full_earth_grid)?;
+            }
+            (
+                WorldGeometry::FullEarth { full_earth_grid },
+                WorldInputReference::ProvisionalExecution { .. },
+                ExecutionScale::Partitioned {
+                    partitioned_execution,
+                },
+            ) if self.configuration_schema_version
+                == PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION =>
+            {
                 full_earth_grid.validate()?;
                 partitioned_execution.validate(full_earth_grid)?;
             }
@@ -428,6 +625,25 @@ impl WorldConfiguration {
             WorldGeometry::BoundedRaster { .. } => None,
             WorldGeometry::FullEarth { full_earth_grid } => Some(full_earth_grid),
         }
+    }
+
+    /// Admitted normalized bundle input, absent for a provisional execution proof.
+    #[must_use]
+    pub const fn world_data(&self) -> Option<&WorldDataBundleReference> {
+        self.input.world_data()
+    }
+
+    /// Provisional composition input, absent for admitted and legacy configurations.
+    #[must_use]
+    pub const fn provisional_world_composition(
+        &self,
+    ) -> Option<&ProvisionalWorldCompositionReference> {
+        self.input.provisional_world_composition()
+    }
+
+    #[must_use]
+    pub const fn is_provisional_execution(&self) -> bool {
+        matches!(self.input, WorldInputReference::ProvisionalExecution { .. })
     }
 
     /// Durable partition semantics for a full-Earth configuration. Operational
@@ -466,6 +682,18 @@ fn is_https_url(value: &str) -> bool {
     value.starts_with("https://") && value.len() > "https://".len()
 }
 
+fn is_semantic_version(value: &str) -> bool {
+    let mut parts = value.split('.');
+    let valid = (0..3).all(|_| {
+        parts.next().is_some_and(|part| {
+            !part.is_empty()
+                && (part == "0" || !part.starts_with('0'))
+                && part.bytes().all(|byte| byte.is_ascii_digit())
+        })
+    });
+    valid && parts.next().is_none()
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum WorldConfigurationError {
     #[error("world-data bundle schema version must be greater than zero")]
@@ -480,6 +708,14 @@ pub enum WorldConfigurationError {
     NonHttpsBundleUrl,
     #[error("world-data bundle license expression is required")]
     MissingLicenseExpression,
+    #[error("provisional composition schema version must be greater than zero")]
+    ZeroCompositionSchemaVersion,
+    #[error("provisional composition identifier must be a lowercase ASCII slug")]
+    InvalidCompositionId,
+    #[error("provisional composition version must be a canonical major.minor.patch version")]
+    InvalidCompositionVersion,
+    #[error("provisional composition content hash must not be zero")]
+    ZeroCompositionHash,
     #[error("spatial grid EPSG code must be greater than zero")]
     ZeroEpsgCode,
     #[error("spatial grid cell size, width, and height must be greater than zero")]
@@ -569,6 +805,16 @@ mod tests {
         }
     }
 
+    fn provisional_composition() -> ProvisionalWorldCompositionReference {
+        ProvisionalWorldCompositionReference::new(
+            1,
+            "full-earth-breadth-first",
+            "0.1.0",
+            Digest::from_bytes([9; 32]),
+        )
+        .expect("valid provisional composition reference")
+    }
+
     #[test]
     fn legacy_configuration_keeps_its_published_json_shape() {
         let configuration =
@@ -632,8 +878,134 @@ mod tests {
         assert!(encoded.contains("\"pause_at_committed_boundary\""));
         assert!(!encoded.contains("spatial_grid"));
         assert_eq!(
+            encoded,
+            format!(
+                concat!(
+                    "{{\"configuration_schema_version\":2,\"tick_duration_seconds\":300,",
+                    "\"full_earth_grid\":{{\"physics_crs_epsg\":4978,",
+                    "\"catalog_crs_epsg\":4979,\"vertical_crs_epsg\":3855,",
+                    "\"s2_definition_url\":",
+                    "\"https://s2geometry.io/devguide/s2cell_hierarchy\",",
+                    "\"s2_library_revision\":\"0123456789abcdef\",",
+                    "\"s2_definition_hash\":\"{}\",",
+                    "\"s2_projection\":\"quadratic\",\"levels\":{{",
+                    "\"planetary_aggregate\":10,\"regional_ecology\":14,",
+                    "\"active_landscape\":18,\"embodied_patch\":23}},",
+                    "\"refinement_policy_version\":1}},\"world_data\":{{",
+                    "\"bundle_schema_version\":2,\"bundle_id\":\"earth-test\",",
+                    "\"bundle_version\":\"0.1.0\",\"content_hash\":",
+                    "\"0707070707070707070707070707070707070707070707070707070707070707\",",
+                    "\"download_url\":",
+                    "\"https://data.atinycivilization.com/earth-test/0.1.0.json\",",
+                    "\"license_expression\":\"CC-BY-4.0\"}},",
+                    "\"partitioned_execution\":{{\"scheduler_schema_version\":1,",
+                    "\"scheduler\":\"deterministic_event_queue\",",
+                    "\"partition_s2_level\":10,",
+                    "\"person_representation\":\"durable_individuals\",",
+                    "\"capacity_exhaustion\":\"pause_at_committed_boundary\",",
+                    "\"max_events_per_partition_transition\":10000}}}}"
+                ),
+                full_earth_grid().s2_definition_hash
+            )
+        );
+        assert_eq!(
             serde_json::from_str::<WorldConfiguration>(&encoded).expect("decodable Earth config"),
             configuration
+        );
+    }
+
+    #[test]
+    fn provisional_full_earth_has_a_distinct_canonical_schema_three_shape() {
+        let configuration = WorldConfiguration::new_provisional_full_earth(
+            300,
+            full_earth_grid(),
+            provisional_composition(),
+            execution(),
+        )
+        .expect("valid provisional full-Earth configuration");
+        assert!(configuration.is_provisional_execution());
+        assert!(configuration.world_data().is_none());
+        assert_eq!(
+            configuration
+                .provisional_world_composition()
+                .map(|reference| reference.composition_id.as_str()),
+            Some("full-earth-breadth-first")
+        );
+
+        let encoded = serde_json::to_string(&configuration)
+            .expect("serializable provisional full-Earth configuration");
+        assert!(encoded.contains("\"configuration_schema_version\":3"));
+        assert!(encoded.contains("\"provisional_world_composition\":"));
+        assert!(encoded.contains("\"content_hash\":\"0909090909090909"));
+        assert!(!encoded.contains("\"world_data\":"));
+        assert_eq!(
+            serde_json::from_str::<WorldConfiguration>(&encoded)
+                .expect("decodable provisional configuration"),
+            configuration
+        );
+
+        let as_value = serde_json::to_value(&configuration).expect("JSON value");
+        let provisional_input = serde_json::from_value::<WorldInputReference>(serde_json::json!({
+            "provisional_world_composition": as_value["provisional_world_composition"]
+        }));
+        assert!(matches!(
+            provisional_input,
+            Ok(WorldInputReference::ProvisionalExecution { .. })
+        ));
+    }
+
+    #[test]
+    fn admitted_and_provisional_inputs_cannot_impersonate_each_other() {
+        let admitted = WorldConfiguration::new_full_earth(
+            300,
+            full_earth_grid(),
+            bundle(WORLD_CONFIGURATION_SCHEMA_VERSION),
+            execution(),
+        )
+        .expect("valid admitted full-Earth configuration");
+        let mut admitted_as_provisional =
+            serde_json::to_value(admitted).expect("admitted JSON value");
+        admitted_as_provisional["configuration_schema_version"] =
+            serde_json::json!(PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION);
+        assert!(serde_json::from_value::<WorldConfiguration>(admitted_as_provisional).is_err());
+
+        let provisional = WorldConfiguration::new_provisional_full_earth(
+            300,
+            full_earth_grid(),
+            provisional_composition(),
+            execution(),
+        )
+        .expect("valid provisional full-Earth configuration");
+        let mut provisional_as_admitted =
+            serde_json::to_value(provisional).expect("provisional JSON value");
+        provisional_as_admitted["configuration_schema_version"] =
+            serde_json::json!(WORLD_CONFIGURATION_SCHEMA_VERSION);
+        assert!(serde_json::from_value::<WorldConfiguration>(provisional_as_admitted).is_err());
+    }
+
+    #[test]
+    fn provisional_reference_rejects_ambiguous_or_unpinned_identity() {
+        assert_eq!(
+            ProvisionalWorldCompositionReference::new(
+                0,
+                "full-earth",
+                "0.1.0",
+                Digest::from_bytes([1; 32]),
+            ),
+            Err(WorldConfigurationError::ZeroCompositionSchemaVersion)
+        );
+        assert_eq!(
+            ProvisionalWorldCompositionReference::new(
+                1,
+                "full-earth",
+                "01.1.0",
+                Digest::from_bytes([1; 32]),
+            ),
+            Err(WorldConfigurationError::InvalidCompositionVersion)
+        );
+        assert_eq!(
+            ProvisionalWorldCompositionReference::new(1, "full-earth", "0.1.0", Digest::ZERO,),
+            Err(WorldConfigurationError::ZeroCompositionHash)
         );
     }
 
@@ -670,7 +1042,10 @@ mod tests {
             execution(),
         )
         .expect("valid full-Earth config");
-        wrong_bundle.world_data.bundle_schema_version = LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION;
+        if let WorldInputReference::ScientificallyAdmitted { world_data } = &mut wrong_bundle.input
+        {
+            world_data.bundle_schema_version = LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION;
+        }
         assert_eq!(
             wrong_bundle.validate(),
             Err(WorldConfigurationError::BundleSchemaMismatch)

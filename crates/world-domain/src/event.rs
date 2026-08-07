@@ -11,6 +11,8 @@ pub const CONFIGURED_EVENT_SCHEMA_VERSION: u16 = 2;
 pub const EVENT_SCHEMA_VERSION: u16 = 3;
 /// Adds durable S2 embodied-patch positions and movement facts for full-Earth worlds.
 pub const EMBODIED_POSITION_EVENT_SCHEMA_VERSION: u16 = 4;
+/// Adds an explicitly non-admitted provisional full-Earth configuration input.
+pub const PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION: u16 = 5;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -256,6 +258,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | CONFIGURED_EVENT_SCHEMA_VERSION
             | EVENT_SCHEMA_VERSION
             | EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+            | PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -291,6 +294,15 @@ fn validate_event_for_schema(
                     embodied_patch: Some(_),
                     ..
                 }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::WorldConfigured { configuration }
+                if configuration.is_provisional_execution()
         )
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
@@ -350,7 +362,9 @@ pub enum EventBatchError {
 mod tests {
     use super::*;
     use crate::{
-        PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading,
+        CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
+        PerceptionChannel, PersonRepresentation, PrimitiveAction, PrimitiveActionKind,
+        PropertyReading, ProvisionalWorldCompositionReference, S2Projection, SchedulerKind,
         SituatedPerception, SpatialGrid, WorldConfiguration, WorldDataBundleReference, WorldSeed,
     };
     use uuid::Uuid;
@@ -386,6 +400,44 @@ mod tests {
             10_000,
         )
         .expect("valid world configuration")
+    }
+
+    fn provisional_configuration() -> WorldConfiguration {
+        WorldConfiguration::new_provisional_full_earth(
+            300,
+            FullEarthGrid {
+                physics_crs_epsg: 4_978,
+                catalog_crs_epsg: 4_979,
+                vertical_crs_epsg: 3_855,
+                s2_definition_url: "https://s2geometry.io/devguide/s2cell_hierarchy".to_owned(),
+                s2_library_revision: "0123456789abcdef".to_owned(),
+                s2_definition_hash: Digest::sha256(b"provisional event S2 fixture"),
+                s2_projection: S2Projection::Quadratic,
+                levels: EarthResolutionLevels {
+                    planetary_aggregate: 10,
+                    regional_ecology: 14,
+                    active_landscape: 18,
+                    embodied_patch: 23,
+                },
+                refinement_policy_version: 1,
+            },
+            ProvisionalWorldCompositionReference::new(
+                1,
+                "event-schema-provisional",
+                "0.1.0",
+                Digest::sha256(b"provisional event composition"),
+            )
+            .expect("valid provisional composition reference"),
+            PartitionedExecution {
+                scheduler_schema_version: 1,
+                scheduler: SchedulerKind::DeterministicEventQueue,
+                partition_s2_level: 10,
+                person_representation: PersonRepresentation::DurableIndividuals,
+                capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+                max_events_per_partition_transition: 10_000,
+            },
+        )
+        .expect("valid provisional world configuration")
     }
 
     #[test]
@@ -557,5 +609,63 @@ mod tests {
             )
             .is_ok()
         );
+    }
+
+    #[test]
+    fn provisional_configuration_requires_event_schema_five() {
+        let manifest = manifest();
+        let event = DomainEvent::WorldConfigured {
+            configuration: provisional_configuration(),
+        };
+        for older_schema in [
+            LEGACY_EVENT_SCHEMA_VERSION,
+            CONFIGURED_EVENT_SCHEMA_VERSION,
+            EVENT_SCHEMA_VERSION,
+            EMBODIED_POSITION_EVENT_SCHEMA_VERSION,
+        ] {
+            assert!(matches!(
+                EventBatch::new(
+                    older_schema,
+                    manifest.world_id,
+                    EventSequence::new(1),
+                    SimTick::ZERO,
+                    manifest.ruleset_version,
+                    Digest::ZERO,
+                    vec![event.clone()],
+                    Digest::sha256(b"provisional post-state"),
+                ),
+                Err(EventBatchError::EventRequiresNewerSchema)
+            ));
+        }
+
+        let batch = EventBatch::new(
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            manifest.ruleset_version,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"provisional post-state"),
+        );
+        assert!(matches!(batch, Ok(value) if value.verify_integrity().is_ok()));
+    }
+
+    #[test]
+    fn schema_five_remains_forward_compatible_with_admitted_events() {
+        let manifest = manifest();
+        let batch = EventBatch::new(
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            manifest.ruleset_version,
+            Digest::ZERO,
+            vec![DomainEvent::WorldConfigured {
+                configuration: configuration(),
+            }],
+            Digest::sha256(b"admitted post-state"),
+        );
+        assert!(matches!(batch, Ok(value) if value.verify_integrity().is_ok()));
     }
 }

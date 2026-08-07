@@ -12,7 +12,8 @@ use sha2::{Digest as _, Sha256};
 use world_data::{
     BundleArtifact, BundleArtifactKind, DataLayerStorage, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PackedBooleanFieldTile, PackedScalarFieldTile, PackedScalarTerrainTile, SourceSnapshotArtifact,
+    PackedBooleanFieldTile, PackedScalarFieldTile, PackedScalarTerrainTile,
+    ProvisionalArtifactReference, ProvisionalWorldComposition, SourceSnapshotArtifact,
     SourceSnapshotManifest, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, TileTreeReference,
     WorldDataBundle,
 };
@@ -185,6 +186,98 @@ fn verify_source_artifact(
         .expected_artifact()
         .verify_observation(actual_length, actual_digest)
         .with_context(|| format!("source artifact {:?} is invalid", artifact.artifact_path))
+}
+
+/// Load and validate an exact canonical provisional-world composition.
+pub fn load_provisional_world_composition(path: &Path) -> Result<ProvisionalWorldComposition> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("failed to read provisional composition {}", path.display()))?;
+    ProvisionalWorldComposition::from_canonical_slice(&bytes)
+        .with_context(|| format!("provisional composition {} is invalid", path.display()))
+}
+
+/// Verify every artifact referenced by an already-loaded provisional-world composition.
+///
+/// Verification is local and streaming. Every path component beneath `artifact_root` must be a
+/// real directory or file rather than a symbolic link, and every file must exactly match its
+/// declared byte length and SHA-256 digest.
+pub fn verify_provisional_world_artifacts(
+    composition: &ProvisionalWorldComposition,
+    artifact_root: &Path,
+) -> Result<VerificationStats> {
+    composition
+        .validate()
+        .context("provisional composition is invalid")?;
+    let artifact_root = SafeArtifactRoot::new(artifact_root).with_context(|| {
+        format!(
+            "failed to resolve provisional artifact root {}",
+            artifact_root.display()
+        )
+    })?;
+    let releases = composition
+        .earth_layers
+        .iter()
+        .map(|layer| &layer.release)
+        .chain(
+            composition
+                .world_components
+                .iter()
+                .map(|component| &component.release),
+        );
+    let mut stats = VerificationStats::default();
+    for release in releases {
+        verify_provisional_artifact(&artifact_root, release)?;
+        stats.add_artifact(release.byte_length)?;
+    }
+    Ok(stats)
+}
+
+fn verify_provisional_artifact(
+    artifact_root: &SafeArtifactRoot,
+    release: &ProvisionalArtifactReference,
+) -> Result<()> {
+    let path = artifact_root
+        .resolve_file(&release.artifact_path)
+        .with_context(|| {
+            format!(
+                "resolve provisional artifact {}",
+                artifact_root
+                    .canonical_root
+                    .join(&release.artifact_path)
+                    .display()
+            )
+        })?;
+    let mut file = fs::File::open(&path)
+        .with_context(|| format!("verify provisional artifact {}", path.display()))?;
+    let mut hasher = Sha256::new();
+    let mut actual_length = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file
+            .read(&mut buffer)
+            .with_context(|| format!("verify provisional artifact {}", path.display()))?;
+        if count == 0 {
+            break;
+        }
+        actual_length = actual_length
+            .checked_add(u64::try_from(count).context("provisional read length overflow")?)
+            .context("provisional artifact byte count overflow")?;
+        if actual_length > release.byte_length {
+            bail!(
+                "provisional artifact differs from its composition reference: {}",
+                path.display()
+            );
+        }
+        hasher.update(&buffer[..count]);
+    }
+    let actual_hash = Digest::from_bytes(hasher.finalize().into());
+    if actual_length != release.byte_length || actual_hash != release.content_hash {
+        bail!(
+            "provisional artifact differs from its composition reference: {}",
+            path.display()
+        );
+    }
+    Ok(())
 }
 
 /// Verify every retained source, bounded raster, tile index, and tile under `artifact_root`.
@@ -475,10 +568,107 @@ mod tests {
 
     use super::*;
     use world_data::{
+        DataLayerKind, PROVISIONAL_WORLD_COMPOSITION_SCHEMA_VERSION,
+        ProvisionalEarthLayerReference, ProvisionalWorldComponentKind,
+        ProvisionalWorldComponentReference, ProvisionalWorldCompositionStatus,
         SourceSnapshotArtifact, SourceSnapshotArtifactRole, TILE_TREE_INDEX_SCHEMA_VERSION,
         TileArtifactReference, TileTreeEntryKind,
     };
-    use world_domain::Digest;
+    use world_domain::{Digest, EarthResolutionLevels, FullEarthGrid, S2Projection};
+
+    fn temporary_root(label: &str) -> PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("system clock after epoch")
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "a-tiny-civilization-{label}-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).expect("create test root");
+        root
+    }
+
+    fn provisional_composition(root: &Path) -> ProvisionalWorldComposition {
+        let artifact_directory = root.join("provisional");
+        fs::create_dir(&artifact_directory).expect("create provisional fixture directory");
+        let release = |artifact_id: String, index: u8| {
+            let bytes = vec![index; usize::from(index) + 3];
+            let artifact_path = format!("provisional/{artifact_id}.bin");
+            fs::write(root.join(&artifact_path), &bytes).expect("write provisional fixture");
+            ProvisionalArtifactReference {
+                artifact_id,
+                artifact_path,
+                media_type: "application/octet-stream".to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len()).expect("fixture length fits u64"),
+                license_expression: "CC-BY-4.0".to_owned(),
+                scientific_scope: "Filesystem verification fixture.".to_owned(),
+                limitations: vec!["Not scientifically admitted.".to_owned()],
+            }
+        };
+        let earth_layers = [
+            DataLayerKind::Bathymetry,
+            DataLayerKind::Climate,
+            DataLayerKind::Coastline,
+            DataLayerKind::Elevation,
+            DataLayerKind::Habitat,
+            DataLayerKind::Hydrography,
+            DataLayerKind::Soil,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| ProvisionalEarthLayerReference {
+            kind,
+            release: release(
+                format!("earth-layer-{index}"),
+                u8::try_from(index + 1).expect("earth fixture index fits u8"),
+            ),
+        })
+        .collect();
+        let world_components = [
+            ProvisionalWorldComponentKind::CelestialEphemeris,
+            ProvisionalWorldComponentKind::FaunaCatalog,
+            ProvisionalWorldComponentKind::FaunaTraitEvidence,
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(index, kind)| ProvisionalWorldComponentReference {
+            kind,
+            release: release(
+                format!("world-component-{index}"),
+                u8::try_from(index + 20).expect("world fixture index fits u8"),
+            ),
+        })
+        .collect();
+        ProvisionalWorldComposition {
+            composition_schema_version: PROVISIONAL_WORLD_COMPOSITION_SCHEMA_VERSION,
+            composition_id: "filesystem-verification-fixture".to_owned(),
+            composition_version: "0.1.0".to_owned(),
+            status: ProvisionalWorldCompositionStatus::ProvisionalNotScientificallyAdmitted,
+            full_earth_grid: FullEarthGrid {
+                physics_crs_epsg: 4_978,
+                catalog_crs_epsg: 4_979,
+                vertical_crs_epsg: 3_855,
+                s2_definition_url: "https://s2geometry.io/devguide/s2cell_hierarchy".to_owned(),
+                s2_library_revision: "0123456789abcdef".to_owned(),
+                s2_definition_hash: Digest::sha256(b"filesystem provisional S2 fixture"),
+                s2_projection: S2Projection::Quadratic,
+                levels: EarthResolutionLevels {
+                    planetary_aggregate: 10,
+                    regional_ecology: 14,
+                    active_landscape: 18,
+                    embodied_patch: 23,
+                },
+                refinement_policy_version: 1,
+            },
+            earth_layers,
+            world_components,
+            coupled_validation_gaps: vec!["Fixture validation is incomplete.".to_owned()],
+        }
+    }
 
     fn artifact(path: &str, media_type: &str, bytes: &[u8]) -> TileArtifactReference {
         TileArtifactReference {
@@ -617,6 +807,113 @@ mod tests {
         fs::write(root.join("source.bin"), oversized).expect("write oversized tamper");
         assert!(verify_source_snapshot_artifact(&artifact, &root).is_err());
         fs::remove_dir_all(root).expect("remove source snapshot fixture root");
+    }
+
+    #[test]
+    fn provisional_composition_loads_canonical_bytes_and_verifies_every_artifact() {
+        let root = temporary_root("provisional-load");
+        let composition = provisional_composition(&root);
+        let composition_path = root.join("composition.json");
+        fs::write(
+            &composition_path,
+            composition
+                .canonical_bytes()
+                .expect("canonical provisional composition"),
+        )
+        .expect("write provisional composition");
+
+        let loaded = load_provisional_world_composition(&composition_path)
+            .expect("load canonical provisional composition");
+        assert_eq!(loaded, composition);
+        let stats = verify_provisional_world_artifacts(&loaded, &root)
+            .expect("verify provisional artifacts");
+        assert_eq!(stats.artifacts, 10);
+        assert_eq!(
+            stats.bytes,
+            loaded
+                .earth_layers
+                .iter()
+                .map(|layer| layer.release.byte_length)
+                .chain(
+                    loaded
+                        .world_components
+                        .iter()
+                        .map(|component| component.release.byte_length)
+                )
+                .sum::<u64>()
+        );
+
+        let mut noncanonical = composition
+            .canonical_bytes()
+            .expect("canonical provisional composition");
+        noncanonical.push(b'\n');
+        fs::write(&composition_path, noncanonical).expect("write noncanonical composition");
+        assert!(load_provisional_world_composition(&composition_path).is_err());
+
+        fs::remove_dir_all(root).expect("remove provisional fixture root");
+    }
+
+    #[test]
+    fn provisional_verification_rejects_hash_and_length_tampering() {
+        let root = temporary_root("provisional-tamper");
+        let composition = provisional_composition(&root);
+        let artifact = &composition.earth_layers[0].release;
+        let path = root.join(&artifact.artifact_path);
+        let original = fs::read(&path).expect("read provisional fixture");
+
+        let mut same_length_tamper = original.clone();
+        same_length_tamper[0] ^= 1;
+        fs::write(&path, same_length_tamper).expect("write same-length tamper");
+        assert!(verify_provisional_world_artifacts(&composition, &root).is_err());
+
+        let mut length_tamper = original;
+        length_tamper.push(0);
+        fs::write(&path, length_tamper).expect("write length tamper");
+        assert!(verify_provisional_world_artifacts(&composition, &root).is_err());
+
+        fs::remove_dir_all(root).expect("remove provisional tamper root");
+    }
+
+    #[test]
+    fn provisional_verification_rejects_nonportable_paths_before_filesystem_access() {
+        let root = temporary_root("provisional-path");
+        let mut composition = provisional_composition(&root);
+        composition.earth_layers[0].release.artifact_path = "../outside.bin".to_owned();
+        let error = verify_provisional_world_artifacts(&composition, &root)
+            .expect_err("parent path must fail closed");
+        assert!(format!("{error:#}").contains("provisional composition is invalid"));
+        fs::remove_dir_all(root).expect("remove provisional path root");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn provisional_verification_rejects_symlink_leaves_and_parents() {
+        use std::os::unix::fs::symlink;
+
+        let root = temporary_root("provisional-symlink");
+        let outside = temporary_root("provisional-symlink-outside");
+        let composition = provisional_composition(&root);
+        let leaf = &composition.earth_layers[0].release;
+        let leaf_path = root.join(&leaf.artifact_path);
+        let outside_leaf = outside.join("outside.bin");
+        fs::write(
+            &outside_leaf,
+            fs::read(&leaf_path).expect("read leaf fixture"),
+        )
+        .expect("write outside leaf fixture");
+        fs::remove_file(&leaf_path).expect("remove original leaf fixture");
+        symlink(&outside_leaf, &leaf_path).expect("create leaf symlink");
+        assert!(verify_provisional_world_artifacts(&composition, &root).is_err());
+
+        fs::remove_file(&leaf_path).expect("remove leaf symlink");
+        let parent = root.join("provisional");
+        let moved_parent = outside.join("provisional");
+        fs::rename(&parent, &moved_parent).expect("move fixture directory outside root");
+        symlink(&moved_parent, &parent).expect("create parent symlink");
+        assert!(verify_provisional_world_artifacts(&composition, &root).is_err());
+
+        fs::remove_dir_all(root).expect("remove provisional symlink root");
+        fs::remove_dir_all(outside).expect("remove outside provisional root");
     }
 
     #[test]
