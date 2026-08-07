@@ -68,12 +68,16 @@ def load_gbif_names(path: Path) -> dict[str, list[int]]:
             raise ValueError("GBIF Animalia catalog is empty")
         for _ in range(count):
             key = struct.unpack("<Q", read_exact(stream, 8))[0]
+            read_string(stream)  # Authored scientific name, not comparable to iNaturalist's canonical form.
             name = read_string(stream)
-            for _ in range(6):
+            for _ in range(5):
                 read_string(stream)
-            if key == 0 or not name:
-                raise ValueError("GBIF Animalia catalog contains an invalid accepted species")
-            names.setdefault(name, []).append(key)
+            if key == 0:
+                raise ValueError("GBIF Animalia catalog contains a zero accepted-species key")
+            # A rare accepted record can lack a canonical form. It cannot participate
+            # in this exact-name bridge, but must not invalidate the source catalog.
+            if name:
+                names.setdefault(name, []).append(key)
         if stream.read(1):
             raise ValueError("GBIF Animalia catalog contains trailing bytes")
     return names
@@ -170,7 +174,7 @@ def main() -> int:
         raise ValueError("unique GBIF name matching produced duplicate accepted taxa")
     document = {
         "crosswalk_schema_version": 1,
-        "method": "unique-byte-exact-scientific-name-match-at-species-rank",
+        "method": "unique-byte-exact-canonical-species-name-match",
         "gbif_catalog_sha256": sha256(args.gbif_catalog),
         "inaturalist_release": VERSION,
         "inaturalist_taxonomy_sha256": sha256(source / "taxonomy.csv"),

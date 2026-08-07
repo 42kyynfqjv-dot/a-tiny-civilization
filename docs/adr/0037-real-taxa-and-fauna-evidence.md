@@ -91,11 +91,14 @@ with `--download-packages`; neither operation admits the maps to canonical genes
 against their release metadata and taxonomy crosswalk before a range normalizer can
 consume them.
 `scripts/derive-inaturalist-gbif-range-crosswalk.py` then permits only a unique,
-byte-exact species-name bridge from an iNaturalist mapped taxon to an accepted GBIF
-taxon. The first retained releases yield 598 such bridges out of 58,832 range features;
-all remaining records remain unresolved until a separately pinned authoritative
-taxonomic crosswalk is available. This is intentionally a limitation, not an excuse to
-invent identifier mappings.
+byte-exact canonical-species-name bridge from an iNaturalist mapped taxon to an
+accepted GBIF taxon. It compares canonical names, never authorship-bearing display
+names, synonyms, ranks, or fuzzy matches. Any remaining records stay unresolved until
+a separately pinned authoritative taxonomic crosswalk is available. This is
+intentionally a limitation, not an excuse to invent identifier mappings.
+For the retained GBIF 2023-08-28 and iNaturalist v2.20 releases, this deterministic
+method links 47,353 species-range records; 4,641 species names and 6,838 non-species
+range records remain outside the bridge.
 
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
