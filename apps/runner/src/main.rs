@@ -31,8 +31,9 @@ use world_data_filesystem::{
 };
 use world_domain::{
     BirthCategory, CapacityExhaustionPolicy, CelestialState, EntityId, OrganismRole,
-    PartitionedExecution, PersonRepresentation, S2CellId, SchedulerKind, SpeciesIdentity,
-    TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
+    PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline, S2CellId,
+    SchedulerKind, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId,
+    WorldManifest, WorldSeed, WorldStatus,
 };
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
@@ -530,19 +531,31 @@ async fn init_provisional_full_earth_world(
     let composition_reference = composition
         .execution_reference()
         .context("construct provisional execution reference")?;
-    let configuration = WorldConfiguration::new_provisional_full_earth(
-        tick_duration_seconds,
-        composition.full_earth_grid,
-        composition_reference.clone(),
-        PartitionedExecution {
-            scheduler_schema_version: 1,
-            scheduler: SchedulerKind::DeterministicEventQueue,
-            partition_s2_level: partition_level,
-            person_representation: PersonRepresentation::DurableIndividuals,
-            capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
-            max_events_per_partition_transition,
-        },
-    )
+    let execution = PartitionedExecution {
+        scheduler_schema_version: 1,
+        scheduler: SchedulerKind::DeterministicEventQueue,
+        partition_s2_level: partition_level,
+        person_representation: PersonRepresentation::DurableIndividuals,
+        capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+        max_events_per_partition_transition,
+    };
+    let configuration = match origin_environment.as_ref() {
+        Some(environment) => {
+            WorldConfiguration::new_provisional_full_earth_with_environment_baseline(
+                tick_duration_seconds,
+                composition.full_earth_grid.clone(),
+                composition_reference.clone(),
+                execution,
+                environment.baseline.clone(),
+            )
+        }
+        None => WorldConfiguration::new_provisional_full_earth(
+            tick_duration_seconds,
+            composition.full_earth_grid.clone(),
+            composition_reference.clone(),
+            execution,
+        ),
+    }
     .context("construct provisional full-Earth execution configuration")?;
 
     let mut manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
@@ -643,6 +656,7 @@ struct ResolvedInitialOrigin {
 
 struct VerifiedProvisionalOriginEnvironment {
     digest: world_domain::Digest,
+    baseline: ProvisionalLocalEnvironmentBaseline,
 }
 
 fn load_provisional_origin_environment(
@@ -672,6 +686,41 @@ fn load_provisional_origin_environment(
     }
     Ok(Some(VerifiedProvisionalOriginEnvironment {
         digest: world_domain::Digest::sha256(&bytes),
+        baseline: ProvisionalLocalEnvironmentBaseline {
+            status: "provisional-evidence-only".to_owned(),
+            source_evidence_digest: world_domain::Digest::sha256(&bytes),
+            evidence_patch: environment.selected_l10_patch,
+            active_patch: environment.selected_embodied_patch,
+            air_temperature_unit: environment.air_temperature_normal_unit,
+            air_temperature_decimal_places: environment.air_temperature_normal_decimal_places,
+            air_temperature_normal_minimum: environment
+                .air_temperature_normal
+                .minimum_values
+                .try_into()
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "origin environment must contain twelve minimum temperature phases"
+                    )
+                })?,
+            air_temperature_normal_mean: environment
+                .air_temperature_normal
+                .mean_values
+                .try_into()
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "origin environment must contain twelve mean temperature phases"
+                    )
+                })?,
+            air_temperature_normal_maximum: environment
+                .air_temperature_normal
+                .maximum_values
+                .try_into()
+                .map_err(|_| {
+                    anyhow::anyhow!(
+                        "origin environment must contain twelve maximum temperature phases"
+                    )
+                })?,
+        },
     }))
 }
 

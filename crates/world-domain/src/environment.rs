@@ -22,9 +22,9 @@ pub struct ProvisionalLocalEnvironmentBaseline {
     pub active_patch: S2CellId,
     pub air_temperature_unit: String,
     pub air_temperature_decimal_places: u8,
-    pub air_temperature_normal_minimum: [i32; NORMAL_YEAR_PHASE_COUNT],
-    pub air_temperature_normal_mean: [i32; NORMAL_YEAR_PHASE_COUNT],
-    pub air_temperature_normal_maximum: [i32; NORMAL_YEAR_PHASE_COUNT],
+    pub air_temperature_normal_minimum: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub air_temperature_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub air_temperature_normal_maximum: [i64; NORMAL_YEAR_PHASE_COUNT],
 }
 
 impl ProvisionalLocalEnvironmentBaseline {
@@ -52,7 +52,7 @@ impl ProvisionalLocalEnvironmentBaseline {
         Ok(())
     }
 
-    pub fn mean_at_normal_phase(&self, phase: usize) -> Result<i32, LocalEnvironmentError> {
+    pub fn mean_at_normal_phase(&self, phase: usize) -> Result<i64, LocalEnvironmentError> {
         self.validate()?;
         self.air_temperature_normal_mean
             .get(phase)
