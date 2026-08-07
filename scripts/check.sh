@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+export PYTHONDONTWRITEBYTECODE=1
+
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$project_root"
 
@@ -13,6 +15,9 @@ python3 ./scripts/verify-s2-routing.py
 python3 ./scripts/verify-geographic-s2-routing.py
 python3 ./scripts/verify-era5-request.py
 python3 ./scripts/verify-era5-provenance-tools.py
+python3 ./scripts/acquire-cds-land-cover.py \
+  --output-directory data/source-cache/copernicus-land-cover-2022 --dry-run >/dev/null
+python3 ./scripts/verify-cds-land-cover-tools.py
 ./scripts/check-boundaries.sh
 ./scripts/verify-demo.sh
 
