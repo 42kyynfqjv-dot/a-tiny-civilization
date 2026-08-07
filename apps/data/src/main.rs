@@ -13,6 +13,9 @@ use netcdf_reader::{NcAttrValue, NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
 use rayon::prelude::*;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
+use tiff::decoder::{
+    ChunkType as TiffChunkType, Decoder as TiffDecoder, DecodingResult as TiffDecodingResult,
+};
 use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, LandCoverClassCount, LandCoverEvidenceCell,
     LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
@@ -291,6 +294,13 @@ enum InspectCommand {
         target_s2_level: u8,
         #[arg(long, default_value_t = 32)]
         points_per_axis: u8,
+    },
+    /// Inspect every retained SoilGrids topsoil overview without decoding a whole raster.
+    SoilgridsTopsoil {
+        /// Directory containing the nine property subdirectories acquired by the
+        /// SoilGrids breadth-first acquisition script.
+        #[arg(long)]
+        input_directory: PathBuf,
     },
 }
 
@@ -598,6 +608,9 @@ async fn main() -> Result<()> {
                 target_s2_level,
                 points_per_axis,
             ),
+            InspectCommand::SoilgridsTopsoil { input_directory } => {
+                inspect_soilgrids_topsoil(&input_directory)
+            }
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -696,6 +709,276 @@ async fn main() -> Result<()> {
                 source_chunk_cache,
             }),
         },
+    }
+}
+
+const SOILGRIDS_TOPSOIL_PROPERTIES: [&str; 9] = [
+    "bdod", "cec", "cfvo", "clay", "nitrogen", "phh2o", "sand", "silt", "soc",
+];
+const SOILGRIDS_TOPSOIL_QUANTILES: [&str; 3] = ["Q0.05", "Q0.5", "Q0.95"];
+
+#[derive(Debug, Serialize)]
+struct SoilgridsTopsoilInspection {
+    inspection_schema_version: u16,
+    source: &'static str,
+    release: &'static str,
+    depth: &'static str,
+    artifact_count: usize,
+    byte_length: u64,
+    artifacts: Vec<SoilgridsArtifactInspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsArtifactInspection {
+    property: String,
+    quantile: String,
+    path: String,
+    byte_length: u64,
+    image_directories: Vec<SoilgridsImageDirectoryInspection>,
+}
+
+#[derive(Debug, Serialize, PartialEq, Eq)]
+struct SoilgridsImageDirectoryProfile {
+    width: u32,
+    height: u32,
+    color_type: String,
+    chunk_type: String,
+    chunk_width: u32,
+    chunk_height: u32,
+    chunk_count: u32,
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsImageDirectoryInspection {
+    image_index: usize,
+    #[serde(flatten)]
+    profile: SoilgridsImageDirectoryProfile,
+    sampled_chunks: Vec<SoilgridsChunkInspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsChunkInspection {
+    chunk_index: u32,
+    data_width: u32,
+    data_height: u32,
+    sample_type: &'static str,
+    sample_count: usize,
+    finite_minimum: Option<String>,
+    finite_maximum: Option<String>,
+    non_finite_samples: usize,
+}
+
+fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
+    let mut artifacts =
+        Vec::with_capacity(SOILGRIDS_TOPSOIL_PROPERTIES.len() * SOILGRIDS_TOPSOIL_QUANTILES.len());
+    let mut byte_length = 0_u64;
+
+    for property in SOILGRIDS_TOPSOIL_PROPERTIES {
+        for quantile in SOILGRIDS_TOPSOIL_QUANTILES {
+            let filename = format!("{property}_0-5cm_{quantile}.vrt.ovr");
+            let path = input_directory.join(property).join(&filename);
+            let metadata = fs::metadata(&path).with_context(|| {
+                format!("inspect retained SoilGrids artifact {}", path.display())
+            })?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                bail!(
+                    "SoilGrids artifact is not a nonempty regular file: {}",
+                    path.display()
+                );
+            }
+            byte_length = byte_length
+                .checked_add(metadata.len())
+                .context("SoilGrids retained byte length overflow")?;
+            let file = File::open(&path)
+                .with_context(|| format!("open retained SoilGrids artifact {}", path.display()))?;
+            let mut decoder = TiffDecoder::new(file)
+                .with_context(|| format!("parse SoilGrids BigTIFF header {}", path.display()))?;
+            let mut image_directories = Vec::new();
+
+            loop {
+                let image_index = image_directories.len();
+                let (width, height) = decoder.dimensions().with_context(|| {
+                    format!(
+                        "read SoilGrids image {image_index} dimensions in {}",
+                        path.display()
+                    )
+                })?;
+                let color_type = format!(
+                    "{:?}",
+                    decoder.colortype().with_context(|| {
+                        format!(
+                            "read SoilGrids image {image_index} color type in {}",
+                            path.display()
+                        )
+                    })?
+                );
+                let chunk_kind = decoder.get_chunk_type();
+                let chunk_count = match chunk_kind {
+                    TiffChunkType::Strip => decoder.strip_count(),
+                    TiffChunkType::Tile => decoder.tile_count(),
+                }
+                .with_context(|| {
+                    format!(
+                        "read SoilGrids image {image_index} chunk count in {}",
+                        path.display()
+                    )
+                })?;
+                if chunk_count == 0 {
+                    bail!(
+                        "SoilGrids image {image_index} has no chunks: {}",
+                        path.display()
+                    );
+                }
+                let (chunk_width, chunk_height) = decoder.chunk_dimensions();
+                let profile = SoilgridsImageDirectoryProfile {
+                    width,
+                    height,
+                    color_type,
+                    chunk_type: match chunk_kind {
+                        TiffChunkType::Strip => "strip",
+                        TiffChunkType::Tile => "tile",
+                    }
+                    .to_owned(),
+                    chunk_width,
+                    chunk_height,
+                    chunk_count,
+                };
+
+                let mut sample_indices = vec![0, chunk_count / 2, chunk_count - 1];
+                sample_indices.sort_unstable();
+                sample_indices.dedup();
+                let mut sampled_chunks = Vec::with_capacity(sample_indices.len());
+                for chunk_index in sample_indices {
+                    let (data_width, data_height) = decoder.chunk_data_dimensions(chunk_index);
+                    let decoded = decoder.read_chunk(chunk_index).with_context(|| {
+                        format!(
+                            "decode SoilGrids image {image_index} chunk {chunk_index} in {}",
+                            path.display()
+                        )
+                    })?;
+                    sampled_chunks.push(inspect_soilgrids_chunk(
+                        chunk_index,
+                        data_width,
+                        data_height,
+                        &decoded,
+                    ));
+                }
+                image_directories.push(SoilgridsImageDirectoryInspection {
+                    image_index,
+                    profile,
+                    sampled_chunks,
+                });
+                if !decoder.more_images() {
+                    break;
+                }
+                decoder.next_image().with_context(|| {
+                    format!("advance SoilGrids image directory in {}", path.display())
+                })?;
+            }
+
+            if !image_directories.windows(2).all(|images| {
+                images[1].profile.width <= images[0].profile.width
+                    && images[1].profile.height <= images[0].profile.height
+            }) {
+                bail!(
+                    "SoilGrids overview dimensions do not descend monotonically: {}",
+                    path.display()
+                );
+            }
+
+            artifacts.push(SoilgridsArtifactInspection {
+                property: property.to_owned(),
+                quantile: quantile.to_owned(),
+                path: format!("{property}/{filename}"),
+                byte_length: metadata.len(),
+                image_directories,
+            });
+        }
+    }
+
+    println!(
+        "{}",
+        serde_json::to_string(&SoilgridsTopsoilInspection {
+            inspection_schema_version: 1,
+            source: "ISRIC SoilGrids 2.0 official global VRT overview pyramids",
+            release: "latest (retained source bytes)",
+            depth: "0-5cm",
+            artifact_count: artifacts.len(),
+            byte_length,
+            artifacts,
+        })?
+    );
+    Ok(())
+}
+
+fn inspect_soilgrids_chunk(
+    chunk_index: u32,
+    data_width: u32,
+    data_height: u32,
+    decoded: &TiffDecodingResult,
+) -> SoilgridsChunkInspection {
+    macro_rules! integer_summary {
+        ($values:expr, $sample_type:literal) => {{
+            let minimum = $values.iter().min().map(ToString::to_string);
+            let maximum = $values.iter().max().map(ToString::to_string);
+            ($sample_type, $values.len(), minimum, maximum, 0)
+        }};
+    }
+    macro_rules! float_summary {
+        ($values:expr, $sample_type:literal, $convert:expr) => {{
+            let mut minimum: Option<f64> = None;
+            let mut maximum: Option<f64> = None;
+            let mut non_finite = 0_usize;
+            for value in $values {
+                let value: f64 = $convert(value);
+                if value.is_finite() {
+                    minimum = Some(minimum.map_or(value, |current| current.min(value)));
+                    maximum = Some(maximum.map_or(value, |current| current.max(value)));
+                } else {
+                    non_finite += 1;
+                }
+            }
+            (
+                $sample_type,
+                $values.len(),
+                minimum.map(|value| value.to_string()),
+                maximum.map(|value| value.to_string()),
+                non_finite,
+            )
+        }};
+    }
+
+    let (sample_type, sample_count, finite_minimum, finite_maximum, non_finite_samples) =
+        match decoded {
+            TiffDecodingResult::U8(values) => integer_summary!(values, "u8"),
+            TiffDecodingResult::U16(values) => integer_summary!(values, "u16"),
+            TiffDecodingResult::U32(values) => integer_summary!(values, "u32"),
+            TiffDecodingResult::U64(values) => integer_summary!(values, "u64"),
+            TiffDecodingResult::I8(values) => integer_summary!(values, "i8"),
+            TiffDecodingResult::I16(values) => integer_summary!(values, "i16"),
+            TiffDecodingResult::I32(values) => integer_summary!(values, "i32"),
+            TiffDecodingResult::I64(values) => integer_summary!(values, "i64"),
+            TiffDecodingResult::F16(values) => {
+                let expanded = values
+                    .iter()
+                    .map(|value| f64::from(f32::from(*value)))
+                    .collect::<Vec<_>>();
+                float_summary!(&expanded, "f16", |value: &f64| *value)
+            }
+            TiffDecodingResult::F32(values) => {
+                float_summary!(values, "f32", |value: &f32| f64::from(*value))
+            }
+            TiffDecodingResult::F64(values) => float_summary!(values, "f64", |value: &f64| *value),
+        };
+    SoilgridsChunkInspection {
+        chunk_index,
+        data_width,
+        data_height,
+        sample_type,
+        sample_count,
+        finite_minimum,
+        finite_maximum,
+        non_finite_samples,
     }
 }
 
@@ -6825,6 +7108,29 @@ mod tests {
         assert_eq!(resumed_cells, 24);
         assert_eq!(resumed_lookup.calls, 0);
         fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn soilgrids_chunk_inspection_preserves_integer_sentinel_and_float_finiteness() {
+        let integers =
+            inspect_soilgrids_chunk(7, 2, 2, &TiffDecodingResult::I16(vec![-32_768, 1, 2, 9]));
+        assert_eq!(integers.chunk_index, 7);
+        assert_eq!(integers.sample_type, "i16");
+        assert_eq!(integers.sample_count, 4);
+        assert_eq!(integers.finite_minimum.as_deref(), Some("-32768"));
+        assert_eq!(integers.finite_maximum.as_deref(), Some("9"));
+        assert_eq!(integers.non_finite_samples, 0);
+
+        let floats = inspect_soilgrids_chunk(
+            8,
+            3,
+            1,
+            &TiffDecodingResult::F32(vec![f32::NAN, -1.5, 4.25]),
+        );
+        assert_eq!(floats.sample_type, "f32");
+        assert_eq!(floats.finite_minimum.as_deref(), Some("-1.5"));
+        assert_eq!(floats.finite_maximum.as_deref(), Some("4.25"));
+        assert_eq!(floats.non_finite_samples, 1);
     }
 
     #[test]
