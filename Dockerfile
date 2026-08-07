@@ -1,6 +1,9 @@
 FROM rust:1.97.1-bookworm AS builder
 
-ENV RUSTUP_TOOLCHAIN=stable
+# Keep the build on the compiler already pinned by the base image. `stable` makes
+# rustup contact the network to refresh a moving channel, which turns an otherwise
+# reproducible Docker build into a DNS-dependent deployment step.
+ENV RUSTUP_TOOLCHAIN=1.97.1
 WORKDIR /source
 COPY Cargo.toml Cargo.lock rust-toolchain.toml rustfmt.toml ./
 COPY apps ./apps
