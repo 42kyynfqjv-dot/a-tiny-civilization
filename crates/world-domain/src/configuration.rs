@@ -389,7 +389,7 @@ pub struct WorldConfiguration {
     #[serde(flatten)]
     pub execution: ExecutionScale,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub local_environment_baseline: Option<ProvisionalLocalEnvironmentBaseline>,
+    pub local_environment_baseline: Option<Box<ProvisionalLocalEnvironmentBaseline>>,
 }
 
 #[derive(Deserialize)]
@@ -430,7 +430,7 @@ struct ProvisionalEnvironmentalWorldConfigurationWire {
     full_earth_grid: FullEarthGrid,
     provisional_world_composition: ProvisionalWorldCompositionReference,
     partitioned_execution: PartitionedExecution,
-    local_environment_baseline: ProvisionalLocalEnvironmentBaseline,
+    local_environment_baseline: Box<ProvisionalLocalEnvironmentBaseline>,
 }
 
 #[derive(Deserialize)]
@@ -439,7 +439,7 @@ enum WorldConfigurationWire {
     Legacy(LegacyWorldConfigurationWire),
     FullEarth(FullEarthWorldConfigurationWire),
     ProvisionalFullEarth(ProvisionalFullEarthWorldConfigurationWire),
-    ProvisionalEnvironmental(ProvisionalEnvironmentalWorldConfigurationWire),
+    ProvisionalEnvironmental(Box<ProvisionalEnvironmentalWorldConfigurationWire>),
 }
 
 impl<'de> Deserialize<'de> for WorldConfiguration {
@@ -607,7 +607,7 @@ impl WorldConfiguration {
             execution: ExecutionScale::Partitioned {
                 partitioned_execution,
             },
-            local_environment_baseline: Some(local_environment_baseline),
+            local_environment_baseline: Some(Box::new(local_environment_baseline)),
         };
         configuration.validate()?;
         Ok(configuration)
@@ -735,8 +735,8 @@ impl WorldConfiguration {
     }
 
     #[must_use]
-    pub const fn local_environment_baseline(&self) -> Option<&ProvisionalLocalEnvironmentBaseline> {
-        self.local_environment_baseline.as_ref()
+    pub fn local_environment_baseline(&self) -> Option<&ProvisionalLocalEnvironmentBaseline> {
+        self.local_environment_baseline.as_deref()
     }
 
     /// Durable partition semantics for a full-Earth configuration. Operational
@@ -1086,7 +1086,7 @@ mod tests {
         assert_eq!(
             configuration
                 .local_environment_baseline()
-                .unwrap()
+                .expect("environment baseline")
                 .mean_at_normal_phase(0),
             Ok(2)
         );
