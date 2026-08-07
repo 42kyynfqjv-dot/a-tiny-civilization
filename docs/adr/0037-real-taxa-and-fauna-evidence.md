@@ -120,6 +120,15 @@ candidate-set digest and seed, and validation recomputes the exact ordered subse
 It likewise carries no abundance, demographic, trait, or organism-creation claim; a
 separate ecological population plan must supply those inputs before any fauna exists.
 
+For integration worlds only, `civilization-runner init-provisional-full-earth` can
+consume both canonical artifacts and one explicit, nonzero
+`--fauna-individuals-per-selected-species` value. It rejects partial inputs,
+noncanonical or seed-mismatched selection bytes, and an empty selected set; it commits
+the candidate-set and selection digests to the immutable world manifest. That count is
+called **provisional** throughout the runner: it is a testable execution input, never
+an estimate derived from a modeled range. Scientifically admitted fauna population
+plans remain a later requirement.
+
 `civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
 bridge. It preserves the original artifact hash while decoding EltonTraits' published
 Windows-1252 files and their quoted multiline reference cells, then compares only

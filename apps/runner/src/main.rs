@@ -19,6 +19,7 @@ use serde_json::json;
 use sim_engine::{CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, RULESET_VERSION};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
+use world_data::{FaunaRangeCandidateSet, FaunaSeededSelection};
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
@@ -84,6 +85,20 @@ enum Command {
         /// Exact lowercase 16-hex-character S2 cell at the configured embodied-patch level.
         #[arg(long)]
         initial_patch: S2CellId,
+
+        /// Canonical point-scoped modeled-range candidates. Must be supplied with
+        /// `--fauna-seeded-selection` and `--fauna-individuals-per-selected-species`.
+        #[arg(long)]
+        fauna_range_candidates: Option<PathBuf>,
+
+        /// Canonical seed-derived subset of `--fauna-range-candidates`.
+        #[arg(long)]
+        fauna_seeded_selection: Option<PathBuf>,
+
+        /// Explicit provisional count to initialize for every selected species.
+        /// This is not inferred from modeled-range evidence or treated as abundance.
+        #[arg(long)]
+        fauna_individuals_per_selected_species: Option<u32>,
 
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
@@ -154,6 +169,9 @@ async fn main() -> Result<()> {
             composition,
             artifact_root,
             initial_patch,
+            fauna_range_candidates,
+            fauna_seeded_selection,
+            fauna_individuals_per_selected_species,
             predecessor_world_id,
             tick_duration_seconds,
             max_events_per_partition_transition,
@@ -166,6 +184,9 @@ async fn main() -> Result<()> {
                 &composition,
                 &artifact_root,
                 initial_patch,
+                fauna_range_candidates.as_deref(),
+                fauna_seeded_selection.as_deref(),
+                fauna_individuals_per_selected_species,
                 predecessor_world_id,
                 tick_duration_seconds,
                 max_events_per_partition_transition,
@@ -425,6 +446,9 @@ async fn init_provisional_full_earth_world(
     composition_path: &std::path::Path,
     artifact_root: &std::path::Path,
     initial_patch: S2CellId,
+    fauna_range_candidates_path: Option<&std::path::Path>,
+    fauna_seeded_selection_path: Option<&std::path::Path>,
+    fauna_individuals_per_selected_species: Option<u32>,
     predecessor_world_id: Option<WorldId>,
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
@@ -460,14 +484,14 @@ async fn init_provisional_full_earth_world(
     )
     .context("construct provisional full-Earth execution configuration")?;
 
-    let manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
+    let mut manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
     let species = SpeciesIdentity::new(
         "gbif",
         "2436436",
         "Homo sapiens",
         "https://www.gbif.org/species/2436436",
     )?;
-    let initial_organisms = [
+    let mut initial_organisms = [
         (b"provisional-founder-a".as_slice(), "female"),
         (b"provisional-founder-b".as_slice(), "male"),
     ]
@@ -484,6 +508,25 @@ async fn init_provisional_full_earth_world(
         })
     })
     .collect::<Result<Vec<_>>>()?;
+    let fauna = load_provisional_fauna_initial_organisms(
+        world_id,
+        WorldSeed::new(seed),
+        initial_patch,
+        fauna_range_candidates_path,
+        fauna_seeded_selection_path,
+        fauna_individuals_per_selected_species,
+    )?;
+    if let Some(fauna) = fauna {
+        manifest.scientific_datasets.insert(
+            "inaturalist_fauna_range_candidate_set".to_owned(),
+            fauna.candidate_set_digest.to_string(),
+        );
+        manifest.scientific_datasets.insert(
+            "provisional_fauna_seeded_selection".to_owned(),
+            fauna.selection_digest.to_string(),
+        );
+        initial_organisms.extend(fauna.initial_organisms);
+    }
     let session = initialize_or_resume_configured_world(
         store,
         manifest,
@@ -509,6 +552,87 @@ async fn init_provisional_full_earth_world(
         session.world.cursor.sequence, session.world.cursor.tick, session.world.cursor.state_hash
     );
     Ok(())
+}
+
+struct ProvisionalFaunaGenesis {
+    candidate_set_digest: world_domain::Digest,
+    selection_digest: world_domain::Digest,
+    initial_organisms: Vec<InitialOrganism>,
+}
+
+fn load_provisional_fauna_initial_organisms(
+    world_id: WorldId,
+    world_seed: WorldSeed,
+    initial_patch: S2CellId,
+    candidates_path: Option<&std::path::Path>,
+    selection_path: Option<&std::path::Path>,
+    individuals_per_selected_species: Option<u32>,
+) -> Result<Option<ProvisionalFaunaGenesis>> {
+    let provided = [
+        candidates_path.is_some(),
+        selection_path.is_some(),
+        individuals_per_selected_species.is_some(),
+    ];
+    if provided.iter().all(|provided| !provided) {
+        return Ok(None);
+    }
+    if !provided.iter().all(|provided| *provided) {
+        anyhow::bail!(
+            "provisional fauna genesis requires --fauna-range-candidates, --fauna-seeded-selection, and --fauna-individuals-per-selected-species together"
+        );
+    }
+    let individuals_per_selected_species =
+        individuals_per_selected_species.expect("checked complete provisional fauna arguments");
+    if individuals_per_selected_species == 0 {
+        anyhow::bail!("--fauna-individuals-per-selected-species must be nonzero");
+    }
+    let candidate_bytes = std::fs::read(candidates_path.expect("checked candidate path"))
+        .context("read provisional fauna range candidate set")?;
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes)
+        .context("validate provisional fauna range candidate set")?;
+    let selection_bytes = std::fs::read(selection_path.expect("checked selection path"))
+        .context("read provisional fauna seeded selection")?;
+    let selection =
+        FaunaSeededSelection::from_canonical_slice_against(&selection_bytes, &candidates)
+            .context("validate provisional fauna seeded selection")?;
+    if selection.world_seed != world_seed {
+        anyhow::bail!("provisional fauna selection world seed does not match the world seed");
+    }
+    if selection.selected_candidates.is_empty() {
+        anyhow::bail!("provisional fauna selection must retain at least one candidate");
+    }
+    let candidate_set_digest = world_domain::Digest::sha256(&candidate_bytes);
+    let selection_digest = world_domain::Digest::sha256(&selection_bytes);
+    let capacity = selection
+        .selected_candidates
+        .len()
+        .checked_mul(usize::try_from(individuals_per_selected_species)?)
+        .context("provisional fauna genesis count overflows host capacity")?;
+    let mut initial_organisms = Vec::with_capacity(capacity);
+    for candidate in selection.selected_candidates {
+        for ordinal in 0..individuals_per_selected_species {
+            let identity = format!(
+                "provisional-fauna:{}:{}",
+                candidate.species.identifier, ordinal
+            );
+            initial_organisms.push(InitialOrganism {
+                organism_id: EntityId::deterministic(world_id, identity.as_bytes()),
+                species: candidate.species.clone(),
+                role: OrganismRole::Fauna,
+                // This engine-only category intentionally avoids an unsupported
+                // demographic assertion or explicit observer presentation.
+                birth_category: BirthCategory::new("unspecified")?,
+                initial_age_ticks: 0,
+                location_id: None,
+                embodied_patch: Some(initial_patch),
+            });
+        }
+    }
+    Ok(Some(ProvisionalFaunaGenesis {
+        candidate_set_digest,
+        selection_digest,
+        initial_organisms,
+    }))
 }
 
 async fn serve_memory_worker(
@@ -605,4 +729,110 @@ fn init_tracing() {
         .with(filter)
         .with(tracing_subscriber::fmt::layer().json())
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use world_data::{
+        FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION, FaunaRangeCandidate, FaunaRangeQueryPoint,
+    };
+
+    fn candidate_set() -> FaunaRangeCandidateSet {
+        FaunaRangeCandidateSet {
+            candidate_set_schema_version: FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
+            candidate_set_id: "inaturalist-v2-20-point-test".to_owned(),
+            inaturalist_release: "2.20".to_owned(),
+            query_point: FaunaRangeQueryPoint {
+                latitude_e7: 446_000_000,
+                longitude_e7: -1_105_000_000,
+            },
+            source_crosswalk_digest: world_domain::Digest::sha256(b"crosswalk"),
+            source_gbif_catalog_digest: world_domain::Digest::sha256(b"catalog"),
+            source_inaturalist_taxonomy_digest: world_domain::Digest::sha256(b"taxonomy"),
+            candidates: vec![
+                FaunaRangeCandidate {
+                    species: SpeciesIdentity::new(
+                        "gbif",
+                        "12",
+                        "Canis lupus",
+                        "https://www.gbif.org/species/12",
+                    )
+                    .expect("species"),
+                    inaturalist_taxon_id: 13,
+                    range_package: "mammalia".to_owned(),
+                    range_feature_fid: 14,
+                },
+                FaunaRangeCandidate {
+                    species: SpeciesIdentity::new(
+                        "gbif",
+                        "20",
+                        "Lynx canadensis",
+                        "https://www.gbif.org/species/20",
+                    )
+                    .expect("species"),
+                    inaturalist_taxon_id: 21,
+                    range_package: "mammalia".to_owned(),
+                    range_feature_fid: 22,
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn provisional_fauna_genesis_requires_and_pins_seeded_source_inputs() {
+        let candidates = candidate_set();
+        let seed = WorldSeed::new(7);
+        let selection = candidates
+            .select_seeded_candidates(seed, 2)
+            .expect("selection");
+        let directory = std::env::temp_dir().join(format!("atc-runner-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).expect("test directory");
+        let candidates_path = directory.join("candidates.json");
+        let selection_path = directory.join("selection.json");
+        std::fs::write(
+            &candidates_path,
+            candidates.canonical_bytes().expect("canonical candidates"),
+        )
+        .expect("write candidates");
+        std::fs::write(
+            &selection_path,
+            selection
+                .canonical_bytes_against(&candidates)
+                .expect("canonical selection"),
+        )
+        .expect("write selection");
+        let world_id = WorldId::from_uuid(Uuid::new_v4());
+        let genesis = load_provisional_fauna_initial_organisms(
+            world_id,
+            seed,
+            S2CellId::new(1_u64 << 60).expect("S2 cell"),
+            Some(&candidates_path),
+            Some(&selection_path),
+            Some(2),
+        )
+        .expect("fauna genesis")
+        .expect("provided fauna");
+        assert_eq!(genesis.initial_organisms.len(), 4);
+        assert!(
+            genesis
+                .initial_organisms
+                .iter()
+                .all(|organism| organism.role == OrganismRole::Fauna)
+        );
+        assert_ne!(genesis.candidate_set_digest, world_domain::Digest::ZERO);
+        assert_ne!(genesis.selection_digest, world_domain::Digest::ZERO);
+        assert!(
+            load_provisional_fauna_initial_organisms(
+                world_id,
+                WorldSeed::new(8),
+                S2CellId::new(1_u64 << 60).expect("S2 cell"),
+                Some(&candidates_path),
+                Some(&selection_path),
+                Some(2),
+            )
+            .is_err()
+        );
+        std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
 }
