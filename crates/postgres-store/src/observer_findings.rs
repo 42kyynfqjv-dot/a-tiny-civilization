@@ -141,7 +141,8 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }
                 | DomainEvent::OrganismMoved { .. }
-                | DomainEvent::OrganismAgeAdvanced { .. } => {}
+                | DomainEvent::OrganismAgeAdvanced { .. }
+                | DomainEvent::CelestialStateRecorded { .. } => {}
             }
         }
         for role in [OrganismRole::Person, OrganismRole::Fauna] {

@@ -27,6 +27,8 @@ entries=(
   "data/derived-cache/jrc-global-surface-water-v1-5-2024-occurrence-l6-l10-v1/layers/observed-water-occurrence-source-code/root.index|82d77b6cdfa56109fee93560e60790890b1e276a11d22c067cce01b16024e02f|8257625"
   "data/derived-cache/soilgrids-2-0-topsoil-overviews-l6-l10-v1/layers/soilgrids-topsoil/root.index|4bda39813eb6a6faaf3b286ec3aeea0ad260108e38b626320a4dda878d91db2e|7913541"
   "data/source-inspections/jpl-de441-inventory.json|a253715e23e547d07f2e7be066a3fa437974b54f1c8a78f876f144ff8be22742|1851"
+  "data/source-cache/jpl-de441/de441_part-1.bsp|13757827f5db41b835a24bbd637488636ce79a8ca754062fed17844f7d5b618e|1651119104"
+  "data/source-cache/jpl-de441/de441_part-2.bsp|3abb17dae2d78dd34880377544aacb54892104a0d4462b322cb9f4454d4887f6|1656830976"
   "data/derived-cache/gbif-animalia-2023-08-28-v1.bin|b0597d47bc616b8ed2c18e7ba625a460538e9bac4bbae920f3f016095b966fa0|256508217"
   "data/source-inspections/fauna-traits-v1-inventory.json|b03ce7a3bf08188ba756e256f353f11b6f5d651b652e132a829a60bb844e0499|5640"
 )

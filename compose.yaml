@@ -88,9 +88,8 @@ services:
       migrate:
         condition: service_healthy
     volumes:
-      # The runner may read the content-addressed world inputs to initialize or
-      # verify a provisional world, but a simulation process must never mutate
-      # its retained scientific artifacts.
+      # The runner may read content-addressed inputs—including DE441 source bytes
+      # for a future source-backed celestial driver—but must never mutate them.
       - ./runtime-artifacts:/runtime:ro
     restart: unless-stopped
 

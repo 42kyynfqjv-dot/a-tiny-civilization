@@ -123,7 +123,8 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }
                 | DomainEvent::OrganismMoved { .. }
-                | DomainEvent::OrganismAgeAdvanced { .. } => {
+                | DomainEvent::OrganismAgeAdvanced { .. }
+                | DomainEvent::CelestialStateRecorded { .. } => {
                     return None;
                 }
             };
@@ -312,6 +313,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismActed { .. }
             | DomainEvent::OrganismMoved { .. }
             | DomainEvent::OrganismAgeAdvanced { .. }
+            | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
             | DomainEvent::WorldArchived => None,
