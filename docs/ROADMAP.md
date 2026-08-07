@@ -140,8 +140,10 @@ metadata. The exhaustive class/quality census covers all 8,398,080,000 cells acr
 all 2,048 native chunks and is retained under `data/source-inspections/` with a pinned
 byte fingerprint. The mixed-class L6/L10 payload now conserves class proportions and
 all four sampled quality signals, while ADR 0036 pins a 32 × 32 exact face-UV target
-quadrature and integer source-area lookup. The full global observed-class release and
-the inferred habitat/coastline evidence roots remain pending.
+quadrature and integer source-area lookup. The bounded-cache, parallel-address,
+resumable and atomically published global normalizer plus independent release inspector
+are implemented. The full global observed-class release and the inferred habitat/
+coastline evidence roots remain pending.
 
 ### 3. Situated memory and bounded cognition
 

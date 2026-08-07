@@ -10,11 +10,14 @@ use std::{
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use netcdf_reader::{NcAttrValue, NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
+use rayon::prelude::*;
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedScalarTerrainTile,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, LandCoverClassCount, LandCoverEvidenceCell,
+    LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarTerrainTile,
     ScalarTerrainCell, SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference,
     TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
 };
@@ -190,6 +193,17 @@ enum InspectCommand {
         #[arg(long, default_value_t = 32)]
         points_per_axis: u8,
     },
+    /// Sample one L10 cell from the verified Copernicus source and retain quality.
+    CopernicusLandCoverCellEvidence {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long)]
+        s2_cell_id: S2CellId,
+        #[arg(long, default_value_t = 32)]
+        points_per_axis: u8,
+    },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
         /// Latitude in exact 10^-7 degrees, within [-900000000, 900000000].
@@ -264,6 +278,19 @@ enum InspectCommand {
         container_s2_level: u8,
         #[arg(long, default_value_t = 10)]
         target_s2_level: u8,
+    },
+    /// Verify every artifact in a packed Copernicus observed-land-cover release.
+    CopernicusLandCoverLayer {
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value = "observed-land-cover")]
+        layer_id: String,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        #[arg(long, default_value_t = 32)]
+        points_per_axis: u8,
     },
 }
 
@@ -378,6 +405,26 @@ enum DeriveCommand {
         #[arg(long, default_value_t = 10)]
         target_s2_level: u8,
     },
+    /// Normalize Copernicus 2022 into mixed-class, quality-preserving L6→L10 tiles.
+    CopernicusLandCoverLayer {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long, default_value = "observed-land-cover")]
+        layer_id: String,
+        #[arg(long)]
+        output_directory: PathBuf,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        #[arg(long, default_value_t = 32)]
+        points_per_axis: u8,
+        /// Maximum decompressed 2,025 × 2,025 source chunks retained in memory.
+        #[arg(long, default_value_t = 32)]
+        source_chunk_cache: usize,
+    },
 }
 
 #[tokio::main]
@@ -476,6 +523,17 @@ async fn main() -> Result<()> {
                 s2_cell_id,
                 points_per_axis,
             } => inspect_copernicus_land_cover_target_support(s2_cell_id, points_per_axis),
+            InspectCommand::CopernicusLandCoverCellEvidence {
+                source_snapshot,
+                artifact_root,
+                s2_cell_id,
+                points_per_axis,
+            } => inspect_copernicus_land_cover_cell_evidence(
+                &source_snapshot,
+                &artifact_root,
+                s2_cell_id,
+                points_per_axis,
+            ),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -526,6 +584,19 @@ async fn main() -> Result<()> {
                 &layer_id,
                 container_s2_level,
                 target_s2_level,
+            ),
+            InspectCommand::CopernicusLandCoverLayer {
+                input_directory,
+                layer_id,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
+            } => inspect_copernicus_land_cover_layer(
+                &input_directory,
+                &layer_id,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
             ),
         },
         Command::Derive { command } => match command {
@@ -605,6 +676,25 @@ async fn main() -> Result<()> {
                 container_s2_level,
                 target_s2_level,
             ),
+            DeriveCommand::CopernicusLandCoverLayer {
+                source_snapshot,
+                artifact_root,
+                layer_id,
+                output_directory,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
+                source_chunk_cache,
+            } => derive_copernicus_land_cover_layer(CopernicusLandCoverDerivationOptions {
+                manifest_path: &source_snapshot,
+                artifact_root: &artifact_root,
+                layer_id: &layer_id,
+                output_directory: &output_directory,
+                container_s2_level,
+                target_s2_level,
+                points_per_axis,
+                source_chunk_cache,
+            }),
         },
     }
 }
@@ -1104,6 +1194,143 @@ fn inspect_natural_earth_land_reference_layer(
     Ok(())
 }
 
+#[derive(Serialize)]
+struct CopernicusLandCoverLayerInspection {
+    inspection_schema_version: u16,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    sample_policy: String,
+    quadrature_points_per_axis: u8,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+    tile_count: u64,
+    target_cell_count: u64,
+    target_support_samples: u64,
+    tile_byte_length: u64,
+    class_sample_counts: Vec<RasterValueCount>,
+}
+
+/// Independently validate every tile and root reference in observed land cover.
+fn inspect_copernicus_land_cover_layer(
+    input_directory: &Path,
+    layer_id: &str,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    points_per_axis: u8,
+) -> Result<()> {
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_bytes = read_release_file(input_directory, &root_relative_path)?;
+    let root = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical Copernicus land-cover root index")?;
+    if root.layer_id != layer_id {
+        bail!("Copernicus land-cover root declares an unexpected layer identifier");
+    }
+    let expected_containers = global_s2_cells_at_level(container_s2_level)?;
+    if root.entries.len() != expected_containers.len() {
+        bail!("Copernicus land-cover root does not cover every expected container");
+    }
+    let expected_policy = copernicus_land_cover_sample_policy(points_per_axis);
+    let mut source_snapshot_digest = None;
+    let mut source_artifact_digest = None;
+    let mut tile_byte_length = 0_u64;
+    let mut target_cell_count = 0_u64;
+    let mut target_support_samples = 0_u64;
+    let mut class_sample_counts = [0_u64; 256];
+    for (entry, expected_container) in root.entries.iter().zip(expected_containers) {
+        let expected_path =
+            format!("layers/{layer_id}/l{container_s2_level}/{expected_container}.tile");
+        if entry.kind != TileTreeEntryKind::Tile
+            || entry.s2_level != container_s2_level
+            || entry.s2_cell_id != expected_container.to_string()
+            || entry.artifact.path != expected_path
+            || entry.artifact.media_type != PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE
+        {
+            bail!("Copernicus land-cover root has an invalid tile entry");
+        }
+        let bytes = read_release_file(input_directory, &entry.artifact.path)?;
+        if u64::try_from(bytes.len())? != entry.artifact.byte_length
+            || Digest::sha256(&bytes) != entry.artifact.content_hash
+        {
+            bail!("Copernicus land-cover tile fails its root reference");
+        }
+        let tile = PackedLandCoverEvidenceTile::from_canonical_slice(&bytes)
+            .context("decode canonical Copernicus land-cover tile")?;
+        if tile.layer_id != layer_id
+            || tile.container_s2_cell_id != expected_container
+            || tile.target_s2_level != target_s2_level
+            || tile.quadrature_points_per_axis != points_per_axis
+            || tile.sample_policy != expected_policy
+        {
+            bail!("Copernicus land-cover tile has inconsistent packing metadata");
+        }
+        match source_snapshot_digest {
+            Some(expected) if expected != tile.source_snapshot_digest => {
+                bail!("Copernicus land-cover tiles disagree on source snapshot digest")
+            }
+            None => source_snapshot_digest = Some(tile.source_snapshot_digest),
+            _ => {}
+        }
+        match source_artifact_digest {
+            Some(expected) if expected != tile.source_artifact_digest => {
+                bail!("Copernicus land-cover tiles disagree on source artifact digest")
+            }
+            None => source_artifact_digest = Some(tile.source_artifact_digest),
+            _ => {}
+        }
+        tile_byte_length = tile_byte_length
+            .checked_add(entry.artifact.byte_length)
+            .context("Copernicus land-cover tile byte total overflow")?;
+        target_cell_count = target_cell_count
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("Copernicus land-cover target-cell total overflow")?;
+        for cell in tile.cells {
+            target_support_samples = target_support_samples
+                .checked_add(cell.support_samples)
+                .context("Copernicus target-support total overflow")?;
+            for count in cell.class_counts {
+                class_sample_counts[usize::from(count.class_value)] = class_sample_counts
+                    [usize::from(count.class_value)]
+                .checked_add(count.samples)
+                .context("Copernicus class sample total overflow")?;
+            }
+        }
+    }
+    let expected_support = target_cell_count
+        .checked_mul(u64::from(points_per_axis) * u64::from(points_per_axis))
+        .context("Copernicus expected target-support total overflow")?;
+    if target_support_samples != expected_support {
+        bail!("Copernicus land-cover release lost target-support samples");
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&CopernicusLandCoverLayerInspection {
+            inspection_schema_version: 1,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            sample_policy: expected_policy,
+            quadrature_points_per_axis: points_per_axis,
+            source_snapshot_digest: source_snapshot_digest
+                .context("Copernicus land-cover root is empty")?,
+            source_artifact_digest: source_artifact_digest
+                .context("Copernicus land-cover root is empty")?,
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+            tile_count: u64::try_from(root.entries.len())?,
+            target_cell_count,
+            target_support_samples,
+            tile_byte_length,
+            class_sample_counts: raster_value_counts_u8(&class_sample_counts),
+        })?
+    );
+    Ok(())
+}
+
 fn read_release_file(root: &Path, relative_path: &str) -> Result<Vec<u8>> {
     if Path::new(relative_path)
         .components()
@@ -1568,7 +1795,7 @@ fn derive_etopo_terrain_layer(
     let summaries = summaries.into_iter().collect::<BTreeMap<_, _>>();
 
     let staging_directory =
-        prepare_or_resume_natural_earth_land_staging_directory(output_directory)?;
+        prepare_or_resume_layer_staging_directory(output_directory, "ETOPO terrain")?;
     let (root_relative_path, root_bytes) = write_packed_etopo_terrain_layer(
         &staging_directory,
         EtopoTerrainPackingProfile {
@@ -1890,36 +2117,37 @@ fn prepare_terrain_layer_staging_directory(output_directory: &Path) -> Result<Pa
     Ok(staging_directory)
 }
 
-/// Resume only the unpublished, hidden Natural Earth staging tree. Every reused tile
+/// Resume only an unpublished, hidden layer staging tree. Every reused tile
 /// is decoded, re-canonicalized, and checked against the current layer/source/profile
 /// before it is admitted into the new root index. This makes an interrupted long global
 /// derivation recoverable without ever exposing a partial release or replacing data.
-fn prepare_or_resume_natural_earth_land_staging_directory(
+fn prepare_or_resume_layer_staging_directory(
     output_directory: &Path,
+    layer_label: &str,
 ) -> Result<PathBuf> {
     if fs::symlink_metadata(output_directory).is_ok() {
         bail!(
-            "land-reference output directory {} already exists",
+            "{layer_label} output directory {} already exists",
             output_directory.display()
         );
     }
     let output_parent = output_directory
         .parent()
-        .context("land-reference output directory has no parent")?;
+        .with_context(|| format!("{layer_label} output directory has no parent"))?;
     if !output_parent.is_dir() {
         bail!(
-            "land-reference output parent {} is not a directory",
+            "{layer_label} output parent {} is not a directory",
             output_parent.display()
         );
     }
     let output_name = output_directory
         .file_name()
         .and_then(OsStr::to_str)
-        .context("land-reference output directory name is not UTF-8")?;
+        .with_context(|| format!("{layer_label} output directory name is not UTF-8"))?;
     let staging_directory = output_parent.join(format!(".{output_name}.staging"));
     match fs::symlink_metadata(&staging_directory) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => bail!(
-            "land-reference staging path {} is not a real directory",
+            "{layer_label} staging path {} is not a real directory",
             staging_directory.display()
         ),
         Ok(_) => Ok(staging_directory),
@@ -3751,18 +3979,20 @@ fn copernicus_land_cover_target_support_samples(
         .checked_mul(usize::from(points_per_axis))
         .context("Copernicus target-support sample count overflow")?;
     let mut samples = Vec::with_capacity(sample_count);
-    for v_index in 0..points_per_axis {
-        let (v_numerator, denominator) =
-            interpolate_s2_face_uv_midpoint(lower, upper, v_index, points_per_axis, false)?;
-        for u_index in 0..points_per_axis {
-            let (u_numerator, u_denominator) =
-                interpolate_s2_face_uv_midpoint(lower, upper, u_index, points_per_axis, true)?;
-            if u_denominator != denominator {
+    let u_midpoints = (0..points_per_axis)
+        .map(|index| interpolate_s2_face_uv_midpoint(lower, upper, index, points_per_axis, true))
+        .collect::<Result<Vec<_>>>()?;
+    let v_midpoints = (0..points_per_axis)
+        .map(|index| interpolate_s2_face_uv_midpoint(lower, upper, index, points_per_axis, false))
+        .collect::<Result<Vec<_>>>()?;
+    for (v_numerator, denominator) in v_midpoints {
+        for (u_numerator, u_denominator) in &u_midpoints {
+            if *u_denominator != denominator {
                 bail!("target-support axes produced different denominators");
             }
             let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(S2FaceUv {
                 face: ij.face,
-                u_numerator,
+                u_numerator: *u_numerator,
                 v_numerator,
                 denominator,
             })?)?;
@@ -3812,6 +4042,636 @@ fn inspect_copernicus_land_cover_target_support(
             sample_fingerprint: copernicus_target_support_fingerprint(&samples),
             first_sample: *samples.first().context("target support is empty")?,
             last_sample: *samples.last().context("target support is empty")?,
+        })?
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy)]
+struct CopernicusLandCoverSourceValue {
+    class_value: u8,
+    processed_flag: i8,
+    current_pixel_state: i8,
+    observation_count: u16,
+    change_count: u8,
+}
+
+struct CopernicusLandCoverSourceChunk {
+    last_used: u64,
+    classes: Vec<u8>,
+    processed_flags: Vec<i8>,
+    current_pixel_states: Vec<i8>,
+    observation_counts: Vec<u16>,
+    change_counts: Vec<u8>,
+}
+
+trait CopernicusLandCoverLookup {
+    fn lookup(&mut self, row: u32, column: u32) -> Result<CopernicusLandCoverSourceValue>;
+}
+
+struct CopernicusLandCoverChunkCache<'a> {
+    file: &'a NcFile,
+    capacity: usize,
+    access_clock: u64,
+    chunks_loaded: u64,
+    cache_hits: u64,
+    chunks: HashMap<(u32, u32), CopernicusLandCoverSourceChunk>,
+}
+
+impl<'a> CopernicusLandCoverChunkCache<'a> {
+    fn new(file: &'a NcFile, capacity: usize) -> Result<Self> {
+        if capacity == 0 || capacity > 64 {
+            bail!("Copernicus source chunk cache must retain 1 through 64 chunks");
+        }
+        Ok(Self {
+            file,
+            capacity,
+            access_clock: 0,
+            chunks_loaded: 0,
+            cache_hits: 0,
+            chunks: HashMap::new(),
+        })
+    }
+
+    fn load_chunk(
+        &self,
+        chunk_row: u32,
+        chunk_column: u32,
+    ) -> Result<CopernicusLandCoverSourceChunk> {
+        Ok(CopernicusLandCoverSourceChunk {
+            last_used: 0,
+            classes: read_copernicus_source_chunk::<u8>(
+                self.file,
+                "lccs_class",
+                chunk_row,
+                chunk_column,
+            )?,
+            processed_flags: read_copernicus_source_chunk::<i8>(
+                self.file,
+                "processed_flag",
+                chunk_row,
+                chunk_column,
+            )?,
+            current_pixel_states: read_copernicus_source_chunk::<i8>(
+                self.file,
+                "current_pixel_state",
+                chunk_row,
+                chunk_column,
+            )?,
+            observation_counts: read_copernicus_source_chunk::<u16>(
+                self.file,
+                "observation_count",
+                chunk_row,
+                chunk_column,
+            )?,
+            change_counts: read_copernicus_source_chunk::<u8>(
+                self.file,
+                "change_count",
+                chunk_row,
+                chunk_column,
+            )?,
+        })
+    }
+}
+
+impl CopernicusLandCoverLookup for CopernicusLandCoverChunkCache<'_> {
+    fn lookup(&mut self, row: u32, column: u32) -> Result<CopernicusLandCoverSourceValue> {
+        if u64::from(row) >= COPERNICUS_LAND_COVER_LATITUDE_CELLS
+            || u64::from(column) >= COPERNICUS_LAND_COVER_LONGITUDE_CELLS
+        {
+            bail!("Copernicus source lookup is outside the global raster");
+        }
+        let chunk_size = u32::try_from(COPERNICUS_LAND_COVER_CHUNK_CELLS)?;
+        let key = (row / chunk_size, column / chunk_size);
+        let cached = self.chunks.contains_key(&key);
+        if !cached {
+            if self.chunks.len() == self.capacity {
+                let oldest = self
+                    .chunks
+                    .iter()
+                    .min_by_key(|(_, chunk)| chunk.last_used)
+                    .map(|(key, _)| *key)
+                    .context("nonempty Copernicus source cache has no oldest chunk")?;
+                self.chunks.remove(&oldest);
+            }
+            let chunk = self.load_chunk(key.0, key.1)?;
+            self.chunks.insert(key, chunk);
+            self.chunks_loaded = self
+                .chunks_loaded
+                .checked_add(1)
+                .context("Copernicus source chunk load count overflow")?;
+        } else {
+            self.cache_hits = self
+                .cache_hits
+                .checked_add(1)
+                .context("Copernicus source cache hit count overflow")?;
+        }
+        self.access_clock = self
+            .access_clock
+            .checked_add(1)
+            .context("Copernicus source cache clock overflow")?;
+        let chunk = self
+            .chunks
+            .get_mut(&key)
+            .context("Copernicus source chunk disappeared from cache")?;
+        chunk.last_used = self.access_clock;
+        let local_row = usize::try_from(row % chunk_size)?;
+        let local_column = usize::try_from(column % chunk_size)?;
+        let index = local_row
+            .checked_mul(usize::try_from(chunk_size)?)
+            .and_then(|value| value.checked_add(local_column))
+            .context("Copernicus source chunk index overflow")?;
+        Ok(CopernicusLandCoverSourceValue {
+            class_value: *chunk
+                .classes
+                .get(index)
+                .context("Copernicus class chunk index is missing")?,
+            processed_flag: *chunk
+                .processed_flags
+                .get(index)
+                .context("Copernicus processed chunk index is missing")?,
+            current_pixel_state: *chunk
+                .current_pixel_states
+                .get(index)
+                .context("Copernicus pixel-state chunk index is missing")?,
+            observation_count: *chunk
+                .observation_counts
+                .get(index)
+                .context("Copernicus observation chunk index is missing")?,
+            change_count: *chunk
+                .change_counts
+                .get(index)
+                .context("Copernicus change chunk index is missing")?,
+        })
+    }
+}
+
+fn read_copernicus_source_chunk<T>(
+    file: &NcFile,
+    variable_name: &str,
+    chunk_row: u32,
+    chunk_column: u32,
+) -> Result<Vec<T>>
+where
+    T: netcdf_reader::NcReadable + Clone,
+{
+    let chunk_size = COPERNICUS_LAND_COVER_CHUNK_CELLS;
+    let latitude_start = u64::from(chunk_row)
+        .checked_mul(chunk_size)
+        .context("Copernicus source chunk latitude overflow")?;
+    let longitude_start = u64::from(chunk_column)
+        .checked_mul(chunk_size)
+        .context("Copernicus source chunk longitude overflow")?;
+    if latitude_start + chunk_size > COPERNICUS_LAND_COVER_LATITUDE_CELLS
+        || longitude_start + chunk_size > COPERNICUS_LAND_COVER_LONGITUDE_CELLS
+    {
+        bail!("Copernicus source chunk address is outside the pinned raster");
+    }
+    let selection = NcSliceInfo {
+        selections: vec![
+            NcSliceInfoElem::Index(0),
+            NcSliceInfoElem::Slice {
+                start: latitude_start,
+                end: latitude_start + chunk_size,
+                step: 1,
+            },
+            NcSliceInfoElem::Slice {
+                start: longitude_start,
+                end: longitude_start + chunk_size,
+                step: 1,
+            },
+        ],
+    };
+    let values = file
+        .read_variable_slice::<T>(variable_name, &selection)
+        .with_context(|| {
+            format!("read Copernicus {variable_name} source chunk {chunk_row},{chunk_column}")
+        })?;
+    let values = values
+        .as_slice()
+        .with_context(|| format!("Copernicus {variable_name} source chunk is not contiguous"))?;
+    let expected = usize::try_from(chunk_size * chunk_size)?;
+    if values.len() != expected {
+        bail!("Copernicus {variable_name} source chunk has an unexpected cell count");
+    }
+    Ok(values.to_vec())
+}
+
+struct CopernicusLandCoverCellAccumulator {
+    support_samples: u64,
+    class_counts: [u64; 256],
+    processed_flag_counts: [u64; 3],
+    current_pixel_state_counts: [u64; 7],
+    observation_count_minimum: u16,
+    observation_count_sum: u64,
+    observation_count_maximum: u16,
+    change_count_minimum: u8,
+    change_count_sum: u64,
+    change_count_maximum: u8,
+}
+
+impl Default for CopernicusLandCoverCellAccumulator {
+    fn default() -> Self {
+        Self {
+            support_samples: 0,
+            class_counts: [0; 256],
+            processed_flag_counts: [0; 3],
+            current_pixel_state_counts: [0; 7],
+            observation_count_minimum: u16::MAX,
+            observation_count_sum: 0,
+            observation_count_maximum: 0,
+            change_count_minimum: u8::MAX,
+            change_count_sum: 0,
+            change_count_maximum: 0,
+        }
+    }
+}
+
+impl CopernicusLandCoverCellAccumulator {
+    fn add(&mut self, value: CopernicusLandCoverSourceValue) -> Result<()> {
+        if !COPERNICUS_LCCS_CLASSES
+            .iter()
+            .any(|(class_value, _)| *class_value == value.class_value)
+        {
+            bail!(
+                "sampled unsupported Copernicus LCCS value {}",
+                value.class_value
+            );
+        }
+        if !(-1..=1).contains(&value.processed_flag)
+            || !(-1..=5).contains(&value.current_pixel_state)
+            || value.observation_count > 32_767
+            || value.change_count > 100
+        {
+            bail!("sampled Copernicus classification quality is outside its pinned domain");
+        }
+        self.support_samples = self
+            .support_samples
+            .checked_add(1)
+            .context("land-cover target support overflow")?;
+        self.class_counts[usize::from(value.class_value)] += 1;
+        self.processed_flag_counts[usize::try_from(i16::from(value.processed_flag) + 1)?] += 1;
+        self.current_pixel_state_counts
+            [usize::try_from(i16::from(value.current_pixel_state) + 1)?] += 1;
+        self.observation_count_minimum =
+            self.observation_count_minimum.min(value.observation_count);
+        self.observation_count_sum = self
+            .observation_count_sum
+            .checked_add(u64::from(value.observation_count))
+            .context("land-cover observation-count sum overflow")?;
+        self.observation_count_maximum =
+            self.observation_count_maximum.max(value.observation_count);
+        self.change_count_minimum = self.change_count_minimum.min(value.change_count);
+        self.change_count_sum = self
+            .change_count_sum
+            .checked_add(u64::from(value.change_count))
+            .context("land-cover change-count sum overflow")?;
+        self.change_count_maximum = self.change_count_maximum.max(value.change_count);
+        Ok(())
+    }
+
+    fn finish(self, s2_cell_id: S2CellId) -> Result<LandCoverEvidenceCell> {
+        if self.support_samples == 0 {
+            bail!("land-cover target cell has no support samples");
+        }
+        Ok(LandCoverEvidenceCell {
+            s2_cell_id,
+            support_samples: self.support_samples,
+            class_counts: COPERNICUS_LCCS_CLASSES
+                .iter()
+                .filter_map(|(class_value, _)| {
+                    let samples = self.class_counts[usize::from(*class_value)];
+                    (samples != 0).then_some(LandCoverClassCount {
+                        class_value: *class_value,
+                        samples,
+                    })
+                })
+                .collect(),
+            processed_flag_counts: self
+                .processed_flag_counts
+                .iter()
+                .enumerate()
+                .filter_map(|(index, samples)| {
+                    (*samples != 0).then_some(LandCoverSignedValueCount {
+                        value: i8::try_from(index).expect("processed index fits i8") - 1,
+                        samples: *samples,
+                    })
+                })
+                .collect(),
+            current_pixel_state_counts: self
+                .current_pixel_state_counts
+                .iter()
+                .enumerate()
+                .filter_map(|(index, samples)| {
+                    (*samples != 0).then_some(LandCoverSignedValueCount {
+                        value: i8::try_from(index).expect("pixel-state index fits i8") - 1,
+                        samples: *samples,
+                    })
+                })
+                .collect(),
+            observation_count_minimum: self.observation_count_minimum,
+            observation_count_sum: self.observation_count_sum,
+            observation_count_maximum: self.observation_count_maximum,
+            change_count_minimum: self.change_count_minimum,
+            change_count_sum: self.change_count_sum,
+            change_count_maximum: self.change_count_maximum,
+        })
+    }
+}
+
+#[derive(Serialize)]
+struct CopernicusLandCoverCellEvidenceInspection {
+    inspection_schema_version: u16,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    sample_policy: String,
+    cell_fingerprint: Digest,
+    source_chunks_loaded: u64,
+    source_chunk_cache_hits: u64,
+    cell: LandCoverEvidenceCell,
+}
+
+fn inspect_copernicus_land_cover_cell_evidence(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    target: S2CellId,
+    points_per_axis: u8,
+) -> Result<()> {
+    if target.level() != 10 || points_per_axis != 32 {
+        bail!("Copernicus observed-land-cover v1 cell evidence requires an L10 cell and q32");
+    }
+    let source = open_verified_copernicus_land_cover(manifest_path, artifact_root)?;
+    let mut cache = CopernicusLandCoverChunkCache::new(&source.file, 4)?;
+    let mut accumulator = CopernicusLandCoverCellAccumulator::default();
+    for sample in copernicus_land_cover_target_support_samples(target, points_per_axis)? {
+        accumulator.add(cache.lookup(sample.source_row, sample.source_column)?)?;
+    }
+    let cell = accumulator.finish(target)?;
+    let cell_fingerprint = Digest::canonical(&cell)?;
+    println!(
+        "{}",
+        serde_json::to_string(&CopernicusLandCoverCellEvidenceInspection {
+            inspection_schema_version: 1,
+            source_snapshot_digest: source.source_snapshot_digest,
+            source_artifact_digest: source.artifact_hash,
+            sample_policy: copernicus_land_cover_sample_policy(points_per_axis),
+            cell_fingerprint,
+            source_chunks_loaded: cache.chunks_loaded,
+            source_chunk_cache_hits: cache.cache_hits,
+            cell,
+        })?
+    );
+    Ok(())
+}
+
+fn copernicus_land_cover_sample_policy(points_per_axis: u8) -> String {
+    format!("s2-face-uv-q{points_per_axis}-e7-source-area-v1")
+}
+
+fn pack_copernicus_land_cover_tile(
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+    points_per_axis: u8,
+    lookup: &mut impl CopernicusLandCoverLookup,
+) -> Result<PackedLandCoverEvidenceTile> {
+    let target_cells = enumerate_s2_descendants(container_s2_cell_id, target_s2_level)?;
+    let parallel_samples = target_cells
+        .par_iter()
+        .map(|target| copernicus_land_cover_target_support_samples(*target, points_per_axis))
+        .collect::<Vec<_>>();
+    let sample_sets = parallel_samples.into_iter().collect::<Result<Vec<_>>>()?;
+    let mut cells = Vec::with_capacity(target_cells.len());
+    for (target, samples) in target_cells.into_iter().zip(sample_sets) {
+        let mut accumulator = CopernicusLandCoverCellAccumulator::default();
+        for sample in samples {
+            accumulator.add(lookup.lookup(sample.source_row, sample.source_column)?)?;
+        }
+        cells.push(accumulator.finish(target)?);
+    }
+    let tile = PackedLandCoverEvidenceTile {
+        tile_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        source_snapshot_digest,
+        source_artifact_digest,
+        sample_policy: copernicus_land_cover_sample_policy(points_per_axis),
+        quadrature_points_per_axis: points_per_axis,
+        container_s2_cell_id,
+        target_s2_level,
+        cells,
+    };
+    tile.validate()
+        .context("packed Copernicus land-cover tile is invalid")?;
+    Ok(tile)
+}
+
+#[derive(Clone, Copy)]
+struct CopernicusLandCoverPackingProfile<'a> {
+    layer_id: &'a str,
+    source_snapshot_digest: Digest,
+    source_artifact_digest: Digest,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    points_per_axis: u8,
+}
+
+fn validate_resumable_copernicus_land_cover_tile(
+    bytes: &[u8],
+    profile: CopernicusLandCoverPackingProfile<'_>,
+    container: S2CellId,
+) -> Result<()> {
+    let tile = PackedLandCoverEvidenceTile::from_canonical_slice(bytes)
+        .context("decode staged Copernicus land-cover tile")?;
+    if tile.layer_id != profile.layer_id
+        || tile.source_snapshot_digest != profile.source_snapshot_digest
+        || tile.source_artifact_digest != profile.source_artifact_digest
+        || tile.sample_policy != copernicus_land_cover_sample_policy(profile.points_per_axis)
+        || tile.quadrature_points_per_axis != profile.points_per_axis
+        || tile.container_s2_cell_id != container
+        || tile.target_s2_level != profile.target_s2_level
+    {
+        bail!("staged Copernicus land-cover tile does not match the requested derivation");
+    }
+    Ok(())
+}
+
+fn write_packed_copernicus_land_cover_layer(
+    output_directory: &Path,
+    profile: CopernicusLandCoverPackingProfile<'_>,
+    lookup: &mut impl CopernicusLandCoverLookup,
+) -> Result<(String, Vec<u8>, u64)> {
+    let level_directory = format!("l{}", profile.container_s2_level);
+    let tile_directory = output_directory
+        .join("layers")
+        .join(profile.layer_id)
+        .join(&level_directory);
+    fs::create_dir_all(&tile_directory)?;
+    let containers = global_s2_cells_at_level(profile.container_s2_level)?;
+    let mut entries = Vec::with_capacity(containers.len());
+    let mut target_cells = 0_u64;
+    for (position, container) in containers.into_iter().enumerate() {
+        let relative_path = format!(
+            "layers/{}/{level_directory}/{container}.tile",
+            profile.layer_id
+        );
+        let artifact_path = output_directory.join(&relative_path);
+        let bytes = match fs::read(&artifact_path) {
+            Ok(existing) => {
+                validate_resumable_copernicus_land_cover_tile(&existing, profile, container)?;
+                existing
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let tile = pack_copernicus_land_cover_tile(
+                    profile.layer_id,
+                    profile.source_snapshot_digest,
+                    profile.source_artifact_digest,
+                    container,
+                    profile.target_s2_level,
+                    profile.points_per_axis,
+                    lookup,
+                )?;
+                let bytes = tile.canonical_bytes()?;
+                write_new_artifact(&artifact_path, &bytes)?;
+                bytes
+            }
+            Err(error) => return Err(error).context("read staged Copernicus land-cover tile"),
+        };
+        let tile = PackedLandCoverEvidenceTile::from_canonical_slice(&bytes)?;
+        target_cells = target_cells
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("Copernicus land-cover target-cell count overflow")?;
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: profile.container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+        if (position + 1) % 256 == 0 {
+            eprintln!(
+                "Copernicus land-cover normalization progress: {}/24576 containers",
+                position + 1
+            );
+        }
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: profile.layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{}/root.index", profile.layer_id);
+    let root_path = output_directory.join(&root_relative_path);
+    match fs::read(&root_path) {
+        Ok(existing) if existing == root_bytes => {}
+        Ok(_) => bail!("staged Copernicus land-cover root does not match this derivation"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_new_artifact(&root_path, &root_bytes)?;
+        }
+        Err(error) => return Err(error).context("read staged Copernicus land-cover root"),
+    }
+    Ok((root_relative_path, root_bytes, target_cells))
+}
+
+#[derive(Serialize)]
+struct CopernicusLandCoverLayerDerivation {
+    derivation_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_path: String,
+    source_artifact_hash: Digest,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    sample_policy: String,
+    points_per_axis: u8,
+    target_cells: u64,
+    target_support_samples: u64,
+    source_chunks_loaded: u64,
+    source_chunk_cache_hits: u64,
+    output_directory: String,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+}
+
+struct CopernicusLandCoverDerivationOptions<'a> {
+    manifest_path: &'a Path,
+    artifact_root: &'a Path,
+    layer_id: &'a str,
+    output_directory: &'a Path,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    points_per_axis: u8,
+    source_chunk_cache: usize,
+}
+
+fn derive_copernicus_land_cover_layer(
+    options: CopernicusLandCoverDerivationOptions<'_>,
+) -> Result<()> {
+    let CopernicusLandCoverDerivationOptions {
+        manifest_path,
+        artifact_root,
+        layer_id,
+        output_directory,
+        container_s2_level,
+        target_s2_level,
+        points_per_axis,
+        source_chunk_cache,
+    } = options;
+    if container_s2_level != 6 || target_s2_level != 10 || points_per_axis != 32 {
+        bail!("Copernicus observed-land-cover v1 requires L6→L10 packing and q32 support");
+    }
+    let source = open_verified_copernicus_land_cover(manifest_path, artifact_root)?;
+    let staging_directory =
+        prepare_or_resume_layer_staging_directory(output_directory, "Copernicus land-cover")?;
+    let profile = CopernicusLandCoverPackingProfile {
+        layer_id,
+        source_snapshot_digest: source.source_snapshot_digest,
+        source_artifact_digest: source.artifact_hash,
+        container_s2_level,
+        target_s2_level,
+        points_per_axis,
+    };
+    let mut cache = CopernicusLandCoverChunkCache::new(&source.file, source_chunk_cache)?;
+    let (root_relative_path, root_bytes, target_cells) =
+        write_packed_copernicus_land_cover_layer(&staging_directory, profile, &mut cache)?;
+    let target_support_samples = target_cells
+        .checked_mul(u64::from(points_per_axis) * u64::from(points_per_axis))
+        .context("Copernicus target-support total overflow")?;
+    fs::rename(&staging_directory, output_directory).with_context(|| {
+        format!(
+            "atomically publish Copernicus land-cover directory {}",
+            output_directory.display()
+        )
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string(&CopernicusLandCoverLayerDerivation {
+            derivation_schema_version: 1,
+            source_snapshot_id: source.source_snapshot_id.clone(),
+            source_snapshot_digest: source.source_snapshot_digest,
+            source_artifact_path: source.artifact_path.clone(),
+            source_artifact_hash: source.artifact_hash,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            sample_policy: copernicus_land_cover_sample_policy(points_per_axis),
+            points_per_axis,
+            target_cells,
+            target_support_samples,
+            source_chunks_loaded: cache.chunks_loaded,
+            source_chunk_cache_hits: cache.cache_hits,
+            output_directory: output_directory.display().to_string(),
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
         })?
     );
     Ok(())
@@ -5112,6 +5972,23 @@ mod tests {
 
     use super::*;
 
+    struct ConstantLandCoverLookup {
+        calls: u64,
+    }
+
+    impl CopernicusLandCoverLookup for ConstantLandCoverLookup {
+        fn lookup(&mut self, _row: u32, _column: u32) -> Result<CopernicusLandCoverSourceValue> {
+            self.calls += 1;
+            Ok(CopernicusLandCoverSourceValue {
+                class_value: 130,
+                processed_flag: 1,
+                current_pixel_state: 1,
+                observation_count: 42,
+                change_count: 0,
+            })
+        }
+    }
+
     #[test]
     fn era5_member_contract_separates_instantaneous_and_accumulated_fields() {
         let instantaneous = expected_era5_member_variables(ERA5_ARCHIVE_MEMBERS[0])
@@ -5895,6 +6772,58 @@ mod tests {
             assert_eq!(tile.cells.len(), 4);
             assert!(tile.cells.iter().all(|cell| cell.true_samples == 0));
         }
+        fs::remove_dir_all(root).expect("remove test root");
+    }
+
+    #[test]
+    fn miniature_land_cover_layer_conserves_support_and_resumes_without_recalculation() {
+        let root = temporary_root("land-cover-layer");
+        let profile = CopernicusLandCoverPackingProfile {
+            layer_id: "observed-land-cover",
+            source_snapshot_digest: Digest::sha256(b"snapshot"),
+            source_artifact_digest: Digest::sha256(b"artifact"),
+            container_s2_level: 0,
+            target_s2_level: 1,
+            points_per_axis: 2,
+        };
+        let mut lookup = ConstantLandCoverLookup { calls: 0 };
+        let (root_path, root_bytes, target_cells) =
+            write_packed_copernicus_land_cover_layer(&root, profile, &mut lookup)
+                .expect("write miniature land-cover layer");
+        assert_eq!(target_cells, 24);
+        assert_eq!(lookup.calls, 96);
+        let index = TileTreeIndex::from_canonical_slice(&root_bytes).expect("root index");
+        assert_eq!(index.entries.len(), 6);
+        assert_eq!(
+            fs::read(root.join(&root_path)).expect("root bytes"),
+            root_bytes
+        );
+        inspect_copernicus_land_cover_layer(&root, "observed-land-cover", 0, 1, 2)
+            .expect("independently inspect miniature land-cover layer");
+        for entry in &index.entries {
+            let tile = PackedLandCoverEvidenceTile::from_canonical_slice(
+                &fs::read(root.join(&entry.artifact.path)).expect("tile bytes"),
+            )
+            .expect("packed land-cover tile");
+            assert_eq!(tile.cells.len(), 4);
+            assert!(tile.cells.iter().all(|cell| {
+                cell.support_samples == 4
+                    && cell.class_counts
+                        == vec![LandCoverClassCount {
+                            class_value: 130,
+                            samples: 4,
+                        }]
+                    && cell.observation_count_sum == 168
+            }));
+        }
+        let mut resumed_lookup = ConstantLandCoverLookup { calls: 0 };
+        let (resumed_path, resumed_bytes, resumed_cells) =
+            write_packed_copernicus_land_cover_layer(&root, profile, &mut resumed_lookup)
+                .expect("resume miniature land-cover layer");
+        assert_eq!(resumed_path, root_path);
+        assert_eq!(resumed_bytes, root_bytes);
+        assert_eq!(resumed_cells, 24);
+        assert_eq!(resumed_lookup.calls, 0);
         fs::remove_dir_all(root).expect("remove test root");
     }
 

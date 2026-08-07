@@ -338,6 +338,7 @@ dependencies = [
  "anyhow",
  "clap",
  "netcdf-reader",
+ "rayon",
  "reqwest",
  "serde",
  "serde_json",

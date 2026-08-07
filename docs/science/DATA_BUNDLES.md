@@ -224,6 +224,42 @@ cargo run --release --locked -p civilization-data -- \
   --s2-cell-id 1000010000000000 --points-per-axis 32
 ```
 
+One target cell can then be sampled end to end from the fully verified source. This
+reads the actual LCCS and quality values and emits the exact packed-cell semantics; it
+does not create a release:
+
+```bash
+cargo run --release --locked -p civilization-data -- \
+  inspect copernicus-land-cover-cell-evidence \
+  --source-snapshot data/source-snapshots/copernicus-satellite-land-cover-v2-1-1-2022.json \
+  --artifact-root data/source-cache \
+  --s2-cell-id 1000010000000000 --points-per-axis 32
+```
+
+The full offline normalizer writes L6 containers with all L10 descendants into a
+hidden resumable staging tree, validates any retained staged tile before reuse, and
+publishes the complete tree with one atomic rename. `source-chunk-cache` changes only
+bounded operational memory and decompression work; it cannot change canonical bytes.
+
+```bash
+cargo run --release --locked -p civilization-data -- \
+  derive copernicus-land-cover-layer \
+  --source-snapshot data/source-snapshots/copernicus-satellite-land-cover-v2-1-1-2022.json \
+  --artifact-root data/source-cache \
+  --output-directory data/derived-cache/copernicus-land-cover-2022-l6-l10-q32 \
+  --source-chunk-cache 32
+```
+
+After generation, the independent inspector rereads every content-addressed tile,
+conserves all class samples, and emits the root hash. A second build to a new directory
+must produce the same root before the release is retained as evidence.
+
+```bash
+cargo run --release --locked -p civilization-data -- \
+  inspect copernicus-land-cover-layer \
+  --input-directory data/derived-cache/copernicus-land-cover-2022-l6-l10-q32
+```
+
 One raw grid cell can be examined without a GIS dependency. The zero-based row and
 column refer only to the retained source-axis order; the result emits raw coordinate
 and `Band1` IEEE-754 bits, not a converted temperature or an S2 assignment. See
