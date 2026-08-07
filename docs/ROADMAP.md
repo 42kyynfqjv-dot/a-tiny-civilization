@@ -199,7 +199,13 @@ species under SHA-256
 Distribution will come from a separate
 DOI-backed occurrence extract filtered to CC0/CC BY records. ADR 0037 prevents the
 convenient noncommercial cloud snapshot, modern observation density, or missing traits
-from silently becoming canonical animal truth.
+from silently becoming canonical animal truth. The first physiology/life-history and
+feeding-ecology evidence set now retains twelve exact AnimalTraits, Amniote, and
+EltonTraits artifacts (67,009,045 bytes) under inventory SHA-256
+`b03ce7a3bf08188ba756e256f353f11b6f5d651b652e132a829a60bb844e0499`.
+Its acquisition rechecks upstream MD5s, SHA-256s, schemas, complete row shapes, and
+published record counts. Inferred EltonTraits values remain distinguishable from
+species-level evidence; taxonomic crosswalk and parameter admission are still pending.
 
 The heavens now have an account-free long-range source path, retained bytes, and a
 causal contract. Both JPL DE441 ephemeris halves and their technical/orientation
@@ -212,7 +218,10 @@ extrapolation beyond source coverage. The portable Rust reader now verifies both
 little-endian DAF/SPK directories, all 28 type-2 segments, NAIF target/center/frame
 identities, epoch intervals, and one-based data ranges. Its bounded Chebyshev evaluator
 already resolves actual barycentric Earth plus geocentric Sun and Moon vectors at an
-exact integral TDB second; fixed-scale tick-boundary normalization remains pending.
+exact integral TDB second. Fixed-scale tick conversion, exact millimetre vectors,
+replay-safe Sun/Moon tide geometry, local radial-horizon illumination, and a reduced
+inverse-square solar-distance forcing ratio are now implemented with checked integer
+arithmetic. Earth-orientation transforms and the coupled ocean response remain pending.
 
 ### 3. Situated memory and bounded cognition
 
