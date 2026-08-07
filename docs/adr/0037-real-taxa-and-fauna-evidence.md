@@ -24,6 +24,18 @@ constituent records are CC0 or CC BY.
 - Obtain geographic evidence through a separately DOI-issued GBIF occurrence download,
   filtered to records whose individual licenses permit commercial reuse. Do not ingest
   the blanket CC-BY-NC cloud snapshot.
+- Use iNaturalist's version-pinned Open Range Map Dataset (CC BY) as a separately
+  versioned *modeled range* candidate for terrestrial and freshwater taxa. Its maps
+  are evidence of predicted presence, not measured occupancy or abundance. The
+  monthly moving `latest` endpoint is forbidden from canonical use: a world pins an
+  explicit geomodel version and the exact GeoPackage bytes.
+- Use OBIS only as separately licensed marine occurrence evidence, retaining records
+  whose dataset licence is CC0 or CC BY. Its portal contains some restricted datasets,
+  so the same fail-closed licence filter applies; the portal-wide statement that most
+  records are CC BY is not a substitute for per-record/dataset evidence.
+- Use TetraDENSITY v1 (CC BY) only as sparse, georeferenced calibration evidence for
+  terrestrial vertebrate density. It cannot provide a complete global animal census;
+  an absence of a density estimate remains unknown, never zero abundance.
 - Treat occurrences as presence evidence with sampling bias, not range polygons or
   abundance. Infer provisional habitat support only from multiple compatible records,
   climate, terrain, water, soil, and land cover, retaining the method and uncertainty.
@@ -63,9 +75,19 @@ pins this three-source composition and uses disjoint wire types for retained evi
 and assumptions; it has no admitted status and rejects an assumption that shadows an
 evidenced species trait.
 
+`scripts/filter-commercial-occurrences.py` is the mandatory first gate for a GBIF or
+OBIS export. It retains only CC0/CC BY record licences, fails closed for an empty
+output, and atomically refuses to overwrite an evidence file with different bytes. Its
+output metadata records the source DOI/version and retained and rejected record counts.
+This protects both the public repository and a future supporter-funded deployment; it
+does not decide scientific validity.
+
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
 [GBIF citation guidance](https://www.gbif.org/citation-guidelines),
+[iNaturalist Open Range Map Dataset](https://www.inaturalist.org/pages/range_maps),
+[OBIS Data Policy](https://www.obis.org/data/datapolicy/),
+[TetraDENSITY v1](https://nora.nerc.ac.uk/id/eprint/520429/),
 [AnimalTraits v1.0.7](https://zenodo.org/records/6468938),
 [Amniote Life-History archive](https://www.esapubs.org/archive/ecol/E096/269/), and
 [EltonTraits archive](https://esapubs.org/archive/ecol/E095/178/).
