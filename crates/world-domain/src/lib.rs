@@ -46,8 +46,8 @@ pub use illumination::{
 };
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
 pub use solar::{
-    CanonicalPositiveRational, PinnedSolarReferenceDistance, SolarDistanceForcing,
-    SolarDistanceForcingError,
+    CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,
+    SolarDistanceForcing, SolarDistanceForcingError,
 };
 pub use spatial::{MAX_S2_LEVEL, S2CellId, S2CellIdError};
 pub use tide::{

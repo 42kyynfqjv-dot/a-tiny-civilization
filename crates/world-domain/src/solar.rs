@@ -5,6 +5,8 @@
 //! atmospheric response, surface irradiance, orbital interpretation, or scientific
 //! admission claim.
 
+use std::fmt;
+
 use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
@@ -13,7 +15,7 @@ use crate::{Digest, SquaredMillimetres, TdbSecondsSinceJ2000, TideGeometry};
 /// A positive rational stored in one canonical reduced form.
 ///
 /// Numerator and denominator serialize as decimal strings for portable verification.
-#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, Hash, PartialEq, Serialize)]
 pub struct CanonicalPositiveRational {
     #[serde(with = "decimal_u128")]
     numerator: u128,
@@ -22,12 +24,13 @@ pub struct CanonicalPositiveRational {
 }
 
 impl CanonicalPositiveRational {
-    pub fn new(numerator: u128, denominator: u128) -> Result<Self, SolarDistanceForcingError> {
+    /// Reduce a nonzero numerator and denominator to their unique canonical form.
+    pub fn new(numerator: u128, denominator: u128) -> Result<Self, CanonicalPositiveRationalError> {
         if numerator == 0 {
-            return Err(SolarDistanceForcingError::ZeroRationalNumerator);
+            return Err(CanonicalPositiveRationalError::ZeroNumerator);
         }
         if denominator == 0 {
-            return Err(SolarDistanceForcingError::ZeroRationalDenominator);
+            return Err(CanonicalPositiveRationalError::ZeroDenominator);
         }
         let divisor = greatest_common_divisor(numerator, denominator);
         Ok(Self {
@@ -44,6 +47,17 @@ impl CanonicalPositiveRational {
     #[must_use]
     pub const fn denominator(self) -> u128 {
         self.denominator
+    }
+
+    #[must_use]
+    pub const fn is_unity(self) -> bool {
+        self.numerator == self.denominator
+    }
+}
+
+impl fmt::Display for CanonicalPositiveRational {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}/{}", self.numerator, self.denominator)
     }
 }
 
@@ -256,10 +270,17 @@ pub enum SolarDistanceForcingError {
     ReferenceDistanceSquareOverflow,
     #[error("observed Earth-Sun distance must be nonzero")]
     ZeroEarthSunDistance,
+    #[error("relative inverse-square forcing is invalid: {0}")]
+    InvalidRelativeInverseSquare(#[from] CanonicalPositiveRationalError),
+}
+
+/// Failure to construct a canonical positive rational.
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum CanonicalPositiveRationalError {
     #[error("positive rational numerator must be nonzero")]
-    ZeroRationalNumerator,
+    ZeroNumerator,
     #[error("positive rational denominator must be nonzero")]
-    ZeroRationalDenominator,
+    ZeroDenominator,
 }
 
 const fn greatest_common_divisor(mut left: u128, mut right: u128) -> u128 {
@@ -319,6 +340,7 @@ mod tests {
                     && value.relative_inverse_square()
                         == CanonicalPositiveRational::new(4, 9)
                             .unwrap_or_else(|error| panic!("valid fixture: {error}"))
+                    && value.relative_inverse_square().to_string() == "4/9"
         ));
     }
 
@@ -329,19 +351,39 @@ mod tests {
             CartesianMillimetres::new(6, 8, 0),
             CartesianMillimetres::new(1, 0, 0),
         );
-        let tide = TideGeometry::from_celestial_state(celestial);
-        let forcing = tide.and_then(|tide| {
-            SolarDistanceForcing::from_tide_geometry(reference(10), tide)
-                .map_err(|_| crate::TideGeometryError::SunMoonDotProductOverflow)
-        });
+        let forcing = TideGeometry::from_celestial_state(celestial)
+            .ok()
+            .map(|tide| SolarDistanceForcing::from_tide_geometry(reference(10), tide));
         assert!(matches!(
             forcing,
-            Ok(value)
+            Some(Ok(value))
                 if value.tdb_seconds_since_j2000() == TdbSecondsSinceJ2000::new(-3)
+                    && value.earth_sun_distance_squared_mm2()
+                        == SquaredMillimetres::new(100)
                     && value.relative_inverse_square()
                         == CanonicalPositiveRational::new(1, 1)
                             .unwrap_or_else(|error| panic!("valid fixture: {error}"))
+                    && value.relative_inverse_square().is_unity()
         ));
+    }
+
+    #[test]
+    fn tide_handoff_uses_sun_distance_not_lunar_geometry() {
+        let state = |moon| {
+            CelestialState::new(
+                TdbSecondsSinceJ2000::new(11),
+                CartesianMillimetres::new(9, 12, 0),
+                moon,
+            )
+        };
+        let derive = |celestial| {
+            TideGeometry::from_celestial_state(celestial)
+                .ok()
+                .and_then(|tide| SolarDistanceForcing::from_tide_geometry(reference(10), tide).ok())
+        };
+        let first = derive(state(CartesianMillimetres::new(1, 0, 0)));
+        let second = derive(state(CartesianMillimetres::new(0, -2, 0)));
+        assert!(matches!((first, second), (Some(left), Some(right)) if left == right));
     }
 
     #[test]
@@ -375,6 +417,41 @@ mod tests {
                 "{\"numerator\":\"2\",\"denominator\":\"4\"}",
             ),
             Err(error) if error.to_string().contains("canonical reduced")
+        ));
+        assert_eq!(
+            CanonicalPositiveRational::new(0, 1),
+            Err(CanonicalPositiveRationalError::ZeroNumerator)
+        );
+        assert_eq!(
+            CanonicalPositiveRational::new(1, 0),
+            Err(CanonicalPositiveRationalError::ZeroDenominator)
+        );
+    }
+
+    #[test]
+    fn astronomical_unit_scale_remains_exact_and_portable() {
+        // The domain does not bless this reference; the fixture merely exercises the
+        // magnitude expected when an adapter pins an astronomical-unit-scale source.
+        const REFERENCE_MM: u128 = 149_597_870_700_000;
+        let reference = reference(REFERENCE_MM);
+        let forcing = SolarDistanceForcing::derive(
+            TdbSecondsSinceJ2000::new(0),
+            reference,
+            reference.distance_squared_mm2(),
+        );
+        assert!(matches!(
+            forcing,
+            Ok(value)
+                if value.reference().distance_mm() == REFERENCE_MM
+                    && value.reference().distance_squared_mm2().get()
+                        == 22_379_522_917_973_918_490_000_000_000
+                    && value.relative_inverse_square().is_unity()
+                    && serde_json::to_string(&value).is_ok_and(|encoded| {
+                        encoded.contains("\"distance_mm\":\"149597870700000\"")
+                            && encoded.contains(
+                                "\"distance_squared_mm2\":\"22379522917973918490000000000\"",
+                            )
+                    })
         ));
     }
 
