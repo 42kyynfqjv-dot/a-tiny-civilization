@@ -82,6 +82,12 @@ output metadata records the source DOI/version and retained and rejected record 
 This protects both the public repository and a future supporter-funded deployment; it
 does not decide scientific validity.
 
+`scripts/acquire-inaturalist-open-range-maps.py` pins the complete v2.20 Animalia
+GeoPackage inventory and its metadata/taxonomy crosswalk. It will only download the
+explicit immutable release, with no replacement of existing bytes. Operators may fetch
+the small crosswalk first with `--download-metadata`, then the complete range packages
+with `--download-packages`; neither operation admits the maps to canonical genesis.
+
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
 [GBIF citation guidance](https://www.gbif.org/citation-guidelines),
