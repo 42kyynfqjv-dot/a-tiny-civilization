@@ -226,6 +226,83 @@ pub fn decode_s2_face_ij(cell: S2CellId) -> S2FaceIj {
     }
 }
 
+/// Return down, right, up, and left neighbors at the cell's own S2 level.
+/// Cross-face neighbors use S2's linear face-wrap projection before routing back
+/// through the exact Hilbert encoder.
+pub fn s2_edge_neighbors(cell: S2CellId) -> Result<[S2CellId; 4], GeographicRoutingError> {
+    let ij = decode_s2_face_ij(cell);
+    let leaf_size = 1_i64 << u32::from(MAX_S2_LEVEL - ij.level);
+    let i = i64::from(ij.i) * leaf_size;
+    let j = i64::from(ij.j) * leaf_size;
+    Ok([
+        face_ij_wrap(ij.face, i, j - leaf_size, ij.level)?,
+        face_ij_wrap(ij.face, i + leaf_size, j, ij.level)?,
+        face_ij_wrap(ij.face, i, j + leaf_size, ij.level)?,
+        face_ij_wrap(ij.face, i - leaf_size, j, ij.level)?,
+    ])
+}
+
+fn face_ij_wrap(face: u8, i: i64, j: i64, level: u8) -> Result<S2CellId, GeographicRoutingError> {
+    const MAX_SIZE: i64 = 1_i64 << MAX_S2_LEVEL;
+    let i = i.clamp(-1, MAX_SIZE);
+    let j = j.clamp(-1, MAX_SIZE);
+    // This is S2CellId::FromFaceIJWrap's linear face projection, expressed as
+    // integer homogeneous UV coordinates rather than binary floating point.
+    let ray = s2_face_uv_to_ray(S2FaceUv {
+        face,
+        u_numerator: i128::from(2 * (i - MAX_SIZE / 2) + 1),
+        v_numerator: i128::from(2 * (j - MAX_SIZE / 2) + 1),
+        denominator: i128::from(MAX_SIZE),
+    })?;
+    let (face, u, v, d) = face_uv_from_ray(ray)?;
+    let leaf_i = linear_uv_to_leaf(u, d)?;
+    let leaf_j = linear_uv_to_leaf(v, d)?;
+    cell_id_from_face_ij(face, leaf_i, leaf_j, MAX_S2_LEVEL)?
+        .ancestor(level)
+        .map_err(GeographicRoutingError::S2)
+}
+
+fn face_uv_from_ray(ray: S2FaceRay) -> Result<(u8, i128, i128, i128), GeographicRoutingError> {
+    let values = [ray.x, ray.y, ray.z];
+    let absolute = [ray.x.abs(), ray.y.abs(), ray.z.abs()];
+    let axis = if absolute[0] > absolute[1] {
+        if absolute[0] > absolute[2] { 0 } else { 2 }
+    } else if absolute[1] > absolute[2] {
+        1
+    } else {
+        2
+    };
+    let face = axis + usize::from(values[axis] < 0) * 3;
+    let (u, v, d) = match face {
+        0 => (ray.y, ray.z, ray.x),
+        1 => (-ray.x, ray.z, ray.y),
+        2 => (-ray.x, -ray.y, ray.z),
+        3 => (-ray.z, -ray.y, -ray.x),
+        4 => (-ray.z, ray.x, -ray.y),
+        5 => (ray.y, ray.x, -ray.z),
+        _ => unreachable!(),
+    };
+    Ok((
+        u8::try_from(face).map_err(|_| GeographicRoutingError::Overflow)?,
+        u,
+        v,
+        d,
+    ))
+}
+
+fn linear_uv_to_leaf(numerator: i128, denominator: i128) -> Result<u32, GeographicRoutingError> {
+    const MAX_SIZE: i128 = 1_i128 << MAX_S2_LEVEL;
+    let scaled = numerator
+        .checked_add(denominator)
+        .and_then(|value| value.checked_mul(MAX_SIZE))
+        .ok_or(GeographicRoutingError::Overflow)?;
+    let divisor = denominator
+        .checked_mul(2)
+        .ok_or(GeographicRoutingError::Overflow)?;
+    u32::try_from((scaled / divisor).clamp(0, MAX_SIZE - 1))
+        .map_err(|_| GeographicRoutingError::Overflow)
+}
+
 /// Apply S2's quadratic projection to the exact centre of a decoded IJ cell.
 pub fn s2_face_ij_center_uv(ij: S2FaceIj) -> Result<S2FaceUv, GeographicRoutingError> {
     let size = 1_i128
@@ -942,6 +1019,28 @@ mod tests {
                 finest.ancestor(level),
                 Ok(route_geographic_to_s2(coordinate, level).expect("routable ancestor"))
             );
+        }
+    }
+
+    #[test]
+    fn edge_neighbors_preserve_level_and_reverse_across_cube_faces() {
+        for face in 0_u64..6 {
+            let root = S2CellId::new((face << 61) | (1_u64 << 60)).expect("face root");
+            for cell in root.descendants_at(2).expect("small face grid") {
+                let neighbors = s2_edge_neighbors(cell).expect("edge neighbors");
+                assert!(
+                    neighbors
+                        .iter()
+                        .all(|neighbor| neighbor.level() == cell.level())
+                );
+                for neighbor in neighbors {
+                    assert!(
+                        s2_edge_neighbors(neighbor)
+                            .expect("neighbor edges")
+                            .contains(&cell)
+                    );
+                }
+            }
         }
     }
 
