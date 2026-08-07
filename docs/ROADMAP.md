@@ -145,6 +145,13 @@ resumable and atomically published global normalizer plus independent release in
 are implemented. The full global observed-class release and the inferred habitat/
 coastline evidence roots remain pending.
 
+The public JRC Global Surface Water v1.5 10-degree release now has a deterministic,
+network-free 1,512-artifact inventory and a bounded-parallel, no-replacement acquisition
+path for global occurrence, 2024 seasonality, and transitions. This is breadth-first
+source plumbing, not a pinned snapshot or admitted hydrography layer; exact acquired
+hashes, terrain routing, reconstruction policy, and integrated scientific validation
+remain pending.
+
 ### 3. Situated memory and bounded cognition
 
 - local deterministic working memory plus the asynchronous Hindsight adapter;

@@ -2,9 +2,11 @@
 
 ## Status
 
-Accepted on 2026-08-07 for source selection and algorithm design. A pinned JRC source
-snapshot, routing specification, normalized release, and independent rebuild remain
-required before this decision can authorize genesis.
+Accepted on 2026-08-07 for source selection and algorithm design. The public JRC v1.5
+1984–2024 tile contract is now implemented as a deterministic, resumable acquisition
+tool. A pinned source snapshot, routing specification, normalized release, and final
+integrated scientific validation remain required before this decision can authorize
+genesis.
 
 ## Context
 
@@ -29,7 +31,10 @@ independent coarse comparison.
   layer. The future routing ADR must specify depression handling, flats, endorheic
   basins, ocean outlets, neighbour ordering, integer slope comparison, accumulation,
   and every tie break. Runtime simulation and replay never invoke a GIS package.
-- Pin JRC Global Surface Water occurrence, seasonality, and transition evidence to
+- Acquire JRC Global Surface Water v1.5 occurrence, seasonality, and transition
+  evidence from its official 2024 10-degree tile release, then pin every retained byte to
+  a source snapshot. The long-term occurrence and transition layers cover 1984–2024;
+  the v1.5 seasonality download describes 2024 rather than the complete history. Pin it to
   constrain observed freshwater storage and intermittent/permanent surface-water
   support. Reservoirs and other human-altered water bodies follow the project's
   explicit reconstruction policy; they are never silently relabelled natural.
@@ -49,7 +54,10 @@ independent coarse comparison.
 ## Consequences
 
 Hydrography no longer requires a new owner account or commercial data licence. The
-remaining work is engineering and evidence acquisition: pin JRC and HYDRO1K artifacts,
+network-free acquisition inventory covers 1,512 official files across occurrence,
+seasonality, and transitions; `scripts/acquire-jrc-surface-water.py --download` retains
+them without replacing completed artifacts. The remaining work is engineering and
+evidence acquisition: download and pin JRC and HYDRO1K artifacts,
 define the deterministic routing algorithm, generate the global graph and water tiles,
 compare them against independent evidence, and couple conserved water state to the
 durable ecology model.
