@@ -198,10 +198,10 @@ Do not introduce Redis, Kafka, Kubernetes, or independent microservices before
 measurement demonstrates a need. The single-process engine remains the deterministic
 reference implementation. Its pure L10 ordering/barrier kernel, synthetic
 dense-equivalence proof, exact ECEF-to-S2 address router, exact conserved L10-to-L14
-scalar-refinement proof, durable embodied positions, and empty durable partition
-schedule are implemented. The engine-level foundation replays, but production
+scalar-refinement proof, durable embodied positions, and a ruleset-two per-organism
+body-clock partition schedule are implemented. The engine-level foundation replays, but production
 canonical genesis remains gated on exact source admission, coupled ecological state,
-retained refinements and deltas, the first real scheduled process, horizontal-worker
+retained refinements and deltas, source-backed physiology and locomotion, horizontal-worker
 equivalence, and the persistence barrier. Every person remains an individual;
 infrastructure pressure may slow or pause wall-clock advancement at a committed hash
 boundary but cannot change causal rules or discard lives. See

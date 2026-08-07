@@ -68,10 +68,11 @@ EPSG:4978-to-S2 reference also pins all six faces, exact projection boundaries, 
 L10/L14/L18/L23 ancestor routing. A private L10-to-L14 refinement proof now allocates
 all 256 descendants with exact integer conservation, deterministic residual streams,
 canonical reaggregation, and an explicit Alabama-paradox guard. Neither reference
-changes durable schemas. Persistent full-Earth execution remains intentionally
-disabled until exact source bundles, coupled ecological quantities, retained refined
-state, locomotion physics, scheduling, and persistence are integrated. Schema-v4
-state now retains and replays a full-Earth organism's durable S2 embodied-patch
+changes durable schemas. Ruleset-two full-Earth execution now deterministically
+schedules every living embodied organism and records one internal body-clock transition
+per tick. It remains provisional: coupled ecological quantities, retained refined
+state, locomotion physics, and source-backed physiology are not yet integrated.
+Schema-v4 state now retains and replays a full-Earth organism's durable S2 embodied-patch
 position and resolved movement, while public projections intentionally omit both.
 
 Exact upstream snapshots now pin both Natural Earth v5.1.2 generalized global land

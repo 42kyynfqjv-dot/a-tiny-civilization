@@ -90,7 +90,7 @@ The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction trans
 authorized successor operation, and tamper detection are implemented and covered by
 the full repository checks. The engine-level partition foundation now replays, but
 canonical world initialization remains intentionally blocked on admitted full-Earth
-inputs and the first real scheduled causal process; the available initialization
+inputs and source-backed causal effects; the available initialization
 command is visibly non-production and requires an explicit world identifier and seed.
 
 ### 2. Full Earth, reference tile, and embodied lives
@@ -110,8 +110,9 @@ individual people, and pause-at-committed-boundary capacity behavior. Scientific
 schema v2 requires content-addressed global climate, elevation, bathymetry, coastline,
 habitat, hydrography, and soil roots plus an explicit counterfactual-baseline policy.
 Legacy bounded schema-v1 bytes remain supported. The engine can now configure, tick,
-snapshot, and replay the full-Earth foundation with a durable empty partition schedule.
-That is infrastructure, not a launch authorization: no scheduled organism process or
+snapshot, and replay the full-Earth foundation with a durable ruleset-two per-organism
+body-clock schedule. That is infrastructure, not a launch authorization: no
+source-backed organism process or
 production canonical initializer exists, and no canonical seed has been selected.
 
 Full-Earth organism state now has a schema-v4 durable S2 embodied-patch position and
@@ -136,10 +137,10 @@ changing events, snapshots, configuration, or PostgreSQL. A private conserved
 L10-to-L14 reference now enumerates all 256 children, allocates generic sourced
 extensive totals with exact order-independent integer arithmetic, and reaggregates them
 without loss. It explicitly proves why a synthesis generation must be retained rather
-than recalculated. Durable embodied patches, conditional movement, and an empty
-partition schedule are now integrated. The next engine checkpoints are a coupled
+than recalculated. Durable embodied patches, conditional movement, and a ruleset-two
+body-clock schedule are now integrated. The next engine checkpoints are a coupled
 ecological quantity policy with retained refinement state and deltas, physical
-movement resolution, and the first real scheduled causal process.
+movement resolution, and source-backed causal effects.
 
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one

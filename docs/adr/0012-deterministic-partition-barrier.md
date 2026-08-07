@@ -105,3 +105,9 @@ configure, tick, snapshot, and replay a full-Earth foundation, while the applica
 still exposes no canonical initializer. Exact source admission, the first real causal
 process, horizontal-worker equivalence, and production persistence remain genesis
 gates.
+
+## Later implementation note
+
+[ADR 0040](0040-ruleset-two-body-clock.md) adds the first real scheduled causal
+transition for new ruleset-two worlds. This ADR's ruleset-one queue and replay behavior
+remain unchanged; the body clock does not admit ecology or canonical genesis.
