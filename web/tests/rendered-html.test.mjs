@@ -20,9 +20,9 @@ test("server-renders the civilization observatory", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Live World · A Tiny Civilization<\/title>/i);
-  assert.match(html, /A little world with a life of its own\./);
-  assert.match(html, /One world is moving through time/);
-  assert.match(html, /A living world · now unfolding/);
+  assert.match(html, /A window into a world becoming itself\./);
+  assert.match(html, /The canvas is global\. The record begins small\./);
+  assert.match(html, /observatory \/ live record/);
   assert.match(html, /provisional—not yet scientifically admitted/);
   assert.doesNotMatch(html, /River basin · seed awaiting launch/);
   assert.match(html, /World notebook/);

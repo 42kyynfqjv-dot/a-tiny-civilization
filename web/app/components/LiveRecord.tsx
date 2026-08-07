@@ -53,9 +53,9 @@ export function LiveRecord() {
         }
         const encoded = encodeURIComponent(world.world_id);
         const [timelineResponse, organismsResponse, findingsResponse] = await Promise.all([
-          fetch(`/api/v1/worlds/${encoded}/timeline?limit=5`, { cache: "no-store" }),
-          fetch(`/api/v1/worlds/${encoded}/organisms?limit=8`, { cache: "no-store" }),
-          fetch(`/api/v1/worlds/${encoded}/findings?limit=4`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${encoded}/timeline?limit=12`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${encoded}/organisms?limit=50`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${encoded}/findings?limit=12`, { cache: "no-store" }),
         ]);
         if (!timelineResponse.ok || !organismsResponse.ok || !findingsResponse.ok) throw new Error("world data unavailable");
         const timeline = (await timelineResponse.json()) as { items: TimelineItem[] };
@@ -79,27 +79,66 @@ export function LiveRecord() {
   if (record.state === "error") return <section className="live-record empty">The live window is resting. Please check back in a moment.</section>;
 
   const { world, timeline, organisms, findings } = record;
+  const people = organisms.filter((organism) => organism.role === "person" && !organism.ended_event_id);
+  const animals = organisms.filter((organism) => organism.role === "fauna" && !organism.ended_event_id);
+  const latestMoment = timeline[0];
+  const began = timeline.find((item) => item.source_tick === "0" || item.source_tick === 0);
   return (
-    <section className="live-record" aria-labelledby="live-record-title">
+    <section className="live-record" id="happening" aria-labelledby="live-record-title">
       <div className="live-record-heading">
         <div>
-          <p className="eyebrow">The world today</p>
-          <h2 id="live-record-title">World {world.world_id.slice(0, 8)}</h2>
+          <p className="eyebrow">What is happening now</p>
+          <h2 id="live-record-title">The opening chapter is under way.</h2>
           <WorldInputStatus world={world} />
         </div>
-        <p>{world.status} · moment {world.tick}</p>
+        <p className="live-record-cursor"><span aria-hidden="true" /> live · moment {formatNumber(world.tick)}</p>
+      </div>
+      <p className="live-record-intro">
+        This world began with {people.length === 1 ? "one person" : `${people.length} people`} in the
+        public record. Its clock is still advancing; every displayed fact below comes from committed
+        history, not a story written for visitors.
+      </p>
+      <div className="world-now" aria-label="Current world state">
+        <article id="people">
+          <span>People here</span>
+          <strong>{formatNumber(people.length)}</strong>
+          <small>{people.length === 0 ? "no public life records yet" : "present in the record"}</small>
+        </article>
+        <article id="animals">
+          <span>Animals here</span>
+          <strong>{formatNumber(animals.length)}</strong>
+          <small>{animals.length === 0 ? "none seeded into this preview" : "individual lives recorded"}</small>
+        </article>
+        <article>
+          <span>Committed moments</span>
+          <strong>{formatNumber(world.through_sequence)}</strong>
+          <small>the permanent history so far</small>
+        </article>
+        <article id="discoveries">
+          <span>Discoveries</span>
+          <strong>{formatNumber(findings.length)}</strong>
+          <small>{findings.length === 0 ? "nothing established yet" : "firsts and records observed"}</small>
+        </article>
       </div>
       <div className="live-record-grid">
-        <article>
-          <h3>Recent moments</h3>
-          {timeline.length === 0 ? <p>It is quiet here for now.</p> : <ol>{timeline.map((item) => <li key={item.source_event_id}><strong>{item.title}</strong><span>{item.summary} <em>Moment {item.source_tick}</em></span></li>)}</ol>}
-          {findings.length > 0 && <><h3 className="finding-heading">Things worth noticing</h3><ul>{findings.map((finding) => <li key={finding.finding_key}><strong>{finding.title}</strong><span>{finding.summary}</span></li>)}</ul></>}
+        <article id="timeline">
+          <h3>The record so far</h3>
+          {timeline.length === 0 ? <p>The projector has not published a public event yet.</p> : <ol>{timeline.map((item) => <li key={item.source_event_id}><strong>{item.title}</strong><span>{item.summary} <em>moment {formatNumber(item.source_tick)}</em></span></li>)}</ol>}
+          {latestMoment?.source_tick === "0" || latestMoment?.source_tick === 0 ? <p className="quiet-note">No later public milestone has been recorded yet. The live clock is advancing, but this preview does not pretend quiet time is drama.</p> : null}
         </article>
         <article>
-          <h3>Who is here</h3>
-          {organisms.length === 0 ? <p>No individual lives are here yet.</p> : <ul>{organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a><small>{organism.ended_event_id ? "their story has ended" : "here now"}</small></li>)}</ul>}
+          <h3>Lives to watch</h3>
+          {organisms.length === 0 ? <p>No individual lives are public yet.</p> : <ul>{organisms.map((organism, index) => <li key={organism.organism_id}><strong>{organism.role === "person" ? `Person ${String(index + 1).padStart(2, "0")}` : `Animal ${String(index + 1).padStart(2, "0")}`}</strong><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a><small>{organism.ended_event_id ? "record ended" : `present since moment ${formatNumber(organism.introduced_tick)}`}</small></li>)}</ul>}
         </article>
       </div>
+      <section className="finding-board" aria-labelledby="finding-board-title">
+        <div>
+          <p className="eyebrow">The first things we can say</p>
+          <h3 id="finding-board-title">Evidence, not narration.</h3>
+        </div>
+        {findings.length === 0 ? <p>No firsts or records have been established yet.</p> : <ul>{findings.map((finding) => <li key={finding.finding_key}><span>{finding.kind}</span><strong>{finding.title}</strong><p>{finding.summary}</p></li>)}</ul>}
+      </section>
+      {began && <p className="record-footnote">The record starts at moment {formatNumber(began.source_tick)} and currently ends at moment {formatNumber(world.tick)}. The observatory refreshes every 15 seconds.</p>}
       <details className="verification-details">
         <summary>Verify this world</summary>
         <dl className="audit-hashes" aria-label="Public verification hashes">
@@ -115,4 +154,9 @@ export function LiveRecord() {
 
 function shortHash(hash: string) {
   return `${hash.slice(0, 12)}…${hash.slice(-8)}`;
+}
+
+function formatNumber(value: string | number) {
+  const parsed = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(parsed) ? new Intl.NumberFormat("en-US").format(parsed) : String(value);
 }

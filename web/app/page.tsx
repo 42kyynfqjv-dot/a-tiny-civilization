@@ -12,11 +12,11 @@ export const metadata: Metadata = {
 
 const observeLinks = [
   ["The world", "#live", "●"],
-  ["What happened", "#timeline", "↟"],
+  ["What happened", "#happening", "↟"],
   ["People", "#people", "○"],
   ["Animals", "#animals", "◇"],
-  ["Discoveries", "#cultures", "✦"],
-  ["Things they make", "#artifacts", "⌁"],
+  ["Discoveries", "#discoveries", "✦"],
+  ["Things they make", "#wiki", "⌁"],
 ] as const;
 
 const archiveLinks = [
@@ -98,14 +98,14 @@ export default function Home() {
       </aside>
 
       <main className="main-content" id="live">
-        <section className="hero-copy">
+        <section className="hero-copy observatory-hero">
           <div>
-            <p className="eyebrow accent">A living world · now unfolding</p>
-            <h1>A little world with a life of its own.</h1>
+            <p className="eyebrow accent">Live observatory · public record</p>
+            <h1>A window into a world becoming itself.</h1>
           </div>
           <p className="hero-intro">
-            People will be born. Animals will wander. Ideas may catch on—or disappear forever.
-            Nobody, including us, knows what they will become.
+            Watch what is actually there, not a narrated version of it. The world keeps its own
+            history; this is the window onto it.
           </p>
         </section>
 
@@ -118,15 +118,25 @@ export default function Home() {
           </p>
         </details>
 
-        <section className="world-panel" aria-labelledby="world-panel-title">
+        <section className="observation-window" aria-label="Live world window">
+          <div className="window-chrome" aria-hidden="true">
+            <span />
+            <span />
+            <span />
+            <p>observatory / live record</p>
+          </div>
+          <LiveRecord />
+        </section>
+
+        <section className="world-panel earth-window" aria-labelledby="world-panel-title">
           <div className="panel-toolbar">
             <div>
-              <p className="eyebrow">The whole world</p>
-              <h2 id="world-panel-title">One world is moving through time</h2>
+              <p className="eyebrow">One shared Earth</p>
+              <h2 id="world-panel-title">The canvas is global. The record begins small.</h2>
             </div>
             <div className="map-controls" aria-label="Map display status">
-              <span>Land and water</span>
-              <span>Weather and seasons</span>
+              <span>Earth reference</span>
+              <span>Public history</span>
             </div>
           </div>
 
@@ -140,71 +150,69 @@ export default function Home() {
             <span className="map-point point-two" />
             <span className="map-point animal point-three" />
             <span className="map-point animal point-four" />
-            <div className="map-coordinate coordinate-north">One shared Earth</div>
-            <div className="map-coordinate coordinate-scale">History is recording</div>
+            <div className="map-coordinate coordinate-north">Global reference field</div>
+            <div className="map-coordinate coordinate-scale">No position data is illustrated as fact</div>
             <div className="genesis-marker">
               <span className="marker-pulse" />
               <div>
-                <strong>The world is live</strong>
-                <small>Follow its committed history below</small>
+                <strong>History is recording</strong>
+                <small>Open the live window above</small>
               </div>
             </div>
           </div>
 
-          <div className="world-stats">
+          <div className="world-stats world-scope">
             <article>
-              <span>People</span>
-              <strong>Live</strong>
-              <small>current inhabitants appear below</small>
+              <span>Scope</span>
+              <strong>Earth</strong>
+              <small>a full-Earth composition is attached to this provisional world</small>
             </article>
             <article>
-              <span>World age</span>
-              <strong>Now</strong>
-              <small>the live record shows its current tick</small>
-            </article>
-            <article>
-              <span>Animals</span>
-              <strong>Active</strong>
-              <small>source-backed lives are recorded below</small>
-            </article>
-            <article>
-              <span>Discoveries</span>
+              <span>Method</span>
               <strong>Open</strong>
-              <small>nothing is scripted</small>
+              <small>every current claim needs committed evidence</small>
+            </article>
+            <article>
+              <span>View</span>
+              <strong>Honest</strong>
+              <small>quiet time stays quiet until there is a fact to show</small>
+            </article>
+            <article>
+              <span>Future</span>
+              <strong>Unwritten</strong>
+              <small>culture, artifacts, and writing must emerge before they appear</small>
             </article>
           </div>
         </section>
 
-        <section className="lower-grid">
-          <article className="timeline-card" id="timeline">
+        <section className="lower-grid observer-next">
+          <article className="timeline-card">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">What happened</p>
-                <h2>The newest committed moments.</h2>
+                <p className="eyebrow">How to read this</p>
+                <h2>Return to the record, not a feed of invented excitement.</h2>
               </div>
-              <span className="live-tag">Live record below</span>
+              <a className="live-tag" href="#happening">Open the live record</a>
             </div>
             <div className="empty-timeline">
               <span className="timeline-rule" />
               <span className="timeline-node" />
               <div>
-                <strong>Tick 0</strong>
+                <strong>Watch for a first</strong>
                 <p>
-                  The live record below refreshes from committed history. Quiet moments are still
-                  part of the experiment; nothing is staged for the audience.
+                  A birth, a lasting trail, a repeated action, an artifact, or a discovery only
+                  joins this observatory after the world itself leaves evidence for it.
                 </p>
               </div>
             </div>
           </article>
 
           <article className="principle-card" id="evidence">
-            <p className="eyebrow">The promise</p>
-            <blockquote>“We set the world in motion. After that, it belongs to itself.”</blockquote>
+            <p className="eyebrow">The boundary</p>
+            <blockquote>“We can look in. We cannot reach in.”</blockquote>
             <Link href="/wiki">See how we keep that promise <span aria-hidden="true">→</span></Link>
           </article>
         </section>
-
-        <LiveRecord />
 
         <section className="archive-section" id="archive" aria-labelledby="archive-title">
           <div className="section-heading archive-heading">
