@@ -3,7 +3,8 @@
 ## Status
 
 Accepted on 2026-08-06 as the ordering contract for the single-worker reference
-kernel. This does not yet authorize canonical full-Earth genesis.
+kernel. Durable empty-schedule integration was accepted on 2026-08-07. This does not
+yet authorize canonical full-Earth genesis in the production runner.
 
 ## Context
 
@@ -48,21 +49,31 @@ envelope, database schema, or current engine state.
   once and evaluates extinction only after all lifecycle proposals for that tick,
   including births, resolve.
 
-## Deliberate non-decisions
+## Durable engine integration
 
 - Schema-v1 scheduler checkpoints use a canonical, validated JSON envelope for the
-  exact queue. This prevents a future persistence adapter from introducing a
-  serializer-defined ordering, but the checkpoint remains private: it is not engine
-  state, a snapshot field, a database record, or a state-hash input yet. The first
-  embodied process will establish the concrete scheduled-work state and commit path.
+  exact queue. The queue is now part of `EngineState`, snapshot schema v4, and state-
+  hash schema v4 for partitioned configurations. Replay therefore verifies both the
+  physical lives and their future causal work.
+- Ruleset 1 admits no scheduled causal organism process yet. Its canonical queue is
+  deliberately empty; adding a synthetic per-person heartbeat merely to populate the
+  scheduler would violate [ADR 0011](0011-population-scale-and-capacity.md). A nonempty
+  queue fails closed until energetics or another real causal process is admitted.
+- A partitioned tick validates and advances the durable queue through the same barrier
+  kernel. Transition event limits are enforced independently for each L10 partition;
+  world-control events use a distinct global bucket.
+
+## Deliberate non-decisions
+
 - Its Rust module remains private to `sim-engine`; application and adapter crates cannot
   build canonical work until that embodied boundary is accepted.
 - `location_id: Option<EntityId>` is not treated as an Earth position. The private
   fixed-point ECEF-to-S2 reference is now frozen by
   [ADR 0013](0013-fixed-point-ecef-s2-routing.md), but durable embodied position and
   movement still require an explicit schema decision before real genesis.
-- No `DomainEvent`, `EventBatch`, snapshot, PostgreSQL, or world-configuration field is
-  added by this decision.
+- No `DomainEvent`, `EventBatch`, PostgreSQL, or world-configuration field is added by
+  this integration. The schedule is derived from configuration at genesis and carried
+  by snapshots and state hashes.
 - Whether production persists one atomic whole-tick batch or separately staged
   partition fragments remains open. A per-partition public commit protocol would need
   a new barrier/event schema and must be decided before canonical genesis.
@@ -88,7 +99,9 @@ The reference tests prove:
 
 ## Consequences
 
-This freezes the deterministic map/barrier ordering without pretending that the full
-world can run. `PartitionedExecutionNotImplemented` remains the correct engine result
-until embodied position, conserved causal refinement, durable schedule state, and the
-event persistence boundary are designed and verified.
+This freezes deterministic map/barrier ordering and makes its empty foundation
+replayable without pretending that organism behavior is implemented. The library can
+configure, tick, snapshot, and replay a full-Earth foundation, while the application
+still exposes no canonical initializer. Exact source admission, the first real causal
+process, horizontal-worker equivalence, and production persistence remain genesis
+gates.

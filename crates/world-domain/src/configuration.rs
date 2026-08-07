@@ -430,6 +430,18 @@ impl WorldConfiguration {
         }
     }
 
+    /// Durable partition semantics for a full-Earth configuration. Operational
+    /// worker count is intentionally absent: it cannot affect this causal contract.
+    #[must_use]
+    pub const fn partitioned_execution(&self) -> Option<&PartitionedExecution> {
+        match &self.execution {
+            ExecutionScale::SingleTransition { .. } => None,
+            ExecutionScale::Partitioned {
+                partitioned_execution,
+            } => Some(partitioned_execution),
+        }
+    }
+
     #[must_use]
     pub const fn transition_event_limit(&self) -> u32 {
         match &self.execution {

@@ -2,10 +2,11 @@
 
 ## Status
 
-Accepted on 2026-08-06 as a canonical-genesis gate. The pure single-worker ordering and
+Accepted on 2026-08-06 as a canonical-genesis gate. The single-worker ordering and
 barrier kernel is implemented under [ADR 0012](0012-deterministic-partition-barrier.md),
-but durable scheduled state and embodied integration are not. The current engine still
-rejects schema-v2 full-Earth genesis instead of overstating that partial foundation.
+and its empty ruleset-v1 schedule is now durable engine, snapshot, and state-hash state.
+This enables an engine-level full-Earth foundation without authorizing the production
+runner to create the canonical world.
 
 ## Context
 

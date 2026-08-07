@@ -109,9 +109,10 @@ frames, four causal resolution tiers, deterministic event partitions, durable
 individual people, and pause-at-committed-boundary capacity behavior. Scientific bundle
 schema v2 requires content-addressed global climate, elevation, bathymetry, coastline,
 habitat, hydrography, and soil roots plus an explicit counterfactual-baseline policy.
-Legacy bounded schema-v1 bytes remain supported. The current engine deliberately blocks
-full-Earth genesis until partition execution exists. No canonical seed has been
-selected.
+Legacy bounded schema-v1 bytes remain supported. The engine can now configure, tick,
+snapshot, and replay the full-Earth foundation with a durable empty partition schedule.
+That is infrastructure, not a launch authorization: no scheduled organism process or
+production canonical initializer exists, and no canonical seed has been selected.
 
 Full-Earth organism state now has a schema-v4 durable S2 embodied-patch position and
 conditional movement fact. Full-Earth initialization/birth requires the configured
@@ -122,10 +123,12 @@ partitioned causal execution.
 Canonical tile-index bytes and exhaustive offline tree traversal are now implemented.
 The validator rejects missing or tampered leaves, cycles, repeated cells and paths,
 false leaf counts, invalid S2 identities/parentage, and noncanonical indexes. A shared
-strict S2 identity type and the partition scheduler's pure single-worker reference
-kernel are also implemented. Its tests pin active-L10 ordering, deterministic barriers,
-deferred cross-partition work, per-partition capacity rejection, empty ticks, and
-synthetic dense-versus-queued equivalence without changing persistent event schemas.
+strict S2 identity type and the partition scheduler's single-worker reference kernel
+are also implemented. Its empty queue is now durable snapshot and state-hash state.
+Tests pin active-L10 ordering, deterministic barriers, deferred cross-partition work,
+per-partition capacity rejection, empty ticks, engine-level full-Earth replay, and
+synthetic dense-versus-queued equivalence without inventing an artificial organism
+heartbeat.
 A private fixed-point routing reference now maps bounded integer-millimetre EPSG:4978
 positions through an explicitly geocentric, integer-only S2 bridge. Shared Rust/Python
 goldens pin all faces, ties, exact boundaries, and causal-level ancestors without

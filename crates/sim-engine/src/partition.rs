@@ -1,8 +1,7 @@
-//! Pure reference ordering and barrier semantics for full-Earth partition execution.
+//! Deterministic ordering and barrier semantics for full-Earth partition execution.
 //!
-//! The private scheduler checkpoint has a strict, canonical wire form so a future
-//! durable queue cannot let a platform-specific serializer choose history. It is not
-//! yet engine state, a snapshot field, or a canonical-world authorization.
+//! The engine stores the canonical schedule directly in state and snapshots. Worker
+//! count and arrival order remain operational details and cannot affect resolved order.
 
 use std::{
     cmp::Ordering,
@@ -257,6 +256,11 @@ impl PartitionSchedule {
     #[must_use]
     pub fn entries(&self) -> &[ScheduledWork] {
         &self.entries
+    }
+
+    #[must_use]
+    pub const fn partition_level(&self) -> u8 {
+        self.partition_level
     }
 
     pub fn plan_next_tick(&self, current_tick: SimTick) -> Result<TickPlan, SchedulerError> {

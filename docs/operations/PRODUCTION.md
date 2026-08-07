@@ -1,8 +1,9 @@
 # Production runbook
 
 This is a one-server deployment runbook for a small population. It is intentionally
-not a launch authorization: the runner continues to reject canonical full-Earth genesis
-until the scientific bundle and embodied execution milestones are complete.
+not a launch authorization: although the engine library can replay a configured
+full-Earth foundation, the runner exposes no canonical initializer until the scientific
+bundle and first real scheduled causal process are admitted.
 
 ## Network boundary
 

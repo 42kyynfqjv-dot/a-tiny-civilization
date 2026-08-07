@@ -33,7 +33,8 @@ hash and event semantics.
 ## Consequences
 
 The engine can now retain and replay where an embodied life is at the declared causal
-resolution without teaching that S2 address to the life itself. Locomotion, terrain
-collision, perception ranges, occupancy policy, cross-patch interactions, and the
-partition queue still need deterministic physical rules before full-Earth genesis is
+resolution without teaching that S2 address to the life itself. An empty durable
+partition queue is integrated, but locomotion, terrain collision, perception ranges,
+occupancy policy, cross-patch interactions, and the first real queued causal process
+still need deterministic physical rules before production full-Earth genesis is
 enabled.

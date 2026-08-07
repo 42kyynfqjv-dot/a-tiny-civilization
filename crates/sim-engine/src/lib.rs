@@ -1,7 +1,5 @@
 //! Pure deterministic planning, state transitions, snapshots, and replay.
 
-// Compiled as a reference implementation, but deliberately hidden until embodied
-// scheduling defines a stable crate API and persistent representation.
 #[allow(dead_code)]
 mod partition;
 #[allow(dead_code)]
@@ -11,14 +9,15 @@ mod spatial;
 
 use std::collections::BTreeMap;
 
+use partition::{PartitionSchedule, SchedulerError};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
     BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, DeathCause, Digest,
     DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
     EventBatch, EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION,
-    OrganismRole, PrimitiveAction, S2CellId, SequenceOverflow, SimTick, SituatedPerception,
-    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    OrganismRole, PrimitiveAction, S2CellId, S2CellIdError, SequenceOverflow, SimTick,
+    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
 };
 
@@ -27,9 +26,11 @@ pub const RULESET_VERSION: u32 = 1;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
+pub const PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION: u16 = 4;
 const LEGACY_STATE_HASH_SCHEMA_VERSION: u16 = 1;
 const STATE_HASH_SCHEMA_VERSION: u16 = 2;
 const EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION: u16 = 3;
+const PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION: u16 = 4;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -104,6 +105,8 @@ pub struct EngineState {
     status: WorldStatus,
     tick: SimTick,
     organisms: BTreeMap<EntityId, OrganismState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    partition_schedule: Option<PartitionSchedule>,
 }
 
 impl EngineState {
@@ -115,6 +118,7 @@ impl EngineState {
             status: WorldStatus::Initializing,
             tick: SimTick::ZERO,
             organisms: BTreeMap::new(),
+            partition_schedule: None,
         }
     }
 
@@ -161,6 +165,13 @@ impl EngineState {
             .count()
     }
 
+    #[must_use]
+    pub fn scheduled_work_count(&self) -> usize {
+        self.partition_schedule
+            .as_ref()
+            .map_or(0, |schedule| schedule.entries().len())
+    }
+
     pub fn plan_genesis(
         &self,
         initial_organisms: Vec<InitialOrganism>,
@@ -174,9 +185,6 @@ impl EngineState {
         initial_organisms: Vec<InitialOrganism>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
         configuration.validate()?;
-        if matches!(&configuration.execution, ExecutionScale::Partitioned { .. }) {
-            return Err(EngineError::PartitionedExecutionNotImplemented);
-        }
         self.plan_genesis_internal(Some(configuration), initial_organisms)
     }
 
@@ -226,6 +234,7 @@ impl EngineState {
     pub fn plan_next_tick(&self) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_status(WorldStatus::Running)?;
         let next = self.tick.checked_next()?;
+        self.resolve_partition_tick()?;
         let mut events = vec![DomainEvent::TickAdvanced {
             from: self.tick,
             to: next,
@@ -326,11 +335,7 @@ impl EngineState {
         next.apply_events(&events)?;
         next.validate()?;
         if let Some(configuration) = &next.configuration {
-            let actual = u64::try_from(events.len()).map_err(|_| EngineError::TooManyEvents)?;
-            let maximum = u64::from(configuration.transition_event_limit());
-            if actual > maximum {
-                return Err(EngineError::EventBudgetExceeded { actual, maximum });
-            }
+            self.validate_event_budget(configuration, &events, &next)?;
         }
         let state_hash = next.state_hash()?;
         let event_schema_version = next.event_schema_version();
@@ -356,7 +361,114 @@ impl EngineState {
             status: self.status,
             tick: self.tick,
             organisms: self.organisms.values().collect(),
+            partition_schedule: self.partition_schedule.as_ref(),
         })
+    }
+
+    fn partition_profile(&self) -> Option<(u8, u32)> {
+        self.configuration
+            .as_ref()
+            .and_then(WorldConfiguration::partitioned_execution)
+            .map(|execution| {
+                (
+                    execution.partition_s2_level,
+                    execution.max_events_per_partition_transition,
+                )
+            })
+    }
+
+    fn resolve_partition_tick(&self) -> Result<Option<PartitionSchedule>, EngineError> {
+        let Some((partition_level, maximum_events)) = self.partition_profile() else {
+            return Ok(None);
+        };
+        let schedule = self.partition_schedule.as_ref().ok_or_else(|| {
+            EngineError::PartitionScheduleState(
+                "full-Earth state has no durable partition schedule".to_owned(),
+            )
+        })?;
+        if schedule.partition_level() != partition_level {
+            return Err(EngineError::PartitionScheduleState(
+                "partition schedule level differs from world configuration".to_owned(),
+            ));
+        }
+        if !schedule.entries().is_empty() {
+            return Err(EngineError::PartitionScheduleState(
+                "ruleset 1 has no admitted scheduled causal process".to_owned(),
+            ));
+        }
+        let resolved = schedule
+            .plan_next_tick(self.tick)?
+            .complete::<DomainEvent>(Vec::new(), maximum_events)?;
+        Ok(Some(resolved.next_schedule().clone()))
+    }
+
+    fn validate_event_budget(
+        &self,
+        configuration: &WorldConfiguration,
+        events: &[DomainEvent],
+        resulting_state: &Self,
+    ) -> Result<(), EngineError> {
+        let maximum = u64::from(configuration.transition_event_limit());
+        match &configuration.execution {
+            ExecutionScale::SingleTransition { .. } => {
+                let actual = u64::try_from(events.len()).map_err(|_| EngineError::TooManyEvents)?;
+                if actual > maximum {
+                    return Err(EngineError::EventBudgetExceeded { actual, maximum });
+                }
+            }
+            ExecutionScale::Partitioned {
+                partitioned_execution,
+            } => {
+                let mut counts = BTreeMap::<Option<S2CellId>, u64>::new();
+                for event in events {
+                    let partition = self.event_partition(
+                        event,
+                        resulting_state,
+                        partitioned_execution.partition_s2_level,
+                    )?;
+                    let count = counts.entry(partition).or_default();
+                    *count = count.checked_add(1).ok_or(EngineError::TooManyEvents)?;
+                }
+                if let Some((partition, actual)) =
+                    counts.into_iter().find(|(_, actual)| *actual > maximum)
+                {
+                    return Err(EngineError::PartitionEventBudgetExceeded {
+                        partition,
+                        actual,
+                        maximum,
+                    });
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn event_partition(
+        &self,
+        event: &DomainEvent,
+        resulting_state: &Self,
+        partition_level: u8,
+    ) -> Result<Option<S2CellId>, EngineError> {
+        let patch = match event {
+            DomainEvent::OrganismInitialized { embodied_patch, .. }
+            | DomainEvent::OrganismBorn { embodied_patch, .. } => *embodied_patch,
+            DomainEvent::OrganismMoved { to_patch, .. } => Some(*to_patch),
+            DomainEvent::OrganismDied { organism_id, .. }
+            | DomainEvent::OrganismPerceived { organism_id, .. }
+            | DomainEvent::OrganismActed { organism_id, .. } => self
+                .organisms
+                .get(organism_id)
+                .or_else(|| resulting_state.organisms.get(organism_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::WorldStarted { .. }
+            | DomainEvent::WorldConfigured { .. }
+            | DomainEvent::TickAdvanced { .. }
+            | DomainEvent::WorldExtinct
+            | DomainEvent::WorldArchived => None,
+        };
+        patch
+            .map(|patch| patch.ancestor(partition_level).map_err(EngineError::from))
+            .transpose()
     }
 
     fn apply_events(&mut self, events: &[DomainEvent]) -> Result<(), EngineError> {
@@ -382,7 +494,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self
+        if self.partition_schedule.is_some() {
+            PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION
+        } else if self
             .configuration
             .as_ref()
             .and_then(WorldConfiguration::embodied_patch_s2_level)
@@ -417,10 +531,13 @@ impl EngineState {
                     return Err(EngineError::ConfigurationAfterOrganisms);
                 }
                 configuration.validate()?;
-                if configuration.embodied_patch_s2_level().is_some() {
-                    return Err(EngineError::PartitionedExecutionNotImplemented);
-                }
                 self.configuration = Some(configuration.clone());
+                self.partition_schedule = configuration
+                    .partitioned_execution()
+                    .map(|execution| {
+                        PartitionSchedule::new(execution.partition_s2_level, Vec::new())
+                    })
+                    .transpose()?;
             }
             DomainEvent::OrganismInitialized {
                 organism_id,
@@ -457,6 +574,9 @@ impl EngineState {
                         from: *from,
                         to: *to,
                     });
+                }
+                if let Some(schedule) = self.resolve_partition_tick()? {
+                    self.partition_schedule = Some(schedule);
                 }
                 self.tick = *to;
             }
@@ -661,6 +781,27 @@ impl EngineState {
                 return Err(EngineError::NonCanonicalParentOrder);
             }
         }
+        match (self.partition_profile(), &self.partition_schedule) {
+            (None, None) => {}
+            (None, Some(_)) => {
+                return Err(EngineError::PartitionScheduleState(
+                    "bounded state unexpectedly contains a partition schedule".to_owned(),
+                ));
+            }
+            (Some(_), None) => {
+                return Err(EngineError::PartitionScheduleState(
+                    "full-Earth state has no durable partition schedule".to_owned(),
+                ));
+            }
+            (Some((partition_level, _)), Some(actual)) => {
+                let expected = PartitionSchedule::new(partition_level, Vec::new())?;
+                if actual != &expected {
+                    return Err(EngineError::PartitionScheduleState(
+                        "ruleset 1 has no admitted scheduled causal process".to_owned(),
+                    ));
+                }
+            }
+        }
         Ok(())
     }
 }
@@ -674,6 +815,8 @@ struct StateHashMaterial<'a> {
     status: WorldStatus,
     tick: SimTick,
     organisms: Vec<&'a OrganismState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    partition_schedule: Option<&'a PartitionSchedule>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -694,7 +837,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state
+        let snapshot_schema_version = if state.partition_schedule.is_some() {
+            PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+        } else if state
             .configuration
             .as_ref()
             .and_then(WorldConfiguration::embodied_patch_s2_level)
@@ -722,12 +867,15 @@ impl Snapshot {
             LEGACY_SNAPSHOT_SCHEMA_VERSION
                 | SNAPSHOT_SCHEMA_VERSION
                 | EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
+                | PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self
+        let expected_schema_version = if self.state.partition_schedule.is_some() {
+            PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+        } else if self
             .state
             .configuration
             .as_ref()
@@ -926,8 +1074,14 @@ pub enum EngineError {
     EventBudgetExceeded { actual: u64, maximum: u64 },
     #[error("transition contains more events than the host can count")]
     TooManyEvents,
-    #[error("full-Earth genesis is blocked until deterministic partition execution is implemented")]
-    PartitionedExecutionNotImplemented,
+    #[error("partition event budget exceeded for {partition:?}: {actual} > {maximum}")]
+    PartitionEventBudgetExceeded {
+        partition: Option<S2CellId>,
+        actual: u64,
+        maximum: u64,
+    },
+    #[error("partition schedule state is inconsistent: {0}")]
+    PartitionScheduleState(String),
     #[error("a durable embodied patch requires a full-Earth configuration")]
     EmbodiedPatchRequiresFullEarthConfiguration,
     #[error("full-Earth initial organisms require an embodied patch")]
@@ -1003,6 +1157,10 @@ pub enum EngineError {
     EventBatch(#[from] EventBatchError),
     #[error(transparent)]
     CanonicalHash(#[from] CanonicalHashError),
+    #[error(transparent)]
+    Scheduler(#[from] SchedulerError),
+    #[error(transparent)]
+    S2(#[from] S2CellIdError),
 }
 
 #[cfg(test)]
@@ -1109,6 +1267,14 @@ mod tests {
             },
         )
         .expect("valid full-Earth configuration")
+    }
+
+    fn full_earth_person(world_id: WorldId) -> InitialOrganism {
+        let mut person = initial_person(world_id);
+        let patch: S2CellId = "0000000000004000".parse().expect("valid L23 S2 cell");
+        assert_eq!(patch.level(), 23);
+        person.embodied_patch = Some(patch);
+        person
     }
 
     fn committed_history() -> Vec<EventBatch> {
@@ -1309,18 +1475,41 @@ mod tests {
     }
 
     #[test]
-    fn canonical_full_earth_genesis_is_blocked_until_partition_execution_exists() {
-        let initial = EngineState::new(manifest());
-        assert!(matches!(
-            initial.plan_configured_genesis(full_earth_configuration(), Vec::new()),
-            Err(EngineError::PartitionedExecutionNotImplemented)
-        ));
+    fn full_earth_genesis_ticks_and_replays_with_a_durable_partition_schedule() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                full_earth_configuration(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("full-Earth genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("full-Earth genesis commit");
+        assert_eq!(running.scheduled_work_count(), 0);
+        assert_eq!(
+            Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
+                .expect("partitioned snapshot")
+                .snapshot_schema_version,
+            PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+        );
+
+        let tick_events = running.plan_next_tick().expect("partitioned tick plan");
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("partitioned tick commit");
+        assert_eq!(after_tick.tick(), SimTick::new(1));
+        assert_eq!(after_tick.scheduled_work_count(), 0);
+        let replayed = replay(manifest, &[genesis, tick]).expect("partitioned replay");
+        assert_eq!(replayed.state, after_tick);
     }
 
     #[test]
-    fn manual_full_earth_events_cannot_bypass_the_genesis_guard() {
+    fn manual_full_earth_events_cannot_bypass_embodied_patch_requirement() {
         let manifest = manifest();
         let initial = EngineState::new(manifest.clone());
+        let person = initial_person(manifest.world_id);
         assert!(matches!(
             initial.commit(
                 EventSequence::new(1),
@@ -1330,9 +1519,38 @@ mod tests {
                     DomainEvent::WorldConfigured {
                         configuration: full_earth_configuration(),
                     },
+                    DomainEvent::OrganismInitialized {
+                        organism_id: person.organism_id,
+                        species: person.species,
+                        role: person.role,
+                        birth_category: person.birth_category,
+                        initial_age_ticks: person.initial_age_ticks,
+                        location_id: person.location_id,
+                        embodied_patch: None,
+                    },
                 ],
             ),
-            Err(EngineError::PartitionedExecutionNotImplemented)
+            Err(EngineError::MissingInitialEmbodiedPatch)
+        ));
+    }
+
+    #[test]
+    fn full_earth_state_cannot_drop_its_durable_schedule() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let events = initial
+            .plan_configured_genesis(
+                full_earth_configuration(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("full-Earth genesis plan");
+        let (mut running, _) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, events)
+            .expect("full-Earth genesis");
+        running.partition_schedule = None;
+        assert!(matches!(
+            running.validate(),
+            Err(EngineError::PartitionScheduleState(_))
         ));
     }
 

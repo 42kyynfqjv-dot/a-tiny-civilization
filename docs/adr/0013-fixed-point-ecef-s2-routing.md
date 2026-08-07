@@ -86,9 +86,7 @@ The reference proves:
 
 ## Consequences
 
-The physical-to-hierarchical address bridge is now testable without claiming that an
-organism has durable physical state. Conserved refinement can use the same exact cell
-semantics in a private proof. Full-Earth genesis still returns
-`PartitionedExecutionNotImplemented` until position persistence, movement, refinement,
-durable scheduling, and the commit barrier are integrated through explicit schema
-decisions.
+The physical-to-hierarchical address bridge is testable and durable embodied patch
+state now uses the same exact cell semantics. The engine can replay a configured
+full-Earth foundation with an empty durable partition schedule, but the production
+runner remains gated on exact source admission and a real scheduled causal process.

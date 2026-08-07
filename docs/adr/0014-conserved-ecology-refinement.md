@@ -104,7 +104,7 @@ The repository now has an exact, order-independent conservation proof between it
 first two causal S2 tiers without claiming durable ecology. Together with
 [ADR 0012](0012-deterministic-partition-barrier.md) and
 [ADR 0013](0013-fixed-point-ecef-s2-routing.md), this removes another arithmetic
-ambiguity before embodied state is frozen. Canonical full-Earth genesis remains
-blocked until exact source bundles, coupled ecological quantities, retained refined
-state and deltas, embodied positions and movement, durable scheduling, and the
-persistence barrier are designed and verified.
+ambiguity before embodied state is frozen. The engine now carries embodied positions
+and an empty durable schedule, but production canonical genesis remains gated on exact
+source bundles, coupled ecological quantities, retained refined state and deltas,
+movement, the first real scheduled process, and the persistence barrier.
