@@ -4,6 +4,7 @@
 //! source-addressable species identity to later placement and physiology adapters.
 
 use std::{
+    collections::{BTreeMap, BTreeSet},
     fs::File,
     io::{BufReader, Read},
     path::Path,
@@ -132,6 +133,26 @@ impl GbifAnimaliaCatalogReader {
         }
         Ok(None)
     }
+
+    /// Resolve an exact, bounded set of canonical scientific names in one streaming
+    /// catalog pass. A name can deliberately return more than one accepted record;
+    /// callers must treat that as unresolved rather than choosing a taxon.
+    pub fn find_canonical_names(
+        mut self,
+        expected_names: &BTreeSet<String>,
+    ) -> Result<BTreeMap<String, Vec<GbifAnimaliaSpecies>>, GbifAnimaliaCatalogError> {
+        let mut matches = expected_names
+            .iter()
+            .cloned()
+            .map(|name| (name, Vec::new()))
+            .collect::<BTreeMap<_, _>>();
+        while let Some(species) = self.next_species()? {
+            if let Some(found) = matches.get_mut(&species.canonical_name) {
+                found.push(species);
+            }
+        }
+        Ok(matches)
+    }
 }
 
 fn read_string(reader: &mut impl Read) -> Result<String, GbifAnimaliaCatalogError> {
@@ -238,6 +259,20 @@ mod tests {
                 .identifier,
             "5219173"
         );
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn exact_name_lookup_keeps_missing_and_ambiguous_records_explicit() {
+        let path = fixture_path();
+        write_fixture(&path);
+        let names = BTreeSet::from(["Canis lupus".to_owned(), "Missing species".to_owned()]);
+        let found = GbifAnimaliaCatalogReader::open(&path)
+            .expect("open fixture")
+            .find_canonical_names(&names)
+            .expect("stream fixture");
+        assert_eq!(found["Canis lupus"].len(), 1);
+        assert!(found["Missing species"].is_empty());
         fs::remove_file(path).expect("remove fixture");
     }
 
