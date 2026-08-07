@@ -3,6 +3,7 @@
 mod celestial;
 mod configuration;
 mod embodiment;
+mod environment;
 mod event;
 mod geographic;
 mod hash;
@@ -28,6 +29,9 @@ pub use configuration::{
 pub use embodiment::{
     EmbodimentError, NeedKind, NeedSignal, PerceptionChannel, PrimitiveAction, PrimitiveActionKind,
     PropertyReading, SituatedPerception,
+};
+pub use environment::{
+    LocalEnvironmentError, NORMAL_YEAR_PHASE_COUNT, ProvisionalLocalEnvironmentBaseline,
 };
 pub use event::{
     BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
