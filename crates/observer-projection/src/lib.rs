@@ -620,6 +620,7 @@ mod tests {
                 parent_ids: vec![EntityId::from_uuid(Uuid::from_u128(13))],
                 location_id: Some(EntityId::from_uuid(Uuid::from_u128(14))),
                 embodied_patch: None,
+                metabolic_rate: None,
             },
             DomainEvent::OrganismDied {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
@@ -679,6 +680,7 @@ mod tests {
                 parent_ids: vec![EntityId::from_uuid(Uuid::from_u128(23))],
                 location_id: Some(EntityId::from_uuid(Uuid::from_u128(24))),
                 embodied_patch: None,
+                metabolic_rate: None,
             }],
             Digest::sha256(b"organism projection state"),
         )

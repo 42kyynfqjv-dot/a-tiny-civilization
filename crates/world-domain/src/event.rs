@@ -2,9 +2,9 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHashError, CelestialState, Digest, EntityId, EventId, EventSequence, PrimitiveAction,
-    S2CellId, SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId,
-    WorldManifest,
+    CanonicalHashError, CelestialState, Digest, EntityId, EventId, EventSequence,
+    MetabolicRateCommitment, PrimitiveAction, S2CellId, SimTick, SituatedPerception,
+    SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -21,6 +21,9 @@ pub const SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION: u16 = 6;
 /// The raw source evaluator remains outside the engine; this event is its exact,
 /// hash-chained hand-off into canonical history.
 pub const CELESTIAL_STATE_EVENT_SCHEMA_VERSION: u16 = 7;
+/// Adds source-pinned organism body provenance. This is an evidentiary commitment,
+/// not a claim that metabolism or ecology is scientifically complete.
+pub const BODY_PROVENANCE_EVENT_SCHEMA_VERSION: u16 = 8;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -93,6 +96,8 @@ pub enum DomainEvent {
         location_id: Option<EntityId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         embodied_patch: Option<S2CellId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metabolic_rate: Option<MetabolicRateCommitment>,
     },
     TickAdvanced {
         from: SimTick,
@@ -107,6 +112,8 @@ pub enum DomainEvent {
         location_id: Option<EntityId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         embodied_patch: Option<S2CellId>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        metabolic_rate: Option<MetabolicRateCommitment>,
     },
     OrganismDied {
         organism_id: EntityId,
@@ -281,6 +288,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
             | SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
             | CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+            | BODY_PROVENANCE_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -339,7 +347,29 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismInitialized {
+                metabolic_rate: Some(_),
+                ..
+            } | DomainEvent::OrganismBorn {
+                metabolic_rate: Some(_),
+                ..
+            }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
+        DomainEvent::OrganismInitialized { metabolic_rate, .. }
+        | DomainEvent::OrganismBorn { metabolic_rate, .. } => {
+            if let Some(metabolic_rate) = metabolic_rate {
+                metabolic_rate
+                    .validate()
+                    .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+        }
         DomainEvent::OrganismPerceived { perception, .. } => perception
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,

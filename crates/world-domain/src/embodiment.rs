@@ -6,7 +6,47 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::EntityId;
+use crate::{Digest, EntityId, SpeciesIdentity};
+
+/// A source-pinned measured power carried by a particular organism.
+///
+/// This preserves exactly one retained observation without making an unsupported
+/// claim that it is a basal rate, daily requirement, or environmental response.
+/// A later ruleset may use it only alongside an explicit conversion and exposure
+/// model. Keeping the commitment in canonical body state prevents a runner or
+/// projection from silently changing the evidence that shaped a living world.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MetabolicRateCommitment {
+    pub commitment_schema_version: u16,
+    pub profile_set_digest: Digest,
+    pub observed_species: SpeciesIdentity,
+    pub source_record_id: String,
+    pub source_record_digest: Digest,
+    pub measured_power_value: i64,
+    pub measured_power_decimal_places: u8,
+}
+
+pub const METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+
+impl MetabolicRateCommitment {
+    pub fn validate(&self) -> Result<(), EmbodimentError> {
+        if self.commitment_schema_version != METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION {
+            return Err(EmbodimentError::UnsupportedMetabolicCommitmentSchema);
+        }
+        if self.profile_set_digest == Digest::ZERO
+            || self.source_record_digest == Digest::ZERO
+            || !is_technical(&self.source_record_id)
+            || self.measured_power_value <= 0
+            || self.measured_power_decimal_places > 9
+        {
+            return Err(EmbodimentError::InvalidMetabolicCommitment);
+        }
+        self.observed_species
+            .validate()
+            .map_err(|_| EmbodimentError::InvalidMetabolicCommitment)?;
+        Ok(())
+    }
+}
 
 const FORBIDDEN_PRIVILEGED_CODES: &[&str] = &[
     "building",
@@ -160,8 +200,19 @@ fn is_code(value: &str) -> bool {
             .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_')
 }
 
+fn is_technical(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum EmbodimentError {
+    #[error("unsupported metabolic-rate commitment schema")]
+    UnsupportedMetabolicCommitmentSchema,
+    #[error("invalid metabolic-rate commitment")]
+    InvalidMetabolicCommitment,
     #[error("need signal intensity must be greater than zero")]
     ZeroNeedIntensity,
     #[error("perception property code {0:?} is invalid")]

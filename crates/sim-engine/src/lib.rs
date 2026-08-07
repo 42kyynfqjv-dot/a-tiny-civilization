@@ -16,14 +16,15 @@ use partition::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
-    CanonicalHashError, CelestialState, DeathCause, Digest, DomainEvent,
-    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
-    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
-    LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading, S2CellId,
-    S2CellIdError, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick,
-    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
+    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, DeathCause, Digest,
+    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
+    EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
+    LEGACY_EVENT_SCHEMA_VERSION, MetabolicRateCommitment, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
+    PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
+    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
@@ -53,6 +54,7 @@ pub const PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION: u16 = 4;
 pub const PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION: u16 = 5;
 pub const SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION: u16 = 6;
 pub const CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION: u16 = 7;
+pub const BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 8;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -65,6 +67,7 @@ const PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION: u16 = 4;
 const PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION: u16 = 5;
 const SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION: u16 = 6;
 const CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION: u16 = 7;
+const BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION: u16 = 8;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
 /// driver. It creates no cultural interpretation and does not claim a metabolic or
@@ -101,6 +104,7 @@ pub struct InitialOrganism {
     pub initial_age_ticks: u64,
     pub location_id: Option<EntityId>,
     pub embodied_patch: Option<S2CellId>,
+    pub metabolic_rate: Option<MetabolicRateCommitment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -124,6 +128,8 @@ pub struct OrganismState {
     location_id: Option<EntityId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     embodied_patch: Option<S2CellId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    metabolic_rate: Option<MetabolicRateCommitment>,
     death: Option<DeathRecord>,
 }
 
@@ -304,6 +310,7 @@ impl EngineState {
                 initial_age_ticks: organism.initial_age_ticks,
                 location_id: organism.location_id,
                 embodied_patch: organism.embodied_patch,
+                metabolic_rate: organism.metabolic_rate,
             }
         }));
         Ok(events)
@@ -849,7 +856,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_celestial_driver() {
+        if self.has_metabolic_rate_commitments() {
+            BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+        } else if self.uses_celestial_driver() {
             CELESTIAL_STATE_EVENT_SCHEMA_VERSION
         } else if self.uses_organism_execution_kernel()
             && self
@@ -879,8 +888,16 @@ impl EngineState {
         }
     }
 
+    fn has_metabolic_rate_commitments(&self) -> bool {
+        self.organisms
+            .values()
+            .any(|organism| organism.metabolic_rate.is_some())
+    }
+
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_celestial_driver() {
+        if self.has_metabolic_rate_commitments() {
+            BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_celestial_driver() {
             CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_organism_execution_kernel() && self.partition_schedule.is_some() {
             SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION
@@ -943,10 +960,21 @@ impl EngineState {
                 initial_age_ticks,
                 location_id,
                 embodied_patch,
+                metabolic_rate,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
                 self.validate_initial_embodied_patch(*embodied_patch)?;
+                if let Some(metabolic_rate) = metabolic_rate {
+                    metabolic_rate
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if metabolic_rate.observed_species != *species {
+                        return Err(EngineError::InvalidEmbodiedEvent(
+                            "metabolic-rate commitment species does not match organism".to_owned(),
+                        ));
+                    }
+                }
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
                     species: species.clone(),
@@ -961,6 +989,7 @@ impl EngineState {
                         .then_some(*initial_age_ticks),
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
+                    metabolic_rate: metabolic_rate.clone(),
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -987,10 +1016,21 @@ impl EngineState {
                 parent_ids,
                 location_id,
                 embodied_patch,
+                metabolic_rate,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
                 self.validate_initial_embodied_patch(*embodied_patch)?;
+                if let Some(metabolic_rate) = metabolic_rate {
+                    metabolic_rate
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if metabolic_rate.observed_species != *species {
+                        return Err(EngineError::InvalidEmbodiedEvent(
+                            "metabolic-rate commitment species does not match organism".to_owned(),
+                        ));
+                    }
+                }
                 if parent_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
                     return Err(EngineError::NonCanonicalParentOrder);
                 }
@@ -1012,6 +1052,7 @@ impl EngineState {
                     age_ticks: self.uses_organism_execution_kernel().then_some(0),
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
+                    metabolic_rate: metabolic_rate.clone(),
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -1287,7 +1328,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_celestial_driver() {
+        let snapshot_schema_version = if state.has_metabolic_rate_commitments() {
+            BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_celestial_driver() {
             CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_organism_execution_kernel() && state.partition_schedule.is_some() {
             SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
@@ -1331,12 +1374,15 @@ impl Snapshot {
                 | PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
                 | SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
                 | CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
+                | BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_celestial_driver() {
+        let expected_schema_version = if self.state.has_metabolic_rate_commitments() {
+            BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_celestial_driver() {
             CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_organism_execution_kernel()
             && self.state.partition_schedule.is_some()
@@ -1474,38 +1520,55 @@ fn replay_from_cursor(
                     if configuration.embodied_patch_s2_level().is_some()
             )
         });
-        let expected_schema = if state.uses_celestial_driver() {
-            CELESTIAL_STATE_EVENT_SCHEMA_VERSION
-        } else if state.uses_organism_execution_kernel()
-            && (state
+        let batch_has_metabolic_rate_commitment = batch.events.iter().any(|record| {
+            matches!(
+                &record.event,
+                DomainEvent::OrganismInitialized {
+                    metabolic_rate: Some(_),
+                    ..
+                } | DomainEvent::OrganismBorn {
+                    metabolic_rate: Some(_),
+                    ..
+                }
+            )
+        });
+        let expected_schema =
+            if state.has_metabolic_rate_commitments() || batch_has_metabolic_rate_commitment {
+                BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+            } else if state.uses_celestial_driver() {
+                CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+            } else if state.uses_organism_execution_kernel()
+                && (state
+                    .configuration
+                    .as_ref()
+                    .and_then(WorldConfiguration::embodied_patch_s2_level)
+                    .is_some()
+                    || configures_embodied_world)
+            {
+                SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+            } else if state
+                .configuration
+                .as_ref()
+                .is_some_and(WorldConfiguration::is_provisional_execution)
+                || configures_provisional_world
+            {
+                PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+            } else if state
                 .configuration
                 .as_ref()
                 .and_then(WorldConfiguration::embodied_patch_s2_level)
                 .is_some()
-                || configures_embodied_world)
-        {
-            SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
-        } else if state
-            .configuration
-            .as_ref()
-            .is_some_and(WorldConfiguration::is_provisional_execution)
-            || configures_provisional_world
-        {
-            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
-        } else if state
-            .configuration
-            .as_ref()
-            .and_then(WorldConfiguration::embodied_patch_s2_level)
-            .is_some()
-            || configures_embodied_world
-        {
-            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
-        } else if is_configured {
-            EVENT_SCHEMA_VERSION
-        } else {
-            LEGACY_EVENT_SCHEMA_VERSION
-        };
-        let valid_schema = if expected_schema == CELESTIAL_STATE_EVENT_SCHEMA_VERSION {
+                || configures_embodied_world
+            {
+                EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+            } else if is_configured {
+                EVENT_SCHEMA_VERSION
+            } else {
+                LEGACY_EVENT_SCHEMA_VERSION
+            };
+        let valid_schema = if expected_schema == BODY_PROVENANCE_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+        } else if expected_schema == CELESTIAL_STATE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == CELESTIAL_STATE_EVENT_SCHEMA_VERSION
         } else if expected_schema == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
@@ -1727,6 +1790,7 @@ mod tests {
             initial_age_ticks: 0,
             location_id: None,
             embodied_patch: None,
+            metabolic_rate: None,
         }
     }
 
@@ -1982,6 +2046,50 @@ mod tests {
             committed_history()
                 .iter()
                 .all(|batch| batch.event_schema_version == LEGACY_EVENT_SCHEMA_VERSION)
+        );
+    }
+
+    #[test]
+    fn source_pinned_metabolic_commitment_is_hash_chained_and_replayable() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let mut person = initial_person(manifest.world_id);
+        person.metabolic_rate = Some(MetabolicRateCommitment {
+            commitment_schema_version: 1,
+            profile_set_digest: Digest::sha256(b"retained metabolic profile set"),
+            observed_species: person.species.clone(),
+            source_record_id: "retained-row-1".to_owned(),
+            source_record_digest: Digest::sha256(b"retained metabolic source row"),
+            measured_power_value: 125,
+            measured_power_decimal_places: 3,
+        });
+        let genesis_events = initial
+            .plan_configured_genesis(world_configuration(), vec![person])
+            .expect("committed genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("source-pinned genesis batch");
+        assert_eq!(
+            genesis.event_schema_version,
+            BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+        );
+        let tick_events = running.plan_next_tick().expect("tick plan");
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("source-pinned tick batch");
+        assert_eq!(
+            tick.event_schema_version,
+            BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+        );
+        let snapshot = Snapshot::new(after_tick.clone(), tick.sequence, tick.batch_hash)
+            .expect("source-pinned snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, tick]).expect("replay").state,
+            after_tick
         );
     }
 
@@ -2380,6 +2488,7 @@ mod tests {
                         initial_age_ticks: person.initial_age_ticks,
                         location_id: person.location_id,
                         embodied_patch: None,
+                        metabolic_rate: None,
                     },
                 ],
             ),

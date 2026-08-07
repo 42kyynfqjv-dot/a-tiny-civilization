@@ -5,7 +5,9 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use world_domain::{Digest, SpeciesIdentity};
+use world_domain::{
+    Digest, METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, MetabolicRateCommitment, SpeciesIdentity,
+};
 
 use crate::{FaunaEvidenceBasis, FaunaEvidenceSource, ScaledFaunaTraitValue};
 
@@ -108,6 +110,26 @@ impl FaunaMetabolicRateSelection {
             return Err(FaunaPhysiologyProfileError::InvalidSelectedMetabolicProfile);
         }
         Ok(profile)
+    }
+
+    /// Resolve this selection into the exact canonical body-state commitment.
+    ///
+    /// The resulting value remains a retained standardized measurement in watts;
+    /// it deliberately carries no conversion into a dietary or survival model.
+    pub fn resolve_commitment(
+        &self,
+        profiles: &FaunaPhysiologyProfileSet,
+    ) -> Result<MetabolicRateCommitment, FaunaPhysiologyProfileError> {
+        let profile = self.resolve(profiles)?;
+        Ok(MetabolicRateCommitment {
+            commitment_schema_version: METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+            profile_set_digest: self.profile_set_digest,
+            observed_species: profile.species.clone(),
+            source_record_id: profile.source_record_id.clone(),
+            source_record_digest: profile.source_record_digest,
+            measured_power_value: profile.value.value,
+            measured_power_decimal_places: profile.value.decimal_places,
+        })
     }
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaunaPhysiologyProfileError> {
@@ -369,6 +391,11 @@ mod tests {
                 .unit,
             "W"
         );
+        let commitment = selection
+            .resolve_commitment(&profiles)
+            .expect("exact commitment resolves");
+        assert_eq!(commitment.measured_power_value, 125);
+        assert_eq!(commitment.source_record_digest, Digest::sha256(b"row"));
         let bytes = selection.canonical_bytes().expect("canonical selection");
         assert_eq!(
             FaunaMetabolicRateSelection::from_canonical_slice(&bytes),
