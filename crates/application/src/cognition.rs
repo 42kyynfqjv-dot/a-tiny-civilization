@@ -7,12 +7,13 @@ use world_domain::{
     ActionValueState, BodilyNeedState, Digest, EntityId, EventSequence, PerceptionChannel,
     PrimitiveActionKind, SimTick, WorldId,
 };
+pub use world_domain::{CognitionReading as CognitionInputReading, cognition_request_id};
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 1;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 const MAX_INPUT_READINGS: usize = 32;
-const MAX_RECALLED_MEMORIES: usize = 8;
+pub const MAX_COGNITION_RECALLED_MEMORIES: usize = 8;
 const MAX_MEMORY_CONTENT_BYTES: usize = 4 * 1024;
 const MAX_MEMORY_CONTEXT_BYTES: usize = 512;
 const MAX_PROVIDER_ID_BYTES: usize = 256;
@@ -349,17 +350,6 @@ impl CognitionRouteRegistry {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CognitionInputReading {
-    pub subject_id: Option<EntityId>,
-    pub channel: PerceptionChannel,
-    pub property_code: String,
-    pub quantized_value: i32,
-    pub uncertainty: u16,
-    pub observed_at: SimTick,
-}
-
-#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(deny_unknown_fields)]
 pub struct CognitionMemoryInput {
     pub document_id: Uuid,
     pub source_sequence: EventSequence,
@@ -375,6 +365,7 @@ pub struct ModelCognitionRequest {
     pub request_id: Uuid,
     pub world_id: WorldId,
     pub agent_id: EntityId,
+    pub ordinal: u32,
     pub selected_at_tick: SimTick,
     pub deadline_tick: SimTick,
     pub bodily_needs: BodilyNeedState,
@@ -390,6 +381,16 @@ impl ModelCognitionRequest {
             return Err(CognitionContractError::UnsupportedContractVersion(
                 self.contract_version,
             ));
+        }
+        if self.request_id
+            != cognition_request_id(
+                self.world_id,
+                self.agent_id,
+                self.selected_at_tick,
+                self.ordinal,
+            )
+        {
+            return Err(CognitionContractError::InvalidDeterministicRequestId);
         }
         if self.deadline_tick <= self.selected_at_tick {
             return Err(CognitionContractError::InvalidDeadline);
@@ -420,7 +421,7 @@ impl ModelCognitionRequest {
         {
             return Err(CognitionContractError::InvalidActionValues);
         }
-        if self.recalled_memories.len() > MAX_RECALLED_MEMORIES
+        if self.recalled_memories.len() > MAX_COGNITION_RECALLED_MEMORIES
             || self
                 .recalled_memories
                 .windows(2)
@@ -614,6 +615,8 @@ pub enum CognitionContractError {
     UnsupportedContractVersion(u16),
     #[error("unsupported cognition route-policy version {0}")]
     UnsupportedRoutePolicyVersion(u16),
+    #[error("cognition request ID does not match its world, life, tick, and ordinal")]
+    InvalidDeterministicRequestId,
     #[error("cognition provider ID must be a short lowercase ASCII slug")]
     InvalidProviderId,
     #[error("cognition model route is not explicitly approved")]

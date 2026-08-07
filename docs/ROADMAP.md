@@ -370,9 +370,13 @@ ladder are now implemented under ADR 0051. The versioned registry has 256 route 
 separates production allocations from trial/development endpoints, caps one job at
 sixteen network attempts, records normalized attempt outcomes, and leaves the sole
 approved paid DeepSeek V4 Flash route unreachable without per-job authorization.
-PostgreSQL request selection, cost reservation, worker leases, deterministic deadline
-latching, canonical input events, and replay integration remain the active checkpoint;
-no current runner path invokes a model.
+Ruleset 16 now canonically selects one world-total request from exact body-owned state,
+commits its fixed simulated-time deadline, and carries it through event schema 18 and
+snapshot/state-hash schema 19 under ADR 0052. Hindsight results are normalized and
+re-admitted only by exact comparison with accepted local memory deliveries. PostgreSQL
+job insertion, cost reservation, worker leases, deterministic deadline latching, and
+canonical result consumption remain the active checkpoint; no current runner path
+invokes a model.
 
 ### 4. Evidence observatory
 

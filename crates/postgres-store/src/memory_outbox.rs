@@ -1,5 +1,7 @@
 use application::{
-    MemoryOutboxEntry, MemoryOutboxStore, MemoryRetain, MemoryRetainReceipt, StoreError,
+    CognitionMemoryInput, MAX_COGNITION_RECALLED_MEMORIES, MEMORY_PAYLOAD_VERSION,
+    MemoryOutboxEntry, MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain,
+    MemoryRetainReceipt, StoreError,
 };
 use async_trait::async_trait;
 use serde_json::Value;
@@ -147,6 +149,72 @@ impl MemoryOutboxStore for PostgresStore {
         .await
         .map_err(operation_error)?;
         require_single_update(updated.rows_affected(), entry.retain.operation_id)
+    }
+
+    async fn admit_recall_for_cognition(
+        &self,
+        request: &MemoryRecallRequest,
+        outcome: &MemoryRecallOutcome,
+    ) -> Result<Vec<CognitionMemoryInput>, StoreError> {
+        outcome.validate_against(request).map_err(corrupt)?;
+        let MemoryRecallOutcome::Available { results, .. } = outcome else {
+            return Ok(Vec::new());
+        };
+        let mut admitted = Vec::with_capacity(results.len().min(MAX_COGNITION_RECALLED_MEMORIES));
+        for recalled in results.iter().take(MAX_COGNITION_RECALLED_MEMORIES) {
+            let payload = sqlx::query_scalar::<_, Value>(
+                r#"
+                SELECT payload
+                FROM memory_outbox
+                WHERE document_id = $1
+                  AND world_id = $2
+                  AND agent_id = $3
+                  AND bank_id = $4
+                  AND payload_version = $5
+                  AND completed_at IS NOT NULL
+                "#,
+            )
+            .bind(recalled.document_id)
+            .bind(request.world_id.as_uuid())
+            .bind(request.agent_id.as_uuid())
+            .bind(&request.bank_id)
+            .bind(i32::from(MEMORY_PAYLOAD_VERSION))
+            .fetch_optional(self.pool())
+            .await
+            .map_err(operation_error)?
+            .ok_or_else(|| {
+                StoreError::Conflict(format!(
+                    "recalled document {} was not accepted for this life",
+                    recalled.document_id
+                ))
+            })?;
+            let retained: MemoryRetain = serde_json::from_value(payload).map_err(corrupt)?;
+            retained.validate().map_err(corrupt)?;
+            if retained.document_id != recalled.document_id
+                || retained.world_id != request.world_id
+                || retained.agent_id != request.agent_id
+                || retained.bank_id != request.bank_id
+                || retained.source_sequence != recalled.source_sequence
+                || retained.sim_tick != recalled.sim_tick
+                || retained.ordinal != recalled.ordinal
+                || retained.content != recalled.text
+                || retained.context != recalled.context
+            {
+                return Err(StoreError::Conflict(format!(
+                    "recalled document {} differs from its accepted local source",
+                    recalled.document_id
+                )));
+            }
+            admitted.push(CognitionMemoryInput {
+                document_id: retained.document_id,
+                source_sequence: retained.source_sequence,
+                sim_tick: retained.sim_tick,
+                content: retained.content,
+                context: retained.context,
+            });
+        }
+        admitted.sort_by_key(|memory| memory.document_id);
+        Ok(admitted)
     }
 }
 

@@ -15,22 +15,25 @@ use partition::{
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
+use uuid::Uuid;
 use world_domain::{
     ACTION_LEARNING_EVENT_SCHEMA_VERSION, ACTION_VALUE_MAX, ACTION_VALUE_MIN,
     ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
     BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, BodilyNeedState, BodilyRegulationState,
-    CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError,
-    CelestialState, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
-    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
-    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
-    HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
-    HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
-    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
+    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, CognitionReading,
+    CognitionRequestSelection, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest,
+    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
+    EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
+    HERITABLE_ACTION_KINDS, HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
+    HERITABLE_DISPOSITION_SCHEMA_VERSION, HERITABLE_PROBABILITY_SCALE, HeritableActionWeight,
+    HeritableDisposition, HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
-    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity, MetabolicRateCommitment,
-    OralTransferCommitment, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    PerceptionChannel, PhysiologicalRegulationCommitment, PrimitiveAction, PrimitiveActionKind,
-    PropertyReading, REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
+    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MAX_COGNITION_SELECTION_READINGS, MaterialIdentity,
+    MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
+    PrimitiveAction, PrimitiveActionKind, PropertyReading,
+    REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
@@ -84,6 +87,9 @@ pub const REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION: u32 = 14;
 /// Ruleset fifteen gives every organism an immutable, species-bound inherited
 /// disposition over the neutral action grammar. Learned state remains life-local.
 pub const HERITABLE_DISPOSITION_RULESET_VERSION: u32 = 15;
+/// Ruleset sixteen adds deterministic world-total external-cognition request
+/// selection and pending deadline state. Remote services remain optional inputs.
+pub const COGNITION_RULESET_VERSION: u32 = 16;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -102,6 +108,15 @@ pub const MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION: u16 = 15;
 pub const ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 16;
 pub const REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION: u16 = 17;
 pub const HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 18;
+pub const COGNITION_SNAPSHOT_SCHEMA_VERSION: u16 = 19;
+/// External work receives this fixed simulated-time window. Wall-clock latency can
+/// decide only whether the result is present by the deadline, never move the deadline.
+pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
+pub const COGNITION_MEMORY_MAX_TOKENS: u32 = 512;
+pub const COGNITION_MODEL_MAX_OUTPUT_TOKENS: u16 = 32;
+const COGNITION_REQUEST_ORDINAL: u32 = 0;
+const COGNITION_MEMORY_QUERY_V1: &str =
+    "recent direct experiences matching current bodily pressure and situated property readings";
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -125,6 +140,7 @@ const MATERIAL_INGESTION_STATE_HASH_SCHEMA_VERSION: u16 = 15;
 const ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 16;
 const REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION: u16 = 17;
 const HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION: u16 = 18;
+const COGNITION_STATE_HASH_SCHEMA_VERSION: u16 = 19;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -618,6 +634,8 @@ pub struct EngineState {
     material_instances: BTreeMap<EntityId, MaterialInstanceState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pending_reproductive_developments: BTreeMap<EntityId, PendingReproductiveDevelopment>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pending_cognition_requests: BTreeMap<Uuid, CognitionRequestSelection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<PartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -637,6 +655,7 @@ impl EngineState {
             organisms: BTreeMap::new(),
             material_instances: BTreeMap::new(),
             pending_reproductive_developments: BTreeMap::new(),
+            pending_cognition_requests: BTreeMap::new(),
             partition_schedule: None,
             celestial_state: None,
             celestial_tick: None,
@@ -990,6 +1009,85 @@ impl EngineState {
             organism_id,
             perception,
         }])
+    }
+
+    /// Select one optional external-cognition job from canonical body-owned state.
+    /// The caller chooses only the living organism; request identity, deadline,
+    /// inputs, and budgets are fixed by the ruleset.
+    pub fn plan_cognition_request(
+        &self,
+        organism_id: EntityId,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        if !self.uses_cognition_driver() {
+            return Err(EngineError::CognitionUnsupported);
+        }
+        if !self.pending_cognition_requests.is_empty() {
+            return Err(EngineError::CognitionRequestAlreadyPending);
+        }
+        Ok(vec![DomainEvent::CognitionRequestSelected {
+            selection: self.expected_cognition_selection(organism_id)?,
+        }])
+    }
+
+    fn expected_cognition_selection(
+        &self,
+        organism_id: EntityId,
+    ) -> Result<CognitionRequestSelection, EngineError> {
+        self.require_living_organism(organism_id)?;
+        let organism = self
+            .organisms
+            .get(&organism_id)
+            .expect("living-organism presence was checked");
+        let deadline_tick = SimTick::new(
+            self.tick
+                .get()
+                .checked_add(COGNITION_RESPONSE_WINDOW_TICKS)
+                .ok_or(TimeOverflow)?,
+        );
+
+        // Retain the most recent bounded subset, then restore the domain contract's
+        // canonical address ordering. Infrastructure never chooses this subset.
+        let mut selected_readings = organism.perception_memory.iter().collect::<Vec<_>>();
+        selected_readings.sort_by(|left, right| {
+            right
+                .observed_at
+                .cmp(&left.observed_at)
+                .then_with(|| perception_memory_key(left).cmp(&perception_memory_key(right)))
+        });
+        selected_readings.truncate(MAX_COGNITION_SELECTION_READINGS);
+        let mut readings = selected_readings
+            .into_iter()
+            .map(|reading| CognitionReading {
+                subject_id: reading.subject_id,
+                channel: reading.channel,
+                property_code: reading.property_code.clone(),
+                quantized_value: reading.quantized_value,
+                uncertainty: reading.uncertainty,
+                observed_at: reading.observed_at,
+            })
+            .collect::<Vec<_>>();
+        readings.sort_by(|left, right| {
+            (left.subject_id, left.channel, left.property_code.as_str()).cmp(&(
+                right.subject_id,
+                right.channel,
+                right.property_code.as_str(),
+            ))
+        });
+
+        CognitionRequestSelection::new(
+            self.world_id(),
+            organism_id,
+            self.tick,
+            deadline_tick,
+            COGNITION_REQUEST_ORDINAL,
+            organism.bodily_needs(),
+            readings,
+            organism.action_values.clone(),
+            COGNITION_MEMORY_QUERY_V1,
+            COGNITION_MEMORY_MAX_TOKENS,
+            COGNITION_MODEL_MAX_OUTPUT_TOKENS,
+        )
+        .map_err(|error| EngineError::InvalidCognitionSelection(error.to_string()))
     }
 
     /// Record a chosen primitive bodily act for a living organism. World physics will
@@ -2208,6 +2306,7 @@ impl EngineState {
                 .pending_reproductive_developments
                 .values()
                 .collect(),
+            pending_cognition_requests: self.pending_cognition_requests.values().collect(),
             partition_schedule: self.partition_schedule.as_ref(),
             celestial_state: self.celestial_state,
             celestial_tick: self.celestial_tick,
@@ -2719,6 +2818,10 @@ impl EngineState {
         self.manifest.ruleset_version >= HERITABLE_DISPOSITION_RULESET_VERSION
     }
 
+    fn uses_cognition_driver(&self) -> bool {
+        self.manifest.ruleset_version >= COGNITION_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -2793,6 +2896,11 @@ impl EngineState {
                 .organisms
                 .get(organism_id)
                 .or_else(|| resulting_state.organisms.get(organism_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::CognitionRequestSelected { selection } => self
+                .organisms
+                .get(&selection.organism_id)
+                .or_else(|| resulting_state.organisms.get(&selection.organism_id))
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::ReproductiveDevelopmentStarted {
                 developing_parent_id,
@@ -3167,7 +3275,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_heritable_disposition_driver() {
+        if self.uses_cognition_driver() {
+            COGNITION_EVENT_SCHEMA_VERSION
+        } else if self.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
         } else if self.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
@@ -3230,7 +3340,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_heritable_disposition_driver() {
+        if self.uses_cognition_driver() {
+            COGNITION_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION
@@ -3289,6 +3401,7 @@ impl EngineState {
                     || !self.organisms.is_empty()
                     || !self.material_instances.is_empty()
                     || !self.pending_reproductive_developments.is_empty()
+                    || !self.pending_cognition_requests.is_empty()
                 {
                     return Err(EngineError::InvalidGenesisState);
                 }
@@ -3303,6 +3416,7 @@ impl EngineState {
                     || !self.organisms.is_empty()
                     || !self.material_instances.is_empty()
                     || !self.pending_reproductive_developments.is_empty()
+                    || !self.pending_cognition_requests.is_empty()
                 {
                     return Err(EngineError::ConfigurationAfterOrganisms);
                 }
@@ -4035,6 +4149,39 @@ impl EngineState {
                 }
                 organism.action_values_updated_at = Some(self.tick);
             }
+            DomainEvent::CognitionRequestSelected { selection } => {
+                if !self.uses_cognition_driver() {
+                    return Err(EngineError::CognitionUnsupported);
+                }
+                selection
+                    .validate()
+                    .map_err(|error| EngineError::InvalidCognitionSelection(error.to_string()))?;
+                if selection.world_id != self.world_id()
+                    || selection.selected_at_tick != self.tick
+                    || selection.deadline_tick <= self.tick
+                {
+                    return Err(EngineError::InvalidCognitionSelection(
+                        "selection world or simulation-time boundary is invalid".to_owned(),
+                    ));
+                }
+                if !self.pending_cognition_requests.is_empty() {
+                    return Err(EngineError::CognitionRequestAlreadyPending);
+                }
+                let expected = self.expected_cognition_selection(selection.organism_id)?;
+                if selection != &expected {
+                    return Err(EngineError::InvalidCognitionSelection(
+                        "selection does not match canonical body-owned inputs and ruleset budgets"
+                            .to_owned(),
+                    ));
+                }
+                if self
+                    .pending_cognition_requests
+                    .insert(selection.request_id, selection.clone())
+                    .is_some()
+                {
+                    return Err(EngineError::DuplicateCognitionRequest(selection.request_id));
+                }
+            }
             DomainEvent::CelestialStateRecorded { state } => {
                 if !self.uses_celestial_driver() {
                     return Err(EngineError::CelestialStateUnsupported);
@@ -4459,6 +4606,25 @@ impl EngineState {
                 return Err(EngineError::NonCanonicalParentOrder);
             }
         }
+        if self.uses_cognition_driver() {
+            for (request_id, selection) in &self.pending_cognition_requests {
+                selection
+                    .validate()
+                    .map_err(|error| EngineError::InvalidCognitionSelection(error.to_string()))?;
+                if request_id != &selection.request_id
+                    || selection.world_id != self.world_id()
+                    || selection.selected_at_tick > self.tick
+                    || selection.deadline_tick <= self.tick
+                    || !self.organisms.contains_key(&selection.organism_id)
+                {
+                    return Err(EngineError::InvalidCognitionSelection(
+                        "pending cognition request disagrees with canonical state".to_owned(),
+                    ));
+                }
+            }
+        } else if !self.pending_cognition_requests.is_empty() {
+            return Err(EngineError::CognitionUnsupported);
+        }
         if !self.uses_reproductive_physiology_driver()
             && !self.pending_reproductive_developments.is_empty()
         {
@@ -4658,6 +4824,8 @@ struct StateHashMaterial<'a> {
     material_instances: Vec<&'a MaterialInstanceState>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pending_reproductive_developments: Vec<&'a PendingReproductiveDevelopment>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending_cognition_requests: Vec<&'a CognitionRequestSelection>,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<&'a PartitionSchedule>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -4684,7 +4852,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_heritable_disposition_driver() {
+        let snapshot_schema_version = if state.uses_cognition_driver() {
+            COGNITION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
@@ -4761,12 +4931,15 @@ impl Snapshot {
                 | ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
                 | REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
                 | HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
+                | COGNITION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_heritable_disposition_driver() {
+        let expected_schema_version = if self.state.uses_cognition_driver() {
+            COGNITION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
@@ -4951,7 +5124,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_heritable_disposition_driver() {
+        let expected_schema = if state.uses_cognition_driver() {
+            COGNITION_EVENT_SCHEMA_VERSION
+        } else if state.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
         } else if state.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
@@ -5002,7 +5177,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == COGNITION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == COGNITION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
         } else if expected_schema == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
@@ -5213,6 +5390,14 @@ pub enum EngineError {
     MissingActionValueTransition(EntityId),
     #[error("organism {0} action-value observation count overflowed")]
     ActionValueObservationOverflow(EntityId),
+    #[error("external cognition is unsupported by this ruleset")]
+    CognitionUnsupported,
+    #[error("cognition request selection is invalid: {0}")]
+    InvalidCognitionSelection(String),
+    #[error("a world-total cognition request is already pending")]
+    CognitionRequestAlreadyPending,
+    #[error("cognition request {0} was selected more than once")]
+    DuplicateCognitionRequest(Uuid),
     #[error("reproductive physiology is unsupported by this ruleset")]
     ReproductivePhysiologyUnsupported,
     #[error("organism {0} lacks its species-bound reproductive commitment")]
@@ -8187,6 +8372,124 @@ mod tests {
                 expected: HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
                 actual: REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
             })
+        ));
+    }
+
+    #[test]
+    fn ruleset_sixteen_selects_only_canonical_bounded_cognition_inputs() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x121));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478592),
+            COGNITION_RULESET_VERSION,
+        );
+        let mut founder = regulated_full_earth_person(world_id, 0x711, 10_000_000_000, 10_000_000);
+        founder.birth_category = BirthCategory::new("female").expect("category");
+        founder.initial_age_ticks = 20;
+        founder.reproductive_physiology =
+            Some(reproductive_fixture_profile(founder.species.clone()));
+        founder.heritable_disposition_profile =
+            Some(heritable_fixture_profile(founder.species.clone()));
+        let organism_id = founder.organism_id;
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![founder],
+            )
+            .expect("cognition genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("cognition genesis");
+        assert_eq!(genesis.event_schema_version, COGNITION_EVENT_SCHEMA_VERSION);
+        assert_eq!(
+            running.state_hash_schema_version(),
+            COGNITION_STATE_HASH_SCHEMA_VERSION
+        );
+
+        let selection_events = running
+            .plan_cognition_request(organism_id)
+            .expect("canonical cognition selection");
+        let DomainEvent::CognitionRequestSelected { selection } = &selection_events[0] else {
+            panic!("selection planner emitted a different event")
+        };
+        assert_eq!(selection.world_id, world_id);
+        assert_eq!(selection.organism_id, organism_id);
+        assert_eq!(selection.selected_at_tick, SimTick::ZERO);
+        assert_eq!(
+            selection.deadline_tick,
+            SimTick::new(COGNITION_RESPONSE_WINDOW_TICKS)
+        );
+        assert_eq!(selection.ordinal, COGNITION_REQUEST_ORDINAL);
+        assert_eq!(selection.memory_max_tokens, COGNITION_MEMORY_MAX_TOKENS);
+        assert_eq!(
+            selection.model_max_output_tokens,
+            COGNITION_MODEL_MAX_OUTPUT_TOKENS
+        );
+        assert_eq!(selection.bodily_needs, BodilyNeedState::default());
+        assert!(selection.readings.is_empty());
+        assert!(selection.action_values.is_empty());
+
+        let mut forged_events = selection_events.clone();
+        let DomainEvent::CognitionRequestSelected { selection } = &mut forged_events[0] else {
+            unreachable!()
+        };
+        selection.memory_query = "observer supplied objective".to_owned();
+        assert!(matches!(
+            running
+                .clone()
+                .commit(EventSequence::new(2), genesis.batch_hash, forged_events,),
+            Err(EngineError::InvalidCognitionSelection(_))
+        ));
+
+        let selected_request_id = match &selection_events[0] {
+            DomainEvent::CognitionRequestSelected { selection } => selection.request_id,
+            _ => unreachable!(),
+        };
+        let (pending, selection_batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, selection_events)
+            .expect("canonical cognition selection commit");
+        assert_eq!(
+            selection_batch.event_schema_version,
+            COGNITION_EVENT_SCHEMA_VERSION
+        );
+        assert!(
+            pending
+                .pending_cognition_requests
+                .contains_key(&selected_request_id)
+        );
+        assert!(matches!(
+            pending.plan_cognition_request(organism_id),
+            Err(EngineError::CognitionRequestAlreadyPending)
+        ));
+
+        let snapshot = Snapshot::new(
+            pending.clone(),
+            selection_batch.sequence,
+            selection_batch.batch_hash,
+        )
+        .expect("pending cognition snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            COGNITION_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot.verify_integrity().expect("snapshot integrity");
+        assert_eq!(
+            replay(manifest.clone(), &[genesis, selection_batch])
+                .expect("cognition request replay")
+                .state,
+            pending
+        );
+
+        let legacy_manifest = WorldManifest::new(
+            world_id,
+            manifest.seed,
+            HERITABLE_DISPOSITION_RULESET_VERSION,
+        );
+        assert!(matches!(
+            EngineState::new(legacy_manifest).plan_cognition_request(organism_id),
+            Err(EngineError::CognitionUnsupported)
         ));
     }
 

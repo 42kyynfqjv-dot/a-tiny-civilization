@@ -2,11 +2,12 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId,
-    EventId, EventSequence, HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
-    MetabolicRateCommitment, OralTransferCommitment, PhysiologicalRegulationCommitment,
-    PrimitiveAction, ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId,
-    SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState,
+    CognitionRequestSelection, Digest, EntityId, EventId, EventSequence, HeritableDisposition,
+    HeritableDispositionProfile, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
+    PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
+    ReproductivePhysiologyCommitment, S2CellId, SimTick, SituatedPerception, SpeciesIdentity,
+    WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -49,6 +50,9 @@ pub const REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION: u16 = 16;
 /// Adds immutable species-bound disposition profiles and deterministic inherited
 /// individual action weights.
 pub const HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION: u16 = 17;
+/// Adds deterministic world-total external-cognition selection facts. Responses are
+/// admitted separately at their fixed deadline and replay never calls a provider.
+pub const COGNITION_EVENT_SCHEMA_VERSION: u16 = 18;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -255,6 +259,11 @@ pub enum DomainEvent {
         from: Option<ActionValueState>,
         to: ActionValueState,
     },
+    /// One world-total, simulated-time-budgeted optional cognition request. It
+    /// contains only body-owned situated inputs and cannot directly change state.
+    CognitionRequestSelected {
+        selection: CognitionRequestSelection,
+    },
     /// A source-backed Sun/Moon state for the current simulation tick. This is a
     /// physical input only; observer projections must not expose its mechanism.
     CelestialStateRecorded {
@@ -411,6 +420,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | ACTION_LEARNING_EVENT_SCHEMA_VERSION
             | REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
             | HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
+            | COGNITION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -582,6 +592,11 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < COGNITION_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::CognitionRequestSelected { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             species,
@@ -702,6 +717,9 @@ fn validate_event_for_schema(
                 ));
             }
         }
+        DomainEvent::CognitionRequestSelected { selection } => selection
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
         DomainEvent::ReproductiveDevelopmentStarted {
             development_id,
             offspring_id,

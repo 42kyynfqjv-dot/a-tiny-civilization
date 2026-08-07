@@ -159,6 +159,7 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
+                | DomainEvent::CognitionRequestSelected { .. }
                 | DomainEvent::ReproductiveDevelopmentStarted { .. }
                 | DomainEvent::ReproductiveDevelopmentEnded { .. }
                 | DomainEvent::CelestialStateRecorded { .. } => {}

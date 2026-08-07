@@ -429,9 +429,14 @@ fn parse_response(
     let completion_tokens = u32::try_from(parsed.usage.completion_tokens).map_err(|_| {
         CognitionModelError::InvalidResponse("completion token count exceeds u32".to_owned())
     })?;
-    let billed_micro_usd = match parsed.usage.cost {
-        Some(cost) => decimal_dollars_to_micro_usd(&cost.to_string())?,
-        None => 0,
+    let billed_micro_usd = match (route.billing_class, parsed.usage.cost) {
+        (CognitionBillingClass::PaidApproved, None) => {
+            return Err(CognitionModelError::InvalidResponse(
+                "paid completion omitted an explicit provider-reported cost".to_owned(),
+            ));
+        }
+        (_, Some(cost)) => decimal_dollars_to_micro_usd(&cost.to_string())?,
+        (_, None) => 0,
     };
     if route.billing_class != CognitionBillingClass::PaidApproved && billed_micro_usd != 0 {
         return Err(CognitionModelError::InvalidResponse(
@@ -620,12 +625,21 @@ mod tests {
 
     fn request() -> ModelCognitionRequest {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x1234));
+        let agent_id = EntityId::deterministic(world_id, b"model-adapter-test-agent");
+        let selected_at_tick = SimTick::new(20);
+        let ordinal = 0;
         ModelCognitionRequest {
             contract_version: COGNITION_MODEL_CONTRACT_VERSION,
-            request_id: Uuid::from_u128(0x9876),
+            request_id: application::cognition_request_id(
+                world_id,
+                agent_id,
+                selected_at_tick,
+                ordinal,
+            ),
             world_id,
-            agent_id: EntityId::deterministic(world_id, b"model-adapter-test-agent"),
-            selected_at_tick: SimTick::new(20),
+            agent_id,
+            ordinal,
+            selected_at_tick,
             deadline_tick: SimTick::new(32),
             bodily_needs: BodilyNeedState::default(),
             readings: Vec::new(),
@@ -733,6 +747,26 @@ mod tests {
         assert!(matches!(
             adapter
                 .infer(&CognitionModelRoute::openrouter_free(), &request())
+                .await,
+            Err(CognitionModelError::InvalidResponse(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn paid_adapter_rejects_a_response_without_explicit_cost() {
+        let response = json!({
+            "id": "paid-generation-1",
+            "model": "deepseek/deepseek-v4-flash",
+            "choices": [{"message": {"content": "{\"action_kind\":\"rest\"}"}}],
+            "usage": {"prompt_tokens": 10, "completion_tokens": 4}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter(), response).await;
+        assert!(matches!(
+            adapter
+                .infer(
+                    &CognitionModelRoute::openrouter_deepseek_v4_flash(),
+                    &request(),
+                )
                 .await,
             Err(CognitionModelError::InvalidResponse(_))
         ));

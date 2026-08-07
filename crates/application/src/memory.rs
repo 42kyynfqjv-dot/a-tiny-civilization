@@ -2,15 +2,18 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{Digest, EntityId, EventSequence, SimTick, WorldId};
+
+use crate::CognitionMemoryInput;
 
 pub const MEMORY_PAYLOAD_VERSION: u16 = 1;
 const MAX_MEMORY_CONTENT_BYTES: usize = 64 * 1024;
 const MAX_MEMORY_CONTEXT_BYTES: usize = 512;
 const MAX_RECALL_QUERY_BYTES: usize = 4 * 1024;
+const MAX_RECALL_RESULTS: usize = 32;
+const MAX_REMOTE_MEMORY_ID_BYTES: usize = 256;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MemoryRetain {
@@ -257,13 +260,17 @@ pub enum MemoryFactKind {
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RecalledMemory {
-    pub id: String,
+    pub rank: u16,
+    pub remote_memory_id: String,
+    pub document_id: Uuid,
+    pub source_sequence: EventSequence,
+    pub sim_tick: SimTick,
+    pub ordinal: u32,
     pub text: String,
     pub kind: MemoryFactKind,
-    pub context: Option<String>,
-    pub chunk_id: Option<String>,
-    pub entities: Vec<String>,
+    pub context: String,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -286,7 +293,6 @@ pub enum MemoryRecallOutcome {
         adapter_version: String,
         response_hash: Digest,
         results: Vec<RecalledMemory>,
-        raw_response: Value,
     },
     Unavailable {
         request_id: Uuid,
@@ -296,6 +302,23 @@ pub enum MemoryRecallOutcome {
 }
 
 impl MemoryRecallOutcome {
+    pub fn available(
+        request: &MemoryRecallRequest,
+        adapter_version: impl Into<String>,
+        response_hash: Digest,
+        results: Vec<RecalledMemory>,
+    ) -> Result<Self, MemoryContractError> {
+        let outcome = Self::Available {
+            request_id: request.request_id,
+            request_hash: request.canonical_hash()?,
+            adapter_version: adapter_version.into(),
+            response_hash,
+            results,
+        };
+        outcome.validate_against(request)?;
+        Ok(outcome)
+    }
+
     pub fn unavailable(
         request: &MemoryRecallRequest,
         reason: RecallUnavailableReason,
@@ -324,6 +347,52 @@ impl MemoryRecallOutcome {
                 *request_hash
             }
         }
+    }
+
+    pub fn validate_against(
+        &self,
+        request: &MemoryRecallRequest,
+    ) -> Result<(), MemoryContractError> {
+        request.validate()?;
+        if self.request_id() != request.request_id
+            || self.request_hash() != request.canonical_hash()?
+        {
+            return Err(MemoryContractError::InvalidRecallOutcome);
+        }
+        let Self::Available {
+            adapter_version,
+            response_hash,
+            results,
+            ..
+        } = self
+        else {
+            return Ok(());
+        };
+        if adapter_version.trim().is_empty()
+            || adapter_version.len() > 128
+            || *response_hash == Digest::ZERO
+            || results.len() > MAX_RECALL_RESULTS
+        {
+            return Err(MemoryContractError::InvalidRecallOutcome);
+        }
+        let mut documents = BTreeSet::new();
+        for (position, result) in results.iter().enumerate() {
+            if usize::from(result.rank) != position
+                || !documents.insert(result.document_id)
+                || result.remote_memory_id.trim().is_empty()
+                || result.remote_memory_id.len() > MAX_REMOTE_MEMORY_ID_BYTES
+                || result.source_sequence == EventSequence::ZERO
+                || result.sim_tick > request.selected_at_tick
+                || result.text.trim().is_empty()
+                || result.text.len() > MAX_MEMORY_CONTENT_BYTES
+                || result.kind != MemoryFactKind::Experience
+                || result.context.trim().is_empty()
+                || result.context.len() > MAX_MEMORY_CONTEXT_BYTES
+            {
+                return Err(MemoryContractError::InvalidRecalledMemory);
+            }
+        }
+        Ok(())
     }
 }
 
@@ -357,6 +426,10 @@ pub enum MemoryContractError {
     InvalidQuery,
     #[error("memory recall token budget must be between 1 and 4096")]
     InvalidTokenBudget,
+    #[error("memory recall outcome does not match its request or bounded adapter contract")]
+    InvalidRecallOutcome,
+    #[error("recalled memory lacks canonical life-local source provenance")]
+    InvalidRecalledMemory,
     #[error("memory contract hashing failed: {0}")]
     Hash(String),
 }
@@ -403,6 +476,14 @@ pub trait MemoryOutboxStore: Send + Sync {
         error: &str,
         retry_after_seconds: u32,
     ) -> Result<(), super::StoreError>;
+
+    /// Admits only life-local Hindsight results whose caller-supplied document
+    /// provenance and exact content still match an accepted local delivery.
+    async fn admit_recall_for_cognition(
+        &self,
+        request: &MemoryRecallRequest,
+        outcome: &MemoryRecallOutcome,
+    ) -> Result<Vec<CognitionMemoryInput>, super::StoreError>;
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -457,7 +538,12 @@ impl AgentMemory for RecordedMemory {
             return unavailable_or_invalid(request, RecallUnavailableReason::InvalidResponse);
         };
         match self.outcomes.get(&request.request_id) {
-            Some(outcome) if outcome.request_hash() == request_hash => outcome.clone(),
+            Some(outcome)
+                if outcome.request_hash() == request_hash
+                    && outcome.validate_against(request).is_ok() =>
+            {
+                outcome.clone()
+            }
             Some(_) => {
                 unavailable_or_invalid(request, RecallUnavailableReason::RecordedRequestMismatch)
             }

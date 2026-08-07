@@ -1,8 +1,8 @@
 use anyhow::Result;
 use application::{
-    MemoryOutboxStore, MemoryRetain, MemoryRetainReceipt, StoreError, TransitionEffects,
-    WorldStore, advance_world, initialize_or_resume_configured_world, initialize_or_resume_world,
-    resume_world,
+    MemoryFactKind, MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain,
+    MemoryRetainReceipt, RecalledMemory, StoreError, TransitionEffects, WorldStore, advance_world,
+    initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
     CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
@@ -349,6 +349,55 @@ async fn subjective_memory_delivery_is_atomic_leased_and_immutable(pool: PgPool)
     assert_eq!(accepted.0, Some(retain.operation_id.to_string()));
     assert_eq!(accepted.1.as_deref(), Some("test-hindsight-adapter"));
     assert!(accepted.2.is_some());
+
+    let recall_request = MemoryRecallRequest::new(
+        manifest.world_id,
+        person_id,
+        SimTick::new(2),
+        SimTick::new(4),
+        0,
+        "cold gust",
+        256,
+    )?;
+    let recalled = RecalledMemory {
+        rank: 0,
+        remote_memory_id: "hindsight-memory-1".to_owned(),
+        document_id: retain.document_id,
+        source_sequence: retain.source_sequence,
+        sim_tick: retain.sim_tick,
+        ordinal: retain.ordinal,
+        text: retain.content.clone(),
+        kind: MemoryFactKind::Experience,
+        context: retain.context.clone(),
+    };
+    let recall = MemoryRecallOutcome::available(
+        &recall_request,
+        "test-hindsight-adapter",
+        Digest::sha256(b"test recall response"),
+        vec![recalled.clone()],
+    )?;
+    let admitted = store
+        .admit_recall_for_cognition(&recall_request, &recall)
+        .await?;
+    assert_eq!(admitted.len(), 1);
+    assert_eq!(admitted[0].document_id, retain.document_id);
+    assert_eq!(admitted[0].content, retain.content);
+
+    let forged_recall = MemoryRecallOutcome::available(
+        &recall_request,
+        "test-hindsight-adapter",
+        Digest::sha256(b"forged recall response"),
+        vec![RecalledMemory {
+            text: "An experience that was never retained.".to_owned(),
+            ..recalled
+        }],
+    )?;
+    assert!(
+        store
+            .admit_recall_for_cognition(&recall_request, &forged_recall)
+            .await
+            .is_err()
+    );
 
     let mutation =
         sqlx::query("UPDATE memory_outbox SET payload = payload WHERE operation_id = $1")

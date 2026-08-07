@@ -126,6 +126,14 @@ Wall-clock throughput changes how quickly observers receive ticks, not which sta
 transitions occur. The primary cognition allocation is denominated in simulated time;
 a separate hard currency circuit breaker can force a recorded unavailable result.
 
+Ruleset 16 now owns the first half of that boundary under ADR 0052. It emits a
+canonical request-selection event from exact body-owned state, permits only one
+world-total pending request, fixes a 60-tick simulated-time deadline, and rejects a
+runner-supplied prompt or altered input. Hindsight recall is re-admitted only after
+every returned document exactly matches a successfully delivered local memory-outbox
+row. Provider execution and canonical result consumption remain disabled until the
+immutable job and deadline-latch tables are complete.
+
 ## Irreversible facts and rebuildable views
 
 The event log preserves facts that later projections cannot reconstruct: durable

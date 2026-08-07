@@ -3,8 +3,9 @@
 use std::{collections::BTreeMap, fmt, time::Duration};
 
 use application::{
-    AgentMemory, MemoryAdapterError, MemoryFactKind, MemoryRecallOutcome, MemoryRecallRequest,
-    MemoryRetain, MemoryRetainReceipt, RecallUnavailableReason, RecalledMemory,
+    AgentMemory, MEMORY_PAYLOAD_VERSION, MemoryAdapterError, MemoryFactKind, MemoryRecallOutcome,
+    MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt, RecallUnavailableReason,
+    RecalledMemory,
 };
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode, Url};
@@ -12,7 +13,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
 use uuid::Uuid;
-use world_domain::Digest;
+use world_domain::{Digest, EventSequence, SimTick};
 
 pub const HINDSIGHT_ADAPTER_VERSION: &str = "hindsight-http-v1/0.8.6";
 
@@ -170,32 +171,24 @@ impl AgentMemory for HindsightMemory {
                 return unavailable_outcome(request, RecallUnavailableReason::InvalidResponse);
             }
         };
-        let results = parsed
-            .results
-            .into_iter()
-            .map(RecalledMemory::from)
-            .collect::<Vec<_>>();
-        if results
-            .iter()
-            .any(|result| result.id.trim().is_empty() || result.text.trim().is_empty())
-        {
-            return unavailable_outcome(request, RecallUnavailableReason::InvalidResponse);
+        let mut results = Vec::with_capacity(parsed.results.len());
+        for (rank, result) in parsed.results.into_iter().enumerate() {
+            let Ok(rank) = u16::try_from(rank) else {
+                return unavailable_outcome(request, RecallUnavailableReason::InvalidResponse);
+            };
+            let Ok(result) = normalize_recall_result(result, request, rank) else {
+                return unavailable_outcome(request, RecallUnavailableReason::InvalidResponse);
+            };
+            results.push(result);
         }
-        let Ok(request_hash) = request.canonical_hash() else {
-            return unavailable_outcome(request, RecallUnavailableReason::InvalidResponse);
-        };
         let Ok(response_hash) = Digest::canonical(&raw_response) else {
             return unavailable_outcome(request, RecallUnavailableReason::InvalidResponse);
         };
 
-        MemoryRecallOutcome::Available {
-            request_id: request.request_id,
-            request_hash,
-            adapter_version: HINDSIGHT_ADAPTER_VERSION.to_owned(),
-            response_hash,
-            results,
-            raw_response,
-        }
+        MemoryRecallOutcome::available(request, HINDSIGHT_ADAPTER_VERSION, response_hash, results)
+            .unwrap_or_else(|_| {
+                unavailable_outcome(request, RecallUnavailableReason::InvalidResponse)
+            })
     }
 }
 
@@ -269,7 +262,7 @@ struct RetainResponse {
 #[derive(Serialize)]
 struct RecallRequest {
     query: String,
-    types: [&'static str; 2],
+    types: [&'static str; 1],
     budget: &'static str,
     max_tokens: u32,
     trace: bool,
@@ -279,7 +272,7 @@ impl From<&MemoryRecallRequest> for RecallRequest {
     fn from(request: &MemoryRecallRequest) -> Self {
         Self {
             query: request.query.clone(),
-            types: ["world", "experience"],
+            types: ["experience"],
             budget: "low",
             max_tokens: request.max_tokens,
             trace: false,
@@ -299,22 +292,79 @@ struct RecallResult {
     #[serde(rename = "type")]
     kind: MemoryFactKind,
     context: Option<String>,
+    document_id: Option<String>,
+    metadata: Option<BTreeMap<String, String>>,
     chunk_id: Option<String>,
     #[serde(default)]
     entities: Vec<String>,
 }
 
-impl From<RecallResult> for RecalledMemory {
-    fn from(result: RecallResult) -> Self {
-        Self {
-            id: result.id,
-            text: result.text,
-            kind: result.kind,
-            context: result.context,
-            chunk_id: result.chunk_id,
-            entities: result.entities,
-        }
+fn normalize_recall_result(
+    result: RecallResult,
+    request: &MemoryRecallRequest,
+    rank: u16,
+) -> Result<RecalledMemory, ()> {
+    if result.kind != MemoryFactKind::Experience {
+        return Err(());
     }
+    let document_id = result
+        .document_id
+        .as_deref()
+        .ok_or(())?
+        .parse::<Uuid>()
+        .map_err(|_| ())?;
+    let metadata = result.metadata.ok_or(())?;
+    let world_id = metadata
+        .get("world_id")
+        .ok_or(())?
+        .parse::<world_domain::WorldId>()
+        .map_err(|_| ())?;
+    let agent_id = metadata
+        .get("agent_id")
+        .ok_or(())?
+        .parse::<world_domain::EntityId>()
+        .map_err(|_| ())?;
+    let source_sequence = metadata
+        .get("source_sequence")
+        .ok_or(())?
+        .parse::<u64>()
+        .map(EventSequence::new)
+        .map_err(|_| ())?;
+    let sim_tick = metadata
+        .get("sim_tick")
+        .ok_or(())?
+        .parse::<u64>()
+        .map(SimTick::new)
+        .map_err(|_| ())?;
+    let ordinal = metadata
+        .get("ordinal")
+        .ok_or(())?
+        .parse::<u32>()
+        .map_err(|_| ())?;
+    let payload_version = metadata
+        .get("payload_version")
+        .ok_or(())?
+        .parse::<u16>()
+        .map_err(|_| ())?;
+    if world_id != request.world_id
+        || agent_id != request.agent_id
+        || payload_version != MEMORY_PAYLOAD_VERSION
+    {
+        return Err(());
+    }
+    let _ = result.chunk_id;
+    let _ = result.entities;
+    Ok(RecalledMemory {
+        rank,
+        remote_memory_id: result.id,
+        document_id,
+        source_sequence,
+        sim_tick,
+        ordinal,
+        text: result.text,
+        kind: result.kind,
+        context: result.context.ok_or(())?,
+    })
 }
 
 async fn require_success(
@@ -372,8 +422,7 @@ mod tests {
 
     #[derive(Clone)]
     struct TestState {
-        operation_id: Uuid,
-        bank_id: String,
+        retain: MemoryRetain,
     }
 
     async fn retain_handler(
@@ -381,31 +430,41 @@ mod tests {
         Path(bank_id): Path<String>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
-        assert_eq!(bank_id, state.bank_id);
+        assert_eq!(bank_id, state.retain.bank_id);
         assert_eq!(body["async"], true);
-        assert_eq!(body["operation_id"], state.operation_id.to_string());
+        assert_eq!(body["operation_id"], state.retain.operation_id.to_string());
         assert_eq!(body["items"][0]["timestamp"], "unset");
         Json(json!({
             "success": true,
-            "bank_id": state.bank_id,
+            "bank_id": state.retain.bank_id,
             "items_count": 1,
             "async": true,
-            "operation_id": state.operation_id,
+            "operation_id": state.retain.operation_id,
         }))
     }
 
     async fn recall_handler(
-        State(_state): State<Arc<TestState>>,
+        State(state): State<Arc<TestState>>,
         Json(body): Json<Value>,
     ) -> Json<Value> {
         assert_eq!(body["trace"], false);
+        assert_eq!(body["types"], json!(["experience"]));
         assert!(body.get("query_timestamp").is_none());
         Json(json!({
             "results": [{
                 "id": "memory-1",
-                "text": "A cold gust preceded discomfort.",
+                "text": state.retain.content,
                 "type": "experience",
-                "context": "direct perception",
+                "context": state.retain.context,
+                "document_id": state.retain.document_id,
+                "metadata": {
+                    "world_id": state.retain.world_id.to_string(),
+                    "agent_id": state.retain.agent_id.to_string(),
+                    "source_sequence": state.retain.source_sequence.to_string(),
+                    "sim_tick": state.retain.sim_tick.to_string(),
+                    "ordinal": state.retain.ordinal.to_string(),
+                    "payload_version": state.retain.payload_version.to_string()
+                },
                 "chunk_id": "chunk-1",
                 "entities": []
             }]
@@ -427,8 +486,7 @@ mod tests {
         )
         .expect("valid retain");
         let state = Arc::new(TestState {
-            operation_id: retain.operation_id,
-            bank_id: retain.bank_id.clone(),
+            retain: retain.clone(),
         });
         let app = Router::new()
             .route("/v1/default/banks/{bank_id}/memories", post(retain_handler))
@@ -464,7 +522,9 @@ mod tests {
         assert!(matches!(
             recall,
             MemoryRecallOutcome::Available { results, .. }
-                if results.len() == 1 && results[0].kind == MemoryFactKind::Experience
+                if results.len() == 1
+                    && results[0].kind == MemoryFactKind::Experience
+                    && results[0].document_id == retain.document_id
         ));
         server.abort();
     }
