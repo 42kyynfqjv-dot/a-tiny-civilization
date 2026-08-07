@@ -65,6 +65,8 @@ The open-evidence composition for freshwater storage and drainage is fixed in
 [ADR 0035](../adr/0035-open-global-hydrography-composition.md).
 The real-taxon identity, occurrence-licensing, trait-evidence, and fauna-tier boundary
 is fixed in [ADR 0037](../adr/0037-real-taxa-and-fauna-evidence.md).
+The source-backed Sun, Moon, season, illumination, and tidal-forcing boundary is fixed
+in [ADR 0038](../adr/0038-source-backed-sky-and-tides.md).
 
 ## Removing inherited modern information
 

@@ -165,6 +165,13 @@ extract filtered to CC0/CC BY records. ADR 0037 prevents the convenient noncomme
 cloud snapshot, modern observation density, or missing traits from silently becoming
 canonical animal truth.
 
+The heavens now have an account-free long-range source path and a causal contract.
+JPL DE441 supplies actual Sun/Earth/Moon and planetary positions across roughly 30,000
+years; genesis pins the epoch, deterministic interpolation drives light and seasons,
+and Sun/Moon equilibrium potential drives the first tide model. ADR 0038 forbids a
+decorative calendar, wall-clock sky, agent-visible astronomy labels, or silent
+extrapolation beyond source coverage.
+
 ### 3. Situated memory and bounded cognition
 
 - local deterministic working memory plus the asynchronous Hindsight adapter;

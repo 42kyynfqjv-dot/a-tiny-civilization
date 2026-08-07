@@ -21,6 +21,7 @@ python3 ./scripts/verify-cds-land-cover-tools.py
 python3 ./scripts/acquire-jrc-surface-water.py --layers occurrence >/dev/null
 python3 ./scripts/acquire-soilgrids-topsoil.py >/dev/null
 python3 ./scripts/acquire-gbif-taxonomy.py >/dev/null
+python3 ./scripts/acquire-jpl-de441.py >/dev/null
 ./scripts/check-boundaries.sh
 ./scripts/verify-demo.sh
 
