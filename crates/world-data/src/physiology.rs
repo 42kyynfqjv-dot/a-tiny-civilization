@@ -20,6 +20,9 @@ pub const FAUNA_PHYSIOLOGY_PROFILE_CATALOG_MEDIA_TYPE: &str =
 pub const FAUNA_METABOLIC_RATE_SELECTION_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_METABOLIC_RATE_SELECTION_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-metabolic-rate-selection+json";
+pub const FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_METABOLIC_RATE_PLAN_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.fauna-metabolic-rate-plan+json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaPhysiologyProfile {
@@ -72,6 +75,62 @@ pub struct FaunaMetabolicRateSelection {
     pub profile_set_digest: Digest,
     pub species: SpeciesIdentity,
     pub source_record_id: String,
+}
+
+/// A canonical set of one deliberately selected observed rate per participating taxon.
+///
+/// It is separate from a population plan: it says which measurement is carried by a
+/// species, never how many individuals of it exist or what that measurement means
+/// for survival.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaMetabolicRatePlan {
+    pub plan_schema_version: u16,
+    pub selections: Vec<FaunaMetabolicRateSelection>,
+}
+
+impl FaunaMetabolicRatePlan {
+    pub fn validate(&self) -> Result<(), FaunaPhysiologyProfileError> {
+        if self.plan_schema_version != FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION {
+            return Err(FaunaPhysiologyProfileError::UnsupportedMetabolicPlanSchema);
+        }
+        if self.selections.is_empty() {
+            return Err(FaunaPhysiologyProfileError::EmptyMetabolicPlan);
+        }
+        for pair in self.selections.windows(2) {
+            if metabolic_selection_key(&pair[0]) >= metabolic_selection_key(&pair[1]) {
+                return Err(FaunaPhysiologyProfileError::NonCanonicalMetabolicPlanOrder);
+            }
+        }
+        for selection in &self.selections {
+            selection.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn selection_for(&self, species: &SpeciesIdentity) -> Option<&FaunaMetabolicRateSelection> {
+        self.selections
+            .binary_search_by(|selection| {
+                metabolic_selection_key(selection)
+                    .cmp(&(species.catalog.as_str(), species.identifier.as_str()))
+            })
+            .ok()
+            .map(|index| &self.selections[index])
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaunaPhysiologyProfileError> {
+        self.validate()?;
+        serde_json::to_vec(self)
+            .map_err(|error| FaunaPhysiologyProfileError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, FaunaPhysiologyProfileError> {
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| FaunaPhysiologyProfileError::Decode(error.to_string()))?;
+        if value.canonical_bytes()? != bytes {
+            return Err(FaunaPhysiologyProfileError::NonCanonicalEncoding);
+        }
+        Ok(value)
+    }
 }
 
 impl FaunaMetabolicRateSelection {
@@ -244,6 +303,10 @@ fn profile_key(profile: &FaunaPhysiologyProfile) -> (&str, &str, &str, &str) {
         &profile.source_record_id,
     )
 }
+
+fn metabolic_selection_key(selection: &FaunaMetabolicRateSelection) -> (&str, &str) {
+    (&selection.species.catalog, &selection.species.identifier)
+}
 fn slug(value: &str) -> bool {
     !value.is_empty()
         && value
@@ -277,6 +340,12 @@ pub enum FaunaPhysiologyProfileError {
     InvalidCatalogReference,
     #[error("unsupported fauna metabolic-rate selection schema")]
     UnsupportedMetabolicSelectionSchema,
+    #[error("unsupported fauna metabolic-rate plan schema")]
+    UnsupportedMetabolicPlanSchema,
+    #[error("fauna metabolic-rate plan must not be empty")]
+    EmptyMetabolicPlan,
+    #[error("fauna metabolic-rate plan is not canonically ordered")]
+    NonCanonicalMetabolicPlanOrder,
     #[error("invalid fauna metabolic-rate selection")]
     InvalidMetabolicSelection,
     #[error("metabolic-rate selection does not match the supplied profile set")]
@@ -400,6 +469,16 @@ mod tests {
         assert_eq!(
             FaunaMetabolicRateSelection::from_canonical_slice(&bytes),
             Ok(selection.clone())
+        );
+        let plan = FaunaMetabolicRatePlan {
+            plan_schema_version: 1,
+            selections: vec![selection.clone()],
+        };
+        assert_eq!(
+            FaunaMetabolicRatePlan::from_canonical_slice(
+                &plan.canonical_bytes().expect("canonical plan")
+            ),
+            Ok(plan)
         );
         let missing = FaunaMetabolicRateSelection {
             source_record_id: "animaltraits-observations-line-8".to_owned(),

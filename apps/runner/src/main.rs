@@ -23,8 +23,9 @@ use sim_engine::{
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 use world_data::{
-    DataLayerKind, FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection,
-    ProvisionalLandOriginSelection, ProvisionalOriginEnvironment,
+    DataLayerKind, FaunaMetabolicRatePlan, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
+    FaunaRangeCandidateSet, FaunaSeededSelection, ProvisionalLandOriginSelection,
+    ProvisionalOriginEnvironment,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -53,6 +54,7 @@ struct Cli {
     database_max_connections: u32,
 }
 
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
     /// Verify and advance all explicitly initialized running worlds.
@@ -127,6 +129,14 @@ enum Command {
         /// counts to the seed-derived origin and selected source candidates.
         #[arg(long)]
         fauna_population_plan: Option<PathBuf>,
+
+        /// Retained profile set used by the optional fauna metabolic-rate plan.
+        #[arg(long)]
+        fauna_metabolic_profile_set: Option<PathBuf>,
+
+        /// One deliberately selected retained rate for every planned fauna taxon.
+        #[arg(long)]
+        fauna_metabolic_rate_plan: Option<PathBuf>,
 
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
@@ -203,6 +213,8 @@ async fn main() -> Result<()> {
             fauna_seeded_selection,
             fauna_origin_environment,
             fauna_population_plan,
+            fauna_metabolic_profile_set,
+            fauna_metabolic_rate_plan,
             predecessor_world_id,
             tick_duration_seconds,
             max_events_per_partition_transition,
@@ -221,6 +233,8 @@ async fn main() -> Result<()> {
                 fauna_seeded_selection.as_deref(),
                 fauna_origin_environment.as_deref(),
                 fauna_population_plan.as_deref(),
+                fauna_metabolic_profile_set.as_deref(),
+                fauna_metabolic_rate_plan.as_deref(),
                 predecessor_world_id,
                 tick_duration_seconds,
                 max_events_per_partition_transition,
@@ -506,6 +520,8 @@ async fn init_provisional_full_earth_world(
     fauna_seeded_selection_path: Option<&std::path::Path>,
     fauna_origin_environment_path: Option<&std::path::Path>,
     fauna_population_plan_path: Option<&std::path::Path>,
+    fauna_metabolic_profile_set_path: Option<&std::path::Path>,
+    fauna_metabolic_rate_plan_path: Option<&std::path::Path>,
     predecessor_world_id: Option<WorldId>,
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
@@ -601,10 +617,14 @@ async fn init_provisional_full_earth_world(
         world_id,
         WorldSeed::new(seed),
         initial_patch,
-        fauna_range_candidates_path,
-        fauna_seeded_selection_path,
-        fauna_origin_environment_path,
-        fauna_population_plan_path,
+        ProvisionalFaunaInputPaths {
+            candidates_path: fauna_range_candidates_path,
+            selection_path: fauna_seeded_selection_path,
+            origin_environment_path: fauna_origin_environment_path,
+            population_plan_path: fauna_population_plan_path,
+            metabolic_profile_set_path: fauna_metabolic_profile_set_path,
+            metabolic_rate_plan_path: fauna_metabolic_rate_plan_path,
+        },
     )?;
     if let Some(fauna) = fauna {
         manifest.scientific_datasets.insert(
@@ -623,6 +643,18 @@ async fn init_provisional_full_earth_world(
             "provisional_fauna_population_plan".to_owned(),
             fauna.population_plan_digest.to_string(),
         );
+        if let Some(metabolic_rate_plan_digest) = fauna.metabolic_rate_plan_digest {
+            manifest.scientific_datasets.insert(
+                "provisional_fauna_metabolic_rate_plan".to_owned(),
+                metabolic_rate_plan_digest.to_string(),
+            );
+        }
+        if let Some(metabolic_profile_set_digest) = fauna.metabolic_profile_set_digest {
+            manifest.scientific_datasets.insert(
+                "provisional_fauna_metabolic_profile_set".to_owned(),
+                metabolic_profile_set_digest.to_string(),
+            );
+        }
         initial_organisms.extend(fauna.initial_organisms);
     }
     let session = initialize_or_resume_configured_world(
@@ -793,30 +825,56 @@ struct ProvisionalFaunaGenesis {
     selection_digest: world_domain::Digest,
     origin_environment_digest: world_domain::Digest,
     population_plan_digest: world_domain::Digest,
+    metabolic_rate_plan_digest: Option<world_domain::Digest>,
+    metabolic_profile_set_digest: Option<world_domain::Digest>,
     initial_organisms: Vec<InitialOrganism>,
+}
+
+#[derive(Clone, Copy)]
+struct ProvisionalFaunaInputPaths<'a> {
+    candidates_path: Option<&'a std::path::Path>,
+    selection_path: Option<&'a std::path::Path>,
+    origin_environment_path: Option<&'a std::path::Path>,
+    population_plan_path: Option<&'a std::path::Path>,
+    metabolic_profile_set_path: Option<&'a std::path::Path>,
+    metabolic_rate_plan_path: Option<&'a std::path::Path>,
 }
 
 fn load_provisional_fauna_initial_organisms(
     world_id: WorldId,
     world_seed: WorldSeed,
     initial_patch: S2CellId,
-    candidates_path: Option<&std::path::Path>,
-    selection_path: Option<&std::path::Path>,
-    origin_environment_path: Option<&std::path::Path>,
-    population_plan_path: Option<&std::path::Path>,
+    inputs: ProvisionalFaunaInputPaths<'_>,
 ) -> Result<Option<ProvisionalFaunaGenesis>> {
+    let ProvisionalFaunaInputPaths {
+        candidates_path,
+        selection_path,
+        origin_environment_path,
+        population_plan_path,
+        metabolic_profile_set_path,
+        metabolic_rate_plan_path,
+    } = inputs;
     let provided = [
         candidates_path.is_some(),
         selection_path.is_some(),
         origin_environment_path.is_some(),
         population_plan_path.is_some(),
+        metabolic_profile_set_path.is_some(),
+        metabolic_rate_plan_path.is_some(),
     ];
-    if provided.iter().all(|provided| !provided) {
+    if provided[..4].iter().all(|provided| !provided)
+        && provided[4..].iter().all(|provided| !provided)
+    {
         return Ok(None);
     }
-    if !provided.iter().all(|provided| *provided) {
+    if !provided[..4].iter().all(|provided| *provided) {
         anyhow::bail!(
             "provisional fauna genesis requires --fauna-range-candidates, --fauna-seeded-selection, --fauna-origin-environment, and --fauna-population-plan together"
+        );
+    }
+    if metabolic_profile_set_path.is_some() != metabolic_rate_plan_path.is_some() {
+        anyhow::bail!(
+            "provisional fauna metabolic commitments require --fauna-metabolic-profile-set and --fauna-metabolic-rate-plan together"
         );
     }
     let candidate_bytes = std::fs::read(candidates_path.expect("checked candidate path"))
@@ -858,6 +916,41 @@ fn load_provisional_fauna_initial_organisms(
     let selection_digest = world_domain::Digest::sha256(&selection_bytes);
     let origin_environment_digest = world_domain::Digest::sha256(&environment_bytes);
     let population_plan_digest = world_domain::Digest::sha256(&population_plan_bytes);
+    let (metabolic_rate_plan, metabolic_rate_plan_digest, metabolic_profile_set_digest) =
+        match (metabolic_profile_set_path, metabolic_rate_plan_path) {
+            (None, None) => (None, None, None),
+            (Some(profile_set_path), Some(plan_path)) => {
+                let profile_set_bytes =
+                    std::fs::read(profile_set_path).context("read fauna metabolic profile set")?;
+                let profile_set =
+                    FaunaPhysiologyProfileSet::from_canonical_slice(&profile_set_bytes)
+                        .context("validate fauna metabolic profile set")?;
+                let plan_bytes =
+                    std::fs::read(plan_path).context("read fauna metabolic rate plan")?;
+                let plan = FaunaMetabolicRatePlan::from_canonical_slice(&plan_bytes)
+                    .context("validate fauna metabolic rate plan")?;
+                for entry in &population_plan.entries {
+                    let selection = plan.selection_for(&entry.species).ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "fauna metabolic rate plan has no selection for {}",
+                            entry.species.scientific_name
+                        )
+                    })?;
+                    selection.resolve(&profile_set).with_context(|| {
+                        format!(
+                            "resolve fauna metabolic rate for {}",
+                            entry.species.scientific_name
+                        )
+                    })?;
+                }
+                (
+                    Some((profile_set, plan)),
+                    Some(world_domain::Digest::sha256(&plan_bytes)),
+                    Some(world_domain::Digest::sha256(&profile_set_bytes)),
+                )
+            }
+            _ => unreachable!("metabolic option pair checked above"),
+        };
     let capacity = population_plan
         .entries
         .iter()
@@ -868,6 +961,12 @@ fn load_provisional_fauna_initial_organisms(
         .context("provisional fauna genesis count overflows host capacity")?;
     let mut initial_organisms = Vec::with_capacity(capacity);
     for entry in population_plan.entries {
+        let metabolic_rate = metabolic_rate_plan.as_ref().map(|(profiles, plan)| {
+            plan.selection_for(&entry.species)
+                .expect("all planned fauna have a verified metabolic selection")
+                .resolve_commitment(profiles)
+                .expect("previously verified metabolic selection remains valid")
+        });
         for ordinal in 0..entry.initial_individual_count {
             let identity = format!("provisional-fauna:{}:{}", entry.species.identifier, ordinal);
             initial_organisms.push(InitialOrganism {
@@ -880,7 +979,7 @@ fn load_provisional_fauna_initial_organisms(
                 initial_age_ticks: 0,
                 location_id: None,
                 embodied_patch: Some(initial_patch),
-                metabolic_rate: None,
+                metabolic_rate: metabolic_rate.clone(),
             });
         }
     }
@@ -889,6 +988,8 @@ fn load_provisional_fauna_initial_organisms(
         selection_digest,
         origin_environment_digest,
         population_plan_digest,
+        metabolic_rate_plan_digest,
+        metabolic_profile_set_digest,
         initial_organisms,
     }))
 }
@@ -994,10 +1095,12 @@ mod tests {
     use super::*;
     use world_data::{
         FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
+        FaunaEvidenceBasis, FaunaEvidenceSource, FaunaMetabolicRatePlan,
+        FaunaMetabolicRateSelection, FaunaPhysiologyProfile, FaunaPhysiologyProfileSet,
         FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeQueryPoint,
         LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
         PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION, ProvisionalWorldComposition,
-        SeasonalScalarFieldCell,
+        ScaledFaunaTraitValue, SeasonalScalarFieldCell,
     };
 
     fn candidate_set() -> FaunaRangeCandidateSet {
@@ -1103,6 +1206,8 @@ mod tests {
         let selection_path = directory.join("selection.json");
         let origin_environment_path = directory.join("origin-environment.json");
         let population_plan_path = directory.join("population-plan.json");
+        let metabolic_profile_set_path = directory.join("metabolic-profile-set.json");
+        let metabolic_rate_plan_path = directory.join("metabolic-rate-plan.json");
         std::fs::write(
             &candidates_path,
             candidates.canonical_bytes().expect("canonical candidates"),
@@ -1161,14 +1266,68 @@ mod tests {
                 .expect("canonical population plan"),
         )
         .expect("write population plan");
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: 1,
+            source_artifact_digest: world_domain::Digest::sha256(
+                b"retained metabolic observations",
+            ),
+            profiles: plan
+                .entries
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| FaunaPhysiologyProfile {
+                    species: entry.species.clone(),
+                    trait_id: "standardized-metabolic-rate".to_owned(),
+                    value: ScaledFaunaTraitValue {
+                        value: i64::try_from(index + 1).expect("small fixture") * 125,
+                        decimal_places: 3,
+                        unit: "W".to_owned(),
+                    },
+                    source: FaunaEvidenceSource::AnimalTraitsV1_0_7,
+                    source_field: "metabolic_rate".to_owned(),
+                    source_record_id: format!("fixture-row-{}", index + 1),
+                    source_record_digest: world_domain::Digest::sha256(
+                        format!("fixture metabolic row {}", index + 1).as_bytes(),
+                    ),
+                    evidence_basis: FaunaEvidenceBasis::EmpiricalObservation,
+                })
+                .collect(),
+        };
+        let profile_bytes = profiles.canonical_bytes().expect("canonical profiles");
+        std::fs::write(&metabolic_profile_set_path, &profile_bytes).expect("write profiles");
+        let profile_digest = world_domain::Digest::sha256(&profile_bytes);
+        let metabolic_plan = FaunaMetabolicRatePlan {
+            plan_schema_version: 1,
+            selections: profiles
+                .profiles
+                .iter()
+                .map(|profile| FaunaMetabolicRateSelection {
+                    selection_schema_version: 1,
+                    profile_set_digest: profile_digest,
+                    species: profile.species.clone(),
+                    source_record_id: profile.source_record_id.clone(),
+                })
+                .collect(),
+        };
+        std::fs::write(
+            &metabolic_rate_plan_path,
+            metabolic_plan
+                .canonical_bytes()
+                .expect("canonical metabolic plan"),
+        )
+        .expect("write metabolic plan");
         let genesis = load_provisional_fauna_initial_organisms(
             world_id,
             seed,
             initial_patch,
-            Some(&candidates_path),
-            Some(&selection_path),
-            Some(&origin_environment_path),
-            Some(&population_plan_path),
+            ProvisionalFaunaInputPaths {
+                candidates_path: Some(&candidates_path),
+                selection_path: Some(&selection_path),
+                origin_environment_path: Some(&origin_environment_path),
+                population_plan_path: Some(&population_plan_path),
+                metabolic_profile_set_path: Some(&metabolic_profile_set_path),
+                metabolic_rate_plan_path: Some(&metabolic_rate_plan_path),
+            },
         )
         .expect("fauna genesis")
         .expect("provided fauna");
@@ -1178,6 +1337,16 @@ mod tests {
                 .initial_organisms
                 .iter()
                 .all(|organism| organism.role == OrganismRole::Fauna)
+        );
+        assert!(
+            genesis
+                .initial_organisms
+                .iter()
+                .all(|organism| organism.metabolic_rate.is_some())
+        );
+        assert_ne!(
+            genesis.metabolic_rate_plan_digest,
+            Some(world_domain::Digest::ZERO)
         );
         assert_ne!(genesis.candidate_set_digest, world_domain::Digest::ZERO);
         assert_ne!(genesis.selection_digest, world_domain::Digest::ZERO);
@@ -1191,10 +1360,14 @@ mod tests {
                 world_id,
                 WorldSeed::new(8),
                 initial_patch,
-                Some(&candidates_path),
-                Some(&selection_path),
-                Some(&origin_environment_path),
-                Some(&population_plan_path),
+                ProvisionalFaunaInputPaths {
+                    candidates_path: Some(&candidates_path),
+                    selection_path: Some(&selection_path),
+                    origin_environment_path: Some(&origin_environment_path),
+                    population_plan_path: Some(&population_plan_path),
+                    metabolic_profile_set_path: None,
+                    metabolic_rate_plan_path: None,
+                },
             )
             .is_err()
         );

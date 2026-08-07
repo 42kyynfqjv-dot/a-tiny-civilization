@@ -62,11 +62,13 @@ pub use origin_environment::{
 };
 
 pub use physiology::{
+    FAUNA_METABOLIC_RATE_PLAN_MEDIA_TYPE, FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION,
     FAUNA_METABOLIC_RATE_SELECTION_MEDIA_TYPE, FAUNA_METABOLIC_RATE_SELECTION_SCHEMA_VERSION,
     FAUNA_PHYSIOLOGY_PROFILE_CATALOG_MEDIA_TYPE, FAUNA_PHYSIOLOGY_PROFILE_CATALOG_SCHEMA_VERSION,
     FAUNA_PHYSIOLOGY_PROFILE_SET_MEDIA_TYPE, FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
-    FaunaMetabolicRateSelection, FaunaPhysiologyProfile, FaunaPhysiologyProfileCatalog,
-    FaunaPhysiologyProfileError, FaunaPhysiologyProfileSet, FaunaPhysiologyProfileSetReference,
+    FaunaMetabolicRatePlan, FaunaMetabolicRateSelection, FaunaPhysiologyProfile,
+    FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileError, FaunaPhysiologyProfileSet,
+    FaunaPhysiologyProfileSetReference,
 };
 pub use provisional::{
     PROVISIONAL_WORLD_COMPOSITION_MEDIA_TYPE, PROVISIONAL_WORLD_COMPOSITION_SCHEMA_VERSION,
