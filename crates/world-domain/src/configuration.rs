@@ -1,13 +1,15 @@
 use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
-use crate::{Digest, MAX_S2_LEVEL};
+use crate::{Digest, MAX_S2_LEVEL, ProvisionalLocalEnvironmentBaseline};
 
 pub const LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 1;
 /// Scientifically admitted full-Earth configuration schema.
 pub const WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 2;
 /// Full-Earth execution proof whose inputs are explicitly not scientifically admitted.
 pub const PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 3;
+/// Provisional execution with an immutable source-bound local environment baseline.
+pub const PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 4;
 const SECONDS_PER_DAY: u32 = 86_400;
 const MAX_V1_GRID_CELLS: u64 = 1_000_000;
 const WGS_84_ECEF_EPSG: u32 = 4_978;
@@ -386,6 +388,8 @@ pub struct WorldConfiguration {
     pub input: WorldInputReference,
     #[serde(flatten)]
     pub execution: ExecutionScale,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_environment_baseline: Option<ProvisionalLocalEnvironmentBaseline>,
 }
 
 #[derive(Deserialize)]
@@ -419,11 +423,23 @@ struct ProvisionalFullEarthWorldConfigurationWire {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionalEnvironmentalWorldConfigurationWire {
+    configuration_schema_version: u16,
+    tick_duration_seconds: u32,
+    full_earth_grid: FullEarthGrid,
+    provisional_world_composition: ProvisionalWorldCompositionReference,
+    partitioned_execution: PartitionedExecution,
+    local_environment_baseline: ProvisionalLocalEnvironmentBaseline,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum WorldConfigurationWire {
     Legacy(LegacyWorldConfigurationWire),
     FullEarth(FullEarthWorldConfigurationWire),
     ProvisionalFullEarth(ProvisionalFullEarthWorldConfigurationWire),
+    ProvisionalEnvironmental(ProvisionalEnvironmentalWorldConfigurationWire),
 }
 
 impl<'de> Deserialize<'de> for WorldConfiguration {
@@ -444,6 +460,7 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 execution: ExecutionScale::SingleTransition {
                     max_events_per_transition: wire.max_events_per_transition,
                 },
+                local_environment_baseline: None,
             },
             WorldConfigurationWire::FullEarth(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
@@ -457,6 +474,7 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 execution: ExecutionScale::Partitioned {
                     partitioned_execution: wire.partitioned_execution,
                 },
+                local_environment_baseline: None,
             },
             WorldConfigurationWire::ProvisionalFullEarth(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
@@ -470,6 +488,21 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 execution: ExecutionScale::Partitioned {
                     partitioned_execution: wire.partitioned_execution,
                 },
+                local_environment_baseline: None,
+            },
+            WorldConfigurationWire::ProvisionalEnvironmental(wire) => Self {
+                configuration_schema_version: wire.configuration_schema_version,
+                tick_duration_seconds: wire.tick_duration_seconds,
+                geometry: WorldGeometry::FullEarth {
+                    full_earth_grid: wire.full_earth_grid,
+                },
+                input: WorldInputReference::ProvisionalExecution {
+                    provisional_world_composition: wire.provisional_world_composition,
+                },
+                execution: ExecutionScale::Partitioned {
+                    partitioned_execution: wire.partitioned_execution,
+                },
+                local_environment_baseline: Some(wire.local_environment_baseline),
             },
         };
         configuration.validate().map_err(serde::de::Error::custom)?;
@@ -493,6 +526,7 @@ impl WorldConfiguration {
             execution: ExecutionScale::SingleTransition {
                 max_events_per_transition,
             },
+            local_environment_baseline: None,
         };
         configuration.validate()?;
         Ok(configuration)
@@ -525,6 +559,7 @@ impl WorldConfiguration {
             execution: ExecutionScale::Partitioned {
                 partitioned_execution,
             },
+            local_environment_baseline: None,
         };
         configuration.validate()?;
         Ok(configuration)
@@ -548,6 +583,31 @@ impl WorldConfiguration {
             execution: ExecutionScale::Partitioned {
                 partitioned_execution,
             },
+            local_environment_baseline: None,
+        };
+        configuration.validate()?;
+        Ok(configuration)
+    }
+
+    pub fn new_provisional_full_earth_with_environment_baseline(
+        tick_duration_seconds: u32,
+        full_earth_grid: FullEarthGrid,
+        provisional_world_composition: ProvisionalWorldCompositionReference,
+        partitioned_execution: PartitionedExecution,
+        local_environment_baseline: ProvisionalLocalEnvironmentBaseline,
+    ) -> Result<Self, WorldConfigurationError> {
+        let configuration = Self {
+            configuration_schema_version:
+                PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION,
+            tick_duration_seconds,
+            geometry: WorldGeometry::FullEarth { full_earth_grid },
+            input: WorldInputReference::ProvisionalExecution {
+                provisional_world_composition,
+            },
+            execution: ExecutionScale::Partitioned {
+                partitioned_execution,
+            },
+            local_environment_baseline: Some(local_environment_baseline),
         };
         configuration.validate()?;
         Ok(configuration)
@@ -599,8 +659,36 @@ impl WorldConfiguration {
             ) if self.configuration_schema_version
                 == PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION =>
             {
+                if self.local_environment_baseline.is_some() {
+                    return Err(WorldConfigurationError::ConfigurationShapeMismatch {
+                        schema: self.configuration_schema_version,
+                    });
+                }
                 full_earth_grid.validate()?;
                 partitioned_execution.validate(full_earth_grid)?;
+            }
+            (
+                WorldGeometry::FullEarth { full_earth_grid },
+                WorldInputReference::ProvisionalExecution { .. },
+                ExecutionScale::Partitioned {
+                    partitioned_execution,
+                },
+            ) if self.configuration_schema_version
+                == PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION =>
+            {
+                let baseline = self.local_environment_baseline.as_ref().ok_or(
+                    WorldConfigurationError::ConfigurationShapeMismatch {
+                        schema: self.configuration_schema_version,
+                    },
+                )?;
+                full_earth_grid.validate()?;
+                partitioned_execution.validate(full_earth_grid)?;
+                baseline.validate().map_err(|error| {
+                    WorldConfigurationError::InvalidLocalEnvironment(error.to_string())
+                })?;
+                if baseline.active_patch.level() != full_earth_grid.levels.embodied_patch {
+                    return Err(WorldConfigurationError::LocalEnvironmentPatchLevelMismatch);
+                }
             }
             _ => {
                 return Err(WorldConfigurationError::ConfigurationShapeMismatch {
@@ -644,6 +732,11 @@ impl WorldConfiguration {
     #[must_use]
     pub const fn is_provisional_execution(&self) -> bool {
         matches!(self.input, WorldInputReference::ProvisionalExecution { .. })
+    }
+
+    #[must_use]
+    pub const fn local_environment_baseline(&self) -> Option<&ProvisionalLocalEnvironmentBaseline> {
+        self.local_environment_baseline.as_ref()
     }
 
     /// Durable partition semantics for a full-Earth configuration. Operational
@@ -746,11 +839,16 @@ pub enum WorldConfigurationError {
     InvalidTickDuration,
     #[error("maximum events per transition must be greater than zero")]
     ZeroEventBudget,
+    #[error("invalid provisional local-environment baseline: {0}")]
+    InvalidLocalEnvironment(String),
+    #[error("local-environment active patch must use the configured embodied-patch level")]
+    LocalEnvironmentPatchLevelMismatch,
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::S2CellId;
 
     fn bundle(schema: u16) -> WorldDataBundleReference {
         WorldDataBundleReference::new(
@@ -952,6 +1050,52 @@ mod tests {
             provisional_input,
             Ok(WorldInputReference::ProvisionalExecution { .. })
         ));
+    }
+
+    #[test]
+    fn environmental_provisional_configuration_pins_a_local_baseline() {
+        let evidence_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
+        let mut active_patch = evidence_patch;
+        for _ in 10..23 {
+            active_patch = active_patch.children().expect("child patch")[0];
+        }
+        let baseline = ProvisionalLocalEnvironmentBaseline {
+            status: "provisional-evidence-only".to_owned(),
+            source_evidence_digest: Digest::sha256(b"origin environment"),
+            evidence_patch,
+            active_patch,
+            air_temperature_unit: "degC".to_owned(),
+            air_temperature_decimal_places: 1,
+            air_temperature_normal_minimum: [1; 12],
+            air_temperature_normal_mean: [2; 12],
+            air_temperature_normal_maximum: [3; 12],
+        };
+        let configuration =
+            WorldConfiguration::new_provisional_full_earth_with_environment_baseline(
+                300,
+                full_earth_grid(),
+                provisional_composition(),
+                execution(),
+                baseline,
+            )
+            .expect("environmental provisional configuration");
+        assert_eq!(
+            configuration.configuration_schema_version,
+            PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            configuration
+                .local_environment_baseline()
+                .unwrap()
+                .mean_at_normal_phase(0),
+            Ok(2)
+        );
+        let encoded = serde_json::to_string(&configuration).expect("serialize");
+        assert!(encoded.contains("local_environment_baseline"));
+        assert_eq!(
+            serde_json::from_str::<WorldConfiguration>(&encoded).expect("decode"),
+            configuration
+        );
     }
 
     #[test]

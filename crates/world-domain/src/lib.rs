@@ -21,10 +21,12 @@ pub use celestial::{
 };
 pub use configuration::{
     CapacityExhaustionPolicy, EarthResolutionLevels, ExecutionScale, FullEarthGrid,
-    LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION, PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION,
-    PartitionedExecution, PersonRepresentation, ProvisionalWorldCompositionReference, S2Projection,
-    SchedulerKind, SpatialGrid, WORLD_CONFIGURATION_SCHEMA_VERSION, WorldConfiguration,
-    WorldConfigurationError, WorldDataBundleReference, WorldGeometry, WorldInputReference,
+    LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION,
+    PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION,
+    PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION, PartitionedExecution, PersonRepresentation,
+    ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SpatialGrid,
+    WORLD_CONFIGURATION_SCHEMA_VERSION, WorldConfiguration, WorldConfigurationError,
+    WorldDataBundleReference, WorldGeometry, WorldInputReference,
 };
 pub use embodiment::{
     EmbodimentError, NeedKind, NeedSignal, PerceptionChannel, PrimitiveAction, PrimitiveActionKind,
