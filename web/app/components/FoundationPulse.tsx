@@ -47,12 +47,12 @@ export function FoundationPulse({ compact = false }: { compact?: boolean }) {
 
   const label =
     pulse.state === "checking"
-      ? "Checking foundation"
+      ? "Looking for the world"
       : pulse.state === "offline"
-        ? "Foundation offline"
+        ? "Observatory is resting"
         : pulse.status.worlds.running > 0
-          ? `${pulse.status.worlds.running} world live`
-          : "Foundation online";
+          ? `${pulse.status.worlds.running} ${pulse.status.worlds.running === 1 ? "world" : "worlds"} alive`
+          : "World room open";
 
   return (
     <div className={`foundation-pulse ${compact ? "compact" : ""}`} role="status">

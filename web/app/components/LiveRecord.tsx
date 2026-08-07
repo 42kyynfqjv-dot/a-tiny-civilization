@@ -74,38 +74,41 @@ export function LiveRecord() {
     };
   }, []);
 
-  if (record.state === "loading") return <section className="live-record loading">Reading committed observer records…</section>;
-  if (record.state === "empty") return <section className="live-record empty">No world has been committed yet. Genesis will appear here from its first recorded event.</section>;
-  if (record.state === "error") return <section className="live-record empty">Live records are temporarily unavailable. The static observatory remains available.</section>;
+  if (record.state === "loading") return <section className="live-record loading">Looking for signs of life…</section>;
+  if (record.state === "empty") return <section className="live-record empty">The world has not begun yet. When it does, its first moments will appear here.</section>;
+  if (record.state === "error") return <section className="live-record empty">The live window is resting. Please check back in a moment.</section>;
 
   const { world, timeline, organisms, findings } = record;
   return (
     <section className="live-record" aria-labelledby="live-record-title">
       <div className="live-record-heading">
         <div>
-          <p className="eyebrow">Committed observer record</p>
-          <h2 id="live-record-title">World {world.world_id.slice(0, 8)} · {world.status}</h2>
+          <p className="eyebrow">The world today</p>
+          <h2 id="live-record-title">World {world.world_id.slice(0, 8)}</h2>
           <WorldInputStatus world={world} />
         </div>
-        <p>Through event {world.through_sequence} · tick {world.tick}</p>
+        <p>{world.status} · moment {world.tick}</p>
       </div>
-      <dl className="audit-hashes" aria-label="Public verification hashes">
-        <div><dt>Manifest</dt><dd title={world.manifest_hash}>{shortHash(world.manifest_hash)}</dd></div>
-        <div><dt>Event head</dt><dd title={world.event_hash}>{shortHash(world.event_hash)}</dd></div>
-        <div><dt>State</dt><dd title={world.state_hash}>{shortHash(world.state_hash)}</dd></div>
-        {world.composition_hash && <div><dt>Input composition</dt><dd title={world.composition_hash}>{shortHash(world.composition_hash)}</dd></div>}
-      </dl>
       <div className="live-record-grid">
         <article>
-          <h3>Recent facts</h3>
-          {timeline.length === 0 ? <p>No public events are available yet.</p> : <ol>{timeline.map((item) => <li key={item.source_event_id}><strong>{item.title}</strong><span>{item.summary} <em>Event {item.source_sequence}, tick {item.source_tick}</em></span></li>)}</ol>}
-          {findings.length > 0 && <><h3 className="finding-heading">Finding aids</h3><ul>{findings.map((finding) => <li key={finding.finding_key}><strong>{finding.title}</strong><span>{finding.summary}</span></li>)}</ul></>}
+          <h3>Recent moments</h3>
+          {timeline.length === 0 ? <p>It is quiet here for now.</p> : <ol>{timeline.map((item) => <li key={item.source_event_id}><strong>{item.title}</strong><span>{item.summary} <em>Moment {item.source_tick}</em></span></li>)}</ol>}
+          {findings.length > 0 && <><h3 className="finding-heading">Things worth noticing</h3><ul>{findings.map((finding) => <li key={finding.finding_key}><strong>{finding.title}</strong><span>{finding.summary}</span></li>)}</ul></>}
         </article>
         <article>
-          <h3>Lives in record</h3>
-          {organisms.length === 0 ? <p>No individual lives are available yet.</p> : <ul>{organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a><small>{organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
+          <h3>Who is here</h3>
+          {organisms.length === 0 ? <p>No individual lives are here yet.</p> : <ul>{organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a><small>{organism.ended_event_id ? "their story has ended" : "here now"}</small></li>)}</ul>}
         </article>
       </div>
+      <details className="verification-details">
+        <summary>Verify this world</summary>
+        <dl className="audit-hashes" aria-label="Public verification hashes">
+          <div><dt>Manifest</dt><dd title={world.manifest_hash}>{shortHash(world.manifest_hash)}</dd></div>
+          <div><dt>Event head</dt><dd title={world.event_hash}>{shortHash(world.event_hash)}</dd></div>
+          <div><dt>State</dt><dd title={world.state_hash}>{shortHash(world.state_hash)}</dd></div>
+          {world.composition_hash && <div><dt>Input composition</dt><dd title={world.composition_hash}>{shortHash(world.composition_hash)}</dd></div>}
+        </dl>
+      </details>
     </section>
   );
 }

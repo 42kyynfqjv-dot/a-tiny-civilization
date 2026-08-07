@@ -20,16 +20,16 @@ test("server-renders the civilization observatory", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Live World · A Tiny Civilization<\/title>/i);
-  assert.match(html, /History, before anyone knows it is history\./);
-  assert.match(html, /Earth coverage · seed not yet committed/);
-  assert.match(html, /Provisional — not scientifically admitted/);
-  assert.match(html, /not yet eligible for canonical genesis/);
+  assert.match(html, /A little world with a life of its own\./);
+  assert.match(html, /Waiting for its first sunrise/);
+  assert.match(html, /provisional—not yet scientifically admitted/);
   assert.doesNotMatch(html, /River basin · seed awaiting launch/);
-  assert.match(html, /Observer wiki/);
-  assert.match(html, /Name the next naturally born life\./);
-  assert.match(html, /A reset never erases a history\./);
-  assert.match(html, /Extinction is mechanical\./);
-  assert.match(html, /Actual materials/);
+  assert.match(html, /World notebook/);
+  assert.match(html, /Give a future life a name\./);
+  assert.match(html, /Even an ending becomes a story\./);
+  assert.match(html, /If every person dies/);
+  assert.match(html, /Places that change/);
+  assert.doesNotMatch(html, /Scientific reference|Committed observer record|Integrity rule 01/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });
 

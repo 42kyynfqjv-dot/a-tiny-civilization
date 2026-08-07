@@ -28,17 +28,17 @@ export async function generateMetadata(): Promise<Metadata> {
       template: "%s · A Tiny Civilization",
     },
     description:
-      "Watch an unscripted civilization live, trace every claim to evidence, and explore the worlds it leaves behind.",
+      "Come watch a tiny, unscripted world wake up—and follow the lives, discoveries, and stories that emerge.",
     openGraph: {
       type: "website",
       title: "A Tiny Civilization",
-      description: "History without a script.",
+      description: "A little world with a life of its own.",
       images: [{ url: "/og-v3.png", width: 1731, height: 909, alt: "A Tiny Civilization global pre-genesis observatory" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "A Tiny Civilization",
-      description: "History without a script.",
+      description: "A little world with a life of its own.",
       images: ["/og-v3.png"],
     },
   };

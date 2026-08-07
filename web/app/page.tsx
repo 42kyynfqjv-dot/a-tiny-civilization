@@ -11,18 +11,18 @@ export const metadata: Metadata = {
 };
 
 const observeLinks = [
-  ["Live world", "#live", "LV"],
-  ["Timeline", "#timeline", "TL"],
-  ["People", "#people", "PE"],
-  ["Animals", "#animals", "AN"],
-  ["Cultures", "#cultures", "CU"],
-  ["Artifacts", "#artifacts", "AR"],
+  ["The world", "#live", "●"],
+  ["What happened", "#timeline", "↟"],
+  ["People", "#people", "○"],
+  ["Animals", "#animals", "◇"],
+  ["Discoveries", "#cultures", "✦"],
+  ["Things they make", "#artifacts", "⌁"],
 ] as const;
 
 const archiveLinks = [
-  ["Observer wiki", "/wiki"],
-  ["Extinct worlds", "#archive"],
-  ["Evidence ledger", "#evidence"],
+  ["World notebook", "/wiki"],
+  ["Past worlds", "#archive"],
+  ["How this works", "#evidence"],
 ] as const;
 
 export default function Home() {
@@ -41,19 +41,18 @@ export default function Home() {
           </span>
         </a>
 
-        <label className="search-shell">
-          <span className="sr-only">Search the observer wiki</span>
-          <span className="search-symbol" aria-hidden="true" />
-          <input type="search" placeholder="Search lives, places, evidence…" disabled />
-          <kbd>Soon</kbd>
-        </label>
+        <nav className="top-links" aria-label="Quick links">
+          <a href="#live">Watch</a>
+          <Link href="/wiki">World notebook</Link>
+          <a href="#supporters">Join in</a>
+        </nav>
 
         <FoundationPulse compact />
       </header>
 
       <aside className="sidebar">
         <nav aria-label="Observatory navigation">
-          <p className="nav-label">Observe</p>
+          <p className="nav-label">Look around</p>
           <ul className="nav-list">
             {observeLinks.map(([label, href, short], index) => (
               <li key={label}>
@@ -67,7 +66,7 @@ export default function Home() {
             ))}
           </ul>
 
-          <p className="nav-label nav-label-secondary">Research</p>
+          <p className="nav-label nav-label-secondary">Go deeper</p>
           <ul className="nav-list nav-list-plain">
             {archiveLinks.map(([label, href]) => (
               <li key={label}>
@@ -81,14 +80,13 @@ export default function Home() {
           <div className="support-orbit" aria-hidden="true">
             <span />
           </div>
-          <p className="eyebrow">Support the experiment</p>
-          <h2 id="support-title">Follow a life from its first breath.</h2>
+          <p className="eyebrow">Take part</p>
+          <h2 id="support-title">Give a future life a name.</h2>
           <p>
-            Reserve an observer name for a future person or animal. Labels never alter the
-            simulation.
+            One day you will be able to name a person or animal born naturally into this world.
           </p>
           <a className="button button-light" href="#supporters">
-            Supporter preview
+            See how it works
             <span aria-hidden="true">↗</span>
           </a>
         </section>
@@ -102,32 +100,32 @@ export default function Home() {
       <main className="main-content" id="live">
         <section className="hero-copy">
           <div>
-            <p className="eyebrow accent">Global reference · Pre-genesis</p>
-            <h1>History, before anyone knows it is history.</h1>
+            <p className="eyebrow accent">A living world, beginning soon</p>
+            <h1>A little world with a life of its own.</h1>
           </div>
           <p className="hero-intro">
-            A persistent Earth simulation with no technology tree, narrator, or promised future.
-            Every idea must survive contact with matter, memory, and other lives.
+            People will be born. Animals will wander. Ideas may catch on—or disappear forever.
+            Nobody, including us, knows what they will become.
           </p>
         </section>
 
-        <aside className="provisional-input-banner" aria-label="Scientific admission status">
-          <strong>Provisional — not scientifically admitted</strong>
-          <span>
-            The complete-first Earth input composition is visible for integration and audit. It is
-            not yet eligible for canonical genesis.
-          </span>
-        </aside>
+        <details className="preview-note">
+          <summary>This is a public preview. What does that mean?</summary>
+          <p>
+            The world is still being checked before its first moment. The Earth model is
+            provisional—not yet scientifically admitted—and no lives or location have been chosen.
+          </p>
+        </details>
 
         <section className="world-panel" aria-labelledby="world-panel-title">
           <div className="panel-toolbar">
             <div>
-              <p className="eyebrow">Live terrain</p>
-              <h2 id="world-panel-title">Earth coverage · seed not yet committed</h2>
+              <p className="eyebrow">The whole world</p>
+              <h2 id="world-panel-title">Waiting for its first sunrise</h2>
             </div>
             <div className="map-controls" aria-label="Map display status">
-              <span>Scientific reference</span>
-              <span>Observer projection</span>
+              <span>Land and water</span>
+              <span>Weather and seasons</span>
             </div>
           </div>
 
@@ -141,37 +139,37 @@ export default function Home() {
             <span className="map-point point-two" />
             <span className="map-point animal point-three" />
             <span className="map-point animal point-four" />
-            <div className="map-coordinate coordinate-north">Whole Earth</div>
-            <div className="map-coordinate coordinate-scale">L10 reference</div>
+            <div className="map-coordinate coordinate-north">One shared Earth</div>
+            <div className="map-coordinate coordinate-scale">Waiting quietly</div>
             <div className="genesis-marker">
               <span className="marker-pulse" />
               <div>
-                <strong>Genesis remains uncommitted</strong>
-                <small>No location or population has been selected</small>
+                <strong>The world is waiting</strong>
+                <small>No lives have begun here yet</small>
               </div>
             </div>
           </div>
 
           <div className="world-stats">
             <article>
-              <span>Population</span>
+              <span>People</span>
+              <strong>0</strong>
+              <small>no one here yet</small>
+            </article>
+            <article>
+              <span>World age</span>
               <strong>—</strong>
-              <small>awaiting first world</small>
+              <small>not begun</small>
             </article>
             <article>
-              <span>Simulated time</span>
-              <strong>00:00</strong>
-              <small>tick zero</small>
-            </article>
-            <article>
-              <span>Known concepts</span>
+              <span>Animals</span>
               <strong>0</strong>
-              <small>nothing granted</small>
+              <small>habitats are waiting</small>
             </article>
             <article>
-              <span>Interventions</span>
-              <strong>0</strong>
-              <small>observer influence</small>
+              <span>Discoveries</span>
+              <strong>—</strong>
+              <small>the future is unwritten</small>
             </article>
           </div>
         </section>
@@ -180,8 +178,8 @@ export default function Home() {
           <article className="timeline-card" id="timeline">
             <div className="section-heading">
               <div>
-                <p className="eyebrow">Event stream</p>
-                <h2>The first page is still blank.</h2>
+                <p className="eyebrow">What happened</p>
+                <h2>Nothing yet. That is the point.</h2>
               </div>
               <span className="live-tag">Awaiting genesis</span>
             </div>
@@ -191,17 +189,17 @@ export default function Home() {
               <div>
                 <strong>Tick 0</strong>
                 <p>
-                  Once the world begins, objective events appear here without being promoted to
-                  knowledge inside the civilization.
+                  When the world begins, its first footsteps, meetings, losses, and surprises will
+                  appear here as they happen.
                 </p>
               </div>
             </div>
           </article>
 
           <article className="principle-card" id="evidence">
-            <p className="eyebrow">Integrity rule 01</p>
-            <blockquote>“We create the laws and initial conditions. We do not create the destination.”</blockquote>
-            <Link href="/wiki">Read the evidence model <span aria-hidden="true">→</span></Link>
+            <p className="eyebrow">The promise</p>
+            <blockquote>“We set the world in motion. After that, it belongs to itself.”</blockquote>
+            <Link href="/wiki">See how we keep that promise <span aria-hidden="true">→</span></Link>
           </article>
         </section>
 
@@ -210,12 +208,12 @@ export default function Home() {
         <section className="archive-section" id="archive" aria-labelledby="archive-title">
           <div className="section-heading archive-heading">
             <div>
-              <p className="eyebrow">World archives</p>
-              <h2 id="archive-title">A reset never erases a history.</h2>
+              <p className="eyebrow">Past worlds</p>
+              <h2 id="archive-title">Even an ending becomes a story.</h2>
             </div>
             <p>
-              Extinction is mechanical. An archived world cannot be revived or rewritten; any
-              successor starts with a separate, explicit seed.
+              If every person dies, that world ends. We keep its whole story here, then let a new
+              world begin from scratch.
             </p>
           </div>
           <ArchiveIndex />
@@ -224,44 +222,44 @@ export default function Home() {
         <section className="wiki-section" id="wiki">
           <div className="section-heading wiki-heading">
             <div>
-              <p className="eyebrow">Observer wiki</p>
-              <h2>Every claim carries its evidence.</h2>
+              <p className="eyebrow">The world notebook</p>
+              <h2>The story so far, without making things up.</h2>
             </div>
             <p>
-              World fact, remembered experience, cultural teaching, and observer inference never
-              collapse into one story.
+              Follow lives, places, discoveries, and the things people make. The deeper research is
+              always there when you want it.
             </p>
           </div>
           <div className="wiki-grid">
             <article>
               <span className="wiki-index">01</span>
-              <p className="provenance provenance-fact">World fact</p>
-              <h3>Actual materials</h3>
-              <p>Measured properties, scientific sources, uncertainty, and ruleset transformations.</p>
+              <p className="provenance provenance-fact">The world</p>
+              <h3>Places that change</h3>
+              <p>Weather, water, paths, shelters, and the marks left behind over time.</p>
             </article>
             <article>
               <span className="wiki-index">02</span>
-              <p className="provenance provenance-memory">Situated memory</p>
-              <h3>What a life could know</h3>
-              <p>Perception, testimony, forgotten details, confidence, distortion, and contradiction.</p>
+              <p className="provenance provenance-memory">The lives</p>
+              <h3>Someone to follow</h3>
+              <p>Every person and special animal can have a life story you return to.</p>
             </article>
             <article>
               <span className="wiki-index">03</span>
-              <p className="provenance provenance-inference">Observer inference</p>
-              <h3>Artifacts, if they emerge</h3>
-              <p>Physical marks and objects gain special pages without teaching agents what they mean.</p>
+              <p className="provenance provenance-inference">The surprises</p>
+              <h3>Things they discover</h3>
+              <p>If writing, tools, art, or traditions appear, they earn a home in the notebook.</p>
             </article>
           </div>
         </section>
 
         <section className="supporter-strip" id="supporters">
           <div>
-            <p className="eyebrow">A front-row seat, never a steering wheel</p>
-            <h2>Name the next naturally born life.</h2>
+            <p className="eyebrow">A small way to be part of it</p>
+            <h2>Give a future life a name.</h2>
           </div>
           <p>
-            Choose a person or species and birth sex, then wait for the simulation to produce a
-            matching birth naturally. Supporters receive a permanent observer profile—not control.
+            Pick a person or animal and a gender. When a matching life is born naturally, your name
+            joins their story. You can follow them, but never control them.
           </p>
           <button className="button button-dark" type="button" disabled>
             Opens after first births
@@ -269,8 +267,8 @@ export default function Home() {
         </section>
 
         <footer>
-          <p>A Tiny Civilization · Public foundation build</p>
-          <p>No LLM key connected · deterministic mode</p>
+          <p>A Tiny Civilization · Open source</p>
+          <p>A world to watch, not a game to win</p>
         </footer>
       </main>
     </div>
