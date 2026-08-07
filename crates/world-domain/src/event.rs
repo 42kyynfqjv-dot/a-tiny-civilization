@@ -33,6 +33,9 @@ pub const MATERIAL_HANDLING_EVENT_SCHEMA_VERSION: u16 = 10;
 pub const SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION: u16 = 11;
 /// Adds source-addressed bodily regulation and exact pressure transitions.
 pub const BODILY_REGULATION_EVENT_SCHEMA_VERSION: u16 = 12;
+/// Changes live action selection to the seeded, situated baseline policy. No new
+/// payload is added, but the semantic boundary is explicit for audit and replay.
+pub const DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION: u16 = 13;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -331,6 +334,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
             | SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
             | BODILY_REGULATION_EVENT_SCHEMA_VERSION
+            | DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }

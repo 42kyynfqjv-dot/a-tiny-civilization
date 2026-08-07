@@ -155,6 +155,16 @@ ruleset-ten body atomically pins measured metabolic power and a species-matching
 regulation profile. Engineering-assumption profiles exercise the implementation but
 remain ineligible for public genesis until their scientific evidence is reviewed.
 
+Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
+need-responsive baseline policy over the existing label-free action grammar. Candidate
+selection uses only canonical world state, bodily pressure, exact local reachability,
+and ordered identities; it never reads a material or species label, observer state,
+wall time, or model output. The selected act and its physical effects remain ordinary
+replayable events behind new event, snapshot, and state-hash schema boundaries. This
+is a freeform baseline, not learned cognition: neutral ingestion effects, action-value
+learning, imitation, reproduction/heredity, and coupled ecology remain subsequent
+causal checkpoints.
+
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one
 content-addressed manifest. Its only status is

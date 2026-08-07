@@ -18,9 +18,10 @@ use thiserror::Error;
 use world_domain::{
     BODILY_REGULATION_EVENT_SCHEMA_VERSION, BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory,
     BodilyNeedState, BodilyRegulationState, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
-    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, DeathCause, Digest,
-    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
-    EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
+    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState,
+    DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
+    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
+    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
     LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity, MetabolicRateCommitment,
     OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel,
@@ -60,6 +61,9 @@ pub const SIGNAL_PROPAGATION_RULESET_VERSION: u32 = 9;
 /// Ruleset ten integrates committed metabolic and exposure parameters into bodily
 /// pressures and neutral mechanical mortality.
 pub const BODILY_REGULATION_RULESET_VERSION: u32 = 10;
+/// Ruleset eleven replaces the four-phase integration cadence with a seeded,
+/// situated, need-responsive baseline action policy.
+pub const DETERMINISTIC_POLICY_RULESET_VERSION: u32 = 11;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -73,6 +77,7 @@ pub const MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 10;
 pub const MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION: u16 = 11;
 pub const SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION: u16 = 12;
 pub const BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION: u16 = 13;
+pub const DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION: u16 = 14;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -91,6 +96,7 @@ const MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION: u16 = 10;
 const MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION: u16 = 11;
 const SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION: u16 = 12;
 const BODILY_REGULATION_STATE_HASH_SCHEMA_VERSION: u16 = 13;
+const DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION: u16 = 14;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -161,6 +167,50 @@ fn subtract_load(current: u64, amount: u128) -> u64 {
     } else {
         current - u64::try_from(amount).expect("amount below a u64 current value")
     }
+}
+
+#[derive(Serialize)]
+struct PolicyCandidate {
+    action: PrimitiveAction,
+    weight: u32,
+}
+
+#[derive(Serialize)]
+struct PolicyTargetDraw<'a> {
+    policy_version: u16,
+    world_seed: u64,
+    organism_id: EntityId,
+    tick: SimTick,
+    age_ticks: u64,
+    object_ids: &'a [EntityId],
+}
+
+#[derive(Serialize)]
+struct PolicyMovementDraw {
+    policy_version: u16,
+    world_seed: u64,
+    organism_id: EntityId,
+    tick: SimTick,
+    age_ticks: u64,
+    from_patch: S2CellId,
+}
+
+#[derive(Serialize)]
+struct PolicyActionDraw<'a> {
+    policy_version: u16,
+    world_seed: u64,
+    organism_id: EntityId,
+    tick: SimTick,
+    age_ticks: u64,
+    bodily_needs: BodilyNeedState,
+    candidates: &'a [PolicyCandidate],
+}
+
+fn first_digest_u64(digest: Digest) -> u64 {
+    let bytes: [u8; 8] = digest.as_bytes()[..8]
+        .try_into()
+        .expect("SHA-256 has at least eight bytes");
+    u64::from_be_bytes(bytes)
 }
 
 fn decimal_to_millicelsius(value: i64, decimal_places: u8) -> Result<i64, EngineError> {
@@ -714,6 +764,202 @@ impl EngineState {
             .collect())
     }
 
+    fn deterministic_policy_target(
+        &self,
+        organism: &OrganismState,
+        age_ticks: u64,
+        object_ids: &[EntityId],
+    ) -> Result<Option<EntityId>, EngineError> {
+        if object_ids.is_empty() {
+            return Ok(None);
+        }
+        let digest = Digest::canonical(&PolicyTargetDraw {
+            policy_version: 1,
+            world_seed: self.manifest.seed.get(),
+            organism_id: organism.organism_id,
+            tick: self.tick.checked_next()?,
+            age_ticks,
+            object_ids,
+        })?;
+        let length = u64::try_from(object_ids.len()).map_err(|_| EngineError::TooManyEvents)?;
+        let index = usize::try_from(first_digest_u64(digest) % length)
+            .map_err(|_| EngineError::TooManyEvents)?;
+        Ok(Some(object_ids[index]))
+    }
+
+    fn deterministic_policy_candidates(
+        &self,
+        organism: &OrganismState,
+        age_ticks: u64,
+    ) -> Result<Vec<PolicyCandidate>, EngineError> {
+        let patch = organism
+            .embodied_patch
+            .ok_or(EngineError::MissingEmbodiedPatch(organism.organism_id))?;
+        let held_objects = self
+            .material_instances
+            .values()
+            .filter(|instance| instance.held_by == Some(organism.organism_id))
+            .map(|instance| instance.object_id)
+            .collect::<Vec<_>>();
+        let target = if held_objects.is_empty() {
+            let patch_leader = self
+                .organisms
+                .values()
+                .filter(|candidate| candidate.is_alive() && candidate.embodied_patch == Some(patch))
+                .map(|candidate| candidate.organism_id)
+                .min()
+                == Some(organism.organism_id);
+            if patch_leader {
+                let local_objects = self
+                    .material_instances
+                    .values()
+                    .filter(|instance| {
+                        instance.held_by.is_none() && instance.embodied_patch == patch
+                    })
+                    .map(|instance| instance.object_id)
+                    .collect::<Vec<_>>();
+                self.deterministic_policy_target(organism, age_ticks, &local_objects)?
+            } else {
+                None
+            }
+        } else {
+            self.deterministic_policy_target(organism, age_ticks, &held_objects)?
+        };
+
+        let needs = organism.bodily_regulation.needs;
+        let oral_drive = u32::from(
+            needs
+                .energy_deficit
+                .max(needs.hydration_deficit)
+                .saturating_div(8_192),
+        ) + 1;
+        let rest_drive = u32::from(needs.fatigue.saturating_div(4_096)) + 1;
+        let mut candidates = vec![
+            PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::Move,
+                    target_id: None,
+                    intensity: 1,
+                },
+                weight: 2,
+            },
+            PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::Orient,
+                    target_id: None,
+                    intensity: 1,
+                },
+                weight: 2,
+            },
+            PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::Reach,
+                    target_id: target,
+                    intensity: 1,
+                },
+                weight: if target.is_some() { oral_drive } else { 1 },
+            },
+        ];
+        if let Some(target_id) = target {
+            if held_objects.is_empty() {
+                candidates.push(PolicyCandidate {
+                    action: PrimitiveAction {
+                        kind: PrimitiveActionKind::Grasp,
+                        target_id: Some(target_id),
+                        intensity: 1,
+                    },
+                    weight: oral_drive,
+                });
+            } else {
+                for kind in [
+                    PrimitiveActionKind::Release,
+                    PrimitiveActionKind::ApplyForce,
+                    PrimitiveActionKind::Bite,
+                    PrimitiveActionKind::Chew,
+                    PrimitiveActionKind::Swallow,
+                ] {
+                    candidates.push(PolicyCandidate {
+                        action: PrimitiveAction {
+                            kind,
+                            target_id: Some(target_id),
+                            intensity: 1,
+                        },
+                        weight: if matches!(
+                            kind,
+                            PrimitiveActionKind::Bite
+                                | PrimitiveActionKind::Chew
+                                | PrimitiveActionKind::Swallow
+                        ) {
+                            oral_drive
+                        } else {
+                            1
+                        },
+                    });
+                }
+            }
+        }
+        candidates.extend([
+            PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::Rest,
+                    target_id: None,
+                    intensity: 1,
+                },
+                weight: rest_drive,
+            },
+            PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::EmitSignal,
+                    target_id: None,
+                    intensity: 1,
+                },
+                weight: 2,
+            },
+        ]);
+
+        Ok(candidates)
+    }
+
+    fn deterministic_policy_action(
+        &self,
+        organism: &OrganismState,
+        age_ticks: u64,
+    ) -> Result<PrimitiveAction, EngineError> {
+        let candidates = self.deterministic_policy_candidates(organism, age_ticks)?;
+        let needs = organism.bodily_regulation.needs;
+
+        let digest = Digest::canonical(&PolicyActionDraw {
+            policy_version: 1,
+            world_seed: self.manifest.seed.get(),
+            organism_id: organism.organism_id,
+            tick: self.tick.checked_next()?,
+            age_ticks,
+            bodily_needs: needs,
+            candidates: &candidates,
+        })?;
+        let total_weight = candidates.iter().try_fold(0_u64, |total, candidate| {
+            total
+                .checked_add(u64::from(candidate.weight))
+                .ok_or(EngineError::TooManyEvents)
+        })?;
+        let mut roll = first_digest_u64(digest) % total_weight;
+        let selected = candidates
+            .into_iter()
+            .find(|candidate| {
+                let weight = u64::from(candidate.weight);
+                if roll < weight {
+                    true
+                } else {
+                    roll -= weight;
+                    false
+                }
+            })
+            .expect("positive candidate weights cover the deterministic roll");
+        let mut action = selected.action;
+        action.intensity = u16::from(digest.as_bytes()[8] % 4) + 1;
+        Ok(action)
+    }
+
     fn next_bodily_regulation(
         &self,
         organism: &OrganismState,
@@ -1154,73 +1400,123 @@ impl EngineState {
                                     },
                                 ));
                             }
-                            let action_kind = if self.uses_signal_propagation_driver() && phase == 2
-                            {
-                                PrimitiveActionKind::EmitSignal
-                            } else if self.uses_resolved_movement_driver() && phase == 3 {
-                                PrimitiveActionKind::Move
-                            } else {
-                                motor_action_for_phase(phase)
-                            };
-                            let action_index = if self.uses_local_environment_driver() {
+                            let action_index: u32 = if self.uses_local_environment_driver() {
                                 3
                             } else {
                                 2
                             };
-                            events.push(Emission::new(
-                                partition.partition(),
-                                work.key(),
-                                action_index,
-                                DomainEvent::OrganismActed {
-                                    organism_id: organism.organism_id,
-                                    action: PrimitiveAction {
-                                        kind: action_kind,
-                                        target_id: None,
-                                        intensity: 1,
-                                    },
-                                },
-                            ));
-                            if action_kind == PrimitiveActionKind::EmitSignal
-                                && self.uses_signal_propagation_driver()
-                            {
-                                for (offset, perception) in self
-                                    .local_signal_perceptions(organism.organism_id, 1)?
-                                    .into_iter()
-                                    .enumerate()
-                                {
+                            if self.uses_deterministic_policy_driver() {
+                                let action =
+                                    self.deterministic_policy_action(organism, to_age_ticks)?;
+                                let action_kind = action.kind;
+                                let resolved_action =
+                                    self.plan_action(organism.organism_id, action)?;
+                                for (offset, event) in resolved_action.into_iter().enumerate() {
                                     let offset = u32::try_from(offset)
                                         .map_err(|_| EngineError::TooManyEvents)?;
-                                    let emission_index = action_index
-                                        .checked_add(1)
-                                        .and_then(|index| index.checked_add(offset))
-                                        .ok_or(EngineError::TooManyEvents)?;
+                                    events.push(Emission::new(
+                                        partition.partition(),
+                                        work.key(),
+                                        action_index
+                                            .checked_add(offset)
+                                            .ok_or(EngineError::TooManyEvents)?,
+                                        event,
+                                    ));
+                                }
+                                if action_kind == PrimitiveActionKind::Move {
+                                    let from_patch = organism.embodied_patch.ok_or(
+                                        EngineError::MissingEmbodiedPatch(organism.organism_id),
+                                    )?;
+                                    let direction = usize::try_from(
+                                        first_digest_u64(Digest::canonical(&PolicyMovementDraw {
+                                            policy_version: 1,
+                                            world_seed: self.manifest.seed.get(),
+                                            organism_id: organism.organism_id,
+                                            tick: self.tick.checked_next()?,
+                                            age_ticks: to_age_ticks,
+                                            from_patch,
+                                        })?) % 4,
+                                    )
+                                    .expect("direction is in 0..4");
+                                    let to_patch = s2_edge_neighbors(from_patch)
+                                        .map_err(EngineError::from)?[direction];
+                                    let emission_index = u32::try_from(events.len())
+                                        .map_err(|_| EngineError::TooManyEvents)?;
                                     events.push(Emission::new(
                                         partition.partition(),
                                         work.key(),
                                         emission_index,
-                                        perception,
+                                        DomainEvent::OrganismMoved {
+                                            organism_id: organism.organism_id,
+                                            from_patch,
+                                            to_patch,
+                                        },
                                     ));
                                 }
-                            } else if action_kind == PrimitiveActionKind::Move {
-                                let from_patch = organism.embodied_patch.ok_or(
-                                    EngineError::MissingEmbodiedPatch(organism.organism_id),
-                                )?;
-                                let direction = usize::try_from(
-                                    (organism.organism_id.as_uuid().as_u128() >> 2) & 3,
-                                )
-                                .expect("direction fits");
-                                let to_patch = s2_edge_neighbors(from_patch)
-                                    .map_err(EngineError::from)?[direction];
+                            } else {
+                                let action_kind =
+                                    if self.uses_signal_propagation_driver() && phase == 2 {
+                                        PrimitiveActionKind::EmitSignal
+                                    } else if self.uses_resolved_movement_driver() && phase == 3 {
+                                        PrimitiveActionKind::Move
+                                    } else {
+                                        motor_action_for_phase(phase)
+                                    };
                                 events.push(Emission::new(
                                     partition.partition(),
                                     work.key(),
-                                    action_index + 1,
-                                    DomainEvent::OrganismMoved {
+                                    action_index,
+                                    DomainEvent::OrganismActed {
                                         organism_id: organism.organism_id,
-                                        from_patch,
-                                        to_patch,
+                                        action: PrimitiveAction {
+                                            kind: action_kind,
+                                            target_id: None,
+                                            intensity: 1,
+                                        },
                                     },
                                 ));
+                                if action_kind == PrimitiveActionKind::EmitSignal
+                                    && self.uses_signal_propagation_driver()
+                                {
+                                    for (offset, perception) in self
+                                        .local_signal_perceptions(organism.organism_id, 1)?
+                                        .into_iter()
+                                        .enumerate()
+                                    {
+                                        let offset = u32::try_from(offset)
+                                            .map_err(|_| EngineError::TooManyEvents)?;
+                                        let emission_index = action_index
+                                            .checked_add(1)
+                                            .and_then(|index| index.checked_add(offset))
+                                            .ok_or(EngineError::TooManyEvents)?;
+                                        events.push(Emission::new(
+                                            partition.partition(),
+                                            work.key(),
+                                            emission_index,
+                                            perception,
+                                        ));
+                                    }
+                                } else if action_kind == PrimitiveActionKind::Move {
+                                    let from_patch = organism.embodied_patch.ok_or(
+                                        EngineError::MissingEmbodiedPatch(organism.organism_id),
+                                    )?;
+                                    let direction = usize::try_from(
+                                        (organism.organism_id.as_uuid().as_u128() >> 2) & 3,
+                                    )
+                                    .expect("direction fits");
+                                    let to_patch = s2_edge_neighbors(from_patch)
+                                        .map_err(EngineError::from)?[direction];
+                                    events.push(Emission::new(
+                                        partition.partition(),
+                                        work.key(),
+                                        action_index + 1,
+                                        DomainEvent::OrganismMoved {
+                                            organism_id: organism.organism_id,
+                                            from_patch,
+                                            to_patch,
+                                        },
+                                    ));
+                                }
                             }
                         }
                         Ok(WorkOutput::new(work.key(), events, Vec::new()))
@@ -1239,24 +1535,26 @@ impl EngineState {
             // Regulation is a final causal phase after every organism's sensory and
             // motor emissions. This prevents arbitrary subject-key ordering from
             // making a same-tick signal target appear dead before the signal arrives.
+            let mut action_kinds = BTreeMap::new();
+            for event in &events {
+                if let DomainEvent::OrganismActed {
+                    organism_id,
+                    action,
+                } = event
+                    && action_kinds.insert(*organism_id, action.kind).is_some()
+                {
+                    return Err(EngineError::DuplicateScheduledAction(*organism_id));
+                }
+            }
             let mut deaths = Vec::new();
             for organism in self
                 .organisms
                 .values()
                 .filter(|organism| organism.is_alive())
             {
-                let to_age_ticks = organism
-                    .age_ticks()
-                    .and_then(|age| age.checked_add(1))
-                    .ok_or(EngineError::AgeOverflow(organism.organism_id))?;
-                let phase = motor_phase(organism.organism_id, to_age_ticks);
-                let action_kind = if self.uses_signal_propagation_driver() && phase == 2 {
-                    PrimitiveActionKind::EmitSignal
-                } else if self.uses_resolved_movement_driver() && phase == 3 {
-                    PrimitiveActionKind::Move
-                } else {
-                    motor_action_for_phase(phase)
-                };
+                let action_kind = *action_kinds
+                    .get(&organism.organism_id)
+                    .ok_or(EngineError::MissingScheduledAction(organism.organism_id))?;
                 let to = self.next_bodily_regulation(organism, action_kind)?;
                 events.push(DomainEvent::OrganismNeedsChanged {
                     organism_id: organism.organism_id,
@@ -1394,6 +1692,10 @@ impl EngineState {
         self.manifest.ruleset_version >= BODILY_REGULATION_RULESET_VERSION
     }
 
+    fn uses_deterministic_policy_driver(&self) -> bool {
+        self.manifest.ruleset_version >= DETERMINISTIC_POLICY_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -1483,7 +1785,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_bodily_regulation_driver() {
+        if self.uses_deterministic_policy_driver() {
+            DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+        } else if self.uses_bodily_regulation_driver() {
             BODILY_REGULATION_EVENT_SCHEMA_VERSION
         } else if self.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
@@ -1536,7 +1840,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_bodily_regulation_driver() {
+        if self.uses_deterministic_policy_driver() {
+            DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_bodily_regulation_driver() {
             BODILY_REGULATION_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION
@@ -2298,7 +2604,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_bodily_regulation_driver() {
+        let snapshot_schema_version = if state.uses_deterministic_policy_driver() {
+            DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_bodily_regulation_driver() {
             BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
@@ -2360,12 +2668,15 @@ impl Snapshot {
                 | MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
                 | SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
                 | BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
+                | DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_bodily_regulation_driver() {
+        let expected_schema_version = if self.state.uses_deterministic_policy_driver() {
+            DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_bodily_regulation_driver() {
             BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
@@ -2540,7 +2851,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_bodily_regulation_driver() {
+        let expected_schema = if state.uses_deterministic_policy_driver() {
+            DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+        } else if state.uses_bodily_regulation_driver() {
             BODILY_REGULATION_EVENT_SCHEMA_VERSION
         } else if state.uses_signal_propagation_driver() {
             SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
@@ -2581,7 +2894,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == BODILY_REGULATION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+        } else if expected_schema == BODILY_REGULATION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == BODILY_REGULATION_EVENT_SCHEMA_VERSION
         } else if expected_schema == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
@@ -2741,6 +3056,10 @@ pub enum EngineError {
     FatalBodilyRegulationState(EntityId),
     #[error("organism {0} has a mortality cause inconsistent with its regulation limit")]
     InvalidRegulationDeathCause(EntityId),
+    #[error("organism {0} emitted more than one scheduled action in one tick")]
+    DuplicateScheduledAction(EntityId),
+    #[error("organism {0} emitted no scheduled action before bodily regulation")]
+    MissingScheduledAction(EntityId),
     #[error("ruleset-three ticks require one source-backed celestial state")]
     CelestialStateRequired,
     #[error("this ruleset does not accept source-backed celestial states")]
@@ -4010,6 +4329,247 @@ mod tests {
             .expect("fatal signals commit atomically");
         assert_eq!(archived.status(), WorldStatus::Archived);
         assert_eq!(archived.living_people(), 0);
+    }
+
+    #[test]
+    fn seeded_policy_is_diverse_need_responsive_and_strictly_local() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x114));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012819),
+            DETERMINISTIC_POLICY_RULESET_VERSION,
+        );
+        let leader = regulated_full_earth_person(world_id, 0x201, 10_000_000, 1_000_000);
+        let follower = regulated_full_earth_person(world_id, 0x202, 10_000_000, 1_000_000);
+        let local_object = EntityId::deterministic(world_id, b"policy-local-water");
+        let remote_object = EntityId::deterministic(world_id, b"policy-remote-water");
+        let patch = leader.embodied_patch.expect("leader patch");
+        let remote_patch = s2_edge_neighbors(patch).expect("neighbor patches")[0];
+        let initial = EngineState::new(manifest);
+        let mut genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![leader.clone(), follower.clone()],
+            )
+            .expect("policy genesis plan");
+        for (object_id, embodied_patch) in [(local_object, patch), (remote_object, remote_patch)] {
+            genesis_events.push(DomainEvent::MaterialInstanceInitialized {
+                object_id,
+                material: MaterialIdentity::new(
+                    "pubchem",
+                    "962",
+                    "water",
+                    "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+                )
+                .expect("citable water"),
+                embodied_patch,
+            });
+        }
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("policy genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+        );
+
+        let leader_state = running
+            .organisms
+            .get(&leader.organism_id)
+            .expect("leader state");
+        let follower_state = running
+            .organisms
+            .get(&follower.organism_id)
+            .expect("follower state");
+        let leader_candidates = running
+            .deterministic_policy_candidates(leader_state, 1)
+            .expect("leader candidates");
+        assert!(leader_candidates.iter().all(|candidate| {
+            candidate.action.target_id.is_none() || candidate.action.target_id == Some(local_object)
+        }));
+        assert!(leader_candidates.iter().any(|candidate| {
+            candidate.action.kind == PrimitiveActionKind::Grasp
+                && candidate.action.target_id == Some(local_object)
+        }));
+        let follower_candidates = running
+            .deterministic_policy_candidates(follower_state, 1)
+            .expect("follower candidates");
+        assert!(
+            follower_candidates
+                .iter()
+                .all(|candidate| candidate.action.target_id.is_none()),
+            "the deterministic patch conflict rule gives only the lowest identity an unheld target"
+        );
+
+        let mut pressured_leader = leader_state.clone();
+        pressured_leader.bodily_regulation.needs = BodilyNeedState {
+            energy_deficit: u16::MAX,
+            hydration_deficit: u16::MAX,
+            fatigue: u16::MAX,
+            ..BodilyNeedState::default()
+        };
+        let pressured_candidates = running
+            .deterministic_policy_candidates(&pressured_leader, 1)
+            .expect("pressured candidates");
+        let weight = |kind| {
+            pressured_candidates
+                .iter()
+                .find(|candidate| candidate.action.kind == kind)
+                .map(|candidate| candidate.weight)
+                .expect("candidate kind")
+        };
+        assert_eq!(weight(PrimitiveActionKind::Reach), 8);
+        assert_eq!(weight(PrimitiveActionKind::Grasp), 8);
+        assert_eq!(weight(PrimitiveActionKind::Rest), 16);
+
+        let mut pressured_follower = follower_state.clone();
+        pressured_follower.bodily_regulation.needs = pressured_leader.bodily_regulation.needs;
+        let no_target_candidates = running
+            .deterministic_policy_candidates(&pressured_follower, 1)
+            .expect("no-target candidates");
+        assert_eq!(
+            no_target_candidates
+                .iter()
+                .find(|candidate| candidate.action.kind == PrimitiveActionKind::Reach)
+                .expect("reach remains available")
+                .weight,
+            1,
+            "need pressure must not reveal a solution that is not locally reachable"
+        );
+
+        let mut kinds = Vec::new();
+        for age_ticks in 1..=128 {
+            let first = running
+                .deterministic_policy_action(leader_state, age_ticks)
+                .expect("first deterministic draw");
+            let second = running
+                .deterministic_policy_action(leader_state, age_ticks)
+                .expect("second deterministic draw");
+            assert_eq!(first, second);
+            assert!((1..=4).contains(&first.intensity));
+            assert!(first.target_id.is_none() || first.target_id == Some(local_object));
+            kinds.push(first.kind);
+        }
+        kinds.sort_unstable();
+        kinds.dedup();
+        assert!(
+            kinds.len() >= 5,
+            "the seeded policy must not collapse back to the four-step integration cadence"
+        );
+    }
+
+    #[test]
+    fn ruleset_eleven_tick_snapshot_and_replay_share_the_policy_boundary() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x115));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012820),
+            DETERMINISTIC_POLICY_RULESET_VERSION,
+        );
+        let person = regulated_full_earth_person(world_id, 0x301, 10_000_000, 1_000_000);
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("policy genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("policy genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.state_hash_schema_version(),
+            DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION
+        );
+        let genesis_snapshot = Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
+            .expect("policy genesis snapshot");
+        assert_eq!(
+            genesis_snapshot.snapshot_schema_version,
+            DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
+        );
+        genesis_snapshot
+            .verify_integrity()
+            .expect("policy genesis snapshot verifies");
+
+        let expected_action = running
+            .deterministic_policy_action(
+                running
+                    .organisms
+                    .get(&person.organism_id)
+                    .expect("person state"),
+                1,
+            )
+            .expect("policy action");
+        let tick_events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(300),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("policy tick");
+        assert!(tick_events.iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismActed { organism_id, action }
+                if *organism_id == person.organism_id && *action == expected_action
+        )));
+        assert_eq!(
+            tick_events
+                .iter()
+                .filter(|event| matches!(event, DomainEvent::OrganismNeedsChanged { .. }))
+                .count(),
+            1
+        );
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("policy tick commit");
+        assert_eq!(
+            tick.event_schema_version,
+            DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+        );
+        let complete =
+            replay(manifest.clone(), &[genesis.clone(), tick.clone()]).expect("policy replay");
+        assert_eq!(complete.state, after_tick);
+        assert_eq!(
+            replay_from_snapshot(&genesis_snapshot, &[tick])
+                .expect("policy snapshot plus tail")
+                .state,
+            after_tick
+        );
+        let after_snapshot = Snapshot::new(
+            after_tick.clone(),
+            complete.through_sequence,
+            complete.last_event_hash,
+        )
+        .expect("policy tick snapshot");
+        assert_eq!(
+            after_snapshot.snapshot_schema_version,
+            DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
+        );
+
+        let downgraded = EventBatch::new(
+            BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            DETERMINISTIC_POLICY_RULESET_VERSION,
+            Digest::ZERO,
+            vec![DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            }],
+            Digest::sha256(b"downgraded policy state"),
+        )
+        .expect("internally valid pre-policy batch");
+        assert!(matches!(
+            replay(manifest, &[downgraded]),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION,
+                actual: BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+            })
+        ));
     }
 
     #[test]
