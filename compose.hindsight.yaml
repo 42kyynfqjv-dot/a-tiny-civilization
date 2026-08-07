@@ -1,5 +1,3 @@
-version: "2.4"
-
 services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:0.8.6
@@ -40,10 +38,39 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
       RUST_LOG: ${RUST_LOG:-info}
       HINDSIGHT_BASE_URL: http://hindsight:8888
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:-}
       MEMORY_WORKER_ID: ${MEMORY_WORKER_ID:-local-memory-worker}
       MEMORY_POLL_MILLISECONDS: ${MEMORY_POLL_MILLISECONDS:-500}
       MEMORY_CLAIM_LEASE_SECONDS: ${MEMORY_CLAIM_LEASE_SECONDS:-60}
       HINDSIGHT_REQUEST_TIMEOUT_SECONDS: ${HINDSIGHT_REQUEST_TIMEOUT_SECONDS:-15}
+    depends_on:
+      migrate:
+        condition: service_healthy
+      hindsight:
+        condition: service_healthy
+    networks:
+      - backend
+    init: true
+    restart: unless-stopped
+
+  cognition-worker:
+    image: a-tiny-civilization-app:local
+    command: ["/app/civilization-runner", "cognition-worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
+      RUST_LOG: ${RUST_LOG:-info}
+      HINDSIGHT_BASE_URL: http://hindsight:8888
+      HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:-}
+      COGNITION_WORKER_ID: ${COGNITION_WORKER_ID:-local-cognition-worker}
+      COGNITION_POLL_MILLISECONDS: ${COGNITION_POLL_MILLISECONDS:-250}
+      COGNITION_CLAIM_LEASE_SECONDS: ${COGNITION_CLAIM_LEASE_SECONDS:-60}
+      COGNITION_REQUEST_TIMEOUT_SECONDS: ${COGNITION_REQUEST_TIMEOUT_SECONDS:-15}
+      CLOUDFLARE_WORKERS_AI_BASE_URL: ${CLOUDFLARE_WORKERS_AI_BASE_URL:-}
+      CLOUDFLARE_WORKERS_AI_API_KEY: ${CLOUDFLARE_WORKERS_AI_API_KEY:-}
+      GROQ_API_KEY: ${GROQ_API_KEY:-}
+      CEREBRAS_API_KEY: ${CEREBRAS_API_KEY:-}
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      COGNITION_PAID_ENABLED: ${COGNITION_PAID_ENABLED:-false}
     depends_on:
       migrate:
         condition: service_healthy

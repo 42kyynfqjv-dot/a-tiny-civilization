@@ -24,9 +24,11 @@ pub use celestial::{
     TickDurationSeconds, tdb_seconds_at_tick,
 };
 pub use cognition::{
-    COGNITION_SELECTION_SCHEMA_VERSION, CognitionContractError, CognitionReading,
-    CognitionRequestSelection, MAX_COGNITION_RECALL_TOKENS, MAX_COGNITION_SELECTION_OUTPUT_TOKENS,
-    MAX_COGNITION_SELECTION_QUERY_BYTES, MAX_COGNITION_SELECTION_READINGS, cognition_request_id,
+    COGNITION_INPUT_SCHEMA_VERSION, COGNITION_SELECTION_SCHEMA_VERSION, CognitionContractError,
+    CognitionDeadlineInput, CognitionInputOutcome, CognitionModelEvidence, CognitionReading,
+    CognitionRequestSelection, CognitionUnavailableReason, MAX_COGNITION_RECALL_TOKENS,
+    MAX_COGNITION_SELECTION_OUTPUT_TOKENS, MAX_COGNITION_SELECTION_QUERY_BYTES,
+    MAX_COGNITION_SELECTION_READINGS, cognition_request_id,
 };
 pub use configuration::{
     CapacityExhaustionPolicy, EarthResolutionLevels, ExecutionScale, FullEarthGrid,

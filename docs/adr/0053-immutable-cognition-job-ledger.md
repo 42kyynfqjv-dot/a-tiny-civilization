@@ -2,9 +2,10 @@
 
 ## Status
 
-Accepted on 2026-08-07. Atomic request insertion, exclusive request leases, and the
-complete storage schema are implemented. Stepwise attempt/result/cost/latch methods
-and the worker remain the next checkpoint.
+Accepted and implemented on 2026-08-07. Atomic request insertion, exclusive leases,
+stepwise recall/attempt/result persistence, paid reservation accounting, immutable
+deadline latching, and worker crash recovery are covered by PostgreSQL integration
+tests.
 
 ## Context
 
@@ -39,8 +40,7 @@ ordering boundary without turning wall-clock worker state into simulation state.
 
 ## Consequences
 
-Canonical selection and durable work creation can no longer split. The schema can
-represent every skipped route, dispatched call, response, charge, absence, and replay
-input without raw credentials or provider prose. No provider is invoked yet: the
-stepwise store methods, worker, canonical result event, and deadline consumption tests
-must land before credentials are used.
+Canonical selection and durable work creation cannot split. The schema represents
+every skipped route, dispatched call, response, charge, absence, and replay input
+without raw credentials or provider prose. The worker never invokes a route before
+its durable dispatch row exists, and retries do not duplicate completed work.

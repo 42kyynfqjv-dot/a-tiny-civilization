@@ -5,8 +5,8 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    ActionValueState, BodilyNeedState, CognitionRequestSelection, Digest, EntityId, EventId,
-    EventSequence, PerceptionChannel, PrimitiveActionKind, SimTick, WorldId,
+    ActionValueState, BodilyNeedState, CognitionDeadlineInput, CognitionRequestSelection, Digest,
+    EntityId, EventId, EventSequence, PerceptionChannel, PrimitiveActionKind, SimTick, WorldId,
 };
 pub use world_domain::{CognitionReading as CognitionInputReading, cognition_request_id};
 
@@ -68,11 +68,6 @@ impl CognitionProviderId {
     }
 
     #[must_use]
-    pub fn sambanova() -> Self {
-        Self::known("sambanova")
-    }
-
-    #[must_use]
     pub fn cerebras() -> Self {
         Self::known("cerebras")
     }
@@ -96,7 +91,7 @@ pub enum CognitionBillingClass {
 #[serde(rename_all = "snake_case")]
 pub enum CognitionRoutePurpose {
     ProductionWorld,
-    PreGenesisSoak,
+    Development,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -172,20 +167,20 @@ impl CognitionModelRoute {
     }
 
     #[must_use]
-    pub fn sambanova_gpt_oss_120b() -> Self {
+    pub fn cerebras_gpt_oss_120b() -> Self {
         Self {
-            provider: CognitionProviderId::sambanova(),
+            provider: CognitionProviderId::cerebras(),
             requested_model: "gpt-oss-120b".to_owned(),
             billing_class: CognitionBillingClass::FreeAllocation,
         }
     }
 
     #[must_use]
-    pub fn cerebras_gpt_oss_120b_trial() -> Self {
+    pub fn cerebras_llama3_1_8b() -> Self {
         Self {
             provider: CognitionProviderId::cerebras(),
-            requested_model: "gpt-oss-120b".to_owned(),
-            billing_class: CognitionBillingClass::TrialCredit,
+            requested_model: "llama3.1-8b".to_owned(),
+            billing_class: CognitionBillingClass::FreeAllocation,
         }
     }
 
@@ -233,12 +228,10 @@ impl CognitionModelRoute {
                         "openai/gpt-oss-20b:free" | "openai/gpt-oss-120b:free"
                     )
             }
-            ("sambanova", CognitionBillingClass::FreeAllocation) => {
-                self.requested_model == "gpt-oss-120b"
-            }
-            ("cerebras", CognitionBillingClass::TrialCredit) => {
-                self.requested_model == "gpt-oss-120b"
-            }
+            ("cerebras", CognitionBillingClass::FreeAllocation) => matches!(
+                self.requested_model.as_str(),
+                "gpt-oss-120b" | "llama3.1-8b"
+            ),
             ("nvidia_build", CognitionBillingClass::DevelopmentOnly) => {
                 self.requested_model == "nvidia/nemotron-3-ultra-550b-a55b"
             }
@@ -271,7 +264,8 @@ impl CognitionRouteRegistry {
                 CognitionModelRoute::cloudflare_gpt_oss_120b(),
                 CognitionModelRoute::groq_gpt_oss_20b(),
                 CognitionModelRoute::groq_gpt_oss_120b(),
-                CognitionModelRoute::sambanova_gpt_oss_120b(),
+                CognitionModelRoute::cerebras_llama3_1_8b(),
+                CognitionModelRoute::cerebras_gpt_oss_120b(),
                 CognitionModelRoute::openrouter_free(),
                 CognitionModelRoute::openrouter_gpt_oss_20b_free(),
                 CognitionModelRoute::openrouter_gpt_oss_120b_free(),
@@ -281,15 +275,11 @@ impl CognitionRouteRegistry {
     }
 
     #[must_use]
-    pub fn pre_genesis_soak_default() -> Self {
+    pub fn development_default() -> Self {
         let mut registry = Self::production_default();
         let insert_at = registry.routes.len().saturating_sub(1);
         registry.routes.insert(
             insert_at,
-            CognitionModelRoute::cerebras_gpt_oss_120b_trial(),
-        );
-        registry.routes.insert(
-            insert_at + 1,
             CognitionModelRoute::nvidia_nemotron_3_ultra_development(),
         );
         registry
@@ -726,6 +716,25 @@ pub struct CognitionRecallRecord {
 }
 
 impl CognitionRecallRecord {
+    pub fn from_outcome(
+        selection: &CognitionRequestSelection,
+        outcome: crate::MemoryRecallOutcome,
+    ) -> Result<Self, CognitionContractError> {
+        let request = crate::MemoryRecallRequest::from_cognition_selection(selection)
+            .map_err(|error| CognitionContractError::InvalidJob(error.to_string()))?;
+        outcome
+            .validate_against(&request)
+            .map_err(|error| CognitionContractError::InvalidJob(error.to_string()))?;
+        let admitted_memories = admitted_memories_from_outcome(&outcome);
+        let record = Self {
+            request,
+            outcome,
+            admitted_memories,
+        };
+        ModelCognitionRequest::from_selection(selection, record.admitted_memories.clone())?;
+        Ok(record)
+    }
+
     pub fn validate_against(
         &self,
         entry: &CognitionJobEntry,
@@ -740,24 +749,7 @@ impl CognitionRecallRecord {
                 "recall request or outcome differs from its cognition selection".to_owned(),
             ));
         }
-        let expected_memories = match &self.outcome {
-            crate::MemoryRecallOutcome::Available { results, .. } => {
-                let mut memories = results
-                    .iter()
-                    .take(MAX_COGNITION_RECALLED_MEMORIES)
-                    .map(|memory| CognitionMemoryInput {
-                        document_id: memory.document_id,
-                        source_sequence: memory.source_sequence,
-                        sim_tick: memory.sim_tick,
-                        content: memory.text.clone(),
-                        context: memory.context.clone(),
-                    })
-                    .collect::<Vec<_>>();
-                memories.sort_by_key(|memory| memory.document_id);
-                memories
-            }
-            crate::MemoryRecallOutcome::Unavailable { .. } => Vec::new(),
-        };
+        let expected_memories = admitted_memories_from_outcome(&self.outcome);
         if self.admitted_memories != expected_memories {
             return Err(CognitionContractError::InvalidJob(
                 "admitted memories differ from the normalized recall outcome".to_owned(),
@@ -765,6 +757,29 @@ impl CognitionRecallRecord {
         }
         ModelCognitionRequest::from_selection(&entry.selection, self.admitted_memories.clone())?;
         Ok(())
+    }
+}
+
+fn admitted_memories_from_outcome(
+    outcome: &crate::MemoryRecallOutcome,
+) -> Vec<CognitionMemoryInput> {
+    match outcome {
+        crate::MemoryRecallOutcome::Available { results, .. } => {
+            let mut memories = results
+                .iter()
+                .take(MAX_COGNITION_RECALLED_MEMORIES)
+                .map(|memory| CognitionMemoryInput {
+                    document_id: memory.document_id,
+                    source_sequence: memory.source_sequence,
+                    sim_tick: memory.sim_tick,
+                    content: memory.text.clone(),
+                    context: memory.context.clone(),
+                })
+                .collect::<Vec<_>>();
+            memories.sort_by_key(|memory| memory.document_id);
+            memories
+        }
+        crate::MemoryRecallOutcome::Unavailable { .. } => Vec::new(),
     }
 }
 
@@ -904,6 +919,15 @@ impl CognitionJobEntry {
 
 #[async_trait]
 pub trait CognitionJobStore: Send + Sync {
+    /// Freeze every request due in the target transition. A repeated call for the
+    /// same world/sequence returns byte-identical inputs and never re-reads a model.
+    async fn latch_due_cognition_inputs(
+        &self,
+        world_id: WorldId,
+        target_sequence: EventSequence,
+        target_tick: SimTick,
+    ) -> Result<Vec<CognitionDeadlineInput>, crate::StoreError>;
+
     async fn claim_next_cognition_request(
         &self,
         worker_id: &str,
@@ -917,6 +941,14 @@ pub trait CognitionJobStore: Send + Sync {
         error: &str,
         retry_after_seconds: u32,
     ) -> Result<(), crate::StoreError>;
+
+    /// Returns whether the canonical deadline has already been frozen. This is
+    /// an operational state query only; workers must never use it as simulated
+    /// input or attempt to replace the immutable latch.
+    async fn cognition_deadline_is_latched(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<bool, crate::StoreError>;
 
     async fn record_cognition_recall(
         &self,
@@ -985,6 +1017,11 @@ pub trait CognitionJobStore: Send + Sync {
         reserved_micro_usd: u64,
     ) -> Result<PaidCognitionReservationDecision, crate::StoreError>;
 
+    async fn load_paid_cognition_authorization(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<Option<PaidCognitionAuthorization>, crate::StoreError>;
+
     async fn settle_paid_cognition(
         &self,
         worker_id: &str,
@@ -1022,8 +1059,8 @@ mod tests {
             CognitionModelRoute::openrouter_free(),
             CognitionModelRoute::openrouter_gpt_oss_20b_free(),
             CognitionModelRoute::openrouter_gpt_oss_120b_free(),
-            CognitionModelRoute::sambanova_gpt_oss_120b(),
-            CognitionModelRoute::cerebras_gpt_oss_120b_trial(),
+            CognitionModelRoute::cerebras_gpt_oss_120b(),
+            CognitionModelRoute::cerebras_llama3_1_8b(),
             CognitionModelRoute::nvidia_nemotron_3_ultra_development(),
             CognitionModelRoute::openrouter_deepseek_v4_flash(),
         ] {
@@ -1046,10 +1083,13 @@ mod tests {
         );
         assert!(registry.routes.len() < MAX_COGNITION_ROUTES);
 
-        let soak = CognitionRouteRegistry::pre_genesis_soak_default();
-        assert_eq!(soak.validate(CognitionRoutePurpose::PreGenesisSoak), Ok(()));
+        let development = CognitionRouteRegistry::development_default();
         assert_eq!(
-            soak.validate(CognitionRoutePurpose::ProductionWorld),
+            development.validate(CognitionRoutePurpose::Development),
+            Ok(())
+        );
+        assert_eq!(
+            development.validate(CognitionRoutePurpose::ProductionWorld),
             Err(CognitionContractError::NonProductionRoute)
         );
     }

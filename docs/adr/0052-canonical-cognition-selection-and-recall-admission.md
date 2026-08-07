@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted on 2026-08-07. Ruleset 16 request selection and local Hindsight recall
-admission are implemented. Provider execution, deadline latching, and canonical result
-consumption remain disabled until their PostgreSQL boundary is complete.
+Accepted and implemented on 2026-08-07. Ruleset 16 request selection, local Hindsight
+recall admission, provider execution, immutable deadline latching, and canonical
+result-or-absence consumption are exercised end to end.
 
 ## Context
 
@@ -39,8 +39,7 @@ from canonical history. Either path would make replayable history untrustworthy.
 
 ## Consequences
 
-Selection, snapshot, and genesis replay are deterministic before any credential or
-worker exists. A forged prompt or forged recalled document fails closed. The world
-still cannot consume model output: immutable job tables, stepwise attempt persistence,
-cost reservation, deadline latching, and a canonical input-result event are the next
-checkpoint.
+Selection, snapshots, genesis replay, and deadline fallback are deterministic before
+any credential or worker exists. A forged prompt or recalled document fails closed.
+Valid model output can add only a fixed preference bonus to an already legal primitive
+action; it cannot invent an action, fact, object, concept, or state mutation.

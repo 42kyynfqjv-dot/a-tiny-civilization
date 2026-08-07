@@ -378,8 +378,16 @@ job insertion and exclusive request leases now commit against migration 0011 und
 ADR 0053. The same migration establishes immutable recall/result/latch tables, a
 database-enforced 16-call route prefix, and integer-micro-dollar accounts and paid
 reservations. Stepwise attempt/result methods, deterministic deadline latching, and
-canonical result consumption remain the active checkpoint; no current runner path
-invokes a model.
+canonical result consumption are now wired end to end. The cognition worker records
+recall once, persists each dispatch before an HTTP call, recovers interrupted attempts
+without duplicating them, and executes only configured routes. Ruleset 16 derives the
+subject from canonical state; the runner freezes an exact result or explicit absence
+at the 60-tick deadline and replay never calls Hindsight or a provider. A valid response
+can only bias an already legal primitive action by a fixed amount. Late results remain
+auditable and billable but cannot replace the latch. The local Compose profile starts
+the worker with every provider optional and the approved paid route disabled by
+default. Remaining work in this checkpoint is accelerated multi-world/load verification
+and production operator admission for whichever credentials are actually enabled.
 
 ### 4. Evidence observatory
 

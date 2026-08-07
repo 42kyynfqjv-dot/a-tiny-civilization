@@ -788,17 +788,17 @@ mod tests {
     #[tokio::test]
     async fn ladder_records_skips_and_failures_before_the_first_success() {
         let cloudflare_calls = Arc::new(AtomicUsize::new(0));
-        let sambanova_calls = Arc::new(AtomicUsize::new(0));
+        let cerebras_calls = Arc::new(AtomicUsize::new(0));
         let mut adapters = BTreeMap::new();
         adapters.insert(
             CognitionProviderId::cloudflare_workers_ai(),
             fake_adapter(FakeBehavior::Unavailable, &cloudflare_calls),
         );
         adapters.insert(
-            CognitionProviderId::sambanova(),
+            CognitionProviderId::cerebras(),
             fake_adapter(
                 FakeBehavior::Succeed(PrimitiveActionKind::Orient),
-                &sambanova_calls,
+                &cerebras_calls,
             ),
         );
         let registry = CognitionRouteRegistry::production_default();
@@ -830,7 +830,7 @@ mod tests {
             ]
         );
         assert_eq!(cloudflare_calls.load(Ordering::SeqCst), 2);
-        assert_eq!(sambanova_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(cerebras_calls.load(Ordering::SeqCst), 1);
         assert_eq!(
             result.receipt.map(|receipt| receipt.action_kind),
             Some(PrimitiveActionKind::Orient)

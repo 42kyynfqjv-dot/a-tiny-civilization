@@ -21,13 +21,14 @@ use world_domain::{
     ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
     BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, BodilyNeedState, BodilyRegulationState,
     CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
-    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, CognitionReading,
-    CognitionRequestSelection, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest,
-    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
-    EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
-    HERITABLE_ACTION_KINDS, HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
-    HERITABLE_DISPOSITION_SCHEMA_VERSION, HERITABLE_PROBABILITY_SCALE, HeritableActionWeight,
-    HeritableDisposition, HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, CognitionDeadlineInput,
+    CognitionInputOutcome, CognitionReading, CognitionRequestSelection, CognitionUnavailableReason,
+    DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
+    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
+    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
+    HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
+    HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
+    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MAX_COGNITION_SELECTION_READINGS, MaterialIdentity,
     MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
@@ -115,6 +116,7 @@ pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
 pub const COGNITION_MEMORY_MAX_TOKENS: u32 = 512;
 pub const COGNITION_MODEL_MAX_OUTPUT_TOKENS: u16 = 32;
 const COGNITION_REQUEST_ORDINAL: u32 = 0;
+const COGNITION_ACTION_WEIGHT_BONUS: u32 = 2;
 const COGNITION_MEMORY_QUERY_V1: &str =
     "recent direct experiences matching current bodily pressure and situated property readings";
 /// The first deterministic execution phase: every living embodied organism receives
@@ -262,6 +264,14 @@ struct PolicyActionDraw<'a> {
     age_ticks: u64,
     bodily_needs: BodilyNeedState,
     candidates: &'a [PolicyCandidate],
+}
+
+#[derive(Serialize)]
+struct CognitionSubjectDraw<'a> {
+    driver_version: u16,
+    world_seed: u64,
+    selected_at_tick: SimTick,
+    living_organism_ids: &'a [EntityId],
 }
 
 #[derive(Serialize)]
@@ -920,7 +930,7 @@ impl EngineState {
         if self.uses_celestial_driver() {
             return Err(EngineError::CelestialStateRequired);
         }
-        self.plan_next_tick_internal(None)
+        self.plan_next_tick_internal(None, &[])
     }
 
     /// Plan one complete ruleset-three transition. The caller supplies the exact
@@ -933,20 +943,43 @@ impl EngineState {
         if !self.uses_celestial_driver() {
             return Err(EngineError::CelestialStateUnsupported);
         }
-        self.plan_next_tick_internal(Some(celestial_state))
+        self.plan_next_tick_internal(Some(celestial_state), &[])
+    }
+
+    /// Plan one tick with the exact fixed-deadline cognition inputs already
+    /// durably latched by infrastructure. Replay uses the resulting events only.
+    pub fn plan_next_tick_with_celestial_and_cognition(
+        &self,
+        celestial_state: CelestialState,
+        cognition_inputs: &[CognitionDeadlineInput],
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        if !self.uses_celestial_driver() {
+            return Err(EngineError::CelestialStateUnsupported);
+        }
+        if !self.uses_cognition_driver() {
+            return Err(EngineError::CognitionUnsupported);
+        }
+        self.plan_next_tick_internal(Some(celestial_state), cognition_inputs)
     }
 
     fn plan_next_tick_internal(
         &self,
         celestial_state: Option<CelestialState>,
+        cognition_inputs: &[CognitionDeadlineInput],
     ) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_status(WorldStatus::Running)?;
         let next = self.tick.checked_next()?;
-        let scheduled_events = self.plan_partition_tick_events()?;
+        let cognition_input = self.cognition_input_for_tick(next, cognition_inputs)?;
+        let scheduled_events = self.plan_partition_tick_events_with_cognition(cognition_input)?;
         let mut events = vec![DomainEvent::TickAdvanced {
             from: self.tick,
             to: next,
         }];
+        if let Some(input) = cognition_input {
+            events.push(DomainEvent::CognitionInputRecorded {
+                input: input.clone(),
+            });
+        }
         events.extend(scheduled_events);
         if let Some(state) = celestial_state {
             events.push(DomainEvent::CelestialStateRecorded { state });
@@ -958,6 +991,9 @@ impl EngineState {
             preview.apply_events(&reproductive_events)?;
             events.extend(reproductive_events);
         }
+        let unavailable_cognition = preview.plan_unavailable_cognition_events()?;
+        preview.apply_events(&unavailable_cognition)?;
+        events.extend(unavailable_cognition);
         if preview.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
@@ -987,6 +1023,9 @@ impl EngineState {
             preview.apply_events(&endings)?;
             events.extend(endings);
         }
+        let unavailable_cognition = preview.plan_unavailable_cognition_events()?;
+        preview.apply_events(&unavailable_cognition)?;
+        events.extend(unavailable_cognition);
         if preview.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
@@ -1027,6 +1066,39 @@ impl EngineState {
         Ok(vec![DomainEvent::CognitionRequestSelected {
             selection: self.expected_cognition_selection(organism_id)?,
         }])
+    }
+
+    /// Select the next world-total cognition subject from canonical state. This is
+    /// the production entry point: infrastructure cannot choose which life receives
+    /// the bounded request.
+    pub fn plan_scheduled_cognition_request(&self) -> Result<Vec<DomainEvent>, EngineError> {
+        if !self.uses_cognition_driver() {
+            return Err(EngineError::CognitionUnsupported);
+        }
+        self.require_status(WorldStatus::Running)?;
+        if !self.pending_cognition_requests.is_empty() {
+            return Ok(Vec::new());
+        }
+        let living_organism_ids = self
+            .organisms
+            .values()
+            .filter(|organism| organism.is_alive())
+            .map(|organism| organism.organism_id)
+            .collect::<Vec<_>>();
+        if living_organism_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let draw = Digest::canonical(&CognitionSubjectDraw {
+            driver_version: 1,
+            world_seed: self.manifest.seed.get(),
+            selected_at_tick: self.tick,
+            living_organism_ids: &living_organism_ids,
+        })?;
+        let length =
+            u64::try_from(living_organism_ids.len()).map_err(|_| EngineError::TooManyEvents)?;
+        let index = usize::try_from(first_digest_u64(draw) % length)
+            .map_err(|_| EngineError::TooManyEvents)?;
+        self.plan_cognition_request(living_organism_ids[index])
     }
 
     fn expected_cognition_selection(
@@ -1088,6 +1160,79 @@ impl EngineState {
             COGNITION_MODEL_MAX_OUTPUT_TOKENS,
         )
         .map_err(|error| EngineError::InvalidCognitionSelection(error.to_string()))
+    }
+
+    fn cognition_input_for_tick<'a>(
+        &self,
+        next: SimTick,
+        inputs: &'a [CognitionDeadlineInput],
+    ) -> Result<Option<&'a CognitionDeadlineInput>, EngineError> {
+        if !self.uses_cognition_driver() {
+            return if inputs.is_empty() {
+                Ok(None)
+            } else {
+                Err(EngineError::CognitionUnsupported)
+            };
+        }
+        if inputs
+            .windows(2)
+            .any(|pair| pair[0].request_id >= pair[1].request_id)
+        {
+            return Err(EngineError::InvalidCognitionInput(
+                "deadline inputs are duplicated or not ordered by request ID".to_owned(),
+            ));
+        }
+        let due = self
+            .pending_cognition_requests
+            .values()
+            .filter(|selection| selection.deadline_tick == next)
+            .collect::<Vec<_>>();
+        if due.len() != inputs.len() {
+            return if due.is_empty() {
+                Err(EngineError::UnexpectedCognitionInput)
+            } else {
+                Err(EngineError::CognitionInputRequired)
+            };
+        }
+        for (selection, input) in due.iter().zip(inputs) {
+            input
+                .validate_against(selection)
+                .map_err(|error| EngineError::InvalidCognitionInput(error.to_string()))?;
+        }
+        Ok(inputs.first())
+    }
+
+    fn plan_unavailable_cognition_events(&self) -> Result<Vec<DomainEvent>, EngineError> {
+        if !self.uses_cognition_driver() {
+            return Ok(Vec::new());
+        }
+        self.pending_cognition_requests
+            .values()
+            .filter_map(|selection| {
+                let subject_alive = self
+                    .organisms
+                    .get(&selection.organism_id)
+                    .is_some_and(OrganismState::is_alive);
+                let reason = if !subject_alive {
+                    Some(CognitionUnavailableReason::SubjectUnavailable)
+                } else if self.living_people() == 0 {
+                    Some(CognitionUnavailableReason::WorldArchived)
+                } else {
+                    None
+                }?;
+                Some(
+                    CognitionDeadlineInput::unavailable(
+                        selection,
+                        Digest::ZERO,
+                        Digest::ZERO,
+                        Digest::ZERO,
+                        reason,
+                    )
+                    .map(|input| DomainEvent::CognitionInputRecorded { input })
+                    .map_err(|error| EngineError::InvalidCognitionInput(error.to_string())),
+                )
+            })
+            .collect()
     }
 
     /// Record a chosen primitive bodily act for a living organism. World physics will
@@ -1209,10 +1354,20 @@ impl EngineState {
         Ok(Some(object_ids[index]))
     }
 
+    #[cfg(test)]
     fn deterministic_policy_candidates(
         &self,
         organism: &OrganismState,
         age_ticks: u64,
+    ) -> Result<Vec<PolicyCandidate>, EngineError> {
+        self.deterministic_policy_candidates_with_cognition(organism, age_ticks, None)
+    }
+
+    fn deterministic_policy_candidates_with_cognition(
+        &self,
+        organism: &OrganismState,
+        age_ticks: u64,
+        cognition_action_kind: Option<PrimitiveActionKind>,
     ) -> Result<Vec<PolicyCandidate>, EngineError> {
         let patch = organism
             .embodied_patch
@@ -1372,19 +1527,46 @@ impl EngineState {
             }
         }
 
+        if let Some(cognition_action_kind) = cognition_action_kind {
+            for candidate in &mut candidates {
+                if candidate.action.kind == cognition_action_kind {
+                    candidate.weight = candidate
+                        .weight
+                        .checked_add(COGNITION_ACTION_WEIGHT_BONUS)
+                        .ok_or(EngineError::TooManyEvents)?;
+                }
+            }
+        }
+
         Ok(candidates)
     }
 
+    #[cfg(test)]
     fn deterministic_policy_action(
         &self,
         organism: &OrganismState,
         age_ticks: u64,
     ) -> Result<PrimitiveAction, EngineError> {
-        let candidates = self.deterministic_policy_candidates(organism, age_ticks)?;
+        self.deterministic_policy_action_with_cognition(organism, age_ticks, None)
+    }
+
+    fn deterministic_policy_action_with_cognition(
+        &self,
+        organism: &OrganismState,
+        age_ticks: u64,
+        cognition_action_kind: Option<PrimitiveActionKind>,
+    ) -> Result<PrimitiveAction, EngineError> {
+        let candidates = self.deterministic_policy_candidates_with_cognition(
+            organism,
+            age_ticks,
+            cognition_action_kind,
+        )?;
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_heritable_disposition_driver() {
+            policy_version: if self.uses_cognition_driver() {
+                4
+            } else if self.uses_heritable_disposition_driver() {
                 3
             } else if self.uses_action_learning_driver() {
                 2
@@ -2325,7 +2507,10 @@ impl EngineState {
             })
     }
 
-    fn plan_partition_tick_events(&self) -> Result<Vec<DomainEvent>, EngineError> {
+    fn plan_partition_tick_events_with_cognition(
+        &self,
+        cognition_input: Option<&CognitionDeadlineInput>,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
         let Some((partition_level, maximum_events)) = self.partition_profile() else {
             return Ok(Vec::new());
         };
@@ -2453,8 +2638,14 @@ impl EngineState {
                                 2
                             };
                             if self.uses_deterministic_policy_driver() {
-                                let action =
-                                    self.deterministic_policy_action(organism, to_age_ticks)?;
+                                let cognition_action_kind = cognition_input
+                                    .filter(|input| input.organism_id == organism.organism_id)
+                                    .and_then(CognitionDeadlineInput::action_kind);
+                                let action = self.deterministic_policy_action_with_cognition(
+                                    organism,
+                                    to_age_ticks,
+                                    cognition_action_kind,
+                                )?;
                                 let action_kind = action.kind;
                                 let resolved_action =
                                     self.plan_action(organism.organism_id, action)?;
@@ -2901,6 +3092,11 @@ impl EngineState {
                 .organisms
                 .get(&selection.organism_id)
                 .or_else(|| resulting_state.organisms.get(&selection.organism_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::CognitionInputRecorded { input } => self
+                .organisms
+                .get(&input.organism_id)
+                .or_else(|| resulting_state.organisms.get(&input.organism_id))
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::ReproductiveDevelopmentStarted {
                 developing_parent_id,
@@ -4182,6 +4378,54 @@ impl EngineState {
                     return Err(EngineError::DuplicateCognitionRequest(selection.request_id));
                 }
             }
+            DomainEvent::CognitionInputRecorded { input } => {
+                if !self.uses_cognition_driver() {
+                    return Err(EngineError::CognitionUnsupported);
+                }
+                let selection = self
+                    .pending_cognition_requests
+                    .get(&input.request_id)
+                    .ok_or(EngineError::UnknownCognitionRequest(input.request_id))?;
+                input
+                    .validate_against(selection)
+                    .map_err(|error| EngineError::InvalidCognitionInput(error.to_string()))?;
+                if self.tick > selection.deadline_tick {
+                    return Err(EngineError::InvalidCognitionInput(
+                        "deadline input arrived after its simulated-time deadline".to_owned(),
+                    ));
+                }
+                if self.tick < selection.deadline_tick {
+                    let valid_early_resolution = match &input.outcome {
+                        CognitionInputOutcome::Unavailable {
+                            reason: CognitionUnavailableReason::SubjectUnavailable,
+                        } => self
+                            .organisms
+                            .get(&selection.organism_id)
+                            .is_none_or(|organism| !organism.is_alive()),
+                        CognitionInputOutcome::Unavailable {
+                            reason: CognitionUnavailableReason::WorldArchived,
+                        } => self.living_people() == 0,
+                        _ => false,
+                    };
+                    if !valid_early_resolution {
+                        return Err(EngineError::InvalidCognitionInput(
+                            "only a mechanically unavailable subject or world may resolve early"
+                                .to_owned(),
+                        ));
+                    }
+                } else if matches!(
+                    &input.outcome,
+                    CognitionInputOutcome::Model(_) if self
+                        .organisms
+                        .get(&selection.organism_id)
+                        .is_none_or(|organism| !organism.is_alive())
+                ) {
+                    return Err(EngineError::InvalidCognitionInput(
+                        "model input cannot bias an unavailable subject".to_owned(),
+                    ));
+                }
+                self.pending_cognition_requests.remove(&input.request_id);
+            }
             DomainEvent::CelestialStateRecorded { state } => {
                 if !self.uses_celestial_driver() {
                     return Err(EngineError::CelestialStateUnsupported);
@@ -4607,6 +4851,11 @@ impl EngineState {
             }
         }
         if self.uses_cognition_driver() {
+            if self.status != WorldStatus::Running && !self.pending_cognition_requests.is_empty() {
+                return Err(EngineError::InvalidCognitionInput(
+                    "a non-running world retained a pending cognition request".to_owned(),
+                ));
+            }
             for (request_id, selection) in &self.pending_cognition_requests {
                 selection
                     .validate()
@@ -4615,7 +4864,10 @@ impl EngineState {
                     || selection.world_id != self.world_id()
                     || selection.selected_at_tick > self.tick
                     || selection.deadline_tick <= self.tick
-                    || !self.organisms.contains_key(&selection.organism_id)
+                    || self
+                        .organisms
+                        .get(&selection.organism_id)
+                        .is_none_or(|organism| !organism.is_alive())
                 {
                     return Err(EngineError::InvalidCognitionSelection(
                         "pending cognition request disagrees with canonical state".to_owned(),
@@ -5398,6 +5650,14 @@ pub enum EngineError {
     CognitionRequestAlreadyPending,
     #[error("cognition request {0} was selected more than once")]
     DuplicateCognitionRequest(Uuid),
+    #[error("a fixed-deadline cognition input is required before this tick can advance")]
+    CognitionInputRequired,
+    #[error("no cognition input is due for this tick")]
+    UnexpectedCognitionInput,
+    #[error("cognition deadline input is invalid: {0}")]
+    InvalidCognitionInput(String),
+    #[error("cognition request {0} is not pending")]
+    UnknownCognitionRequest(Uuid),
     #[error("reproductive physiology is unsupported by this ruleset")]
     ReproductivePhysiologyUnsupported,
     #[error("organism {0} lacks its species-bound reproductive commitment")]
@@ -8411,6 +8671,12 @@ mod tests {
         let selection_events = running
             .plan_cognition_request(organism_id)
             .expect("canonical cognition selection");
+        assert_eq!(
+            running
+                .plan_scheduled_cognition_request()
+                .expect("world-selected cognition subject"),
+            selection_events
+        );
         let DomainEvent::CognitionRequestSelected { selection } = &selection_events[0] else {
             panic!("selection planner emitted a different event")
         };
@@ -8491,6 +8757,178 @@ mod tests {
             EngineState::new(legacy_manifest).plan_cognition_request(organism_id),
             Err(EngineError::CognitionUnsupported)
         ));
+    }
+
+    #[test]
+    fn cognition_deadline_is_required_replayable_and_only_biases_valid_actions() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x122));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478593),
+            COGNITION_RULESET_VERSION,
+        );
+        let mut founder = regulated_full_earth_person(world_id, 0x712, 10_000_000_000, 10_000_000);
+        founder.birth_category = BirthCategory::new("female").expect("category");
+        founder.initial_age_ticks = 20;
+        founder.reproductive_physiology =
+            Some(reproductive_fixture_profile(founder.species.clone()));
+        founder.heritable_disposition_profile =
+            Some(heritable_fixture_profile(founder.species.clone()));
+        let organism_id = founder.organism_id;
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![founder],
+            )
+            .expect("cognition genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("cognition genesis");
+        let selection_events = running
+            .plan_cognition_request(organism_id)
+            .expect("cognition request");
+        let selection = match &selection_events[0] {
+            DomainEvent::CognitionRequestSelected { selection } => selection.clone(),
+            _ => unreachable!(),
+        };
+        let (mut pending, selection_batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, selection_events)
+            .expect("cognition selection commit");
+
+        let organism = pending.organisms.get(&organism_id).expect("founder");
+        let base = pending
+            .deterministic_policy_candidates_with_cognition(organism, 21, None)
+            .expect("baseline candidates");
+        let biased = pending
+            .deterministic_policy_candidates_with_cognition(
+                organism,
+                21,
+                Some(PrimitiveActionKind::Rest),
+            )
+            .expect("biased candidates");
+        assert_eq!(base.len(), biased.len());
+        for (base, biased) in base.iter().zip(&biased) {
+            assert_eq!(base.action, biased.action);
+            let expected = if base.action.kind == PrimitiveActionKind::Rest {
+                base.weight + COGNITION_ACTION_WEIGHT_BONUS
+            } else {
+                base.weight
+            };
+            assert_eq!(biased.weight, expected);
+        }
+
+        let early = CognitionDeadlineInput::unavailable(
+            &selection,
+            Digest::ZERO,
+            Digest::ZERO,
+            Digest::ZERO,
+            CognitionUnavailableReason::DeadlineNoResult,
+        )
+        .expect("valid unavailable input");
+        assert!(matches!(
+            pending.plan_next_tick_with_celestial_and_cognition(
+                CelestialState::new(
+                    TdbSecondsSinceJ2000::new(300),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ),
+                &[early],
+            ),
+            Err(EngineError::UnexpectedCognitionInput)
+        ));
+
+        let mut batches = vec![genesis, selection_batch];
+        let mut previous_hash = batches.last().expect("selection batch").batch_hash;
+        let mut next_sequence = 3_u64;
+        for tick in 1..COGNITION_RESPONSE_WINDOW_TICKS {
+            let celestial = CelestialState::new(
+                TdbSecondsSinceJ2000::new(i128::from(tick * 300)),
+                CartesianMillimetres::new(i128::from(tick), 2, 3),
+                CartesianMillimetres::new(4, i128::from(tick) + 5, 6),
+            );
+            let events = pending
+                .plan_next_tick_with_celestial(celestial)
+                .expect("pre-deadline tick");
+            let (next, batch) = pending
+                .commit(EventSequence::new(next_sequence), previous_hash, events)
+                .expect("pre-deadline commit");
+            previous_hash = batch.batch_hash;
+            next_sequence += 1;
+            batches.push(batch);
+            pending = next;
+        }
+        assert_eq!(
+            pending.tick(),
+            SimTick::new(COGNITION_RESPONSE_WINDOW_TICKS - 1)
+        );
+        let deadline_celestial = CelestialState::new(
+            TdbSecondsSinceJ2000::new(i128::from(COGNITION_RESPONSE_WINDOW_TICKS * 300)),
+            CartesianMillimetres::new(60, 2, 3),
+            CartesianMillimetres::new(4, 65, 6),
+        );
+        assert!(matches!(
+            pending.plan_next_tick_with_celestial(deadline_celestial),
+            Err(EngineError::CognitionInputRequired)
+        ));
+        let input = CognitionDeadlineInput::unavailable(
+            &selection,
+            Digest::ZERO,
+            Digest::ZERO,
+            Digest::ZERO,
+            CognitionUnavailableReason::DeadlineNoResult,
+        )
+        .expect("deadline fallback input");
+        let events = pending
+            .plan_next_tick_with_celestial_and_cognition(
+                deadline_celestial,
+                std::slice::from_ref(&input),
+            )
+            .expect("deadline tick with input");
+        assert!(matches!(
+            events.get(1),
+            Some(DomainEvent::CognitionInputRecorded { input: recorded }) if recorded == &input
+        ));
+        let (resolved, deadline_batch) = pending
+            .commit(EventSequence::new(next_sequence), previous_hash, events)
+            .expect("deadline input commit");
+        assert!(resolved.pending_cognition_requests.is_empty());
+        batches.push(deadline_batch);
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("cognition deadline replay")
+                .state,
+            resolved
+        );
+
+        let death_events = running
+            .commit(
+                EventSequence::new(2),
+                batches[0].batch_hash,
+                running
+                    .plan_cognition_request(organism_id)
+                    .expect("second branch request"),
+            )
+            .expect("second branch selection")
+            .0
+            .plan_death(
+                organism_id,
+                DeathCause {
+                    mechanism: "test_mechanical_unavailability".to_owned(),
+                },
+            )
+            .expect("early subject death");
+        assert!(death_events.iter().any(|event| matches!(
+            event,
+            DomainEvent::CognitionInputRecorded { input }
+                if matches!(
+                    input.outcome,
+                    CognitionInputOutcome::Unavailable {
+                        reason: CognitionUnavailableReason::SubjectUnavailable
+                    }
+                )
+        )));
     }
 
     #[test]

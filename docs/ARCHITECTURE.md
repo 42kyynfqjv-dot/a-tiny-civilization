@@ -126,20 +126,27 @@ Wall-clock throughput changes how quickly observers receive ticks, not which sta
 transitions occur. The primary cognition allocation is denominated in simulated time;
 a separate hard currency circuit breaker can force a recorded unavailable result.
 
-Ruleset 16 now owns the first half of that boundary under ADR 0052. It emits a
+Ruleset 16 owns that boundary under ADR 0052. It emits a
 canonical request-selection event from exact body-owned state, permits only one
 world-total pending request, fixes a 60-tick simulated-time deadline, and rejects a
 runner-supplied prompt or altered input. Hindsight recall is re-admitted only after
 every returned document exactly matches a successfully delivered local memory-outbox
-row. Provider execution and canonical result consumption remain disabled until the
-immutable job and deadline-latch ledger is exercised end to end.
+row. The subject is derived from the world seed, tick, and sorted living identities;
+infrastructure cannot choose it.
 
 ADR 0053 supplies that durable ledger. Committing a canonical selection now inserts
 its immutable job in the same PostgreSQL transaction. Exclusive worker leases are
 wall-clock coordination only. The schema reserves append-only normalized recall,
 route-attempt prefixes, final results, integer-micro-dollar reservations, immutable
 deadline latches, and atomic latch consumption. Provider calls remain disabled until
-the stepwise store methods and canonical result event use those tables end to end.
+the stepwise worker has recorded its dispatch. It recovers interrupted work without
+retrying an ambiguous call and uses only configured adapters.
+
+ADR 0054 closes the live/replay race. PostgreSQL freezes one exact result or explicit
+absence before planning the deadline transition. The world commit consumes the exact
+latch atomically, while replay reads only the resulting event. A response arriving
+after that latch can resolve operational audit and billing state but cannot create a
+canonical result or replace deterministic local behavior.
 
 ## Irreversible facts and rebuildable views
 

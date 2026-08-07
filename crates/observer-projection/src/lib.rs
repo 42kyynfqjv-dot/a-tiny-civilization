@@ -64,9 +64,10 @@ pub struct PublicTimelineItem {
 
 /// Produces a factual, restrained public finding aid from one committed batch.
 ///
-/// The function never consumes wall-clock time, user input, labels, or model output.
-/// It has no path back into the simulation and intentionally discards sex category,
-/// death cause, parentage, location, and internal scientific identities.
+/// The function never consumes wall-clock time, user input, or observer labels. It
+/// has no path back into the simulation and intentionally discards sex category,
+/// death cause, parentage, location, internal scientific identities, and cognition
+/// provider mechanics.
 #[must_use]
 pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
     batch
@@ -131,6 +132,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
                 | DomainEvent::CognitionRequestSelected { .. }
+                | DomainEvent::CognitionInputRecorded { .. }
                 | DomainEvent::ReproductiveDevelopmentStarted { .. }
                 | DomainEvent::ReproductiveDevelopmentEnded { .. }
                 | DomainEvent::CelestialStateRecorded { .. } => {
@@ -329,6 +331,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::OrganismActionValueChanged { .. }
             | DomainEvent::CognitionRequestSelected { .. }
+            | DomainEvent::CognitionInputRecorded { .. }
             | DomainEvent::ReproductiveDevelopmentStarted { .. }
             | DomainEvent::ReproductiveDevelopmentEnded { .. }
             | DomainEvent::CelestialStateRecorded { .. }

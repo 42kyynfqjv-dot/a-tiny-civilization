@@ -2,9 +2,9 @@
 
 ## Status
 
-Accepted on 2026-08-07. The provider contract, strict response adapter, route registry,
-and bounded failover executor are implemented. Durable scheduling, cost reservation,
-and deadline latching remain disabled until their PostgreSQL boundary is complete.
+Accepted and implemented on 2026-08-07. The registry, strict response adapter,
+stepwise worker, durable cost reservation, and immutable deadline admission are active
+in code. Credentials remain deployment-only and no route is usable until configured.
 
 ## Context
 
@@ -15,8 +15,9 @@ A long provider list must not become an unbounded retry storm, a way to select a
 unapproved paid model, or an infrastructure-dependent replay gap.
 
 Some apparently free services explicitly limit hosted endpoints to development or
-prototyping. Trial credit is also not recurring free capacity. Those routes are useful
-for a pre-genesis soak but cannot silently enter a public world's production ladder.
+prototyping. Trial credit is also not recurring free capacity. Those routes may be
+useful for manual development, but cannot silently enter a public world's production
+ladder.
 
 ## Decision
 
@@ -26,12 +27,14 @@ for a pre-genesis soak but cannot silently enter a public world's production lad
 - Billing classes are `free_allocation`, `trial_credit`, `development_only`, and
   `paid_approved`. A production registry rejects trial and development-only routes.
 - The initial production candidate order is Cloudflare Workers AI GPT-OSS 20B/120B,
-  Groq GPT-OSS 20B/120B, SambaNova GPT-OSS 120B, OpenRouter's dynamic free router,
-  two explicit OpenRouter GPT-OSS free variants, and finally the sole paid route.
+  Groq GPT-OSS 20B/120B, Cerebras Llama 3.1 8B and GPT-OSS 120B, OpenRouter's dynamic
+  free router, two explicit OpenRouter GPT-OSS free variants, and finally the sole
+  paid route.
   Missing credentials or a disabled provider produce a recorded skip; inclusion in
   source code does not enable a provider or replace a current terms review.
-- Pre-genesis soak policy may additionally admit Cerebras trial credit and NVIDIA's
-  hosted Nemotron development endpoint. It cannot validate as production policy.
+- A separate development policy may additionally admit NVIDIA's hosted Nemotron
+  development endpoint. It cannot validate as production policy and creates no
+  private-soak or launch-wait requirement.
 - One cognition job may make at most sixteen actual network attempts even when the
   registry eventually contains hundreds of routes. Cooldown, quota-exhausted,
   disabled, and unconfigured routes are skipped without a network call.
@@ -64,9 +67,10 @@ Free capacity is opportunistic rather than promised. Provider failure, missing
 credentials, exhausted quotas, invalid output, and a denied paid reservation all
 degrade to the deterministic local policy instead of pausing the world.
 
-The route registry and normalized result are hashable, but the infrastructure worker
-and PostgreSQL lease/budget/deadline tables remain required before external cognition
-can affect a canonical world.
+The route registry and normalized result are hashable. The worker persists every
+route decision before or instead of dispatch, and PostgreSQL admits only a completed
+result present at the fixed simulated-time deadline. A late response remains useful
+for audit and billing but cannot replace the immutable local fallback.
 
 ## References
 
@@ -74,6 +78,6 @@ can affect a canonical world.
 - [OpenRouter free-model router](https://openrouter.ai/docs/guides/routing/routers/free)
 - [OpenRouter free variants](https://openrouter.ai/docs/guides/routing/model-variants/free)
 - [Groq rate limits](https://console.groq.com/docs/rate-limits)
-- [SambaNova model rate limits](https://docs.sambanova.ai/docs/en/models/rate-limits)
+- [Cerebras pricing](https://inference-docs.cerebras.ai/support/pricing)
+- [Cerebras rate limits](https://inference-docs.cerebras.ai/support/rate-limits)
 - [NVIDIA hosted NIM product terms FAQ](https://docs.api.nvidia.com/nim/docs/product)
-

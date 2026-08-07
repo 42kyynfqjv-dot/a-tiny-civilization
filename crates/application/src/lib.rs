@@ -1,9 +1,11 @@
 //! Application use cases and infrastructure ports.
 
 mod cognition;
+mod cognition_worker;
 mod memory;
 
 pub use cognition::*;
+pub use cognition_worker::*;
 pub use memory::*;
 
 use async_trait::async_trait;
@@ -314,6 +316,27 @@ pub async fn advance_world<S: WorldStore + ?Sized>(
     advance_world_events(store, current, events).await
 }
 
+/// Commit the engine-selected world-total cognition request as a same-tick
+/// transition. Returns `None` while another request is pending.
+pub async fn schedule_world_cognition<S: WorldStore + ?Sized>(
+    store: &S,
+    current: &WorldSession,
+) -> Result<Option<WorldSession>, WorldRuntimeError> {
+    if current.world.status != WorldStatus::Running
+        || current.state.status() != WorldStatus::Running
+    {
+        return Err(WorldRuntimeError::Integrity(format!(
+            "world {} is not runnable",
+            current.world.manifest.world_id
+        )));
+    }
+    let events = current.state.plan_scheduled_cognition_request()?;
+    if events.is_empty() {
+        return Ok(None);
+    }
+    advance_world_events(store, current, events).await.map(Some)
+}
+
 /// Advance one ruleset-three world using one already-evaluated, source-backed
 /// celestial state. The source adapter lives outside this crate; replay uses only
 /// the committed event and therefore never invokes it.
@@ -333,6 +356,50 @@ pub async fn advance_world_with_celestial<S: WorldStore + ?Sized>(
     let events = current
         .state
         .plan_next_tick_with_celestial(celestial_state)?;
+    advance_world_events(store, current, events).await
+}
+
+/// Advance one cognition-enabled world after atomically freezing every external
+/// result due in this transition. A crash after latching returns the same inputs on
+/// retry, while replay consumes only the committed events.
+pub async fn advance_world_with_celestial_and_cognition<S>(
+    store: &S,
+    current: &WorldSession,
+    celestial_state: CelestialState,
+) -> Result<WorldSession, WorldRuntimeError>
+where
+    S: WorldStore + CognitionJobStore + ?Sized,
+{
+    if current.world.status != WorldStatus::Running
+        || current.state.status() != WorldStatus::Running
+    {
+        return Err(WorldRuntimeError::Integrity(format!(
+            "world {} is not runnable",
+            current.world.manifest.world_id
+        )));
+    }
+    let target_sequence = current
+        .world
+        .cursor
+        .sequence
+        .checked_next()
+        .map_err(EngineError::from)?;
+    let target_tick = current
+        .world
+        .cursor
+        .tick
+        .checked_next()
+        .map_err(EngineError::from)?;
+    let inputs = store
+        .latch_due_cognition_inputs(
+            current.world.manifest.world_id,
+            target_sequence,
+            target_tick,
+        )
+        .await?;
+    let events = current
+        .state
+        .plan_next_tick_with_celestial_and_cognition(celestial_state, &inputs)?;
     advance_world_events(store, current, events).await
 }
 

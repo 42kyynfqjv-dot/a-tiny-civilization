@@ -5,7 +5,8 @@ use sim_engine::{EngineState, Snapshot};
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 use world_domain::{
-    Digest, DomainEvent, EventBatch, EventSequence, SimTick, WorldId, WorldManifest, WorldStatus,
+    CognitionDeadlineInput, CognitionInputOutcome, CognitionUnavailableReason, Digest, DomainEvent,
+    EventBatch, EventSequence, SimTick, WorldId, WorldManifest, WorldStatus,
 };
 
 use crate::PostgresStore;
@@ -48,6 +49,15 @@ struct SnapshotRow {
     state: Value,
     checksum: Vec<u8>,
     last_event_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct CognitionLatchRow {
+    world_id: Uuid,
+    deadline_tick: i64,
+    target_sequence: i64,
+    latch_payload: Value,
+    latch_checksum: Vec<u8>,
 }
 
 #[async_trait]
@@ -361,6 +371,8 @@ impl WorldStore for PostgresStore {
             .map_err(operation_error)?;
         }
 
+        consume_cognition_latches(&mut transaction, batch).await?;
+
         insert_snapshot(&mut transaction, snapshot, ruleset_version, snapshot_json).await?;
 
         let contains_started = batch
@@ -484,6 +496,195 @@ impl WorldStore for PostgresStore {
             },
             predecessor_world_id: persisted.predecessor_world_id,
         })
+    }
+}
+
+async fn consume_cognition_latches(
+    transaction: &mut Transaction<'_, Postgres>,
+    batch: &EventBatch,
+) -> Result<(), StoreError> {
+    let target_sequence = to_i64(batch.sequence.get(), "cognition target sequence")?;
+    let batch_tick = to_i64(batch.tick.get(), "cognition input tick")?;
+    let mut seen = Vec::new();
+    for (position, record) in batch.events.iter().enumerate() {
+        let DomainEvent::CognitionInputRecorded { input } = &record.event else {
+            continue;
+        };
+        input.validate().map_err(corrupt)?;
+        if input.world_id != batch.world_id
+            || !seen
+                .iter()
+                .all(|request_id| request_id != &input.request_id)
+        {
+            return Err(StoreError::Conflict(
+                "cognition input world or request uniqueness is invalid".to_owned(),
+            ));
+        }
+        seen.push(input.request_id);
+        let deadline_tick = to_i64(input.deadline_tick.get(), "cognition deadline tick")?;
+        if batch_tick > deadline_tick {
+            return Err(StoreError::Conflict(
+                "late cognition input cannot enter canonical history".to_owned(),
+            ));
+        }
+        let payload = serde_json::to_value(input).map_err(corrupt)?;
+        let checksum = input.canonical_hash().map_err(corrupt)?;
+        if batch_tick < deadline_tick {
+            validate_early_cognition_resolution(batch, position, input)?;
+            sqlx::query(
+                r#"
+                INSERT INTO cognition_deadline_latches (
+                    request_id,
+                    world_id,
+                    deadline_tick,
+                    target_sequence,
+                    latch_kind,
+                    latch_payload,
+                    latch_checksum
+                )
+                VALUES ($1, $2, $3, $4, 'unavailable', $5, $6)
+                "#,
+            )
+            .bind(input.request_id)
+            .bind(batch.world_id.as_uuid())
+            .bind(deadline_tick)
+            .bind(target_sequence)
+            .bind(payload)
+            .bind(checksum.as_bytes().as_slice())
+            .execute(&mut **transaction)
+            .await
+            .map_err(operation_error)?;
+            insert_cognition_consumption(transaction, batch, record, checksum).await?;
+            continue;
+        }
+
+        let latch = sqlx::query_as::<_, CognitionLatchRow>(
+            r#"
+            SELECT world_id, deadline_tick, target_sequence, latch_payload, latch_checksum
+            FROM cognition_deadline_latches
+            WHERE request_id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(input.request_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(operation_error)?
+        .ok_or_else(|| {
+            StoreError::Conflict(format!(
+                "cognition input {} has no durable deadline latch",
+                input.request_id
+            ))
+        })?;
+        if latch.world_id != batch.world_id.as_uuid()
+            || latch.deadline_tick != deadline_tick
+            || latch.target_sequence != target_sequence
+            || latch.latch_payload != payload
+            || digest_from_db(&latch.latch_checksum, "cognition latch checksum")? != checksum
+        {
+            return Err(StoreError::Conflict(
+                "canonical cognition input differs from its immutable deadline latch".to_owned(),
+            ));
+        }
+        insert_cognition_consumption(transaction, batch, record, checksum).await?;
+    }
+
+    let unconsumed: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM cognition_deadline_latches AS latch
+        LEFT JOIN cognition_latch_consumptions AS consumption
+            ON consumption.request_id = latch.request_id
+        WHERE latch.world_id = $1
+          AND latch.target_sequence = $2
+          AND consumption.request_id IS NULL
+        "#,
+    )
+    .bind(batch.world_id.as_uuid())
+    .bind(target_sequence)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    if unconsumed != 0 {
+        return Err(StoreError::Conflict(
+            "transition omitted one or more immutable cognition deadline latches".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn insert_cognition_consumption(
+    transaction: &mut Transaction<'_, Postgres>,
+    batch: &EventBatch,
+    record: &world_domain::EventRecord,
+    checksum: Digest,
+) -> Result<(), StoreError> {
+    let DomainEvent::CognitionInputRecorded { input } = &record.event else {
+        return Err(StoreError::Corrupt(
+            "cognition consumption was requested for another event kind".to_owned(),
+        ));
+    };
+    sqlx::query(
+        r#"
+        INSERT INTO cognition_latch_consumptions (
+            request_id,
+            world_id,
+            source_sequence,
+            source_event_id,
+            source_event_index,
+            latch_checksum
+        )
+        VALUES ($1, $2, $3, $4, $5, $6)
+        "#,
+    )
+    .bind(input.request_id)
+    .bind(batch.world_id.as_uuid())
+    .bind(to_i64(batch.sequence.get(), "cognition source sequence")?)
+    .bind(record.event_id.as_uuid())
+    .bind(i64::from(record.index))
+    .bind(checksum.as_bytes().as_slice())
+    .execute(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    Ok(())
+}
+
+fn validate_early_cognition_resolution(
+    batch: &EventBatch,
+    position: usize,
+    input: &CognitionDeadlineInput,
+) -> Result<(), StoreError> {
+    if input.recall_outcome_hash != Digest::ZERO
+        || input.route_registry_hash != Digest::ZERO
+        || input.result_hash != Digest::ZERO
+    {
+        return Err(StoreError::Conflict(
+            "early cognition resolution cannot contain external evidence".to_owned(),
+        ));
+    }
+    let mechanically_supported = match input.outcome {
+        CognitionInputOutcome::Unavailable {
+            reason: CognitionUnavailableReason::SubjectUnavailable,
+        } => batch.events[..position].iter().any(|record| {
+            matches!(
+                record.event,
+                DomainEvent::OrganismDied { organism_id, .. }
+                    if organism_id == input.organism_id
+            )
+        }),
+        CognitionInputOutcome::Unavailable {
+            reason: CognitionUnavailableReason::WorldArchived,
+        } => batch.events[position + 1..]
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldArchived)),
+        _ => false,
+    };
+    if mechanically_supported {
+        Ok(())
+    } else {
+        Err(StoreError::Conflict(
+            "early cognition resolution lacks its mechanical lifecycle event".to_owned(),
+        ))
     }
 }
 

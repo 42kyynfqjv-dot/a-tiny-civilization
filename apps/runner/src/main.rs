@@ -2,22 +2,26 @@ use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
     process::Command as ProcessCommand,
+    sync::Arc,
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use application::{
-    AgentMemory, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
+    AgentMemory, CognitionModel, CognitionProviderId, CognitionWorkerConfiguration,
+    CognitionWorkerStep, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
     WorldSession, WorldStore, advance_world, advance_world_with_celestial,
-    initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
+    advance_world_with_celestial_and_cognition, initialize_or_resume_configured_world,
+    initialize_or_resume_world, process_next_cognition_job, resume_world, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
+use model_adapter::OpenAiCompatibleCognition;
 use postgres_store::PostgresStore;
 use serde::Deserialize;
 use serde_json::json;
 use sim_engine::{
-    BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION,
+    BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialOrganism,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RESOLVED_MOVEMENT_RULESET_VERSION, RULESET_VERSION,
 };
@@ -183,6 +187,51 @@ enum Command {
         #[arg(long, env = "HINDSIGHT_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
         request_timeout_seconds: u64,
     },
+    /// Prepare replay-safe Hindsight recall and free-first model results. This
+    /// process never writes canonical events; the simulation runner admits only
+    /// immutable deadline latches.
+    CognitionWorker {
+        #[arg(long, env = "HINDSIGHT_BASE_URL")]
+        hindsight_base_url: String,
+
+        #[arg(long, env = "HINDSIGHT_API_KEY", hide_env_values = true)]
+        hindsight_api_key: Option<String>,
+
+        #[arg(
+            long,
+            env = "COGNITION_WORKER_ID",
+            default_value = "local-cognition-worker"
+        )]
+        worker_id: String,
+
+        #[arg(long, env = "COGNITION_POLL_MILLISECONDS", default_value_t = 250)]
+        poll_milliseconds: u64,
+
+        #[arg(long, env = "COGNITION_CLAIM_LEASE_SECONDS", default_value_t = 60)]
+        claim_lease_seconds: u32,
+
+        #[arg(long, env = "COGNITION_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
+        request_timeout_seconds: u64,
+
+        /// Full OpenAI-compatible Workers AI base ending in `/ai/v1`.
+        #[arg(long, env = "CLOUDFLARE_WORKERS_AI_BASE_URL")]
+        cloudflare_workers_ai_base_url: Option<String>,
+
+        #[arg(long, env = "CLOUDFLARE_WORKERS_AI_API_KEY", hide_env_values = true)]
+        cloudflare_workers_ai_api_key: Option<String>,
+
+        #[arg(long, env = "GROQ_API_KEY", hide_env_values = true)]
+        groq_api_key: Option<String>,
+
+        #[arg(long, env = "CEREBRAS_API_KEY", hide_env_values = true)]
+        cerebras_api_key: Option<String>,
+
+        #[arg(long, env = "OPENROUTER_API_KEY", hide_env_values = true)]
+        openrouter_api_key: Option<String>,
+
+        #[arg(long, env = "COGNITION_PAID_ENABLED", default_value_t = false)]
+        paid_enabled: bool,
+    },
 }
 
 #[tokio::main]
@@ -271,6 +320,43 @@ async fn main() -> Result<()> {
                 &worker_id,
                 poll_milliseconds,
                 claim_lease_seconds,
+            )
+            .await
+        }
+        Command::CognitionWorker {
+            hindsight_base_url,
+            hindsight_api_key,
+            worker_id,
+            poll_milliseconds,
+            claim_lease_seconds,
+            request_timeout_seconds,
+            cloudflare_workers_ai_base_url,
+            cloudflare_workers_ai_api_key,
+            groq_api_key,
+            cerebras_api_key,
+            openrouter_api_key,
+            paid_enabled,
+        } => {
+            let timeout = Duration::from_secs(request_timeout_seconds.max(1));
+            let memory = HindsightMemory::new(&hindsight_base_url, hindsight_api_key, timeout)
+                .context("configure Hindsight cognition recall adapter")?;
+            let adapters = cognition_adapters(
+                cloudflare_workers_ai_base_url,
+                cloudflare_workers_ai_api_key,
+                groq_api_key,
+                cerebras_api_key,
+                openrouter_api_key,
+                timeout,
+            )?;
+            let configuration = CognitionWorkerConfiguration::production(paid_enabled);
+            serve_cognition_worker(
+                &store,
+                &memory,
+                &adapters,
+                &worker_id,
+                poll_milliseconds,
+                claim_lease_seconds,
+                &configuration,
             )
             .await
         }
@@ -390,7 +476,23 @@ async fn advance_running_worlds(
                 session
             }
         };
-        let next = if current.state.ruleset_version() >= CELESTIAL_DRIVER_RULESET_VERSION {
+        if current.state.ruleset_version() >= COGNITION_RULESET_VERSION
+            && let Some(selected) = schedule_world_cognition(store, &current).await?
+        {
+            tracing::info!(
+                %world_id,
+                sequence = %selected.world.cursor.sequence,
+                tick = %selected.world.cursor.tick,
+                "committed deterministic world-selected cognition request"
+            );
+            sessions.insert(world_id, selected);
+            continue;
+        }
+        let next = if current.state.ruleset_version() >= COGNITION_RULESET_VERSION {
+            let celestial = evaluate_pinned_de441(&current)
+                .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+            advance_world_with_celestial_and_cognition(store, &current, celestial).await?
+        } else if current.state.ruleset_version() >= CELESTIAL_DRIVER_RULESET_VERSION {
             let celestial = evaluate_pinned_de441(&current)
                 .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
             advance_world_with_celestial(store, &current, celestial).await?
@@ -1206,6 +1308,131 @@ async fn serve_memory_worker(
         }
     }
 
+    Ok(())
+}
+
+fn cognition_adapters(
+    cloudflare_base_url: Option<String>,
+    cloudflare_api_key: Option<String>,
+    groq_api_key: Option<String>,
+    cerebras_api_key: Option<String>,
+    openrouter_api_key: Option<String>,
+    timeout: Duration,
+) -> Result<BTreeMap<CognitionProviderId, Arc<dyn CognitionModel>>> {
+    let mut adapters = BTreeMap::<CognitionProviderId, Arc<dyn CognitionModel>>::new();
+    match (nonempty(cloudflare_base_url), nonempty(cloudflare_api_key)) {
+        (Some(base_url), Some(api_key)) => insert_cognition_adapter(
+            &mut adapters,
+            CognitionProviderId::cloudflare_workers_ai(),
+            &base_url,
+            api_key,
+            timeout,
+        )?,
+        (None, None) => {}
+        _ => anyhow::bail!(
+            "Cloudflare Workers AI requires both its account-scoped base URL and API key"
+        ),
+    }
+    if let Some(api_key) = nonempty(groq_api_key) {
+        insert_cognition_adapter(
+            &mut adapters,
+            CognitionProviderId::groq(),
+            "https://api.groq.com/openai/v1",
+            api_key,
+            timeout,
+        )?;
+    }
+    if let Some(api_key) = nonempty(cerebras_api_key) {
+        insert_cognition_adapter(
+            &mut adapters,
+            CognitionProviderId::cerebras(),
+            "https://api.cerebras.ai/v1",
+            api_key,
+            timeout,
+        )?;
+    }
+    if let Some(api_key) = nonempty(openrouter_api_key) {
+        insert_cognition_adapter(
+            &mut adapters,
+            CognitionProviderId::openrouter(),
+            "https://openrouter.ai/api/v1",
+            api_key,
+            timeout,
+        )?;
+    }
+    Ok(adapters)
+}
+
+fn insert_cognition_adapter(
+    adapters: &mut BTreeMap<CognitionProviderId, Arc<dyn CognitionModel>>,
+    provider: CognitionProviderId,
+    base_url: &str,
+    api_key: String,
+    timeout: Duration,
+) -> Result<()> {
+    let adapter = OpenAiCompatibleCognition::new(provider.clone(), base_url, api_key, timeout)
+        .with_context(|| format!("configure {} cognition adapter", provider.as_str()))?;
+    adapters.insert(provider, Arc::new(adapter));
+    Ok(())
+}
+
+fn nonempty(value: Option<String>) -> Option<String> {
+    value.filter(|value| !value.trim().is_empty())
+}
+
+async fn serve_cognition_worker(
+    store: &PostgresStore,
+    memory: &HindsightMemory,
+    adapters: &BTreeMap<CognitionProviderId, Arc<dyn CognitionModel>>,
+    worker_id: &str,
+    poll_milliseconds: u64,
+    claim_lease_seconds: u32,
+    configuration: &CognitionWorkerConfiguration,
+) -> Result<()> {
+    configuration
+        .validate()
+        .context("validate cognition worker configuration")?;
+    let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(1)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tracing::info!(
+        worker_id,
+        configured_providers = adapters.len(),
+        routes = configuration.registry.routes.len(),
+        paid_enabled = configuration.paid_enabled,
+        "replay-safe cognition worker started"
+    );
+    loop {
+        tokio::select! {
+            _ = interval.tick() => {
+                match process_next_cognition_job(
+                    store,
+                    memory,
+                    adapters,
+                    worker_id,
+                    claim_lease_seconds,
+                    configuration,
+                ).await {
+                    Ok(CognitionWorkerStep::Idle) => {}
+                    Ok(CognitionWorkerStep::Completed { request_id, used_model }) => {
+                        tracing::info!(%request_id, used_model, "cognition result prepared for its fixed deadline");
+                    }
+                    Ok(CognitionWorkerStep::DeadlineElapsed { request_id }) => {
+                        tracing::info!(%request_id, "cognition deadline elapsed; immutable local fallback retained");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "cognition job unavailable; deterministic local behavior remains active");
+                    }
+                }
+            }
+            result = tokio::signal::ctrl_c() => {
+                if let Err(error) = result {
+                    tracing::error!(%error, "failed to listen for cognition-worker shutdown signal");
+                }
+                tracing::info!(worker_id, "cognition worker stopping");
+                break;
+            }
+        }
+    }
     Ok(())
 }
 

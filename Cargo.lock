@@ -377,6 +377,7 @@ dependencies = [
  "clap",
  "dotenvy",
  "hindsight-adapter",
+ "model-adapter",
  "postgres-store",
  "serde",
  "serde_json",

@@ -13,7 +13,9 @@ use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 use world_domain::{
-    CognitionRequestSelection, Digest, EntityId, EventId, EventSequence, SimTick, WorldId,
+    CognitionDeadlineInput, CognitionInputOutcome, CognitionModelEvidence,
+    CognitionRequestSelection, CognitionUnavailableReason, Digest, EntityId, EventId,
+    EventSequence, SimTick, WorldId,
 };
 
 use crate::PostgresStore;
@@ -66,8 +68,169 @@ struct CostReservationRow {
     actual_micro_usd: Option<i64>,
 }
 
+#[derive(FromRow)]
+struct DueCognitionRow {
+    request_id: Uuid,
+    deadline_tick: i64,
+    selection: Value,
+    selection_checksum: Vec<u8>,
+    recall_outcome_checksum: Option<Vec<u8>>,
+    route_registry_checksum: Option<Vec<u8>>,
+    result_payload: Option<Value>,
+    result_checksum: Option<Vec<u8>>,
+    latch_world_id: Option<Uuid>,
+    latch_deadline_tick: Option<i64>,
+    latch_target_sequence: Option<i64>,
+    latch_kind: Option<String>,
+    latch_payload: Option<Value>,
+    latch_checksum: Option<Vec<u8>>,
+}
+
 #[async_trait]
 impl CognitionJobStore for PostgresStore {
+    async fn latch_due_cognition_inputs(
+        &self,
+        world_id: WorldId,
+        target_sequence: EventSequence,
+        target_tick: SimTick,
+    ) -> Result<Vec<CognitionDeadlineInput>, StoreError> {
+        if target_sequence == EventSequence::ZERO || target_tick == SimTick::ZERO {
+            return Err(StoreError::Conflict(
+                "cognition latch target must be a non-genesis transition".to_owned(),
+            ));
+        }
+        let target_sequence_i64 = to_i64(target_sequence.get(), "cognition target sequence")?;
+        let target_tick_i64 = to_i64(target_tick.get(), "cognition target tick")?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        let world = sqlx::query_as::<_, (String, i64, i64)>(
+            r#"
+            SELECT status, current_tick, current_sequence
+            FROM worlds
+            WHERE id = $1
+            FOR UPDATE
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(operation_error)?
+        .ok_or_else(|| StoreError::NotFound(format!("world {world_id}")))?;
+        if world.0 != "running"
+            || world.1.checked_add(1) != Some(target_tick_i64)
+            || world.2.checked_add(1) != Some(target_sequence_i64)
+        {
+            return Err(StoreError::Conflict(
+                "cognition latch target is not the world's next running transition".to_owned(),
+            ));
+        }
+
+        let rows = sqlx::query_as::<_, DueCognitionRow>(
+            r#"
+            SELECT
+                request.request_id,
+                request.deadline_tick,
+                request.selection,
+                request.selection_checksum,
+                recall.recall_outcome_checksum,
+                result.route_registry_checksum,
+                result.result_payload,
+                result.result_checksum,
+                latch.world_id AS latch_world_id,
+                latch.deadline_tick AS latch_deadline_tick,
+                latch.target_sequence AS latch_target_sequence,
+                latch.latch_kind,
+                latch.latch_payload,
+                latch.latch_checksum
+            FROM cognition_requests AS request
+            LEFT JOIN cognition_recall_outcomes AS recall
+                ON recall.request_id = request.request_id
+            LEFT JOIN cognition_results AS result
+                ON result.request_id = request.request_id
+            LEFT JOIN cognition_deadline_latches AS latch
+                ON latch.request_id = request.request_id
+            LEFT JOIN cognition_latch_consumptions AS consumption
+                ON consumption.request_id = request.request_id
+            WHERE request.world_id = $1
+              AND request.deadline_tick <= $2
+              AND consumption.request_id IS NULL
+            ORDER BY request.request_id ASC
+            FOR UPDATE OF request
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(target_tick_i64)
+        .fetch_all(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+
+        let mut inputs = Vec::with_capacity(rows.len());
+        for row in rows {
+            if row.deadline_tick != target_tick_i64 {
+                return Err(StoreError::Corrupt(format!(
+                    "cognition request {} passed its deadline without consumption",
+                    row.request_id
+                )));
+            }
+            let selection = parse_due_selection(&row)?;
+            let input = if let Some(payload) = row.latch_payload.clone() {
+                parse_existing_latch(
+                    &row,
+                    &selection,
+                    world_id,
+                    target_sequence,
+                    target_tick,
+                    payload,
+                )?
+            } else {
+                if row.latch_target_sequence.is_some()
+                    || row.latch_world_id.is_some()
+                    || row.latch_deadline_tick.is_some()
+                    || row.latch_kind.is_some()
+                    || row.latch_checksum.is_some()
+                {
+                    return Err(StoreError::Corrupt(
+                        "cognition latch columns are only partially present".to_owned(),
+                    ));
+                }
+                let input = build_deadline_input(&row, &selection)?;
+                let input_json = serde_json::to_value(&input).map_err(corrupt)?;
+                let input_checksum = input.canonical_hash().map_err(corrupt)?;
+                let latch_kind = match &input.outcome {
+                    CognitionInputOutcome::Model(_) => "model_result",
+                    CognitionInputOutcome::Unavailable { .. } => "unavailable",
+                };
+                sqlx::query(
+                    r#"
+                    INSERT INTO cognition_deadline_latches (
+                        request_id,
+                        world_id,
+                        deadline_tick,
+                        target_sequence,
+                        latch_kind,
+                        latch_payload,
+                        latch_checksum
+                    )
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    "#,
+                )
+                .bind(input.request_id)
+                .bind(world_id.as_uuid())
+                .bind(target_tick_i64)
+                .bind(target_sequence_i64)
+                .bind(latch_kind)
+                .bind(input_json)
+                .bind(input_checksum.as_bytes().as_slice())
+                .execute(&mut *transaction)
+                .await
+                .map_err(operation_error)?;
+                input
+            };
+            inputs.push(input);
+        }
+        transaction.commit().await.map_err(operation_error)?;
+        Ok(inputs)
+    }
+
     async fn claim_next_cognition_request(
         &self,
         worker_id: &str,
@@ -86,10 +249,24 @@ impl CognitionJobStore for PostgresStore {
                       FROM cognition_results AS result
                       WHERE result.request_id = request.request_id
                   )
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM cognition_deadline_latches AS latch
-                      WHERE latch.request_id = request.request_id
+                  AND (
+                      NOT EXISTS (
+                          SELECT 1
+                          FROM cognition_deadline_latches AS latch
+                          WHERE latch.request_id = request.request_id
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM cognition_route_attempts AS attempt
+                          WHERE attempt.request_id = request.request_id
+                            AND attempt.dispatch_state = 'dispatched'
+                      )
+                      OR EXISTS (
+                          SELECT 1
+                          FROM cognition_cost_reservations AS reservation
+                          WHERE reservation.request_id = request.request_id
+                            AND reservation.status = 'reserved'
+                      )
                   )
                   AND (
                       request.claimed_at IS NULL
@@ -183,6 +360,20 @@ impl CognitionJobStore for PostgresStore {
                 entry.selection.request_id
             )))
         }
+    }
+
+    async fn cognition_deadline_is_latched(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<bool, StoreError> {
+        entry.validate().map_err(corrupt)?;
+        sqlx::query_scalar(
+            "SELECT EXISTS (SELECT 1 FROM cognition_deadline_latches WHERE request_id = $1)",
+        )
+        .bind(entry.selection.request_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(operation_error)
     }
 
     async fn record_cognition_recall(
@@ -686,6 +877,44 @@ impl CognitionJobStore for PostgresStore {
         ))
     }
 
+    async fn load_paid_cognition_authorization(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<Option<PaidCognitionAuthorization>, StoreError> {
+        entry.validate().map_err(corrupt)?;
+        let row = sqlx::query_as::<_, CostReservationRow>(
+            r#"
+            SELECT billing_month, reserved_micro_usd, status, actual_micro_usd
+            FROM cognition_cost_reservations
+            WHERE request_id = $1
+            "#,
+        )
+        .bind(entry.selection.request_id)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if row.status != "reserved" {
+            return Ok(None);
+        }
+        if row.actual_micro_usd.is_some() {
+            return Err(StoreError::Corrupt(
+                "active cognition reservation unexpectedly has an actual cost".to_owned(),
+            ));
+        }
+        let reserved_micro_usd = u64::try_from(row.reserved_micro_usd)
+            .map_err(|_| StoreError::Corrupt("negative cognition reservation amount".to_owned()))?;
+        let authorization = PaidCognitionAuthorization {
+            request_id: entry.selection.request_id,
+            billing_month: row.billing_month,
+            reserved_micro_usd,
+        };
+        authorization.validate_against(entry).map_err(corrupt)?;
+        Ok(Some(authorization))
+    }
+
     async fn settle_paid_cognition(
         &self,
         worker_id: &str,
@@ -704,7 +933,8 @@ impl CognitionJobStore for PostgresStore {
         }
         let receipt_json = serde_json::to_value(receipt).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
+            .await?;
         let persisted_receipt = sqlx::query_scalar::<_, Value>(
             r#"
             SELECT receipt_payload
@@ -742,7 +972,8 @@ impl CognitionJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
+            .await?;
         let dispatched =
             paid_attempt_was_dispatched(&mut transaction, authorization.request_id).await?;
         if dispatched {
@@ -768,7 +999,8 @@ impl CognitionJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
+            .await?;
         if !paid_attempt_was_dispatched(&mut transaction, authorization.request_id).await? {
             return Err(StoreError::Conflict(
                 "an undispatched paid call cannot become billing-indeterminate".to_owned(),
@@ -782,6 +1014,140 @@ impl CognitionJobStore for PostgresStore {
         .await?;
         transaction.commit().await.map_err(operation_error)
     }
+}
+
+fn parse_due_selection(row: &DueCognitionRow) -> Result<CognitionRequestSelection, StoreError> {
+    let selection: CognitionRequestSelection =
+        serde_json::from_value(row.selection.clone()).map_err(corrupt)?;
+    selection.validate().map_err(corrupt)?;
+    if selection.request_id != row.request_id
+        || to_i64(selection.deadline_tick.get(), "cognition deadline tick")? != row.deadline_tick
+        || selection.canonical_hash().map_err(corrupt)?
+            != digest_from_db(&row.selection_checksum, "selection checksum")?
+    {
+        return Err(StoreError::Corrupt(format!(
+            "due cognition request {} disagrees with its selection",
+            row.request_id
+        )));
+    }
+    Ok(selection)
+}
+
+fn build_deadline_input(
+    row: &DueCognitionRow,
+    selection: &CognitionRequestSelection,
+) -> Result<CognitionDeadlineInput, StoreError> {
+    let recall_outcome_hash = row
+        .recall_outcome_checksum
+        .as_deref()
+        .map(|bytes| digest_from_db(bytes, "recall outcome checksum"))
+        .transpose()?
+        .unwrap_or(Digest::ZERO);
+    match (
+        &row.result_payload,
+        &row.result_checksum,
+        &row.route_registry_checksum,
+    ) {
+        (None, None, None) => CognitionDeadlineInput::unavailable(
+            selection,
+            recall_outcome_hash,
+            Digest::ZERO,
+            Digest::ZERO,
+            CognitionUnavailableReason::DeadlineNoResult,
+        )
+        .map_err(corrupt),
+        (Some(payload), Some(result_checksum), Some(registry_checksum)) => {
+            let result: ModelCognitionLadderResult =
+                serde_json::from_value(payload.clone()).map_err(corrupt)?;
+            let result_hash = digest_from_db(result_checksum, "cognition result checksum")?;
+            let route_registry_hash = digest_from_db(registry_checksum, "route registry checksum")?;
+            if result.request_id != selection.request_id
+                || result.route_registry_hash != route_registry_hash
+                || Digest::canonical(&result).map_err(corrupt)? != result_hash
+            {
+                return Err(StoreError::Corrupt(
+                    "cognition result disagrees with its immutable checksums".to_owned(),
+                ));
+            }
+            if let Some(receipt) = &result.receipt {
+                if recall_outcome_hash == Digest::ZERO {
+                    return Err(StoreError::Corrupt(
+                        "successful cognition result has no recorded recall outcome".to_owned(),
+                    ));
+                }
+                CognitionDeadlineInput::model(
+                    selection,
+                    recall_outcome_hash,
+                    route_registry_hash,
+                    result_hash,
+                    CognitionModelEvidence {
+                        provider_slug: receipt.provider.as_str().to_owned(),
+                        requested_model: receipt.requested_model.clone(),
+                        resolved_model: receipt.resolved_model.clone(),
+                        provider_response_hash: receipt.provider_response_hash,
+                        adapter_version: receipt.adapter_version.clone(),
+                        prompt_tokens: receipt.usage.prompt_tokens,
+                        completion_tokens: receipt.usage.completion_tokens,
+                        billed_micro_usd: receipt.billed_micro_usd,
+                        action_kind: receipt.action_kind,
+                    },
+                )
+                .map_err(corrupt)
+            } else {
+                let reason = if result.attempts.iter().any(|attempt| {
+                    attempt.status == CognitionRouteAttemptStatus::SkippedPaidUnauthorized
+                }) {
+                    CognitionUnavailableReason::BudgetDenied
+                } else {
+                    CognitionUnavailableReason::LadderExhausted
+                };
+                CognitionDeadlineInput::unavailable(
+                    selection,
+                    recall_outcome_hash,
+                    route_registry_hash,
+                    result_hash,
+                    reason,
+                )
+                .map_err(corrupt)
+            }
+        }
+        _ => Err(StoreError::Corrupt(
+            "cognition result payload and checksums are only partially present".to_owned(),
+        )),
+    }
+}
+
+fn parse_existing_latch(
+    row: &DueCognitionRow,
+    selection: &CognitionRequestSelection,
+    world_id: WorldId,
+    target_sequence: EventSequence,
+    target_tick: SimTick,
+    payload: Value,
+) -> Result<CognitionDeadlineInput, StoreError> {
+    let input: CognitionDeadlineInput = serde_json::from_value(payload).map_err(corrupt)?;
+    input.validate_against(selection).map_err(corrupt)?;
+    let expected_kind = match &input.outcome {
+        CognitionInputOutcome::Model(_) => "model_result",
+        CognitionInputOutcome::Unavailable { .. } => "unavailable",
+    };
+    let checksum = row
+        .latch_checksum
+        .as_deref()
+        .ok_or_else(|| StoreError::Corrupt("cognition latch checksum is missing".to_owned()))?;
+    if row.latch_world_id != Some(world_id.as_uuid())
+        || row.latch_deadline_tick != Some(to_i64(target_tick.get(), "cognition target tick")?)
+        || row.latch_target_sequence
+            != Some(to_i64(target_sequence.get(), "cognition target sequence")?)
+        || row.latch_kind.as_deref() != Some(expected_kind)
+        || input.canonical_hash().map_err(corrupt)?
+            != digest_from_db(checksum, "cognition latch checksum")?
+    {
+        return Err(StoreError::Corrupt(
+            "cognition deadline latch disagrees with its indexed columns".to_owned(),
+        ));
+    }
+    Ok(input)
 }
 
 fn parse_recall(
@@ -952,7 +1318,8 @@ async fn finish_attempt(
         }
     };
     let mut transaction = store.pool().begin().await.map_err(operation_error)?;
-    ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+    ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
+        .await?;
     let updated = sqlx::query(
         r#"
         UPDATE cognition_route_attempts
@@ -1010,6 +1377,38 @@ async fn ensure_claim(
           AND NOT EXISTS (
               SELECT 1 FROM cognition_deadline_latches WHERE request_id = request.request_id
           )
+        FOR UPDATE
+        "#,
+    )
+    .bind(request_id)
+    .bind(worker_id)
+    .fetch_optional(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    if held.is_some() {
+        Ok(())
+    } else {
+        Err(StoreError::Conflict(format!(
+            "cognition request {request_id} is not held by this worker"
+        )))
+    }
+}
+
+/// External calls are recorded as dispatched before leaving the process. Their
+/// eventual response and billing resolution remain auditable even when the
+/// immutable simulated-time deadline latch wins the race. This lock deliberately
+/// checks worker ownership but does not make the late response canonical.
+async fn ensure_external_resolution_claim(
+    transaction: &mut Transaction<'_, Postgres>,
+    worker_id: &str,
+    request_id: Uuid,
+) -> Result<(), StoreError> {
+    let held = sqlx::query_scalar::<_, Uuid>(
+        r#"
+        SELECT request_id
+        FROM cognition_requests
+        WHERE request_id = $1
+          AND claimed_by = $2
         FOR UPDATE
         "#,
     )

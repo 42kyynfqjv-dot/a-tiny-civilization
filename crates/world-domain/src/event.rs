@@ -3,11 +3,11 @@ use thiserror::Error;
 
 use crate::{
     ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState,
-    CognitionRequestSelection, Digest, EntityId, EventId, EventSequence, HeritableDisposition,
-    HeritableDispositionProfile, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
-    PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
-    ReproductivePhysiologyCommitment, S2CellId, SimTick, SituatedPerception, SpeciesIdentity,
-    WorldConfiguration, WorldId, WorldManifest,
+    CognitionDeadlineInput, CognitionRequestSelection, Digest, EntityId, EventId, EventSequence,
+    HeritableDisposition, HeritableDispositionProfile, MaterialIdentity, MetabolicRateCommitment,
+    OralTransferCommitment, PhysiologicalRegulationCommitment, PrimitiveAction,
+    ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, SimTick,
+    SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -263,6 +263,11 @@ pub enum DomainEvent {
     /// contains only body-owned situated inputs and cannot directly change state.
     CognitionRequestSelected {
         selection: CognitionRequestSelection,
+    },
+    /// One immutable fixed-deadline external input, or an explicit unavailable
+    /// outcome. Replay consumes this event and never calls memory or model services.
+    CognitionInputRecorded {
+        input: CognitionDeadlineInput,
     },
     /// A source-backed Sun/Moon state for the current simulation tick. This is a
     /// physical input only; observer projections must not expose its mechanism.
@@ -593,7 +598,11 @@ fn validate_event_for_schema(
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
     if event_schema_version < COGNITION_EVENT_SCHEMA_VERSION
-        && matches!(event, DomainEvent::CognitionRequestSelected { .. })
+        && matches!(
+            event,
+            DomainEvent::CognitionRequestSelected { .. }
+                | DomainEvent::CognitionInputRecorded { .. }
+        )
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
@@ -718,6 +727,9 @@ fn validate_event_for_schema(
             }
         }
         DomainEvent::CognitionRequestSelected { selection } => selection
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::CognitionInputRecorded { input } => input
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
         DomainEvent::ReproductiveDevelopmentStarted {

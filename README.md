@@ -178,17 +178,16 @@ The first start downloads and caches roughly 220 MB of open local embedding/rera
 models in a named volume; subsequent container replacements reuse that cache. A host
 that later forbids all container egress can set `HINDSIGHT_HF_OFFLINE=1` after this
 first successful start to suppress model-metadata refreshes.
-This starts Hindsight 0.8.6 in provider-`none`/zero-LLM chunk mode plus a separate
-memory-delivery worker. Subjective records are committed to PostgreSQL with their
-source transition before the worker can send them. Stable operation and document IDs
-make lost acknowledgements safe to retry; service failure never blocks a simulation
-tick. The current proof engine does not fabricate subjective perceptions, so the queue
-remains empty until embodied perception begins in the full-Earth/reference-tile
-milestone.
+This starts Hindsight 0.8.6 in provider-`none`/zero-LLM chunk mode plus separate
+memory-delivery and cognition workers. Subjective records are committed to PostgreSQL
+with their source transition before delivery. Cognition dispatches are likewise
+persisted before a provider call, and only an exact response present at its fixed
+simulated-time deadline can enter history. Missing credentials are recorded as route
+skips; the paid route is disabled by default. Stable identities make lost
+acknowledgements safe to retry, and service failure never blocks a simulation tick.
 
-No LLM key is needed for retain or recall in this mode. The project will request one
-only when model-backed extraction and reflection are ready for an explicit integration
-test.
+No LLM key is needed for retain, recall, or deterministic local behavior in this mode.
+Provider keys enable only their exact allowlisted routes; replay never uses them.
 
 With the local stack running, execute all unit, PostgreSQL integration, architecture,
 and web checks outside containers with:

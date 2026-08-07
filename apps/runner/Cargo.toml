@@ -12,6 +12,7 @@ application = { path = "../../crates/application" }
 clap.workspace = true
 dotenvy.workspace = true
 hindsight-adapter = { path = "../../crates/hindsight-adapter" }
+model-adapter = { path = "../../crates/model-adapter" }
 postgres-store = { path = "../../crates/postgres-store" }
 serde.workspace = true
 serde_json.workspace = true

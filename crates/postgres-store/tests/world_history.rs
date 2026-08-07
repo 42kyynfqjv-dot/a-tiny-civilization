@@ -1,13 +1,18 @@
 use anyhow::Result;
 use application::{
-    COGNITION_MODEL_CONTRACT_VERSION, CognitionAttemptPersistenceState, CognitionJobEntry,
-    CognitionJobStore, CognitionModelRoute, CognitionRecallRecord, CognitionRouteAttempt,
-    CognitionRouteAttemptStatus, CognitionRoutePurpose, CognitionRouteRegistry, MemoryFactKind,
-    MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt,
-    ModelCognitionLadderResult, ModelCognitionRequest, PaidCognitionReservationDecision,
-    RecallUnavailableReason, RecalledMemory, StoreError, TransitionEffects, WorldStore,
-    advance_world, initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CognitionAttemptPersistenceState,
+    CognitionJobEntry, CognitionJobStore, CognitionModel, CognitionModelError, CognitionModelRoute,
+    CognitionProviderId, CognitionRecallRecord, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CognitionRoutePurpose, CognitionRouteRegistry, CognitionWorkerConfiguration,
+    CognitionWorkerStep, MemoryAdapterError, MemoryFactKind, MemoryOutboxStore,
+    MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt,
+    ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
+    PaidCognitionReservationDecision, RecallUnavailableReason, RecalledMemory, StoreError,
+    StoredWorld, TransitionEffects, WorldStore, advance_world,
+    initialize_or_resume_configured_world, initialize_or_resume_world, process_next_cognition_job,
+    resume_world,
 };
+use async_trait::async_trait;
 use observer_projection::{
     CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
     ObserverWorldStore, PublicWorldInputStatus, ReservationRequest, ReservationState,
@@ -18,16 +23,24 @@ use sim_engine::{
     COGNITION_RULESET_VERSION, EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay,
 };
 use sqlx::PgPool;
+use std::{
+    collections::BTreeMap,
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+    },
+};
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, CapacityExhaustionPolicy, DeathCause, Digest, EarthResolutionLevels, EntityId,
-    EventBatch, EventId, EventSequence, FullEarthGrid, HeritableDispositionProfile,
-    MetabolicRateCommitment, OrganismRole, PartitionedExecution, PersonRepresentation,
-    PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment,
-    ProvisionalLocalEnvironmentBaseline, ProvisionalWorldCompositionReference,
+    BirthCategory, CapacityExhaustionPolicy, CartesianMillimetres, CelestialState,
+    CognitionInputOutcome, CognitionUnavailableReason, DeathCause, Digest, DomainEvent,
+    EarthResolutionLevels, EntityId, EventBatch, EventId, EventSequence, FullEarthGrid,
+    HeritableDispositionProfile, MetabolicRateCommitment, OrganismRole, PartitionedExecution,
+    PersonRepresentation, PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment,
+    PrimitiveActionKind, ProvisionalLocalEnvironmentBaseline, ProvisionalWorldCompositionReference,
     ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2Projection,
-    SchedulerKind, SimTick, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest, WorldSeed,
-    WorldStatus,
+    SchedulerKind, SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId,
+    WorldManifest, WorldSeed, WorldStatus,
 };
 
 fn manifest(seed: u64) -> WorldManifest {
@@ -265,6 +278,92 @@ async fn claimed_cognition_job(
     Ok((store, entry))
 }
 
+async fn cognition_world_before_deadline(
+    pool: &PgPool,
+    seed: u64,
+    worker_id: &str,
+) -> Result<(PostgresStore, CognitionJobEntry, EngineState, StoredWorld)> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let world_id = WorldId::from_uuid(Uuid::new_v4());
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(seed), COGNITION_RULESET_VERSION);
+    let mut person = cognition_initial_person(world_id);
+    let person_id = person.organism_id;
+    let regulation = person
+        .physiological_regulation
+        .as_mut()
+        .expect("cognition fixture has regulation");
+    regulation.hydration_failure_seconds = 100_000_000;
+    regulation.fatigue_failure_seconds = 100_000_000;
+    regulation.thermal_failure_millicelsius_seconds = 100_000_000_000;
+
+    let created = store.create_world(&manifest, None).await?;
+    let initial = EngineState::new(manifest);
+    let genesis_events =
+        initial.plan_configured_genesis(cognition_configuration(), vec![person])?;
+    let (running, genesis_batch) =
+        initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;
+    let genesis_snapshot = Snapshot::new(
+        running.clone(),
+        genesis_batch.sequence,
+        genesis_batch.batch_hash,
+    )?;
+    let persisted = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let selection_events = running.plan_cognition_request(person_id)?;
+    let (mut state, selection_batch) = running.commit(
+        EventSequence::new(2),
+        genesis_batch.batch_hash,
+        selection_events,
+    )?;
+    let selection_snapshot = Snapshot::new(
+        state.clone(),
+        selection_batch.sequence,
+        selection_batch.batch_hash,
+    )?;
+    let mut world = store
+        .commit_transition(
+            persisted.cursor,
+            &selection_batch,
+            &selection_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let entry = store
+        .claim_next_cognition_request(worker_id, 3_600)
+        .await?
+        .expect("committed cognition selection is claimable");
+
+    while state.tick().checked_next()? < entry.selection.deadline_tick {
+        let next_tick = state.tick().checked_next()?;
+        let celestial = CelestialState::new(
+            TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        );
+        let events = state.plan_next_tick_with_celestial(celestial)?;
+        let sequence = world.cursor.sequence.checked_next()?;
+        let (next, batch) = state.commit(sequence, world.cursor.last_event_hash, events)?;
+        let snapshot = Snapshot::new(next.clone(), batch.sequence, batch.batch_hash)?;
+        world = store
+            .commit_transition(
+                world.cursor,
+                &batch,
+                &snapshot,
+                &TransitionEffects::default(),
+            )
+            .await?;
+        state = next;
+    }
+    assert_eq!(state.tick().checked_next()?, entry.selection.deadline_tick);
+    Ok((store, entry, state, world))
+}
+
 fn unavailable_cognition_recall(entry: &CognitionJobEntry) -> Result<CognitionRecallRecord> {
     let request = MemoryRecallRequest::from_cognition_selection(&entry.selection)?;
     let outcome = MemoryRecallOutcome::unavailable(&request, RecallUnavailableReason::Disabled)?;
@@ -287,6 +386,85 @@ fn route_attempt(
         requested_model: route.requested_model.clone(),
         billing_class: route.billing_class,
         status,
+    }
+}
+
+#[derive(Clone, Default)]
+struct FakeCognitionMemory {
+    recall_calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl AgentMemory for FakeCognitionMemory {
+    async fn retain(
+        &self,
+        _memory: &MemoryRetain,
+    ) -> Result<MemoryRetainReceipt, MemoryAdapterError> {
+        Err(MemoryAdapterError::Rejected(
+            "worker test never retains".to_owned(),
+        ))
+    }
+
+    async fn recall(&self, request: &MemoryRecallRequest) -> MemoryRecallOutcome {
+        self.recall_calls.fetch_add(1, Ordering::SeqCst);
+        MemoryRecallOutcome::unavailable(request, RecallUnavailableReason::Disabled)
+            .expect("valid worker recall request")
+    }
+}
+
+#[derive(Clone)]
+struct PersistedBeforeCallModel {
+    pool: PgPool,
+    calls: Arc<AtomicUsize>,
+}
+
+#[async_trait]
+impl CognitionModel for PersistedBeforeCallModel {
+    async fn infer(
+        &self,
+        route: &CognitionModelRoute,
+        request: &ModelCognitionRequest,
+    ) -> Result<ModelCognitionReceipt, CognitionModelError> {
+        let dispatch_state: Option<(String, bool)> = sqlx::query_as(
+            r#"
+            SELECT dispatch_state, network_dispatched
+            FROM cognition_route_attempts
+            WHERE request_id = $1
+              AND provider_slug = $2
+              AND requested_model = $3
+            "#,
+        )
+        .bind(request.request_id)
+        .bind(route.provider.as_str())
+        .bind(&route.requested_model)
+        .fetch_optional(&self.pool)
+        .await
+        .map_err(|error| CognitionModelError::Unavailable(error.to_string()))?;
+        if dispatch_state != Some(("dispatched".to_owned(), true)) {
+            return Err(CognitionModelError::InvalidResponse(
+                "provider was called before durable dispatch".to_owned(),
+            ));
+        }
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        Ok(ModelCognitionReceipt {
+            contract_version: COGNITION_MODEL_CONTRACT_VERSION,
+            request_id: request.request_id,
+            request_hash: request
+                .canonical_hash()
+                .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?,
+            provider: route.provider.clone(),
+            requested_model: route.requested_model.clone(),
+            resolved_model: route.requested_model.clone(),
+            provider_response_id: "fake-free-response-1".to_owned(),
+            usage: ModelTokenUsage {
+                prompt_tokens: 1,
+                completion_tokens: 1,
+            },
+            billed_micro_usd: 0,
+            action_kind: PrimitiveActionKind::Rest,
+            provider_response_hash: Digest::sha256(b"fake free cognition response"),
+            adapter_version: "postgres-worker-test-v1".to_owned(),
+        })
     }
 }
 
@@ -1356,5 +1534,536 @@ async fn cognition_result_must_equal_the_durable_attempt_prefix(pool: PgPool) ->
             .fetch_one(&pool)
             .await?;
     assert_eq!(persisted, serde_json::to_value(result)?);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cognition_deadline_latch_is_retry_stable_and_consumed_only_by_exact_history(
+    pool: PgPool,
+) -> Result<()> {
+    let (store, entry, state, world) =
+        cognition_world_before_deadline(&pool, 606, "latch-worker").await?;
+    let target_sequence = world.cursor.sequence.checked_next()?;
+    let target_tick = world.cursor.tick.checked_next()?;
+
+    let first = store
+        .latch_due_cognition_inputs(entry.selection.world_id, target_sequence, target_tick)
+        .await?;
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0].request_id, entry.selection.request_id);
+    assert!(matches!(
+        first[0].outcome,
+        CognitionInputOutcome::Unavailable {
+            reason: CognitionUnavailableReason::DeadlineNoResult
+        }
+    ));
+    let first_bytes = serde_json::to_vec(&first)?;
+
+    // This second call represents a process crash after the latch transaction
+    // committed but before the world transition did. It must not rebuild input.
+    let retry = store
+        .latch_due_cognition_inputs(entry.selection.world_id, target_sequence, target_tick)
+        .await?;
+    assert_eq!(serde_json::to_vec(&retry)?, first_bytes);
+    let latch_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cognition_deadline_latches WHERE request_id = $1")
+            .bind(entry.selection.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(latch_count, 1);
+
+    let celestial = CelestialState::new(
+        TdbSecondsSinceJ2000::new(i128::from(target_tick.get()) * 300),
+        CartesianMillimetres::new(1, 2, 3),
+        CartesianMillimetres::new(4, 5, 6),
+    );
+    let exact_events = state.plan_next_tick_with_celestial_and_cognition(celestial, &first)?;
+    let (next, exact_batch) = state.commit(
+        target_sequence,
+        world.cursor.last_event_hash,
+        exact_events.clone(),
+    )?;
+    let exact_snapshot = Snapshot::new(next.clone(), exact_batch.sequence, exact_batch.batch_hash)?;
+
+    let omitted_events = exact_events
+        .iter()
+        .filter(|event| !matches!(event, DomainEvent::CognitionInputRecorded { .. }))
+        .cloned()
+        .collect::<Vec<_>>();
+    let omitted_batch = EventBatch::new(
+        exact_batch.event_schema_version,
+        exact_batch.world_id,
+        exact_batch.sequence,
+        exact_batch.tick,
+        exact_batch.ruleset_version,
+        exact_batch.previous_hash,
+        omitted_events,
+        next.state_hash()?,
+    )?;
+    let omitted_snapshot = Snapshot::new(
+        next.clone(),
+        omitted_batch.sequence,
+        omitted_batch.batch_hash,
+    )?;
+    assert!(
+        store
+            .commit_transition(
+                world.cursor,
+                &omitted_batch,
+                &omitted_snapshot,
+                &TransitionEffects::default(),
+            )
+            .await
+            .is_err(),
+        "a due transition cannot omit its immutable cognition latch"
+    );
+
+    let mut forged_input = first[0].clone();
+    forged_input.outcome = CognitionInputOutcome::Unavailable {
+        reason: CognitionUnavailableReason::BudgetDenied,
+    };
+    forged_input.validate_against(&entry.selection)?;
+    let forged_events = exact_events
+        .iter()
+        .map(|event| match event {
+            DomainEvent::CognitionInputRecorded { .. } => DomainEvent::CognitionInputRecorded {
+                input: forged_input.clone(),
+            },
+            event => event.clone(),
+        })
+        .collect::<Vec<_>>();
+    let forged_batch = EventBatch::new(
+        exact_batch.event_schema_version,
+        exact_batch.world_id,
+        exact_batch.sequence,
+        exact_batch.tick,
+        exact_batch.ruleset_version,
+        exact_batch.previous_hash,
+        forged_events,
+        next.state_hash()?,
+    )?;
+    let forged_snapshot =
+        Snapshot::new(next.clone(), forged_batch.sequence, forged_batch.batch_hash)?;
+    assert!(
+        store
+            .commit_transition(
+                world.cursor,
+                &forged_batch,
+                &forged_snapshot,
+                &TransitionEffects::default(),
+            )
+            .await
+            .is_err(),
+        "a valid but different cognition input cannot replace the latch"
+    );
+
+    store
+        .commit_transition(
+            world.cursor,
+            &exact_batch,
+            &exact_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let consumption: (i64, i64, Vec<u8>) = sqlx::query_as(
+        "SELECT source_sequence, source_event_index, latch_checksum FROM cognition_latch_consumptions WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        u64::try_from(consumption.0).expect("positive sequence"),
+        target_sequence.get()
+    );
+    let input_record = exact_batch
+        .events
+        .iter()
+        .find(|record| matches!(record.event, DomainEvent::CognitionInputRecorded { .. }))
+        .expect("exact batch records cognition input");
+    assert_eq!(
+        u32::try_from(consumption.1).expect("event index"),
+        input_record.index
+    );
+    assert_eq!(consumption.2, first[0].canonical_hash()?.as_bytes());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn late_paid_cognition_is_audited_and_billed_but_cannot_replace_the_latch(
+    pool: PgPool,
+) -> Result<()> {
+    let (store, entry, _state, world) =
+        cognition_world_before_deadline(&pool, 608, "late-paid-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+    store
+        .record_cognition_recall("late-paid-worker", &entry, &recall)
+        .await?;
+    let request =
+        ModelCognitionRequest::from_selection(&entry.selection, recall.admitted_memories.clone())?;
+    let registry = CognitionRouteRegistry::production_default();
+    let paid_index = registry
+        .routes
+        .len()
+        .checked_sub(1)
+        .expect("production registry has a paid terminal route");
+    for route_index in 0..paid_index {
+        let skipped = route_attempt(
+            &registry,
+            route_index,
+            CognitionRouteAttemptStatus::SkippedUnconfigured,
+        );
+        store
+            .record_cognition_route_skip("late-paid-worker", &entry, &skipped)
+            .await?;
+    }
+    let paid_route = &registry.routes[paid_index];
+    let authorization = match store
+        .reserve_paid_cognition("late-paid-worker", &entry, paid_route, 25_000)
+        .await?
+    {
+        PaidCognitionReservationDecision::Authorized(authorization) => authorization,
+        PaidCognitionReservationDecision::DeniedHardStop => {
+            panic!("a fresh monthly cost account has budget")
+        }
+    };
+    store
+        .begin_cognition_route_attempt(
+            "late-paid-worker",
+            &entry,
+            u16::try_from(paid_index)?,
+            paid_route,
+        )
+        .await?;
+
+    let target_sequence = world.cursor.sequence.checked_next()?;
+    let target_tick = world.cursor.tick.checked_next()?;
+    let latched = store
+        .latch_due_cognition_inputs(entry.selection.world_id, target_sequence, target_tick)
+        .await?;
+    assert!(matches!(
+        latched.as_slice(),
+        [world_domain::CognitionDeadlineInput {
+            outcome: CognitionInputOutcome::Unavailable {
+                reason: CognitionUnavailableReason::DeadlineNoResult
+            },
+            ..
+        }]
+    ));
+    assert!(store.cognition_deadline_is_latched(&entry).await?);
+
+    let receipt = ModelCognitionReceipt {
+        contract_version: COGNITION_MODEL_CONTRACT_VERSION,
+        request_id: request.request_id,
+        request_hash: request.canonical_hash()?,
+        provider: paid_route.provider.clone(),
+        requested_model: paid_route.requested_model.clone(),
+        resolved_model: paid_route.requested_model.clone(),
+        provider_response_id: "late-paid-response-1".to_owned(),
+        usage: ModelTokenUsage {
+            prompt_tokens: 10,
+            completion_tokens: 1,
+        },
+        billed_micro_usd: 20_000,
+        action_kind: PrimitiveActionKind::Rest,
+        provider_response_hash: Digest::sha256(b"late paid cognition response"),
+        adapter_version: "postgres-late-response-test-v1".to_owned(),
+    };
+    let succeeded = route_attempt(
+        &registry,
+        paid_index,
+        CognitionRouteAttemptStatus::Succeeded,
+    );
+    store
+        .finish_cognition_route_attempt(
+            "late-paid-worker",
+            &entry,
+            &request,
+            &succeeded,
+            Some(&receipt),
+        )
+        .await?;
+    store
+        .settle_paid_cognition("late-paid-worker", &entry, &authorization, &receipt)
+        .await?;
+
+    let attempts = store.list_cognition_route_attempts(&entry).await?;
+    let result = ModelCognitionLadderResult {
+        contract_version: COGNITION_MODEL_CONTRACT_VERSION,
+        request_id: request.request_id,
+        route_policy_version: registry.policy_version,
+        route_registry_hash: registry.canonical_hash(CognitionRoutePurpose::ProductionWorld)?,
+        attempts: attempts
+            .iter()
+            .map(|record| record.attempt.clone().expect("terminal attempt"))
+            .collect(),
+        receipt: Some(receipt),
+    };
+    assert!(
+        store
+            .complete_cognition_request(
+                "late-paid-worker",
+                &entry,
+                &registry,
+                CognitionRoutePurpose::ProductionWorld,
+                &request,
+                &result,
+            )
+            .await
+            .is_err(),
+        "a late provider response must never replace immutable local fallback"
+    );
+    let retry = store
+        .latch_due_cognition_inputs(entry.selection.world_id, target_sequence, target_tick)
+        .await?;
+    assert_eq!(serde_json::to_vec(&retry)?, serde_json::to_vec(&latched)?);
+    let result_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cognition_results WHERE request_id = $1")
+            .bind(entry.selection.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(result_count, 0);
+    let reservation: (String, Option<i64>) = sqlx::query_as(
+        "SELECT status, actual_micro_usd FROM cognition_cost_reservations WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(reservation, ("settled".to_owned(), Some(20_000)));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn latched_paid_dispatch_is_recovered_without_a_second_network_call(
+    pool: PgPool,
+) -> Result<()> {
+    let (store, entry, _state, world) =
+        cognition_world_before_deadline(&pool, 609, "crashed-paid-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+    store
+        .record_cognition_recall("crashed-paid-worker", &entry, &recall)
+        .await?;
+    let registry = CognitionRouteRegistry::production_default();
+    let paid_index = registry
+        .routes
+        .len()
+        .checked_sub(1)
+        .expect("production registry has a paid terminal route");
+    for route_index in 0..paid_index {
+        store
+            .record_cognition_route_skip(
+                "crashed-paid-worker",
+                &entry,
+                &route_attempt(
+                    &registry,
+                    route_index,
+                    CognitionRouteAttemptStatus::SkippedUnconfigured,
+                ),
+            )
+            .await?;
+    }
+    let paid_route = &registry.routes[paid_index];
+    let authorization = match store
+        .reserve_paid_cognition("crashed-paid-worker", &entry, paid_route, 25_000)
+        .await?
+    {
+        PaidCognitionReservationDecision::Authorized(authorization) => authorization,
+        PaidCognitionReservationDecision::DeniedHardStop => {
+            panic!("a fresh monthly cost account has budget")
+        }
+    };
+    store
+        .begin_cognition_route_attempt(
+            "crashed-paid-worker",
+            &entry,
+            u16::try_from(paid_index)?,
+            paid_route,
+        )
+        .await?;
+    store
+        .latch_due_cognition_inputs(
+            entry.selection.world_id,
+            world.cursor.sequence.checked_next()?,
+            world.cursor.tick.checked_next()?,
+        )
+        .await?;
+    sqlx::query(
+        "UPDATE cognition_requests SET claimed_at = NOW() - INTERVAL '2 hours' WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .execute(&pool)
+    .await?;
+
+    let memory = FakeCognitionMemory::default();
+    let adapters = BTreeMap::<CognitionProviderId, Arc<dyn CognitionModel>>::new();
+    let step = process_next_cognition_job(
+        &store,
+        &memory,
+        &adapters,
+        "recovery-worker",
+        1,
+        &CognitionWorkerConfiguration::production(false),
+    )
+    .await?;
+    assert_eq!(
+        step,
+        CognitionWorkerStep::DeadlineElapsed {
+            request_id: entry.selection.request_id,
+        }
+    );
+    assert_eq!(memory.recall_calls.load(Ordering::SeqCst), 0);
+    let attempt_state: String = sqlx::query_scalar(
+        "SELECT dispatch_state FROM cognition_route_attempts WHERE request_id = $1 AND route_index = $2",
+    )
+    .bind(entry.selection.request_id)
+    .bind(i32::try_from(paid_index)?)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(attempt_state, "abandoned");
+    let reservation_status: String =
+        sqlx::query_scalar("SELECT status FROM cognition_cost_reservations WHERE request_id = $1")
+            .bind(authorization.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(reservation_status, "indeterminate");
+    assert_eq!(
+        process_next_cognition_job(
+            &store,
+            &memory,
+            &adapters,
+            "recovery-worker",
+            1,
+            &CognitionWorkerConfiguration::production(false),
+        )
+        .await?,
+        CognitionWorkerStep::Idle
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
+    pool: PgPool,
+) -> Result<()> {
+    let (store, entry) = claimed_cognition_job(&pool, 607, "fixture-worker").await?;
+    sqlx::query(
+        r#"
+        UPDATE cognition_requests
+        SET claimed_by = NULL, claimed_at = NULL, available_at = NOW()
+        WHERE request_id = $1
+        "#,
+    )
+    .bind(entry.selection.request_id)
+    .execute(&pool)
+    .await?;
+
+    let memory = FakeCognitionMemory::default();
+    let model_calls = Arc::new(AtomicUsize::new(0));
+    let model = PersistedBeforeCallModel {
+        pool: pool.clone(),
+        calls: Arc::clone(&model_calls),
+    };
+    let mut adapters = BTreeMap::<CognitionProviderId, Arc<dyn CognitionModel>>::new();
+    adapters.insert(CognitionProviderId::groq(), Arc::new(model));
+    let configuration = CognitionWorkerConfiguration::production(false);
+
+    let step = process_next_cognition_job(
+        &store,
+        &memory,
+        &adapters,
+        "integration-worker",
+        60,
+        &configuration,
+    )
+    .await?;
+    assert_eq!(
+        step,
+        CognitionWorkerStep::Completed {
+            request_id: entry.selection.request_id,
+            used_model: true,
+        }
+    );
+    assert_eq!(memory.recall_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+
+    let attempts: Vec<(i32, String, String, bool, Option<String>)> = sqlx::query_as(
+        r#"
+        SELECT route_index, provider_slug, dispatch_state, network_dispatched, normalized_status
+        FROM cognition_route_attempts
+        WHERE request_id = $1
+        ORDER BY route_index ASC
+        "#,
+    )
+    .bind(entry.selection.request_id)
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(attempts.len(), 3);
+    assert_eq!(
+        attempts[0],
+        (
+            0,
+            "cloudflare_workers_ai".to_owned(),
+            "skipped".to_owned(),
+            false,
+            Some("skipped_unconfigured".to_owned()),
+        )
+    );
+    assert_eq!(
+        attempts[1],
+        (
+            1,
+            "cloudflare_workers_ai".to_owned(),
+            "skipped".to_owned(),
+            false,
+            Some("skipped_unconfigured".to_owned()),
+        )
+    );
+    assert_eq!(
+        attempts[2],
+        (
+            2,
+            "groq".to_owned(),
+            "completed".to_owned(),
+            true,
+            Some("succeeded".to_owned()),
+        )
+    );
+    let result_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cognition_results WHERE request_id = $1")
+            .bind(entry.selection.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(result_count, 1);
+    let paid_dispatches: i64 = sqlx::query_scalar(
+        r#"
+        SELECT COUNT(*)
+        FROM cognition_route_attempts
+        WHERE request_id = $1
+          AND billing_class = 'paid_approved'
+          AND network_dispatched
+        "#,
+    )
+    .bind(entry.selection.request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(paid_dispatches, 0);
+
+    let retry = process_next_cognition_job(
+        &store,
+        &memory,
+        &adapters,
+        "integration-worker",
+        60,
+        &configuration,
+    )
+    .await?;
+    assert_eq!(retry, CognitionWorkerStep::Idle);
+    assert_eq!(memory.recall_calls.load(Ordering::SeqCst), 1);
+    assert_eq!(model_calls.load(Ordering::SeqCst), 1);
+    let final_attempt_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cognition_route_attempts WHERE request_id = $1")
+            .bind(entry.selection.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(final_attempt_count, 3);
     Ok(())
 }
