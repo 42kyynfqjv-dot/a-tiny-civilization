@@ -99,6 +99,11 @@ intentionally a limitation, not an excuse to invent identifier mappings.
 For the retained GBIF 2023-08-28 and iNaturalist v2.20 releases, this deterministic
 method links 47,353 species-range records; 4,641 species names and 6,838 non-species
 range records remain outside the bridge.
+`scripts/query-inaturalist-range-candidates.py` consumes a bounded set of those
+crosswalked species at an exact WGS84 E7 point. It uses the GeoPackage R-tree only to
+find potential features and then applies point-in-MULTIPOLYGON geometry, including
+holes and dateline unwrapping. The result is still only modeled-range evidence; a
+later ecological normalizer decides whether and how a species may populate a patch.
 
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
