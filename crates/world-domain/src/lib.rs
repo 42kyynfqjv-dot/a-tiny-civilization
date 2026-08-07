@@ -10,6 +10,7 @@ mod hash;
 mod identity;
 mod illumination;
 mod manifest;
+mod material;
 mod solar;
 mod spatial;
 mod tide;
@@ -56,6 +57,7 @@ pub use illumination::{
     RadialHorizonClassification, SunVectorFrame,
 };
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
+pub use material::{MaterialIdentity, MaterialIdentityError};
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,
     SolarDistanceForcing, SolarDistanceForcingError,
