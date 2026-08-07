@@ -87,6 +87,9 @@ GeoPackage inventory and its metadata/taxonomy crosswalk. It will only download 
 explicit immutable release, with no replacement of existing bytes. Operators may fetch
 the small crosswalk first with `--download-metadata`, then the complete range packages
 with `--download-packages`; neither operation admits the maps to canonical genesis.
+`scripts/inspect-inaturalist-range-maps.py` must validate the retained GeoPackages
+against their release metadata and taxonomy crosswalk before a range normalizer can
+consume them.
 
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
