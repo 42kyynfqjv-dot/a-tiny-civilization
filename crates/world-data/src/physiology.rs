@@ -12,6 +12,9 @@ use crate::{FaunaEvidenceBasis, FaunaEvidenceSource, ScaledFaunaTraitValue};
 pub const FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_PHYSIOLOGY_PROFILE_SET_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-physiology-profile-set+json";
+pub const FAUNA_PHYSIOLOGY_PROFILE_CATALOG_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_PHYSIOLOGY_PROFILE_CATALOG_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.fauna-physiology-profile-catalog+json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaPhysiologyProfile {
@@ -30,6 +33,67 @@ pub struct FaunaPhysiologyProfileSet {
     pub profile_set_schema_version: u16,
     pub source_artifact_digest: Digest,
     pub profiles: Vec<FaunaPhysiologyProfile>,
+}
+
+/// A small, immutable index over independently compiled profile sets.
+///
+/// The profile bytes remain independent artifacts because their values came from
+/// distinct publications. A world can pin this catalog before selectively loading
+/// profiles for its actual fauna plan; it never needs to collapse source provenance
+/// into a fictional combined dataset.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaPhysiologyProfileCatalog {
+    pub profile_catalog_schema_version: u16,
+    pub profile_sets: Vec<FaunaPhysiologyProfileSetReference>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaPhysiologyProfileSetReference {
+    pub profile_set_id: String,
+    pub profile_set_digest: Digest,
+    pub source_artifact_digest: Digest,
+    pub profile_count: u64,
+}
+
+impl FaunaPhysiologyProfileCatalog {
+    pub fn validate(&self) -> Result<(), FaunaPhysiologyProfileError> {
+        if self.profile_catalog_schema_version != FAUNA_PHYSIOLOGY_PROFILE_CATALOG_SCHEMA_VERSION {
+            return Err(FaunaPhysiologyProfileError::UnsupportedCatalogSchema);
+        }
+        if self.profile_sets.is_empty() {
+            return Err(FaunaPhysiologyProfileError::EmptyCatalog);
+        }
+        for pair in self.profile_sets.windows(2) {
+            if pair[0].profile_set_id >= pair[1].profile_set_id {
+                return Err(FaunaPhysiologyProfileError::NonCanonicalCatalogOrder);
+            }
+        }
+        for profile_set in &self.profile_sets {
+            if !slug(&profile_set.profile_set_id)
+                || profile_set.profile_set_digest == Digest::ZERO
+                || profile_set.source_artifact_digest == Digest::ZERO
+                || profile_set.profile_count == 0
+            {
+                return Err(FaunaPhysiologyProfileError::InvalidCatalogReference);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaunaPhysiologyProfileError> {
+        self.validate()?;
+        serde_json::to_vec(self)
+            .map_err(|error| FaunaPhysiologyProfileError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, FaunaPhysiologyProfileError> {
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| FaunaPhysiologyProfileError::Decode(error.to_string()))?;
+        if value.canonical_bytes()? != bytes {
+            return Err(FaunaPhysiologyProfileError::NonCanonicalEncoding);
+        }
+        Ok(value)
+    }
 }
 
 impl FaunaPhysiologyProfileSet {
@@ -110,6 +174,14 @@ pub enum FaunaPhysiologyProfileError {
     NonCanonicalOrder,
     #[error("invalid fauna physiology profile")]
     InvalidProfile,
+    #[error("unsupported fauna physiology profile catalog schema")]
+    UnsupportedCatalogSchema,
+    #[error("fauna physiology profile catalog must not be empty")]
+    EmptyCatalog,
+    #[error("fauna physiology profile catalog is not canonically ordered")]
+    NonCanonicalCatalogOrder,
+    #[error("invalid fauna physiology profile catalog reference")]
+    InvalidCatalogReference,
     #[error("decode error: {0}")]
     Decode(String),
     #[error("encoding error: {0}")]
@@ -152,6 +224,24 @@ mod tests {
         assert_eq!(
             FaunaPhysiologyProfileSet::from_canonical_slice(&bytes),
             Ok(set)
+        );
+    }
+
+    #[test]
+    fn catalog_pins_independent_profile_sets_without_erasing_sources() {
+        let catalog = FaunaPhysiologyProfileCatalog {
+            profile_catalog_schema_version: 1,
+            profile_sets: vec![FaunaPhysiologyProfileSetReference {
+                profile_set_id: "amniote-life-history-v1".to_owned(),
+                profile_set_digest: Digest::sha256(b"compiled profiles"),
+                source_artifact_digest: Digest::sha256(b"source artifact"),
+                profile_count: 1,
+            }],
+        };
+        let bytes = catalog.canonical_bytes().expect("canonical fixture");
+        assert_eq!(
+            FaunaPhysiologyProfileCatalog::from_canonical_slice(&bytes),
+            Ok(catalog)
         );
     }
 }

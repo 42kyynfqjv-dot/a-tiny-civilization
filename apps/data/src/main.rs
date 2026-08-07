@@ -21,19 +21,19 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaPhysiologyProfileSet,
-    FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection, LandCoverClassCount,
-    LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
-    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
-    PackedScalarFieldTile, PackedScalarTerrainTile, PackedSeasonalScalarFieldTile,
-    PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection, ProvisionalOriginEnvironment,
-    SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell,
-    SeasonalSourceArtifact, SoilDepth, SoilGridsProperty, SoilGridsPropertySource,
-    SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact, SourceSnapshotManifest,
-    TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
-    soilgrids_source_set_digest,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaPhysiologyProfileCatalog,
+    FaunaPhysiologyProfileSet, FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection,
+    LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
+    PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+    PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
+    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
+    PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
+    ProvisionalLandOriginSelection, ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE,
+    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
+    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
+    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
+    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -123,6 +123,11 @@ enum InspectCommand {
     },
     /// Validate a canonical source-pinned fauna physiology profile set.
     FaunaPhysiologyProfileSet {
+        #[arg(long)]
+        input: PathBuf,
+    },
+    /// Validate a canonical catalog of independently pinned fauna profile sets.
+    FaunaPhysiologyProfileCatalog {
         #[arg(long)]
         input: PathBuf,
     },
@@ -733,6 +738,9 @@ async fn main() -> Result<()> {
             }
             InspectCommand::FaunaPhysiologyProfileSet { input } => {
                 inspect_fauna_physiology_profile_set(&input)
+            }
+            InspectCommand::FaunaPhysiologyProfileCatalog { input } => {
+                inspect_fauna_physiology_profile_catalog(&input)
             }
             InspectCommand::FaunaPopulationPlan {
                 input,
@@ -1637,6 +1645,22 @@ fn inspect_fauna_physiology_profile_set(input: &Path) -> Result<()> {
             "content_hash": Digest::sha256(&bytes),
             "profile_count": profiles.profiles.len(),
             "source_artifact_digest": profiles.source_artifact_digest,
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_fauna_physiology_profile_catalog(input: &Path) -> Result<()> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("read fauna physiology profile catalog {}", input.display()))?;
+    let catalog = FaunaPhysiologyProfileCatalog::from_canonical_slice(&bytes)
+        .context("validate fauna physiology profile catalog")?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "profile_set_count": catalog.profile_sets.len(),
+            "profile_count": catalog.profile_sets.iter().map(|entry| entry.profile_count).sum::<u64>(),
         }))?
     );
     Ok(())

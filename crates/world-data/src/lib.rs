@@ -62,8 +62,10 @@ pub use origin_environment::{
 };
 
 pub use physiology::{
+    FAUNA_PHYSIOLOGY_PROFILE_CATALOG_MEDIA_TYPE, FAUNA_PHYSIOLOGY_PROFILE_CATALOG_SCHEMA_VERSION,
     FAUNA_PHYSIOLOGY_PROFILE_SET_MEDIA_TYPE, FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
-    FaunaPhysiologyProfile, FaunaPhysiologyProfileError, FaunaPhysiologyProfileSet,
+    FaunaPhysiologyProfile, FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileError,
+    FaunaPhysiologyProfileSet, FaunaPhysiologyProfileSetReference,
 };
 pub use provisional::{
     PROVISIONAL_WORLD_COMPOSITION_MEDIA_TYPE, PROVISIONAL_WORLD_COMPOSITION_SCHEMA_VERSION,
