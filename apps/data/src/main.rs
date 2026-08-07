@@ -2989,7 +2989,9 @@ fn parse_soilgrids_vrt_geometry(path: &Path) -> Result<SoilgridsVrtGeometry> {
     let geotransform: [f64; 6] = geotransform_values
         .try_into()
         .map_err(|_| anyhow::anyhow!("SoilGrids GeoTransform must contain six values"))?;
-    if geotransform != [-19_949_000.0, 250.0, 0.0, 8_361_000.0, 0.0, -250.0] {
+    if !matches!(geotransform[0], -19_949_000.0 | -19_949_750.0)
+        || geotransform[1..] != [250.0, 0.0, 8_361_000.0, 0.0, -250.0]
+    {
         bail!("SoilGrids VRT GeoTransform differs from the retained global grid contract");
     }
     if !text.contains("<NoDataValue>-32768</NoDataValue>") {
@@ -3011,8 +3013,8 @@ fn parse_soilgrids_vrt_geometry(path: &Path) -> Result<SoilgridsVrtGeometry> {
 #[derive(Clone, Copy, Debug)]
 struct SoilgridsProjectedCell {
     s2_cell_id: S2CellId,
-    overview_row: i64,
-    overview_column: i64,
+    easting_e12: i128,
+    northing_e12: i128,
 }
 
 struct SoilgridsProjection {
@@ -3137,10 +3139,6 @@ fn project_global_s2_centres_to_soilgrids(target_s2_level: u8) -> Result<Soilgri
     let mut reader = BufReader::new(child_stdout);
     let mut line = String::new();
     let mut cells = Vec::with_capacity(targets.len());
-    let scale = 1_000_000_000_000_i128;
-    let west = -19_949_000_i128 * scale;
-    let north = 8_361_000_i128 * scale;
-    let pixel = 1_000_i128 * scale;
     let read_result = (|| -> Result<()> {
         for target in targets {
             line.clear();
@@ -3151,12 +3149,10 @@ fn project_global_s2_centres_to_soilgrids(target_s2_level: u8) -> Result<Soilgri
             let x = parse_fixed_decimal(fields.next().context("cs2cs output has no easting")?, 12)?;
             let y =
                 parse_fixed_decimal(fields.next().context("cs2cs output has no northing")?, 12)?;
-            let overview_column = i64::try_from((x - west).div_euclid(pixel))?;
-            let overview_row = i64::try_from((north - y).div_euclid(pixel))?;
             cells.push(SoilgridsProjectedCell {
                 s2_cell_id: target,
-                overview_row,
-                overview_column,
+                easting_e12: x,
+                northing_e12: y,
             });
         }
         line.clear();
@@ -3449,7 +3445,8 @@ const SOILGRIDS_DEPTH: &str = "0-5cm";
 const SOILGRIDS_OVERVIEW_REDUCTION: u32 = 4;
 const SOILGRIDS_OVERVIEW_CHUNK_WIDTH: u32 = 128;
 const SOILGRIDS_OVERVIEW_CHUNK_HEIGHT: u32 = 128;
-const SOILGRIDS_SAMPLING_REPROJECTION_METHOD: &str = "s2-cell-centre-proj-igh-nearest-overview-v1";
+const SOILGRIDS_SAMPLING_REPROJECTION_METHOD: &str =
+    "s2-cell-centre-proj-igh-nearest-native-overview-grid-v2";
 
 #[derive(Debug, Deserialize)]
 struct SoilgridsInventory {
@@ -3476,14 +3473,22 @@ struct SoilgridsSourceRasterArtifact {
     byte_length: u64,
     width: u32,
     height: u32,
+    grid: SoilgridsOverviewGrid,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SoilgridsOverviewGrid {
+    west_e12: i128,
+    north_e12: i128,
+    pixel_size_e12: i128,
+    width: u32,
+    height: u32,
 }
 
 struct SoilgridsSourceSet {
     inventory_digest: Digest,
     property_sources: Vec<SoilGridsPropertySource>,
     rasters: Vec<SoilgridsSourceRasterArtifact>,
-    maximum_width: u32,
-    maximum_height: u32,
 }
 
 fn soilgrids_property(index: usize) -> Result<SoilGridsProperty> {
@@ -3559,8 +3564,6 @@ fn load_verified_soilgrids_source_set(
     let mut actual_total = 0_u64;
     let mut rasters = Vec::with_capacity(expected_count / 2);
     let mut property_sources = Vec::with_capacity(SOILGRIDS_TOPSOIL_PROPERTIES.len());
-    let mut maximum_width = 0_u32;
-    let mut maximum_height = 0_u32;
     for (property_index, property_name) in SOILGRIDS_TOPSOIL_PROPERTIES.iter().enumerate() {
         let mut quantile_artifact_digests = [Digest::ZERO; 3];
         for (quantile_index, quantile) in SOILGRIDS_TOPSOIL_QUANTILES.iter().enumerate() {
@@ -3641,13 +3644,32 @@ fn load_verified_soilgrids_source_set(
                 bail!("SoilGrids overview has an unsupported first-image packing profile");
             }
             quantile_artifact_digests[quantile_index] = overview_artifact.content_hash;
-            maximum_width = maximum_width.max(expected_width);
-            maximum_height = maximum_height.max(expected_height);
+            let coordinate_scale = 1_000_000_000_000_i128;
+            let west_meters = geotransform_integer(vrt_geometry.geotransform[0], "west origin")?;
+            let north_meters = geotransform_integer(vrt_geometry.geotransform[3], "north origin")?;
+            let source_pixel_meters =
+                geotransform_integer(vrt_geometry.geotransform[1], "pixel size")?;
+            let overview_pixel_meters = source_pixel_meters
+                .checked_mul(i128::from(SOILGRIDS_OVERVIEW_REDUCTION))
+                .context("SoilGrids overview pixel size overflow")?;
             rasters.push(SoilgridsSourceRasterArtifact {
                 artifact_path: overview_relative_path,
                 byte_length: overview_artifact.byte_length,
                 width: expected_width,
                 height: expected_height,
+                grid: SoilgridsOverviewGrid {
+                    west_e12: west_meters
+                        .checked_mul(coordinate_scale)
+                        .context("SoilGrids west origin scaling overflow")?,
+                    north_e12: north_meters
+                        .checked_mul(coordinate_scale)
+                        .context("SoilGrids north origin scaling overflow")?,
+                    pixel_size_e12: overview_pixel_meters
+                        .checked_mul(coordinate_scale)
+                        .context("SoilGrids pixel size scaling overflow")?,
+                    width: expected_width,
+                    height: expected_height,
+                },
             });
         }
         property_sources.push(SoilGridsPropertySource {
@@ -3662,9 +3684,18 @@ fn load_verified_soilgrids_source_set(
         inventory_digest: Digest::sha256(&inventory_bytes),
         property_sources,
         rasters,
-        maximum_width,
-        maximum_height,
     })
+}
+
+fn geotransform_integer(value: f64, field: &str) -> Result<i128> {
+    if !value.is_finite() || value.fract() != 0.0 {
+        bail!("SoilGrids {field} is not an exact integer-metre coordinate");
+    }
+    let integer = value as i128;
+    if integer as f64 != value {
+        bail!("SoilGrids {field} exceeds exact integer conversion");
+    }
+    Ok(integer)
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -3675,32 +3706,34 @@ struct SoilgridsChunkSampleRequest {
 }
 
 struct SoilgridsChunkGroups {
-    chunks_across: u32,
     requests: Vec<Vec<SoilgridsChunkSampleRequest>>,
 }
 
 fn group_soilgrids_projection_by_source_chunk(
     projection: &[SoilgridsProjectedCell],
-    maximum_width: u32,
-    maximum_height: u32,
+    grid: SoilgridsOverviewGrid,
 ) -> Result<SoilgridsChunkGroups> {
-    if maximum_width == 0 || maximum_height == 0 {
+    if grid.width == 0 || grid.height == 0 || grid.pixel_size_e12 <= 0 {
         bail!("SoilGrids source grid must be nonempty");
     }
-    let chunks_across = maximum_width.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_WIDTH);
-    let chunks_down = maximum_height.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_HEIGHT);
+    let chunks_across = grid.width.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_WIDTH);
+    let chunks_down = grid.height.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_HEIGHT);
     let chunk_count = chunks_across
         .checked_mul(chunks_down)
         .context("SoilGrids chunk-group count overflow")?;
     let mut requests = (0..chunk_count).map(|_| Vec::new()).collect::<Vec<_>>();
     for (target_index, cell) in projection.iter().enumerate() {
-        let Ok(row) = u32::try_from(cell.overview_row) else {
+        let Ok(row) =
+            u32::try_from((grid.north_e12 - cell.northing_e12).div_euclid(grid.pixel_size_e12))
+        else {
             continue;
         };
-        let Ok(column) = u32::try_from(cell.overview_column) else {
+        let Ok(column) =
+            u32::try_from((cell.easting_e12 - grid.west_e12).div_euclid(grid.pixel_size_e12))
+        else {
             continue;
         };
-        if row >= maximum_height || column >= maximum_width {
+        if row >= grid.height || column >= grid.width {
             continue;
         }
         let chunk_index = (row / SOILGRIDS_OVERVIEW_CHUNK_HEIGHT)
@@ -3713,10 +3746,7 @@ fn group_soilgrids_projection_by_source_chunk(
             column,
         });
     }
-    Ok(SoilgridsChunkGroups {
-        chunks_across,
-        requests,
-    })
+    Ok(SoilgridsChunkGroups { requests })
 }
 
 type SoilgridsRawCellValues = [[i16; 3]; 9];
@@ -3785,64 +3815,67 @@ fn sample_global_soilgrids_topsoil(
     {
         bail!("SoilGrids source raster set is incomplete");
     }
-    let groups = group_soilgrids_projection_by_source_chunk(
-        projection,
-        source_set.maximum_width,
-        source_set.maximum_height,
-    )?;
     let mut values = vec![[[SOILGRIDS_NO_DATA_VALUE; 3]; 9]; projection.len()];
     let mut decoded_source_chunks = 0_u64;
-    for (raster_index, raster) in source_set.rasters.iter().enumerate() {
-        let property_index = raster_index / SOILGRIDS_TOPSOIL_QUANTILES.len();
-        let quantile_index = raster_index % SOILGRIDS_TOPSOIL_QUANTILES.len();
-        let path = artifact_root.join(&raster.artifact_path);
-        let metadata = fs::metadata(&path)?;
-        if metadata.len() != raster.byte_length {
-            bail!("SoilGrids overview changed after source verification");
+    let mut grids = Vec::new();
+    for raster in &source_set.rasters {
+        if !grids.contains(&raster.grid) {
+            grids.push(raster.grid);
         }
-        let mut decoder = TiffDecoder::new(File::open(&path)?)
-            .with_context(|| format!("open SoilGrids overview {}", path.display()))?;
-        for (chunk_index, requests) in groups.requests.iter().enumerate() {
-            if requests.is_empty() {
-                continue;
+    }
+    let mut completed_rasters = 0_usize;
+    for grid in grids {
+        let groups = group_soilgrids_projection_by_source_chunk(projection, grid)?;
+        for (raster_index, raster) in source_set
+            .rasters
+            .iter()
+            .enumerate()
+            .filter(|(_, raster)| raster.grid == grid)
+        {
+            let property_index = raster_index / SOILGRIDS_TOPSOIL_QUANTILES.len();
+            let quantile_index = raster_index % SOILGRIDS_TOPSOIL_QUANTILES.len();
+            let path = artifact_root.join(&raster.artifact_path);
+            let metadata = fs::metadata(&path)?;
+            if metadata.len() != raster.byte_length {
+                bail!("SoilGrids overview changed after source verification");
             }
-            let chunk_index = u32::try_from(chunk_index)?;
-            let chunk_row = chunk_index / groups.chunks_across;
-            let chunk_column = chunk_index % groups.chunks_across;
-            if chunk_row * SOILGRIDS_OVERVIEW_CHUNK_HEIGHT >= raster.height
-                || chunk_column * SOILGRIDS_OVERVIEW_CHUNK_WIDTH >= raster.width
-            {
-                continue;
+            let mut decoder = TiffDecoder::new(File::open(&path)?)
+                .with_context(|| format!("open SoilGrids overview {}", path.display()))?;
+            for (chunk_index, requests) in groups.requests.iter().enumerate() {
+                if requests.is_empty() {
+                    continue;
+                }
+                let chunk_index = u32::try_from(chunk_index)?;
+                let decoded = decoder.read_chunk(chunk_index).with_context(|| {
+                    format!(
+                        "decode SoilGrids property {} quantile {} chunk {chunk_index}",
+                        SOILGRIDS_TOPSOIL_PROPERTIES[property_index],
+                        SOILGRIDS_TOPSOIL_QUANTILES[quantile_index]
+                    )
+                })?;
+                let (data_width, data_height) = decoder.chunk_data_dimensions(chunk_index);
+                apply_soilgrids_decoded_chunk(
+                    SoilgridsDecodedChunk {
+                        decoded: &decoded,
+                        data_width,
+                        data_height,
+                        source_width: raster.width,
+                        source_height: raster.height,
+                        property_index,
+                        quantile_index,
+                    },
+                    requests,
+                    &mut values,
+                )?;
+                decoded_source_chunks = decoded_source_chunks
+                    .checked_add(1)
+                    .context("SoilGrids decoded source-chunk count overflow")?;
             }
-            let decoded = decoder.read_chunk(chunk_index).with_context(|| {
-                format!(
-                    "decode SoilGrids property {} quantile {} chunk {chunk_index}",
-                    SOILGRIDS_TOPSOIL_PROPERTIES[property_index],
-                    SOILGRIDS_TOPSOIL_QUANTILES[quantile_index]
-                )
-            })?;
-            let (data_width, data_height) = decoder.chunk_data_dimensions(chunk_index);
-            apply_soilgrids_decoded_chunk(
-                SoilgridsDecodedChunk {
-                    decoded: &decoded,
-                    data_width,
-                    data_height,
-                    source_width: raster.width,
-                    source_height: raster.height,
-                    property_index,
-                    quantile_index,
-                },
-                requests,
-                &mut values,
-            )?;
-            decoded_source_chunks = decoded_source_chunks
-                .checked_add(1)
-                .context("SoilGrids decoded source-chunk count overflow")?;
+            completed_rasters += 1;
+            eprintln!(
+                "SoilGrids grouped sampling progress: {completed_rasters}/27 property-quantile rasters"
+            );
         }
-        eprintln!(
-            "SoilGrids grouped sampling progress: {}/27 property-quantile rasters",
-            raster_index + 1
-        );
     }
     Ok(SoilgridsSampledField {
         values,
@@ -11130,31 +11163,37 @@ mod tests {
     #[test]
     fn soilgrids_grouped_sampling_reads_each_source_chunk_for_all_requested_targets() {
         let cells = global_s2_cells_at_level(1).expect("miniature target grid");
+        let grid = SoilgridsOverviewGrid {
+            west_e12: 0,
+            north_e12: 0,
+            pixel_size_e12: 1,
+            width: 256,
+            height: 256,
+        };
         let projection = vec![
             SoilgridsProjectedCell {
                 s2_cell_id: cells[0],
-                overview_row: 0,
-                overview_column: 0,
+                easting_e12: 0,
+                northing_e12: 0,
             },
             SoilgridsProjectedCell {
                 s2_cell_id: cells[1],
-                overview_row: 1,
-                overview_column: 1,
+                easting_e12: 1,
+                northing_e12: -1,
             },
             SoilgridsProjectedCell {
                 s2_cell_id: cells[2],
-                overview_row: 129,
-                overview_column: 130,
+                easting_e12: 130,
+                northing_e12: -129,
             },
             SoilgridsProjectedCell {
                 s2_cell_id: cells[3],
-                overview_row: -1,
-                overview_column: 0,
+                easting_e12: 0,
+                northing_e12: 1,
             },
         ];
-        let groups = group_soilgrids_projection_by_source_chunk(&projection, 256, 256)
+        let groups = group_soilgrids_projection_by_source_chunk(&projection, grid)
             .expect("group projected targets");
-        assert_eq!(groups.chunks_across, 2);
         assert_eq!(groups.requests.len(), 4);
         assert_eq!(groups.requests[0].len(), 2);
         assert_eq!(groups.requests[3].len(), 1);
@@ -11190,8 +11229,8 @@ mod tests {
             .into_iter()
             .map(|s2_cell_id| SoilgridsProjectedCell {
                 s2_cell_id,
-                overview_row: 0,
-                overview_column: 0,
+                easting_e12: 0,
+                northing_e12: 0,
             })
             .collect::<Vec<_>>();
         let values = projected_cells
