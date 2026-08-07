@@ -93,6 +93,11 @@ enum Command {
 
         #[arg(long, default_value_t = 10_000)]
         max_events_per_partition_transition: u32,
+
+        /// Immutable causal ruleset for this new or resumed provisional world.
+        /// Ruleset three requires the pinned DE441 source driver at every tick.
+        #[arg(long, default_value_t = RULESET_VERSION)]
+        ruleset_version: u32,
     },
     /// Replay one stored world from genesis and verify its snapshot, cursor, and hashes.
     VerifyWorld {
@@ -152,6 +157,7 @@ async fn main() -> Result<()> {
             predecessor_world_id,
             tick_duration_seconds,
             max_events_per_partition_transition,
+            ruleset_version,
         } => {
             init_provisional_full_earth_world(
                 &store,
@@ -163,6 +169,7 @@ async fn main() -> Result<()> {
                 predecessor_world_id,
                 tick_duration_seconds,
                 max_events_per_partition_transition,
+                ruleset_version,
             )
             .await
         }
@@ -416,6 +423,7 @@ async fn init_provisional_full_earth_world(
     predecessor_world_id: Option<WorldId>,
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
+    ruleset_version: u32,
 ) -> Result<()> {
     let composition = load_provisional_world_composition(composition_path)
         .context("load canonical provisional full-Earth composition")?;
@@ -447,7 +455,7 @@ async fn init_provisional_full_earth_world(
     )
     .context("construct provisional full-Earth execution configuration")?;
 
-    let manifest = WorldManifest::new(world_id, WorldSeed::new(seed), RULESET_VERSION);
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
     let species = SpeciesIdentity::new(
         "gbif",
         "2436436",
