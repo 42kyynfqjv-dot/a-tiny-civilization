@@ -1,0 +1,72 @@
+# An isolated restore-drill stack. Its project name and volume are deliberately
+# separate from the production Compose project, and it has no public edge network.
+x-walg-environment: &walg-environment
+  WALG_S3_PREFIX: s3://${R2_BACKUP_BUCKET:-}/a-tiny-civilization/postgres
+  AWS_ENDPOINT: https://${R2_ACCOUNT_ID:-}.r2.cloudflarestorage.com
+  AWS_ACCESS_KEY_ID: ${R2_ACCESS_KEY_ID:-}
+  AWS_SECRET_ACCESS_KEY: ${R2_SECRET_ACCESS_KEY:-}
+  AWS_REGION: auto
+  AWS_S3_FORCE_PATH_STYLE: "true"
+  WALG_COMPRESSION_METHOD: zstd
+  WALG_PREVENT_WAL_OVERWRITE: "true"
+  WALG_LIBSODIUM_KEY: ${WALG_LIBSODIUM_KEY:-}
+  WALG_LIBSODIUM_KEY_TRANSFORM: hex
+
+services:
+  restore-db:
+    image: a-tiny-civilization-postgres-walg:3.0.8-pg17
+    build:
+      context: .
+      dockerfile: Dockerfile.postgres-walg
+      network: host
+    entrypoint: ["/usr/local/bin/a-tiny-restore-entrypoint"]
+    environment:
+      <<: *walg-environment
+      PGDATA: /var/lib/postgresql/data
+      POSTGRES_DB: ${POSTGRES_DB:-civilization}
+      POSTGRES_USER: ${POSTGRES_USER:-civilization}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      PGDATABASE: ${POSTGRES_DB:-civilization}
+      PGUSER: ${POSTGRES_USER:-civilization}
+      RESTORE_BACKUP_NAME: ${RESTORE_BACKUP_NAME:-LATEST}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 3s
+      timeout: 3s
+      retries: 60
+      start_period: 10s
+    ports:
+      - "127.0.0.1:${RESTORE_PORT:-55432}:5432"
+    volumes:
+      - restore-data:/var/lib/postgresql/data
+      - ./scripts/postgres-restore-entrypoint.sh:/usr/local/bin/a-tiny-restore-entrypoint:ro
+    networks:
+      - restore
+    restart: "no"
+
+  restore-verifier:
+    image: a-tiny-civilization-app:local
+    build:
+      context: .
+      dockerfile: Dockerfile
+      network: host
+    command:
+      - /app/civilization-runner
+      - verify-world
+      - --world-id
+      - ${RESTORE_WORLD_ID:-00000000-0000-0000-0000-000000000000}
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@restore-db:5432/${POSTGRES_DB:-civilization}
+    depends_on:
+      restore-db:
+        condition: service_healthy
+    networks:
+      - restore
+    restart: "no"
+
+volumes:
+  restore-data:
+
+networks:
+  restore:
+    driver: bridge

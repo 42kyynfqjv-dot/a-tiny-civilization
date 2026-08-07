@@ -71,6 +71,8 @@ jobs:
       - uses: actions/checkout@v4
       - run: docker compose -f compose.yaml config --quiet
       - run: docker compose -f compose.yaml -f compose.hindsight.yaml config --quiet
+      - run: docker compose -f compose.yaml -f compose.backup.yaml config --quiet
+      - run: RESTORE_WORLD_ID=00000000-0000-0000-0000-000000000001 docker compose -f compose.restore.yaml config --quiet
       - run: ./scripts/check-production-boundaries.sh
       - run: >-
           APP_ENV=production
@@ -78,4 +80,9 @@ jobs:
           POSTGRES_USER=civilization
           POSTGRES_PASSWORD=ci-production-check-only
           CLOUDFLARE_TUNNEL_TOKEN=ci-production-check-only
+          R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef
+          R2_BACKUP_BUCKET=a-tiny-civilization-backups
+          R2_ACCESS_KEY_ID=ci-r2-access-key-only
+          R2_SECRET_ACCESS_KEY=ci-r2-secret-key-only
+          WALG_LIBSODIUM_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           ./scripts/production-preflight.sh

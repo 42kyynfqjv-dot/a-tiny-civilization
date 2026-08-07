@@ -65,15 +65,20 @@ dataset's internal NetCDF format.
 
 ### Server and backups
 
-Choose the Ubuntu host and an owner-controlled offsite object-storage account, bucket
-or prefix, retention period, and encryption-key ownership. Create a least-privilege
-credential limited to the backup prefix. Then install and configure either pgBackRest
-or WAL-G for continuous WAL archiving and scheduled base backups. Record an isolated
-restore drill using the acceptance criteria in
-[Backup and restore](BACKUP_RESTORE.md).
+The implementation choice is now fixed: WAL-G 3.0.8 sends client-side-encrypted WAL and
+base backups to Cloudflare R2. In the Cloudflare account:
 
-This is an owner decision because it creates billing, retention, and recovery
-obligations. It cannot be safely guessed or created by the application.
+1. Activate R2 and create a private bucket dedicated to production backups.
+2. Create an Object Read & Write token scoped only to that bucket. Record its access
+   key ID and secret directly in the host's protected environment.
+3. Generate the independent WAL-G encryption key directly into protected storage with
+   `openssl rand -hex 32`; escrow it outside both this host and the Cloudflare account.
+4. Set the `R2_*` and `WALG_LIBSODIUM_KEY` variables named in
+   [Backup and restore](BACKUP_RESTORE.md), then run production preflight.
+5. Take the first base backup and record an isolated restore drill before launch.
+
+Bucket creation, billing, retention duration, credential lifecycle, and encryption-key
+escrow remain owner decisions. The application never creates or prints those secrets.
 
 ### Cloudflare DNS and tunnel
 

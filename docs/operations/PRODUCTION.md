@@ -50,6 +50,8 @@ Required runtime values are:
 
 - `POSTGRES_DB`, `POSTGRES_USER`, and a unique `POSTGRES_PASSWORD`;
 - `CLOUDFLARE_TUNNEL_TOKEN` for a dedicated remotely managed production tunnel;
+- `R2_ACCOUNT_ID`, `R2_BACKUP_BUCKET`, and a bucket-scoped R2 access-key pair;
+- a persistent 32-byte `WALG_LIBSODIUM_KEY` encoded as hexadecimal;
 - `APP_ENV=production`.
 
 Optional later integrations remain blank until their features are enabled: Stripe,
@@ -71,15 +73,16 @@ shell without echoing it, then run:
 
 ```bash
 ./scripts/production-preflight.sh
-docker compose -f compose.yaml -f compose.tunnel.yaml pull
-docker compose -f compose.yaml -f compose.tunnel.yaml up --build -d
+docker compose -f compose.yaml -f compose.backup.yaml -f compose.tunnel.yaml pull --ignore-buildable
+docker compose -f compose.yaml -f compose.backup.yaml -f compose.tunnel.yaml up --build -d
 make smoke
 ```
 
 The static preflight rejects missing settings, the documented development password, a
-non-production environment, and invalid Compose interpolation. It does not print
-secrets. Before the first use, record the resolved `cloudflared` image digest in the
-deployment change log; do not confuse a mutable image tag with a provenance pin.
+non-production environment, mutable `cloudflared` image references, and invalid Compose
+interpolation. It does not print secrets. The default tunnel image is pinned to the
+multi-architecture digest for Cloudflare's 2026.7.2 release; upgrades are deliberate
+deployment checkpoints.
 
 Verify locally that `http://127.0.0.1:3000/` and `http://127.0.0.1:8080/health/ready`
 work, then verify only the intended hostname through Cloudflare. Confirm that direct

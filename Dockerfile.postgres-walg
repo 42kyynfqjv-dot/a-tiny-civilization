@@ -1,0 +1,20 @@
+FROM postgres:17-bookworm@sha256:9b18b78397054fce88a9552e9d5a3ad5bb7fd258c5b3cc1c5028e46373d6ea8f
+
+ARG TARGETARCH
+ARG WALG_VERSION=v3.0.8
+
+RUN set -eu; \
+    case "${TARGETARCH}" in \
+      amd64) walg_sha256="9a09c2b1afad6a4e7d87444b34726dd098b60ec816032af921d2f887e6e285c5" ;; \
+      arm64) walg_sha256="c3dc13b90fce8fe498742143f9ae07db19a603f7f26de00f161419e163e6175f" ;; \
+      *) echo "unsupported WAL-G target architecture: ${TARGETARCH}" >&2; exit 2 ;; \
+    esac; \
+    apt-get update; \
+    apt-get install --yes --no-install-recommends ca-certificates curl libsodium23; \
+    curl --fail --location --silent --show-error \
+      --output /usr/local/bin/wal-g \
+      "https://github.com/wal-g/wal-g/releases/download/${WALG_VERSION}/wal-g-pg-20.04-${TARGETARCH}"; \
+    echo "${walg_sha256}  /usr/local/bin/wal-g" | sha256sum --check --strict; \
+    chmod 0755 /usr/local/bin/wal-g; \
+    wal-g --version; \
+    rm -rf /var/lib/apt/lists/*

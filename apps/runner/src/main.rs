@@ -54,6 +54,11 @@ enum Command {
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
     },
+    /// Replay one stored world from genesis and verify its snapshot, cursor, and hashes.
+    VerifyWorld {
+        #[arg(long)]
+        world_id: WorldId,
+    },
     /// Deliver committed subjective-memory records without blocking simulation ticks.
     MemoryWorker {
         #[arg(long, env = "HINDSIGHT_BASE_URL")]
@@ -98,6 +103,7 @@ async fn main() -> Result<()> {
             seed,
             predecessor_world_id,
         } => init_proof_world(&store, world_id, seed, predecessor_world_id).await,
+        Command::VerifyWorld { world_id } => verify_world(&store, world_id).await,
         Command::MemoryWorker {
             hindsight_base_url,
             hindsight_api_key,
@@ -122,6 +128,20 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+async fn verify_world(store: &PostgresStore, world_id: WorldId) -> Result<()> {
+    let session = resume_world(store, world_id)
+        .await
+        .context("replay and verify stored world")?;
+    println!(
+        "verified world {} through sequence {} at tick {}: {:?}",
+        world_id, session.world.cursor.sequence, session.world.cursor.tick, session.world.status
+    );
+    println!("event head: {}", session.world.cursor.last_event_hash);
+    println!("state hash: {}", session.world.cursor.state_hash);
+    println!("genesis replay == snapshot + tail == committed cursor");
+    Ok(())
 }
 
 async fn serve(
