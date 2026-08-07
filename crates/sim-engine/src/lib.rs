@@ -1361,6 +1361,11 @@ impl EngineState {
                     return Err(EngineError::UnexpectedEmbodiedPatch(*organism_id));
                 }
                 organism.embodied_patch = Some(*to_patch);
+                for instance in self.material_instances.values_mut() {
+                    if instance.held_by == Some(*organism_id) {
+                        instance.embodied_patch = *to_patch;
+                    }
+                }
                 self.refresh_partition_schedule()?;
             }
             DomainEvent::OrganismAgeAdvanced {
@@ -2740,7 +2745,22 @@ mod tests {
                 .held_by(),
             Some(person.organism_id)
         );
-        let release = after_grasp
+        let moved_to = s2_edge_neighbors(patch).expect("neighbor patches")[0];
+        let movement = after_grasp
+            .plan_movement(person.organism_id, moved_to)
+            .expect("movement plan");
+        let (after_movement, movement_batch) = after_grasp
+            .commit(EventSequence::new(3), grasp_batch.batch_hash, movement)
+            .expect("movement commit");
+        assert_eq!(
+            after_movement
+                .material_instances()
+                .next()
+                .expect("material")
+                .embodied_patch(),
+            moved_to
+        );
+        let release = after_movement
             .plan_action(
                 person.organism_id,
                 PrimitiveAction {
@@ -2750,8 +2770,8 @@ mod tests {
                 },
             )
             .expect("release plan");
-        let (after_release, release_batch) = after_grasp
-            .commit(EventSequence::new(3), grasp_batch.batch_hash, release)
+        let (after_release, release_batch) = after_movement
+            .commit(EventSequence::new(4), movement_batch.batch_hash, release)
             .expect("release commit");
         assert_eq!(
             after_release
@@ -2761,8 +2781,11 @@ mod tests {
                 .held_by(),
             None
         );
-        let replayed =
-            replay(manifest, &[genesis, grasp_batch, release_batch]).expect("handling replay");
+        let replayed = replay(
+            manifest,
+            &[genesis, grasp_batch, movement_batch, release_batch],
+        )
+        .expect("handling replay");
         assert_eq!(replayed.state, after_release);
     }
 
