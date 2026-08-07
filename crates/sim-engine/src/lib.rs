@@ -16,10 +16,11 @@ use partition::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, DeathCause, Digest,
-    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
-    EventBatch, EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION,
-    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PrimitiveAction, S2CellId, S2CellIdError,
+    BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
+    CanonicalHashError, CelestialState, DeathCause, Digest, DomainEvent,
+    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
+    EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PrimitiveAction, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
     SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
@@ -27,15 +28,22 @@ use world_domain::{
 
 /// Ruleset one has the original empty full-Earth execution schedule.
 pub const LEGACY_RULESET_VERSION: u32 = 1;
-/// Version pinned to each new world. Ruleset two adds the executable per-organism
-/// barrier while preserving ruleset-one replay byte-for-byte.
-pub const RULESET_VERSION: u32 = 2;
+/// Ruleset two adds the executable per-organism barrier while preserving
+/// ruleset-one replay byte-for-byte.
+pub const ORGANISM_EXECUTION_RULESET_VERSION: u32 = 2;
+/// Current executable ruleset. Ruleset three is deliberately held back until its
+/// source adapter is wired into the runner; existing provisional worlds continue to
+/// use the verified body-clock kernel.
+pub const RULESET_VERSION: u32 = ORGANISM_EXECUTION_RULESET_VERSION;
+/// A future opt-in ruleset requiring one source-backed celestial input per tick.
+pub const CELESTIAL_DRIVER_RULESET_VERSION: u32 = 3;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
 pub const PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION: u16 = 4;
 pub const PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION: u16 = 5;
 pub const SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION: u16 = 6;
+pub const CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION: u16 = 7;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -47,6 +55,7 @@ const EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION: u16 = 3;
 const PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION: u16 = 4;
 const PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION: u16 = 5;
 const SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION: u16 = 6;
+const CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION: u16 = 7;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -129,6 +138,10 @@ pub struct EngineState {
     organisms: BTreeMap<EntityId, OrganismState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<PartitionSchedule>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    celestial_state: Option<CelestialState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    celestial_tick: Option<SimTick>,
 }
 
 impl EngineState {
@@ -141,6 +154,8 @@ impl EngineState {
             tick: SimTick::ZERO,
             organisms: BTreeMap::new(),
             partition_schedule: None,
+            celestial_state: None,
+            celestial_tick: None,
         }
     }
 
@@ -192,6 +207,12 @@ impl EngineState {
         self.partition_schedule
             .as_ref()
             .map_or(0, |schedule| schedule.entries().len())
+    }
+
+    /// The latest exact source state admitted by the ruleset-three driver.
+    #[must_use]
+    pub const fn celestial_state(&self) -> Option<CelestialState> {
+        self.celestial_state
     }
 
     pub fn plan_genesis(
@@ -255,6 +276,30 @@ impl EngineState {
 
     pub fn plan_next_tick(&self) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_status(WorldStatus::Running)?;
+        if self.uses_celestial_driver() {
+            return Err(EngineError::CelestialStateRequired);
+        }
+        self.plan_next_tick_internal(None)
+    }
+
+    /// Plan one complete ruleset-three transition. The caller supplies the exact
+    /// result of evaluating the world-pinned celestial source; replay consumes this
+    /// recorded result and never opens an ephemeris itself.
+    pub fn plan_next_tick_with_celestial(
+        &self,
+        celestial_state: CelestialState,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        if !self.uses_celestial_driver() {
+            return Err(EngineError::CelestialStateUnsupported);
+        }
+        self.plan_next_tick_internal(Some(celestial_state))
+    }
+
+    fn plan_next_tick_internal(
+        &self,
+        celestial_state: Option<CelestialState>,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.require_status(WorldStatus::Running)?;
         let next = self.tick.checked_next()?;
         let scheduled_events = self.plan_partition_tick_events()?;
         let mut events = vec![DomainEvent::TickAdvanced {
@@ -262,6 +307,9 @@ impl EngineState {
             to: next,
         }];
         events.extend(scheduled_events);
+        if let Some(state) = celestial_state {
+            events.push(DomainEvent::CelestialStateRecorded { state });
+        }
         if self.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
@@ -385,6 +433,8 @@ impl EngineState {
             tick: self.tick,
             organisms: self.organisms.values().collect(),
             partition_schedule: self.partition_schedule.as_ref(),
+            celestial_state: self.celestial_state,
+            celestial_tick: self.celestial_tick,
         })
     }
 
@@ -558,7 +608,11 @@ impl EngineState {
     }
 
     fn uses_organism_execution_kernel(&self) -> bool {
-        self.manifest.ruleset_version >= RULESET_VERSION
+        self.manifest.ruleset_version >= ORGANISM_EXECUTION_RULESET_VERSION
+    }
+
+    fn uses_celestial_driver(&self) -> bool {
+        self.manifest.ruleset_version >= CELESTIAL_DRIVER_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -623,6 +677,7 @@ impl EngineState {
             DomainEvent::WorldStarted { .. }
             | DomainEvent::WorldConfigured { .. }
             | DomainEvent::TickAdvanced { .. }
+            | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::WorldExtinct
             | DomainEvent::WorldArchived => None,
         };
@@ -639,7 +694,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_organism_execution_kernel()
+        if self.uses_celestial_driver() {
+            CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+        } else if self.uses_organism_execution_kernel()
             && self
                 .configuration
                 .as_ref()
@@ -668,7 +725,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_organism_execution_kernel() && self.partition_schedule.is_some() {
+        if self.uses_celestial_driver() {
+            CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_organism_execution_kernel() && self.partition_schedule.is_some() {
             SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION
         } else if self
             .configuration
@@ -873,6 +932,21 @@ impl EngineState {
                 }
                 organism.age_ticks = Some(*to_age_ticks);
             }
+            DomainEvent::CelestialStateRecorded { state } => {
+                if !self.uses_celestial_driver() {
+                    return Err(EngineError::CelestialStateUnsupported);
+                }
+                if self.tick == SimTick::ZERO || self.celestial_tick == Some(self.tick) {
+                    return Err(EngineError::InvalidCelestialTick);
+                }
+                if let Some(previous) = self.celestial_state
+                    && state.tdb_seconds_since_j2000() <= previous.tdb_seconds_since_j2000()
+                {
+                    return Err(EngineError::NonMonotoneCelestialTime);
+                }
+                self.celestial_state = Some(*state);
+                self.celestial_tick = Some(self.tick);
+            }
             DomainEvent::WorldExtinct => {
                 self.require_status(WorldStatus::Running)?;
                 if self.living_people() != 0 {
@@ -977,6 +1051,12 @@ impl EngineState {
         {
             return Err(EngineError::LivingPeopleRemain);
         }
+        if self.uses_celestial_driver()
+            && self.tick != SimTick::ZERO
+            && self.celestial_tick != Some(self.tick)
+        {
+            return Err(EngineError::MissingCelestialState(self.tick));
+        }
         for (id, organism) in &self.organisms {
             if id != &organism.organism_id {
                 return Err(EngineError::OrganismKeyMismatch(*id));
@@ -1028,6 +1108,10 @@ struct StateHashMaterial<'a> {
     organisms: Vec<&'a OrganismState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<&'a PartitionSchedule>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    celestial_state: Option<CelestialState>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    celestial_tick: Option<SimTick>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1048,29 +1132,30 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version =
-            if state.uses_organism_execution_kernel() && state.partition_schedule.is_some() {
-                SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
-            } else if state
-                .configuration
-                .as_ref()
-                .is_some_and(WorldConfiguration::is_provisional_execution)
-            {
-                PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
-            } else if state.partition_schedule.is_some() {
-                PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
-            } else if state
-                .configuration
-                .as_ref()
-                .and_then(WorldConfiguration::embodied_patch_s2_level)
-                .is_some()
-            {
-                EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
-            } else if state.configuration.is_some() {
-                SNAPSHOT_SCHEMA_VERSION
-            } else {
-                LEGACY_SNAPSHOT_SCHEMA_VERSION
-            };
+        let snapshot_schema_version = if state.uses_celestial_driver() {
+            CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_organism_execution_kernel() && state.partition_schedule.is_some() {
+            SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
+        } else if state
+            .configuration
+            .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+        {
+            PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+        } else if state.partition_schedule.is_some() {
+            PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+        } else if state
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+        {
+            EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.configuration.is_some() {
+            SNAPSHOT_SCHEMA_VERSION
+        } else {
+            LEGACY_SNAPSHOT_SCHEMA_VERSION
+        };
         Ok(Self {
             snapshot_schema_version,
             world_id: state.world_id(),
@@ -1090,12 +1175,15 @@ impl Snapshot {
                 | PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
                 | PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
                 | SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
+                | CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_organism_execution_kernel()
+        let expected_schema_version = if self.state.uses_celestial_driver() {
+            CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_organism_execution_kernel()
             && self.state.partition_schedule.is_some()
         {
             SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
@@ -1231,7 +1319,9 @@ fn replay_from_cursor(
                     if configuration.embodied_patch_s2_level().is_some()
             )
         });
-        let expected_schema = if state.uses_organism_execution_kernel()
+        let expected_schema = if state.uses_celestial_driver() {
+            CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+        } else if state.uses_organism_execution_kernel()
             && (state
                 .configuration
                 .as_ref()
@@ -1260,7 +1350,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == CELESTIAL_STATE_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+        } else if expected_schema == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
         } else if expected_schema == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
@@ -1368,6 +1460,16 @@ pub enum EngineError {
     InvalidAgeTransition(EntityId),
     #[error("organism {0} age tick overflowed")]
     AgeOverflow(EntityId),
+    #[error("ruleset-three ticks require one source-backed celestial state")]
+    CelestialStateRequired,
+    #[error("this ruleset does not accept source-backed celestial states")]
+    CelestialStateUnsupported,
+    #[error("a celestial state must occur exactly once after a nonzero tick advances")]
+    InvalidCelestialTick,
+    #[error("celestial source time must strictly advance")]
+    NonMonotoneCelestialTime,
+    #[error("ruleset-three state at tick {0} has no celestial source state")]
+    MissingCelestialState(SimTick),
     #[error("embodied event is invalid: {0}")]
     InvalidEmbodiedEvent(String),
     #[error("parent identities must be strictly sorted and unique")]
@@ -1434,10 +1536,11 @@ mod tests {
     use super::*;
     use uuid::Uuid;
     use world_domain::{
-        CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
-        PerceptionChannel, PersonRepresentation, PrimitiveActionKind, PropertyReading,
-        ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
-        SpatialGrid, WorldDataBundleReference, WorldSeed, WorldStatus,
+        CapacityExhaustionPolicy, CartesianMillimetres, CelestialState, EarthResolutionLevels,
+        FullEarthGrid, PartitionedExecution, PerceptionChannel, PersonRepresentation,
+        PrimitiveActionKind, PropertyReading, ProvisionalWorldCompositionReference, S2Projection,
+        SchedulerKind, SituatedPerception, SpatialGrid, TdbSecondsSinceJ2000,
+        WorldDataBundleReference, WorldSeed, WorldStatus,
     };
 
     fn manifest() -> WorldManifest {
@@ -1800,6 +1903,59 @@ mod tests {
         assert_eq!(after_tick.scheduled_work_count(), 1);
         let replayed = replay(manifest, &[genesis, tick]).expect("partitioned replay");
         assert_eq!(replayed.state, after_tick);
+    }
+
+    #[test]
+    fn celestial_ruleset_requires_and_replays_one_source_state_per_tick() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = CELESTIAL_DRIVER_RULESET_VERSION;
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                full_earth_configuration(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("celestial full-Earth genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("celestial full-Earth genesis commit");
+
+        assert!(matches!(
+            running.plan_next_tick(),
+            Err(EngineError::CelestialStateRequired)
+        ));
+        let celestial = CelestialState::new(
+            TdbSecondsSinceJ2000::new(123),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        );
+        let tick_events = running
+            .plan_next_tick_with_celestial(celestial)
+            .expect("celestial tick plan");
+        assert!(matches!(
+            tick_events.last(),
+            Some(DomainEvent::CelestialStateRecorded { state }) if *state == celestial
+        ));
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("celestial tick commit");
+        assert_eq!(after_tick.celestial_state(), Some(celestial));
+        assert_eq!(
+            tick.event_schema_version,
+            CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            Snapshot::new(after_tick.clone(), tick.sequence, tick.batch_hash)
+                .expect("celestial snapshot")
+                .snapshot_schema_version,
+            CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, tick])
+                .expect("celestial replay")
+                .state,
+            after_tick
+        );
     }
 
     #[test]

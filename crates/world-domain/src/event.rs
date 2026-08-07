@@ -2,8 +2,9 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHashError, Digest, EntityId, EventId, EventSequence, PrimitiveAction, S2CellId,
-    SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    CanonicalHashError, CelestialState, Digest, EntityId, EventId, EventSequence, PrimitiveAction,
+    S2CellId, SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId,
+    WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -16,6 +17,10 @@ pub const PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION: u16 = 5;
 /// Adds internal, deterministic organism body-clock transitions for ruleset-two
 /// worlds. These facts remain observer-neutral and expose no sensitive mechanism.
 pub const SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION: u16 = 6;
+/// Adds one pinned, replayable celestial source result per ruleset-three tick.
+/// The raw source evaluator remains outside the engine; this event is its exact,
+/// hash-chained hand-off into canonical history.
+pub const CELESTIAL_STATE_EVENT_SCHEMA_VERSION: u16 = 7;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -129,6 +134,11 @@ pub enum DomainEvent {
         organism_id: EntityId,
         from_age_ticks: u64,
         to_age_ticks: u64,
+    },
+    /// A source-backed Sun/Moon state for the current simulation tick. This is a
+    /// physical input only; observer projections must not expose its mechanism.
+    CelestialStateRecorded {
+        state: CelestialState,
     },
     WorldExtinct,
     WorldArchived,
@@ -270,6 +280,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | EMBODIED_POSITION_EVENT_SCHEMA_VERSION
             | PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
             | SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+            | CELESTIAL_STATE_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -315,6 +326,11 @@ fn validate_event_for_schema(
             DomainEvent::WorldConfigured { configuration }
                 if configuration.is_provisional_execution()
         )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::CelestialStateRecorded { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
