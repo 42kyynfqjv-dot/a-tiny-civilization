@@ -131,6 +131,11 @@ enum InspectCommand {
         #[arg(long)]
         input: PathBuf,
     },
+    /// Validate and summarize a canonical provisional full-Earth composition.
+    ProvisionalWorldComposition {
+        #[arg(long)]
+        input: PathBuf,
+    },
     /// Validate one explicit provisional fauna population plan against its source
     /// candidate pool and seed-derived selection.
     FaunaPopulationPlan {
@@ -741,6 +746,9 @@ async fn main() -> Result<()> {
             }
             InspectCommand::FaunaPhysiologyProfileCatalog { input } => {
                 inspect_fauna_physiology_profile_catalog(&input)
+            }
+            InspectCommand::ProvisionalWorldComposition { input } => {
+                inspect_provisional_world_composition(&input)
             }
             InspectCommand::FaunaPopulationPlan {
                 input,
@@ -1661,6 +1669,25 @@ fn inspect_fauna_physiology_profile_catalog(input: &Path) -> Result<()> {
             "content_hash": Digest::sha256(&bytes),
             "profile_set_count": catalog.profile_sets.len(),
             "profile_count": catalog.profile_sets.iter().map(|entry| entry.profile_count).sum::<u64>(),
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_provisional_world_composition(input: &Path) -> Result<()> {
+    let composition = load_provisional_world_composition(input)
+        .context("validate provisional world composition")?;
+    let bytes = fs::read(input)
+        .with_context(|| format!("read provisional world composition {}", input.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "composition_id": composition.composition_id,
+            "composition_version": composition.composition_version,
+            "earth_layer_count": composition.earth_layers.len(),
+            "world_component_count": composition.world_components.len(),
+            "status": composition.status,
         }))?
     );
     Ok(())
