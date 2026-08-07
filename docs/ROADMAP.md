@@ -206,7 +206,14 @@ It deliberately gets a real global uncertainty-bearing soil vector wired before 
 final pass expands to all six native-depth products and validates scientific coupling.
 All 27 retained rasters (3,619,187,287 bytes) now pass a portable BigTIFF pyramid and
 bounded-chunk inspection; source-specific one-pixel footprint differences and the
-signed no-data sentinel remain explicit rather than being silently harmonized.
+signed no-data sentinel remain explicit rather than being silently harmonized. The
+global 0–5 cm vector release has now been generated and independently traversed across
+24,576 tiles and 6,291,456 L10 cells under root-index SHA-256
+`4bda39813eb6a6faaf3b286ec3aeea0ad260108e38b626320a4dda878d91db2e`.
+All nine properties retain their Q0.05/Q0.5/Q0.95 values independently; per-property
+no-data totals remain explicit and differ where the native source footprints differ.
+This is still provisional topsoil evidence, not a six-depth or scientifically admitted
+soil state.
 
 Fauna now has a commercially compatible source boundary and retained exact taxonomy:
 the 971,465,842-byte frozen CC BY 4.0 GBIF Backbone supplies stable real taxon
