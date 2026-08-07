@@ -1,8 +1,8 @@
 use anyhow::Result;
 use application::{
-    MemoryFactKind, MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain,
-    MemoryRetainReceipt, RecalledMemory, StoreError, TransitionEffects, WorldStore, advance_world,
-    initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
+    CognitionJobStore, MemoryFactKind, MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest,
+    MemoryRetain, MemoryRetainReceipt, RecalledMemory, StoreError, TransitionEffects, WorldStore,
+    advance_world, initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
     CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
@@ -10,13 +10,18 @@ use observer_projection::{
     ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
-use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
+use sim_engine::{
+    COGNITION_RULESET_VERSION, EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay,
+};
 use sqlx::PgPool;
 use uuid::Uuid;
 use world_domain::{
     BirthCategory, CapacityExhaustionPolicy, DeathCause, Digest, EarthResolutionLevels, EntityId,
-    EventBatch, EventId, EventSequence, FullEarthGrid, OrganismRole, PartitionedExecution,
-    PersonRepresentation, ProvisionalWorldCompositionReference, S2CellId, S2Projection,
+    EventBatch, EventId, EventSequence, FullEarthGrid, HeritableDispositionProfile,
+    MetabolicRateCommitment, OrganismRole, PartitionedExecution, PersonRepresentation,
+    PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment,
+    ProvisionalLocalEnvironmentBaseline, ProvisionalWorldCompositionReference,
+    ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2Projection,
     SchedulerKind, SimTick, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest, WorldSeed,
     WorldStatus,
 };
@@ -96,6 +101,108 @@ fn provisional_initial_person(world_id: WorldId) -> InitialOrganism {
             .parse::<S2CellId>()
             .expect("valid L23 cell"),
     );
+    person
+}
+
+fn cognition_configuration() -> WorldConfiguration {
+    let provisional = provisional_configuration();
+    let active_patch = "0000000000004000"
+        .parse::<S2CellId>()
+        .expect("valid L23 cell");
+    WorldConfiguration::new_provisional_full_earth_with_environment_baseline(
+        300,
+        provisional.full_earth_grid().expect("grid").clone(),
+        provisional
+            .provisional_world_composition()
+            .expect("composition")
+            .clone(),
+        provisional
+            .partitioned_execution()
+            .expect("execution")
+            .clone(),
+        ProvisionalLocalEnvironmentBaseline {
+            status: "provisional-evidence-only".to_owned(),
+            source_evidence_digest: Digest::sha256(b"cognition PostgreSQL local evidence"),
+            evidence_patch: active_patch.ancestor(10).expect("L10 ancestor"),
+            active_patch,
+            air_temperature_unit: "degC".to_owned(),
+            air_temperature_decimal_places: 1,
+            air_temperature_normal_minimum: [1; 12],
+            air_temperature_normal_mean: [2; 12],
+            air_temperature_normal_maximum: [3; 12],
+        },
+    )
+    .expect("cognition configuration")
+}
+
+fn cognition_initial_person(world_id: WorldId) -> InitialOrganism {
+    let mut person = provisional_initial_person(world_id);
+    person.initial_age_ticks = 20;
+    person.metabolic_rate = Some(MetabolicRateCommitment {
+        commitment_schema_version: world_domain::METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+        profile_set_digest: Digest::sha256(b"cognition PostgreSQL metabolic profiles"),
+        observed_species: person.species.clone(),
+        source_record_id: "cognition-postgres-rate".to_owned(),
+        source_record_digest: Digest::sha256(b"cognition PostgreSQL metabolic row"),
+        measured_power_value: 1,
+        measured_power_decimal_places: 0,
+    });
+    person.physiological_regulation = Some(PhysiologicalRegulationCommitment {
+        commitment_schema_version: world_domain::PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
+        profile_id: "cognition-postgres-regulation-v1".to_owned(),
+        profile_digest: Digest::sha256(b"cognition PostgreSQL regulation assumptions"),
+        species: person.species.clone(),
+        evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+        usable_energy_reserve_joules: 10_000_000_000,
+        hydration_failure_seconds: 10_000_000,
+        fatigue_failure_seconds: 600,
+        fatigue_recovery_seconds: 600,
+        thermoneutral_min_millicelsius: -1_000,
+        thermoneutral_max_millicelsius: 1_000,
+        thermal_failure_millicelsius_seconds: 600_000,
+        thermal_recovery_seconds: 600,
+    });
+    person.reproductive_physiology = Some(ReproductivePhysiologyCommitment {
+        commitment_schema_version: world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+        profile_id: "cognition-postgres-reproduction-v1".to_owned(),
+        profile_digest: Digest::sha256(b"cognition PostgreSQL reproduction assumptions"),
+        species: person.species.clone(),
+        evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+        tick_duration_seconds: 300,
+        maturity_age_ticks: 10,
+        development_ticks: 2,
+        recovery_ticks: 2,
+        opportunity_interval_ticks: 1,
+        initiation_probability_millionths: world_domain::REPRODUCTIVE_PROBABILITY_SCALE,
+        compatible_pairs: vec![ReproductiveCategoryPair {
+            first: BirthCategory::new("female").expect("category"),
+            second: BirthCategory::new("male").expect("category"),
+            developing_parent: BirthCategory::new("female").expect("category"),
+        }],
+        offspring_categories: vec![
+            world_domain::OffspringCategoryWeight {
+                category: BirthCategory::new("female").expect("category"),
+                weight: 1,
+            },
+            world_domain::OffspringCategoryWeight {
+                category: BirthCategory::new("male").expect("category"),
+                weight: 1,
+            },
+        ],
+    });
+    person.heritable_disposition_profile = Some(HeritableDispositionProfile {
+        profile_schema_version: world_domain::HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+        profile_id: "cognition-postgres-heredity-v1".to_owned(),
+        profile_digest: Digest::sha256(b"cognition PostgreSQL heredity assumptions"),
+        species: person.species.clone(),
+        evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+        minimum_action_weight: 4,
+        neutral_action_weight: 16,
+        maximum_action_weight: 28,
+        founder_variation_steps: 3,
+        mutation_probability_millionths: 100_000,
+        mutation_max_step: 2,
+    });
     person
 }
 
@@ -807,5 +914,112 @@ async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool)
         .execute(&pool)
         .await;
     assert!(mutation.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cognition_selection_creates_one_immutable_leased_job_atomically(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let world_id = WorldId::from_uuid(Uuid::new_v4());
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(509), COGNITION_RULESET_VERSION);
+    let person = cognition_initial_person(world_id);
+    let person_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let initial = EngineState::new(manifest.clone());
+    let genesis_events =
+        initial.plan_configured_genesis(cognition_configuration(), vec![person])?;
+    let (running, genesis_batch) =
+        initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;
+    let genesis_snapshot = Snapshot::new(
+        running.clone(),
+        genesis_batch.sequence,
+        genesis_batch.batch_hash,
+    )?;
+    let persisted = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+
+    let selection_events = running.plan_cognition_request(person_id)?;
+    let (pending, selection_batch) = running.commit(
+        EventSequence::new(2),
+        genesis_batch.batch_hash,
+        selection_events,
+    )?;
+    let selection_snapshot = Snapshot::new(
+        pending,
+        selection_batch.sequence,
+        selection_batch.batch_hash,
+    )?;
+    store
+        .commit_transition(
+            persisted.cursor,
+            &selection_batch,
+            &selection_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+
+    let job_count: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM cognition_requests WHERE world_id = $1")
+            .bind(world_id.as_uuid())
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(job_count, 1);
+
+    let first = store
+        .claim_next_cognition_request("cognition-worker-a", 60)
+        .await?
+        .expect("committed selection is claimable");
+    assert_eq!(first.selection.world_id, world_id);
+    assert_eq!(first.selection.organism_id, person_id);
+    assert_eq!(first.source_sequence, selection_batch.sequence);
+    assert_eq!(first.source_event_id, selection_batch.events[0].event_id);
+    assert_eq!(first.source_event_index, selection_batch.events[0].index);
+    assert_eq!(first.claim_count, 1);
+    assert!(
+        store
+            .claim_next_cognition_request("cognition-worker-b", 60)
+            .await?
+            .is_none(),
+        "an active lease excludes a second worker"
+    );
+    assert!(
+        store
+            .reschedule_cognition_request("cognition-worker-b", &first, "wrong owner", 1)
+            .await
+            .is_err()
+    );
+    store
+        .reschedule_cognition_request("cognition-worker-a", &first, "temporary failure", 1)
+        .await?;
+
+    let selection_mutation = sqlx::query(
+        r#"
+        UPDATE cognition_requests
+        SET selection = jsonb_set(selection, '{memory_query}', '"forged"'::JSONB)
+        WHERE request_id = $1
+        "#,
+    )
+    .bind(first.selection.request_id)
+    .execute(&pool)
+    .await;
+    assert!(selection_mutation.is_err());
+    let deletion = sqlx::query("DELETE FROM cognition_requests WHERE request_id = $1")
+        .bind(first.selection.request_id)
+        .execute(&pool)
+        .await;
+    assert!(deletion.is_err());
+
+    let batches = store
+        .load_event_batches(world_id, EventSequence::ZERO)
+        .await?;
+    assert_eq!(batches, vec![genesis_batch, selection_batch]);
     Ok(())
 }

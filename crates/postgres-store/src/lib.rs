@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 
+mod cognition_jobs;
 mod memory_outbox;
 mod observer_findings;
 mod observer_organisms;

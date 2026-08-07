@@ -304,6 +304,63 @@ impl WorldStore for PostgresStore {
         .await
         .map_err(operation_error)?;
 
+        // Cognition selection is a causal event, so its worker request is created in
+        // this same transaction. No projection or runner-side effect can diverge from
+        // the canonical batch.
+        for record in &batch.events {
+            let DomainEvent::CognitionRequestSelected { selection } = &record.event else {
+                continue;
+            };
+            selection.validate().map_err(corrupt)?;
+            if selection.world_id != batch.world_id || selection.selected_at_tick != batch.tick {
+                return Err(StoreError::Conflict(
+                    "cognition selection does not match its source batch".to_owned(),
+                ));
+            }
+            let selection_json = serde_json::to_value(selection).map_err(corrupt)?;
+            let selection_checksum = selection.canonical_hash().map_err(corrupt)?;
+            sqlx::query(
+                r#"
+                INSERT INTO cognition_requests (
+                    request_id,
+                    world_id,
+                    agent_id,
+                    source_sequence,
+                    source_event_id,
+                    source_event_index,
+                    selected_tick,
+                    deadline_tick,
+                    ordinal,
+                    selection_schema_version,
+                    selection,
+                    selection_checksum
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                "#,
+            )
+            .bind(selection.request_id)
+            .bind(selection.world_id.as_uuid())
+            .bind(selection.organism_id.as_uuid())
+            .bind(sequence)
+            .bind(record.event_id.as_uuid())
+            .bind(i64::from(record.index))
+            .bind(to_i64(
+                selection.selected_at_tick.get(),
+                "cognition selected tick",
+            )?)
+            .bind(to_i64(
+                selection.deadline_tick.get(),
+                "cognition deadline tick",
+            )?)
+            .bind(i64::from(selection.ordinal))
+            .bind(i32::from(selection.schema_version))
+            .bind(selection_json)
+            .bind(selection_checksum.as_bytes().as_slice())
+            .execute(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+        }
+
         insert_snapshot(&mut transaction, snapshot, ruleset_version, snapshot_json).await?;
 
         let contains_started = batch

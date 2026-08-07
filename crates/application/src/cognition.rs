@@ -4,8 +4,8 @@ use std::collections::BTreeSet;
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    ActionValueState, BodilyNeedState, Digest, EntityId, EventSequence, PerceptionChannel,
-    PrimitiveActionKind, SimTick, WorldId,
+    ActionValueState, BodilyNeedState, CognitionRequestSelection, Digest, EntityId, EventId,
+    EventSequence, PerceptionChannel, PrimitiveActionKind, SimTick, WorldId,
 };
 pub use world_domain::{CognitionReading as CognitionInputReading, cognition_request_id};
 
@@ -641,6 +641,8 @@ pub enum CognitionContractError {
     InvalidActionValues,
     #[error("cognition memories are oversized, reordered, duplicated, or invalid")]
     InvalidMemories,
+    #[error("cognition job is invalid: {0}")]
+    InvalidJob(String),
     #[error("cognition receipt does not match its route and request")]
     InvalidReceipt,
     #[error("cognition route-ladder result is not a canonical prefix of its registry")]
@@ -670,6 +672,55 @@ pub trait CognitionModel: Send + Sync {
         route: &CognitionModelRoute,
         request: &ModelCognitionRequest,
     ) -> Result<ModelCognitionReceipt, CognitionModelError>;
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CognitionJobEntry {
+    pub selection: CognitionRequestSelection,
+    pub source_sequence: EventSequence,
+    pub source_event_id: EventId,
+    pub source_event_index: u32,
+    pub claim_count: u32,
+}
+
+impl CognitionJobEntry {
+    pub fn validate(&self) -> Result<(), CognitionContractError> {
+        self.selection
+            .validate()
+            .map_err(|error| CognitionContractError::InvalidJob(error.to_string()))?;
+        if self.source_sequence == EventSequence::ZERO
+            || self.source_event_id
+                != EventId::for_position(
+                    self.selection.world_id,
+                    self.source_sequence.get(),
+                    self.source_event_index,
+                )
+            || self.claim_count == 0
+        {
+            return Err(CognitionContractError::InvalidJob(
+                "source event identity or claim count is invalid".to_owned(),
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[async_trait]
+pub trait CognitionJobStore: Send + Sync {
+    async fn claim_next_cognition_request(
+        &self,
+        worker_id: &str,
+        claim_lease_seconds: u32,
+    ) -> Result<Option<CognitionJobEntry>, crate::StoreError>;
+
+    async fn reschedule_cognition_request(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        error: &str,
+        retry_after_seconds: u32,
+    ) -> Result<(), crate::StoreError>;
 }
 
 #[cfg(test)]

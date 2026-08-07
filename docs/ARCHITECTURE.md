@@ -132,7 +132,14 @@ world-total pending request, fixes a 60-tick simulated-time deadline, and reject
 runner-supplied prompt or altered input. Hindsight recall is re-admitted only after
 every returned document exactly matches a successfully delivered local memory-outbox
 row. Provider execution and canonical result consumption remain disabled until the
-immutable job and deadline-latch tables are complete.
+immutable job and deadline-latch ledger is exercised end to end.
+
+ADR 0053 supplies that durable ledger. Committing a canonical selection now inserts
+its immutable job in the same PostgreSQL transaction. Exclusive worker leases are
+wall-clock coordination only. The schema reserves append-only normalized recall,
+route-attempt prefixes, final results, integer-micro-dollar reservations, immutable
+deadline latches, and atomic latch consumption. Provider calls remain disabled until
+the stepwise store methods and canonical result event use those tables end to end.
 
 ## Irreversible facts and rebuildable views
 

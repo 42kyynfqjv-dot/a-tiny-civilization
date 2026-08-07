@@ -374,7 +374,10 @@ Ruleset 16 now canonically selects one world-total request from exact body-owned
 commits its fixed simulated-time deadline, and carries it through event schema 18 and
 snapshot/state-hash schema 19 under ADR 0052. Hindsight results are normalized and
 re-admitted only by exact comparison with accepted local memory deliveries. PostgreSQL
-job insertion, cost reservation, worker leases, deterministic deadline latching, and
+job insertion and exclusive request leases now commit against migration 0011 under
+ADR 0053. The same migration establishes immutable recall/result/latch tables, a
+database-enforced 16-call route prefix, and integer-micro-dollar accounts and paid
+reservations. Stepwise attempt/result methods, deterministic deadline latching, and
 canonical result consumption remain the active checkpoint; no current runner path
 invokes a model.
 
