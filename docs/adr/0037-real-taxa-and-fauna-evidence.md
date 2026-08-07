@@ -99,11 +99,14 @@ intentionally a limitation, not an excuse to invent identifier mappings.
 For the retained GBIF 2023-08-28 and iNaturalist v2.20 releases, this deterministic
 method links 47,353 species-range records; 4,641 species names and 6,838 non-species
 range records remain outside the bridge.
-`scripts/query-inaturalist-range-candidates.py` consumes a bounded set of those
-crosswalked species at an exact WGS84 E7 point. It uses the GeoPackage R-tree only to
-find potential features and then applies point-in-MULTIPOLYGON geometry, including
-holes and dateline unwrapping. The result is still only modeled-range evidence; a
-later ecological normalizer decides whether and how a species may populate a patch.
+`scripts/query-inaturalist-range-candidates.py` consumes either a bounded set of
+crosswalked species or every crosswalked Animalia range at one exact WGS84 E7 point.
+It uses the GeoPackage R-tree only to find potential features and then applies
+point-in-MULTIPOLYGON geometry, including holes and dateline unwrapping. The complete
+point mode is a deterministic way to discover the local candidate pool without an
+authored species list; it is deliberately constrained to one point so it cannot be
+mistaken for a global abundance model. The result is still only modeled-range evidence;
+a later ecological normalizer decides whether and how a species may populate a patch.
 
 `civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
 bridge. It preserves the original artifact hash while decoding EltonTraits' published

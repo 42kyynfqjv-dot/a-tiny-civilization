@@ -147,9 +147,14 @@ def main() -> int:
     parser.add_argument("--crosswalk", type=Path, required=True)
     parser.add_argument("--latitude-e7", type=int, required=True)
     parser.add_argument("--longitude-e7", type=int, required=True)
-    parser.add_argument(
-        "--gbif-taxon-key", action="append", required=True,
+    selection = parser.add_mutually_exclusive_group(required=True)
+    selection.add_argument(
+        "--gbif-taxon-key", action="append",
         help="a crosswalked GBIF species key; repeat to test a bounded candidate set",
+    )
+    selection.add_argument(
+        "--all-crosswalked-species", action="store_true",
+        help="evaluate every crosswalked Animalia range at this one point",
     )
     args = parser.parse_args()
     if not -900_000_000 <= args.latitude_e7 <= 900_000_000 or not -1_800_000_000 <= args.longitude_e7 <= 1_800_000_000:
@@ -157,12 +162,17 @@ def main() -> int:
     crosswalk = json.loads(args.crosswalk.read_text(encoding="utf-8"))
     if crosswalk.get("inaturalist_release") != VERSION or crosswalk.get("crosswalk_schema_version") != 1:
         raise ValueError("unsupported iNaturalist-to-GBIF crosswalk")
-    requested_keys = {str(int(value)) for value in args.gbif_taxon_key if int(value) > 0}
-    if not requested_keys:
-        parser.error("--gbif-taxon-key must contain at least one positive integer")
+    requested_keys = None
+    if args.gbif_taxon_key is not None:
+        try:
+            requested_keys = {str(int(value)) for value in args.gbif_taxon_key if int(value) > 0}
+        except ValueError as error:
+            parser.error(f"--gbif-taxon-key must contain positive integers: {error}")
+        if not requested_keys:
+            parser.error("--gbif-taxon-key must contain at least one positive integer")
     by_package = {}
     for record in crosswalk["records"]:
-        if record["gbif_taxon_key"] in requested_keys:
+        if requested_keys is None or record["gbif_taxon_key"] in requested_keys:
             by_package.setdefault(record["range_package"], {})[int(record["inaturalist_taxon_id"])] = record
     source = args.artifact_root.resolve(strict=True) / PREFIX
     longitude = args.longitude_e7 / 10_000_000
@@ -180,7 +190,10 @@ def main() -> int:
         "inaturalist_release": VERSION,
         "latitude_e7": args.latitude_e7,
         "longitude_e7": args.longitude_e7,
-        "requested_gbif_taxon_keys": sorted(requested_keys, key=int),
+        "selection": "all_crosswalked_species" if requested_keys is None else "bounded_gbif_taxon_keys",
+        "requested_gbif_taxon_keys": (
+            [] if requested_keys is None else sorted(requested_keys, key=int)
+        ),
         "modeled_range_candidate_count": len(matches),
         "candidates": matches,
     }, separators=(",", ":"), ensure_ascii=True))
