@@ -3,6 +3,7 @@
 mod boolean_field;
 mod fauna;
 mod fauna_evidence;
+mod fauna_ranges;
 mod gbif_catalog;
 mod land_cover;
 mod provisional;
@@ -26,6 +27,11 @@ pub use fauna_evidence::{
     FaunaAssumptionBasis, FaunaEvidenceBasis, FaunaEvidenceLicense, FaunaEvidenceManifest,
     FaunaEvidenceManifestError, FaunaEvidenceSource, FaunaEvidenceSourceManifest,
     FaunaEvidenceStatus, FaunaTraitAssumption, ObservedFaunaTrait, ScaledFaunaTraitValue,
+};
+
+pub use fauna_ranges::{
+    FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
+    FaunaRangeCandidate, FaunaRangeCandidateSet, FaunaRangeCandidateSetError, FaunaRangeQueryPoint,
 };
 
 pub use gbif_catalog::{

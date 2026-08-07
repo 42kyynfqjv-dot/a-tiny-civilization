@@ -24,6 +24,7 @@ python3 ./scripts/acquire-gbif-taxonomy.py >/dev/null
 python3 ./scripts/acquire-fauna-traits.py >/dev/null
 python3 ./scripts/verify-commercial-occurrence-filter.py
 python3 ./scripts/verify-inaturalist-range-map-tools.py
+python3 -m py_compile ./scripts/query-inaturalist-range-candidates.py
 python3 ./scripts/acquire-jpl-de441.py >/dev/null
 python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/check-boundaries.sh

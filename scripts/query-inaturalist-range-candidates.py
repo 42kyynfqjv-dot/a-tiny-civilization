@@ -11,10 +11,12 @@ this point*, never measured presence, abundance, or a canonical spawning decisio
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 import sqlite3
 import struct
+import sys
 
 
 VERSION = "2.20"
@@ -141,6 +143,27 @@ def candidates_in_package(path: Path, longitude: float, latitude: float, wanted_
         connection.close()
 
 
+def point_identifier(latitude_e7: int, longitude_e7: int) -> str:
+    latitude = f"n{latitude_e7}" if latitude_e7 >= 0 else f"s{-latitude_e7}"
+    longitude = f"e{longitude_e7}" if longitude_e7 >= 0 else f"w{-longitude_e7}"
+    return f"inaturalist-v2-20-point-{latitude}-{longitude}"
+
+
+def candidate_record(record: dict[str, str]) -> dict[str, object]:
+    key = record["gbif_taxon_key"]
+    return {
+        "species": {
+            "catalog": "gbif",
+            "identifier": key,
+            "scientific_name": record["scientific_name"],
+            "source_url": f"https://www.gbif.org/species/{key}",
+        },
+        "inaturalist_taxon_id": int(record["inaturalist_taxon_id"]),
+        "range_package": record["range_package"],
+        "range_feature_fid": int(record["range_feature_fid"]),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
@@ -159,7 +182,8 @@ def main() -> int:
     args = parser.parse_args()
     if not -900_000_000 <= args.latitude_e7 <= 900_000_000 or not -1_800_000_000 <= args.longitude_e7 <= 1_800_000_000:
         parser.error("coordinates must be WGS84 E7 bounds")
-    crosswalk = json.loads(args.crosswalk.read_text(encoding="utf-8"))
+    crosswalk_bytes = args.crosswalk.read_bytes()
+    crosswalk = json.loads(crosswalk_bytes)
     if crosswalk.get("inaturalist_release") != VERSION or crosswalk.get("crosswalk_schema_version") != 1:
         raise ValueError("unsupported iNaturalist-to-GBIF crosswalk")
     requested_keys = None
@@ -185,18 +209,19 @@ def main() -> int:
             if record is not None and int(record["range_feature_fid"]) == fid and contains(geopackage_multipolygon(geometry), longitude, latitude):
                 matches.append(record)
     matches.sort(key=lambda record: int(record["gbif_taxon_key"]))
-    print(json.dumps({
-        "query_schema_version": 1,
+    sys.stdout.write(json.dumps({
+        "candidate_set_schema_version": 1,
+        "candidate_set_id": point_identifier(args.latitude_e7, args.longitude_e7),
         "inaturalist_release": VERSION,
-        "latitude_e7": args.latitude_e7,
-        "longitude_e7": args.longitude_e7,
-        "selection": "all_crosswalked_species" if requested_keys is None else "bounded_gbif_taxon_keys",
-        "requested_gbif_taxon_keys": (
-            [] if requested_keys is None else sorted(requested_keys, key=int)
-        ),
-        "modeled_range_candidate_count": len(matches),
-        "candidates": matches,
-    }, separators=(",", ":"), ensure_ascii=True))
+        "query_point": {
+            "latitude_e7": args.latitude_e7,
+            "longitude_e7": args.longitude_e7,
+        },
+        "source_crosswalk_digest": hashlib.sha256(crosswalk_bytes).hexdigest(),
+        "source_gbif_catalog_digest": crosswalk["gbif_catalog_sha256"],
+        "source_inaturalist_taxonomy_digest": crosswalk["inaturalist_taxonomy_sha256"],
+        "candidates": [candidate_record(record) for record in matches],
+    }, separators=(",", ":"), ensure_ascii=False))
     return 0
 
 

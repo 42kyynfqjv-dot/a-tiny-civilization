@@ -21,8 +21,8 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, LandCoverClassCount, LandCoverEvidenceCell,
-    LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, FaunaRangeCandidateSet, LandCoverClassCount,
+    LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
@@ -101,6 +101,11 @@ enum SourceCommand {
 
 #[derive(Debug, Subcommand)]
 enum InspectCommand {
+    /// Validate an exact point-scoped iNaturalist modeled-range candidate set.
+    FaunaRangeCandidateSet {
+        #[arg(long)]
+        input: PathBuf,
+    },
     /// Compare retained fauna-source names against the frozen accepted GBIF catalog.
     /// This only reports exact-name matches; it never guesses synonym mappings.
     FaunaTraitTaxa {
@@ -613,6 +618,9 @@ async fn main() -> Result<()> {
             } => fetch_source(&manifest, &artifact_root).await,
         },
         Command::Inspect { command } => match command {
+            InspectCommand::FaunaRangeCandidateSet { input } => {
+                inspect_fauna_range_candidate_set(&input)
+            }
             InspectCommand::NaturalEarthLand {
                 source_snapshot,
                 artifact_root,
@@ -1418,6 +1426,26 @@ struct FaunaTraitTaxaInspection {
     catalog: FaunaTaxonomyCatalogInspection,
     sources: Vec<FaunaTraitSourceTaxaInspection>,
     policy: &'static str,
+}
+
+fn inspect_fauna_range_candidate_set(input: &Path) -> Result<()> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("read fauna range candidate set {}", input.display()))?;
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(&bytes)
+        .with_context(|| format!("validate fauna range candidate set {}", input.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "candidate_set_id": candidates.candidate_set_id,
+            "candidate_count": candidates.candidates.len(),
+            "content_hash": Digest::sha256(&bytes),
+            "inaturalist_release": candidates.inaturalist_release,
+            "latitude_e7": candidates.query_point.latitude_e7,
+            "longitude_e7": candidates.query_point.longitude_e7,
+            "status": "modeled-range-candidates-not-population-or-abundance",
+        }))?
+    );
+    Ok(())
 }
 
 #[derive(Debug, Serialize)]

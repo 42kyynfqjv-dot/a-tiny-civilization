@@ -107,6 +107,11 @@ point mode is a deterministic way to discover the local candidate pool without a
 authored species list; it is deliberately constrained to one point so it cannot be
 mistaken for a global abundance model. The result is still only modeled-range evidence;
 a later ecological normalizer decides whether and how a species may populate a patch.
+The query emits a canonical `FaunaRangeCandidateSet`: it pins the exact crosswalk,
+GBIF catalog, and iNaturalist taxonomy digests alongside each source feature identity.
+The validator rejects a changed release, malformed point, unordered taxon keys, or
+noncanonical bytes. It intentionally has no population count, sex assignment, life
+stage, trait claim, or organism-creation instruction.
 
 `civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
 bridge. It preserves the original artifact hash while decoding EltonTraits' published
