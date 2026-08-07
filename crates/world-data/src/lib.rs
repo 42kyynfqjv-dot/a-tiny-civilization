@@ -1,14 +1,21 @@
 //! Deterministic, provenance-complete scientific input bundles.
 
 mod boolean_field;
+mod fauna;
 mod land_cover;
 mod scalar_field;
 mod seasonal_field;
+mod soil;
 mod terrain;
 
 pub use boolean_field::{
     BooleanFieldCell, BooleanFieldTileError, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_BOOLEAN_FIELD_TILE_SCHEMA_VERSION, PackedBooleanFieldTile,
+};
+
+pub use fauna::{
+    FAUNA_CATALOG_MEDIA_TYPE, FAUNA_CATALOG_SCHEMA_VERSION, FaunaCatalog, FaunaCatalogEntry,
+    FaunaCatalogError, FaunaIdentityPolicy, FaunaIdentityTier,
 };
 
 pub use land_cover::{
@@ -27,6 +34,14 @@ pub use seasonal_field::{
     MONTHS_PER_NORMAL_YEAR, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SEASONAL_FIELD_TILE_SCHEMA_VERSION, PackedSeasonalScalarFieldTile,
     SeasonalFieldTileError, SeasonalScalarFieldCell, SeasonalSourceArtifact,
+};
+
+pub use soil::{
+    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_SCHEMA_VERSION,
+    PackedSoilGridsTopsoilTile, SOILGRIDS_NO_DATA_VALUE, SOILGRIDS_QUANTILES,
+    SOILGRIDS_TOPSOIL_PROPERTIES, SoilDepth, SoilGridsProperty, SoilGridsPropertySource,
+    SoilGridsQuantile, SoilGridsQuantileValues, SoilGridsTopsoilCell, SoilGridsTopsoilTileError,
+    soilgrids_source_set_digest,
 };
 
 pub use terrain::{

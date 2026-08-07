@@ -1,9 +1,11 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{BTreeMap, HashMap, HashSet, VecDeque},
     ffi::OsStr,
     fs::{self, File, OpenOptions},
-    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
+    io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
+    process::{Command as ProcessCommand, Stdio},
+    thread,
     time::{Duration, Instant},
 };
 
@@ -11,7 +13,7 @@ use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use netcdf_reader::{NcAttrValue, NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
 use rayon::prelude::*;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 use tiff::decoder::{
     ChunkType as TiffChunkType, Decoder as TiffDecoder, DecodingResult as TiffDecodingResult,
@@ -21,19 +23,24 @@ use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, LandCoverClassCount, LandCoverEvidenceCell,
     LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
-    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarTerrainTile,
-    ScalarTerrainCell, SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference,
-    TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
+    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
+    PackedScalarFieldTile, PackedScalarTerrainTile, PackedSeasonalScalarFieldTile,
+    PackedSoilGridsTopsoilTile, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
+    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
+    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
+    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
+    WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
-    Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId,
-    S2FaceUv, WorldConfiguration, decode_s2_face_ij, route_geographic_to_s2,
-    route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray,
-    s2_ray_to_geographic_e7,
+    CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
+    GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId, S2FaceUv, TdbSecondsSinceJ2000,
+    WorldConfiguration, decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
+    s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -304,6 +311,17 @@ enum InspectCommand {
         #[arg(long)]
         input_directory: PathBuf,
     },
+    /// Verify every artifact in a provisional SoilGrids topsoil release.
+    SoilgridsTopsoilLayer {
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value = "soilgrids-topsoil")]
+        layer_id: String,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+    },
     /// Inspect the frozen GBIF Backbone archive inventory before taxon normalization.
     GbifBackbone {
         #[arg(long)]
@@ -318,6 +336,28 @@ enum InspectCommand {
     JrcSurfaceWaterOccurrence {
         #[arg(long)]
         input_directory: PathBuf,
+    },
+    /// Verify every artifact in a provisional JRC occurrence source-code release.
+    JrcSurfaceWaterOccurrenceLayer {
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value = "observed-water-occurrence-source-code")]
+        layer_id: String,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+    },
+    /// Verify every artifact in a provisional CHELSA monthly-temperature release.
+    ChelsaAnnualTemperatureLayer {
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value = "near-surface-air-temperature-normal")]
+        layer_id: String,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
     },
     /// Inspect both retained JPL DE441 DAF/SPK segment directories.
     JplDe441 {
@@ -464,6 +504,24 @@ enum DeriveCommand {
         #[arg(long, default_value_t = 32)]
         source_chunk_cache: usize,
     },
+    /// Centre-sample the retained SoilGrids topsoil overview set into global L10 tiles.
+    SoilgridsTopsoilLayer {
+        /// Stable hash inventory emitted by the SoilGrids acquisition helper.
+        #[arg(long)]
+        source_inventory: PathBuf,
+        /// Root containing inventory artifact paths, normally `data/source-cache`.
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long, default_value = "soilgrids-topsoil")]
+        layer_id: String,
+        /// New release directory. An interrupted hidden staging tree is resumable.
+        #[arg(long)]
+        output_directory: PathBuf,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+    },
     /// Stream the frozen GBIF core into a compact catalog of accepted Animalia species.
     GbifAnimaliaCatalog {
         #[arg(long)]
@@ -471,6 +529,45 @@ enum DeriveCommand {
         /// New output path. Existing artifacts are never replaced.
         #[arg(long)]
         output: PathBuf,
+    },
+    /// Centre-sample retained JRC occurrence codes into a provisional global L10 field.
+    JrcSurfaceWaterOccurrenceLayer {
+        /// Stable hash inventory emitted by the JRC acquisition helper.
+        #[arg(long)]
+        source_inventory: PathBuf,
+        /// Root containing inventory artifact paths, normally `data/source-cache`.
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long, default_value = "observed-water-occurrence-source-code")]
+        layer_id: String,
+        /// New release directory. An interrupted hidden staging tree is resumable.
+        #[arg(long)]
+        output_directory: PathBuf,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        /// Number of parsed source TIFF strip tables retained in memory.
+        #[arg(long, default_value_t = 16)]
+        source_raster_cache: usize,
+    },
+    /// Centre-sample all twelve retained CHELSA temperature normals into global L10 fields.
+    ChelsaAnnualTemperatureLayer {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long, default_value = "near-surface-air-temperature-normal")]
+        layer_id: String,
+        #[arg(long)]
+        output_directory: PathBuf,
+        #[arg(long, default_value_t = 6)]
+        container_s2_level: u8,
+        #[arg(long, default_value_t = 10)]
+        target_s2_level: u8,
+        /// Number of complete 12-month 500x500 source chunks retained in memory.
+        #[arg(long, default_value_t = 8)]
+        source_chunk_cache: usize,
     },
 }
 
@@ -648,11 +745,44 @@ async fn main() -> Result<()> {
             InspectCommand::SoilgridsTopsoil { input_directory } => {
                 inspect_soilgrids_topsoil(&input_directory)
             }
+            InspectCommand::SoilgridsTopsoilLayer {
+                input_directory,
+                layer_id,
+                container_s2_level,
+                target_s2_level,
+            } => inspect_soilgrids_topsoil_layer(
+                &input_directory,
+                &layer_id,
+                container_s2_level,
+                target_s2_level,
+            ),
             InspectCommand::GbifBackbone { archive } => inspect_gbif_backbone(&archive),
             InspectCommand::GbifAnimaliaCatalog { input } => inspect_gbif_animalia_catalog(&input),
             InspectCommand::JrcSurfaceWaterOccurrence { input_directory } => {
                 inspect_jrc_surface_water_occurrence(&input_directory)
             }
+            InspectCommand::JrcSurfaceWaterOccurrenceLayer {
+                input_directory,
+                layer_id,
+                container_s2_level,
+                target_s2_level,
+            } => inspect_jrc_surface_water_occurrence_layer(
+                &input_directory,
+                &layer_id,
+                container_s2_level,
+                target_s2_level,
+            ),
+            InspectCommand::ChelsaAnnualTemperatureLayer {
+                input_directory,
+                layer_id,
+                container_s2_level,
+                target_s2_level,
+            } => inspect_chelsa_annual_temperature_layer(
+                &input_directory,
+                &layer_id,
+                container_s2_level,
+                target_s2_level,
+            ),
             InspectCommand::JplDe441 { input_directory } => inspect_jpl_de441(&input_directory),
             InspectCommand::JplDe441Epoch {
                 input_directory,
@@ -755,9 +885,58 @@ async fn main() -> Result<()> {
                 points_per_axis,
                 source_chunk_cache,
             }),
+            DeriveCommand::SoilgridsTopsoilLayer {
+                source_inventory,
+                artifact_root,
+                layer_id,
+                output_directory,
+                container_s2_level,
+                target_s2_level,
+            } => derive_soilgrids_topsoil_layer(
+                &source_inventory,
+                &artifact_root,
+                &layer_id,
+                &output_directory,
+                container_s2_level,
+                target_s2_level,
+            ),
             DeriveCommand::GbifAnimaliaCatalog { archive, output } => {
                 derive_gbif_animalia_catalog(&archive, &output)
             }
+            DeriveCommand::JrcSurfaceWaterOccurrenceLayer {
+                source_inventory,
+                artifact_root,
+                layer_id,
+                output_directory,
+                container_s2_level,
+                target_s2_level,
+                source_raster_cache,
+            } => derive_jrc_surface_water_occurrence_layer(
+                &source_inventory,
+                &artifact_root,
+                &layer_id,
+                &output_directory,
+                container_s2_level,
+                target_s2_level,
+                source_raster_cache,
+            ),
+            DeriveCommand::ChelsaAnnualTemperatureLayer {
+                source_snapshot,
+                artifact_root,
+                layer_id,
+                output_directory,
+                container_s2_level,
+                target_s2_level,
+                source_chunk_cache,
+            } => derive_chelsa_annual_temperature_layer(
+                &source_snapshot,
+                &artifact_root,
+                &layer_id,
+                &output_directory,
+                container_s2_level,
+                target_s2_level,
+                source_chunk_cache,
+            ),
         },
     }
 }
@@ -1462,6 +1641,764 @@ fn undo_horizontal_u8_predictor(values: &mut [u8]) {
     }
 }
 
+const JRC_OCCURRENCE_INVENTORY_SCHEMA_VERSION: u16 = 1;
+const JRC_OCCURRENCE_RELEASE: &str = "VER1-5";
+const JRC_OCCURRENCE_VERSION: &str = "v1_5_2024";
+const JRC_OCCURRENCE_WIDTH: u32 = 40_000;
+const JRC_OCCURRENCE_HEIGHT: u32 = 40_000;
+const JRC_OCCURRENCE_PIXEL_E7: i32 = 2_500;
+const JRC_OCCURRENCE_TILE_E7: i32 = 100_000_000;
+const JRC_OCCURRENCE_MIN_LATITUDE_E7: i32 = -600_000_000;
+const JRC_OCCURRENCE_MAX_LATITUDE_E7: i32 = 800_000_000;
+
+#[derive(Debug, Deserialize)]
+struct JrcOccurrenceInventory {
+    inventory_schema_version: u16,
+    release: String,
+    version: String,
+    artifact_count: usize,
+    byte_length: u64,
+    artifacts: Vec<JrcOccurrenceInventoryArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct JrcOccurrenceInventoryArtifact {
+    artifact_path: String,
+    byte_length: u64,
+    content_hash: Digest,
+    download_url: String,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd)]
+struct JrcOccurrenceTileKey {
+    west_degrees: i32,
+    north_degrees: i32,
+}
+
+impl JrcOccurrenceTileKey {
+    fn filename(self) -> String {
+        format!(
+            "occurrence_{}_{}_v1_5_2024.tif",
+            jrc_coordinate_code(self.west_degrees, 'W', 'E'),
+            jrc_coordinate_code(self.north_degrees, 'S', 'N')
+        )
+    }
+
+    fn relative_path(self) -> String {
+        format!(
+            "jrc-global-surface-water-v1-5-2024/occurrence/{}",
+            self.filename()
+        )
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct JrcOccurrenceSampleAddress {
+    tile: JrcOccurrenceTileKey,
+    row: u32,
+    column: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, Ord, PartialEq, PartialOrd)]
+struct JrcOccurrenceSampleRequest {
+    address: JrcOccurrenceSampleAddress,
+    s2_cell_id: S2CellId,
+}
+
+/// Resolve a coordinate to the exact retained JRC source pixel containing it.
+///
+/// The official mosaic ends at 80 N and 60 S. A coordinate outside that footprint
+/// returns `None`; callers retain that absence explicitly as -1 instead of silently
+/// extending observed water evidence into polar gaps.
+fn jrc_occurrence_sample_address(
+    coordinate: GeographicCoordinateE7,
+) -> Option<JrcOccurrenceSampleAddress> {
+    let latitude_e7 = coordinate.latitude_e7();
+    if latitude_e7 <= JRC_OCCURRENCE_MIN_LATITUDE_E7 || latitude_e7 > JRC_OCCURRENCE_MAX_LATITUDE_E7
+    {
+        return None;
+    }
+    let longitude_e7 = coordinate.longitude_e7();
+    let west_band = longitude_e7.div_euclid(JRC_OCCURRENCE_TILE_E7);
+    let west_e7 = west_band * JRC_OCCURRENCE_TILE_E7;
+    let latitude_band = latitude_e7.div_euclid(JRC_OCCURRENCE_TILE_E7);
+    let north_band = latitude_band + i32::from(latitude_e7.rem_euclid(JRC_OCCURRENCE_TILE_E7) != 0);
+    let north_e7 = north_band * JRC_OCCURRENCE_TILE_E7;
+    let row = u32::try_from((north_e7 - latitude_e7) / JRC_OCCURRENCE_PIXEL_E7).ok()?;
+    let column = u32::try_from((longitude_e7 - west_e7) / JRC_OCCURRENCE_PIXEL_E7).ok()?;
+    if row >= JRC_OCCURRENCE_HEIGHT || column >= JRC_OCCURRENCE_WIDTH {
+        return None;
+    }
+    Some(JrcOccurrenceSampleAddress {
+        tile: JrcOccurrenceTileKey {
+            west_degrees: west_e7 / 10_000_000,
+            north_degrees: north_e7 / 10_000_000,
+        },
+        row,
+        column,
+    })
+}
+
+struct JrcOccurrenceSourceSet {
+    inventory_digest: Digest,
+    artifact_set_digest: Digest,
+    artifacts: BTreeMap<JrcOccurrenceTileKey, JrcOccurrenceInventoryArtifact>,
+}
+
+fn load_verified_jrc_occurrence_source_set(
+    inventory_path: &Path,
+    artifact_root: &Path,
+) -> Result<JrcOccurrenceSourceSet> {
+    let inventory_bytes = fs::read(inventory_path)
+        .with_context(|| format!("read JRC source inventory {}", inventory_path.display()))?;
+    let inventory: JrcOccurrenceInventory = serde_json::from_slice(&inventory_bytes)
+        .with_context(|| format!("parse JRC source inventory {}", inventory_path.display()))?;
+    if inventory.inventory_schema_version != JRC_OCCURRENCE_INVENTORY_SCHEMA_VERSION
+        || inventory.release != JRC_OCCURRENCE_RELEASE
+        || inventory.version != JRC_OCCURRENCE_VERSION
+    {
+        bail!("JRC occurrence inventory has an unsupported release contract");
+    }
+    let expected_count = JRC_OCCURRENCE_LONGITUDES.len()
+        * usize::try_from(*JRC_OCCURRENCE_LATITUDES.end() - *JRC_OCCURRENCE_LATITUDES.start() + 1)?;
+    if inventory.artifact_count != expected_count || inventory.artifacts.len() != expected_count {
+        bail!("JRC occurrence inventory does not contain the complete 504-tile mosaic");
+    }
+
+    let mut artifacts = BTreeMap::new();
+    let mut actual_total = 0_u64;
+    let mut verified_artifacts = 0_usize;
+    let mut artifact_set_hasher = Sha256::new();
+    artifact_set_hasher.update(b"a-tiny-civilization:jrc-occurrence-artifact-set:v1\0");
+    for north_band in JRC_OCCURRENCE_LATITUDES.rev() {
+        for west_band in JRC_OCCURRENCE_LONGITUDES.clone() {
+            let key = JrcOccurrenceTileKey {
+                west_degrees: west_band * 10,
+                north_degrees: north_band * 10,
+            };
+            let expected_path = key.relative_path();
+            let artifact = inventory
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_path == expected_path)
+                .with_context(|| format!("JRC source inventory is missing {expected_path}"))?
+                .clone();
+            if artifact
+                .artifact_path
+                .split('/')
+                .any(|component| component.is_empty() || component == "." || component == "..")
+            {
+                bail!("JRC source inventory contains an unsafe artifact path");
+            }
+            if !artifact.download_url.starts_with(
+                "https://storage.googleapis.com/water-world/download2024/VER1-5/occurrence/",
+            ) || !artifact.download_url.ends_with(&key.filename())
+            {
+                bail!("JRC source inventory artifact URL does not match its release path");
+            }
+            let path = artifact_root.join(&artifact.artifact_path);
+            let (actual_length, actual_hash) = digest_file(&path)
+                .with_context(|| format!("verify retained JRC tile {}", path.display()))?;
+            if actual_length != artifact.byte_length || actual_hash != artifact.content_hash {
+                bail!(
+                    "retained JRC tile differs from its hash inventory: {}",
+                    path.display()
+                );
+            }
+            actual_total = actual_total
+                .checked_add(actual_length)
+                .context("JRC occurrence source byte total overflow")?;
+            artifact_set_hasher.update(u64::try_from(artifact.artifact_path.len())?.to_le_bytes());
+            artifact_set_hasher.update(artifact.artifact_path.as_bytes());
+            artifact_set_hasher.update(actual_length.to_le_bytes());
+            artifact_set_hasher.update(actual_hash.as_bytes());
+            if artifacts.insert(key, artifact).is_some() {
+                bail!("JRC occurrence source inventory repeats a source tile");
+            }
+            verified_artifacts += 1;
+            if verified_artifacts.is_multiple_of(32) || verified_artifacts == expected_count {
+                eprintln!(
+                    "JRC occurrence source verification progress: {verified_artifacts}/{expected_count} artifacts"
+                );
+            }
+        }
+    }
+    if actual_total != inventory.byte_length {
+        bail!("JRC occurrence source inventory byte total is inconsistent");
+    }
+    Ok(JrcOccurrenceSourceSet {
+        inventory_digest: Digest::sha256(&inventory_bytes),
+        artifact_set_digest: Digest::from_bytes(artifact_set_hasher.finalize().into()),
+        artifacts,
+    })
+}
+
+struct JrcOccurrenceRaster {
+    file: File,
+    byte_length: u64,
+    strip_offsets: Vec<u64>,
+    strip_byte_counts: Vec<u64>,
+    predictor_code: u16,
+}
+
+impl JrcOccurrenceRaster {
+    fn open(path: &Path, expected_length: u64) -> Result<Self> {
+        let mut decoder = TiffDecoder::new(
+            File::open(path).with_context(|| format!("open JRC raster {}", path.display()))?,
+        )
+        .with_context(|| format!("parse JRC raster {}", path.display()))?;
+        let (width, height) = decoder.dimensions()?;
+        let bits_per_sample = decoder.get_tag_u16_vec(TiffTag::BitsPerSample)?;
+        let compression_code = decoder.get_tag_unsigned::<u16>(TiffTag::Compression)?;
+        let predictor_code = decoder
+            .get_tag_unsigned::<u16>(TiffTag::Predictor)
+            .unwrap_or(1);
+        if width != JRC_OCCURRENCE_WIDTH
+            || height != JRC_OCCURRENCE_HEIGHT
+            || bits_per_sample != [8]
+            || compression_code != 5
+            || decoder.get_chunk_type() != TiffChunkType::Strip
+            || decoder.chunk_dimensions() != (JRC_OCCURRENCE_WIDTH, 1)
+        {
+            bail!("JRC occurrence raster has an unsupported TIFF packing profile");
+        }
+        let strip_offsets = decoder.get_tag_u64_vec(TiffTag::StripOffsets)?;
+        let strip_byte_counts = decoder.get_tag_u64_vec(TiffTag::StripByteCounts)?;
+        if strip_offsets.len() != usize::try_from(JRC_OCCURRENCE_HEIGHT)?
+            || strip_byte_counts.len() != strip_offsets.len()
+        {
+            bail!("JRC occurrence raster has an incomplete strip table");
+        }
+        drop(decoder);
+        Ok(Self {
+            file: File::open(path)?,
+            byte_length: expected_length,
+            strip_offsets,
+            strip_byte_counts,
+            predictor_code,
+        })
+    }
+
+    fn decode_row(&mut self, row: u32) -> Result<Vec<u8>> {
+        let index = usize::try_from(row)?;
+        let offset = *self
+            .strip_offsets
+            .get(index)
+            .context("JRC occurrence row exceeds strip table")?;
+        let compressed_length = *self
+            .strip_byte_counts
+            .get(index)
+            .context("JRC occurrence row has no compressed length")?;
+        if offset
+            .checked_add(compressed_length)
+            .is_none_or(|end| end > self.byte_length)
+        {
+            bail!("JRC occurrence strip lies outside its TIFF");
+        }
+        self.file.seek(SeekFrom::Start(offset))?;
+        let mut compressed = vec![0_u8; usize::try_from(compressed_length)?];
+        self.file.read_exact(&mut compressed)?;
+        let mut values = LzwDecoder::with_tiff_size_switch(LzwBitOrder::Msb, 8)
+            .decode(&compressed)
+            .context("decode JRC occurrence LZW row")?;
+        if values.len() != usize::try_from(JRC_OCCURRENCE_WIDTH)? {
+            bail!("JRC occurrence row decoded to an unexpected width");
+        }
+        match self.predictor_code {
+            1 => {}
+            2 => undo_horizontal_u8_predictor(&mut values),
+            other => bail!("JRC occurrence raster uses unsupported predictor {other}"),
+        }
+        Ok(values)
+    }
+}
+
+struct JrcOccurrenceMosaic {
+    artifact_root: PathBuf,
+    artifacts: BTreeMap<JrcOccurrenceTileKey, JrcOccurrenceInventoryArtifact>,
+    raster_cache_capacity: usize,
+    raster_cache: VecDeque<(JrcOccurrenceTileKey, JrcOccurrenceRaster)>,
+}
+
+impl JrcOccurrenceMosaic {
+    fn new(
+        artifact_root: &Path,
+        artifacts: BTreeMap<JrcOccurrenceTileKey, JrcOccurrenceInventoryArtifact>,
+        raster_cache_capacity: usize,
+    ) -> Result<Self> {
+        if !(1..=128).contains(&raster_cache_capacity) {
+            bail!("JRC source raster cache must contain between 1 and 128 rasters");
+        }
+        Ok(Self {
+            artifact_root: artifact_root.to_owned(),
+            artifacts,
+            raster_cache_capacity,
+            raster_cache: VecDeque::new(),
+        })
+    }
+
+    fn decode_row(&mut self, key: JrcOccurrenceTileKey, row: u32) -> Result<Vec<u8>> {
+        let position = self
+            .raster_cache
+            .iter()
+            .position(|(candidate, _)| *candidate == key);
+        let mut cached = if let Some(position) = position {
+            self.raster_cache
+                .remove(position)
+                .context("JRC raster cache position disappeared")?
+        } else {
+            let artifact = self.artifacts.get(&key).with_context(|| {
+                format!("JRC occurrence source tile is absent: {}", key.filename())
+            })?;
+            let path = self.artifact_root.join(&artifact.artifact_path);
+            (
+                key,
+                JrcOccurrenceRaster::open(&path, artifact.byte_length)
+                    .with_context(|| format!("open retained JRC source tile {}", path.display()))?,
+            )
+        };
+        let values = cached.1.decode_row(row)?;
+        self.raster_cache.push_back(cached);
+        while self.raster_cache.len() > self.raster_cache_capacity {
+            self.raster_cache.pop_front();
+        }
+        Ok(values)
+    }
+}
+
+/// Resolve the entire target grid by source row, so TIFF/LZW work is proportional
+/// to distinct observed rows rather than to S2 container boundaries.
+fn sample_global_jrc_occurrence(
+    mosaic: &mut JrcOccurrenceMosaic,
+    target_s2_level: u8,
+) -> Result<HashMap<S2CellId, i64>> {
+    let targets = global_s2_cells_at_level(target_s2_level)?;
+    let mut values = HashMap::with_capacity(targets.len());
+    let mut requests = Vec::with_capacity(targets.len());
+    for s2_cell_id in targets {
+        let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(s2_face_ij_center_uv(
+            decode_s2_face_ij(s2_cell_id),
+        )?)?)?;
+        if let Some(address) = jrc_occurrence_sample_address(coordinate) {
+            requests.push(JrcOccurrenceSampleRequest {
+                address,
+                s2_cell_id,
+            });
+        } else if values.insert(s2_cell_id, -1).is_some() {
+            bail!("global JRC target enumeration repeated an S2 cell");
+        }
+    }
+    requests.sort_unstable();
+    let mut offset = 0_usize;
+    let mut decoded_rows = 0_u64;
+    let mut completed_tiles = 0_u64;
+    let mut previous_tile = None;
+    while offset < requests.len() {
+        let first = requests[offset];
+        let mut end = offset + 1;
+        while end < requests.len()
+            && requests[end].address.tile == first.address.tile
+            && requests[end].address.row == first.address.row
+        {
+            end += 1;
+        }
+        if previous_tile.is_some_and(|tile| tile != first.address.tile) {
+            completed_tiles += 1;
+            if completed_tiles.is_multiple_of(36) {
+                eprintln!(
+                    "JRC occurrence grouped sampling progress: {completed_tiles}/504 source tiles"
+                );
+            }
+        }
+        previous_tile = Some(first.address.tile);
+        let source_row = mosaic.decode_row(first.address.tile, first.address.row)?;
+        decoded_rows = decoded_rows
+            .checked_add(1)
+            .context("JRC decoded source-row count overflow")?;
+        for request in &requests[offset..end] {
+            let value = i64::from(
+                *source_row
+                    .get(usize::try_from(request.address.column)?)
+                    .context("JRC grouped sample exceeds source row")?,
+            );
+            if values.insert(request.s2_cell_id, value).is_some() {
+                bail!("global JRC sampling repeated an S2 target cell");
+            }
+        }
+        offset = end;
+    }
+    if previous_tile.is_some() {
+        completed_tiles += 1;
+    }
+    let expected = 6_usize
+        .checked_mul(
+            4_usize
+                .checked_pow(u32::from(target_s2_level))
+                .context("global JRC target-count exponent overflow")?,
+        )
+        .context("global JRC target count overflow")?;
+    if completed_tiles != 504 || values.len() != expected {
+        bail!(
+            "global JRC grouped sampling covered {completed_tiles} source tiles and {} of {expected} targets",
+            values.len()
+        );
+    }
+    eprintln!(
+        "JRC occurrence grouped sampling complete: {decoded_rows} distinct source rows for {expected} targets"
+    );
+    Ok(values)
+}
+
+#[derive(Debug, Serialize)]
+struct JrcOccurrenceLayerDerivation {
+    derivation_schema_version: u16,
+    status: &'static str,
+    source_inventory_digest: Digest,
+    source_artifact_set_digest: Digest,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    sample_policy: &'static str,
+    missing_source_code: i64,
+    target_cells: u64,
+    output_directory: String,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+}
+
+fn derive_jrc_surface_water_occurrence_layer(
+    source_inventory: &Path,
+    artifact_root: &Path,
+    layer_id: &str,
+    output_directory: &Path,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    source_raster_cache: usize,
+) -> Result<()> {
+    if container_s2_level != 6 || target_s2_level != 10 {
+        bail!("provisional JRC occurrence layer v1 requires L6 containers and L10 targets");
+    }
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!("JRC occurrence output directory already exists");
+    }
+    let source_set = load_verified_jrc_occurrence_source_set(source_inventory, artifact_root)?;
+    let source_inventory_digest = source_set.inventory_digest;
+    let source_artifact_set_digest = source_set.artifact_set_digest;
+    let mut mosaic =
+        JrcOccurrenceMosaic::new(artifact_root, source_set.artifacts, source_raster_cache)?;
+    let values = sample_global_jrc_occurrence(&mut mosaic, target_s2_level)?;
+    drop(mosaic);
+    let staging_directory =
+        prepare_or_resume_layer_staging_directory(output_directory, "JRC occurrence")?;
+    let (root_index_path, root_bytes) = write_packed_jrc_occurrence_layer(
+        &staging_directory,
+        layer_id,
+        source_inventory_digest,
+        source_artifact_set_digest,
+        container_s2_level,
+        target_s2_level,
+        &values,
+    )?;
+    fs::rename(&staging_directory, output_directory).with_context(|| {
+        format!(
+            "atomically publish JRC occurrence directory {}",
+            output_directory.display()
+        )
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string(&JrcOccurrenceLayerDerivation {
+            derivation_schema_version: 1,
+            status: "provisional-not-scientifically-admitted",
+            source_inventory_digest,
+            source_artifact_set_digest,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            sample_policy: "s2-cell-centre-containing-jrc-pixel-v1",
+            missing_source_code: -1,
+            target_cells: u64::try_from(global_s2_cells_at_level(target_s2_level)?.len())?,
+            output_directory: output_directory.display().to_string(),
+            root_index_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+fn write_packed_jrc_occurrence_layer(
+    output_directory: &Path,
+    layer_id: &str,
+    source_inventory_digest: Digest,
+    source_artifact_set_digest: Digest,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    values: &HashMap<S2CellId, i64>,
+) -> Result<(String, Vec<u8>)> {
+    let level_directory = format!("l{container_s2_level}");
+    let tile_directory = output_directory
+        .join("layers")
+        .join(layer_id)
+        .join(&level_directory);
+    fs::create_dir_all(&tile_directory)?;
+    let containers = global_s2_cells_at_level(container_s2_level)?;
+    let mut entries = Vec::with_capacity(containers.len());
+    for (position, container) in containers.into_iter().enumerate() {
+        let relative_path = format!("layers/{layer_id}/{level_directory}/{container}.tile");
+        let artifact_path = output_directory.join(&relative_path);
+        let bytes = match fs::read(&artifact_path) {
+            Ok(existing) => {
+                validate_resumable_jrc_occurrence_tile(
+                    &existing,
+                    layer_id,
+                    source_inventory_digest,
+                    source_artifact_set_digest,
+                    container,
+                    target_s2_level,
+                )?;
+                existing
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let tile = pack_jrc_occurrence_tile(
+                    layer_id,
+                    source_inventory_digest,
+                    source_artifact_set_digest,
+                    container,
+                    target_s2_level,
+                    values,
+                )?;
+                let bytes = tile.canonical_bytes()?;
+                write_new_artifact(&artifact_path, &bytes)?;
+                bytes
+            }
+            Err(error) => return Err(error).context("read staged JRC occurrence tile"),
+        };
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+        if (position + 1) % 1_024 == 0 {
+            eprintln!(
+                "JRC occurrence normalization progress: {}/24576 containers",
+                position + 1
+            );
+        }
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_path = output_directory.join(&root_relative_path);
+    match fs::read(&root_path) {
+        Ok(existing) if existing == root_bytes => {}
+        Ok(_) => bail!("staged JRC occurrence root differs from requested derivation"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_new_artifact(&root_path, &root_bytes)?;
+        }
+        Err(error) => return Err(error).context("read staged JRC occurrence root"),
+    }
+    Ok((root_relative_path, root_bytes))
+}
+
+fn validate_resumable_jrc_occurrence_tile(
+    bytes: &[u8],
+    layer_id: &str,
+    source_inventory_digest: Digest,
+    source_artifact_set_digest: Digest,
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+) -> Result<()> {
+    let tile = PackedScalarFieldTile::from_canonical_slice(bytes)
+        .context("decode staged JRC occurrence tile")?;
+    if tile.layer_id != layer_id
+        || tile.unit != "source_code"
+        || tile.decimal_places != 0
+        || tile.source_snapshot_digest != source_inventory_digest
+        || tile.source_artifact_digest != source_artifact_set_digest
+        || tile.quadrature_points_per_axis != 1
+        || tile.container_s2_cell_id != container_s2_cell_id
+        || tile.target_s2_level != target_s2_level
+    {
+        bail!("staged JRC occurrence tile differs from requested derivation");
+    }
+    Ok(())
+}
+
+fn pack_jrc_occurrence_tile(
+    layer_id: &str,
+    source_inventory_digest: Digest,
+    source_artifact_set_digest: Digest,
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+    values: &HashMap<S2CellId, i64>,
+) -> Result<PackedScalarFieldTile> {
+    let s2_cells = enumerate_s2_descendants(container_s2_cell_id, target_s2_level)?;
+    let cells = s2_cells
+        .into_iter()
+        .map(|s2_cell_id| {
+            let value = *values.get(&s2_cell_id).with_context(|| {
+                format!("global JRC sampled field is missing target cell {s2_cell_id}")
+            })?;
+            Ok(ScalarFieldCell {
+                s2_cell_id,
+                support_samples: 1,
+                minimum_value: value,
+                mean_value: value,
+                maximum_value: value,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tile = PackedScalarFieldTile {
+        tile_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        unit: "source_code".to_owned(),
+        decimal_places: 0,
+        source_snapshot_digest: source_inventory_digest,
+        source_artifact_digest: source_artifact_set_digest,
+        quadrature_points_per_axis: 1,
+        container_s2_cell_id,
+        target_s2_level,
+        cells,
+    };
+    tile.validate()
+        .context("packed JRC occurrence source-code tile is invalid")?;
+    Ok(tile)
+}
+
+#[derive(Debug, Serialize)]
+struct JrcOccurrenceLayerInspection {
+    inspection_schema_version: u16,
+    status: &'static str,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    source_inventory_digest: Digest,
+    source_artifact_set_digest: Digest,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+    tile_count: u64,
+    target_cell_count: u64,
+    missing_source_cells: u64,
+    source_code_counts: BTreeMap<i64, u64>,
+    tile_byte_length: u64,
+}
+
+fn inspect_jrc_surface_water_occurrence_layer(
+    input_directory: &Path,
+    layer_id: &str,
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<()> {
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_bytes = read_release_file(input_directory, &root_relative_path)?;
+    let root = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical JRC occurrence root index")?;
+    if root.layer_id != layer_id {
+        bail!("JRC occurrence root declares an unexpected layer identifier");
+    }
+    let expected_containers = global_s2_cells_at_level(container_s2_level)?;
+    if root.entries.len() != expected_containers.len() {
+        bail!("JRC occurrence root does not cover every expected container");
+    }
+    let mut source_inventory_digest = None;
+    let mut source_artifact_set_digest = None;
+    let mut tile_byte_length = 0_u64;
+    let mut target_cell_count = 0_u64;
+    let mut source_code_counts = BTreeMap::new();
+    for (entry, expected_container) in root.entries.iter().zip(expected_containers) {
+        if entry.kind != TileTreeEntryKind::Tile
+            || entry.s2_level != container_s2_level
+            || entry.s2_cell_id != expected_container.to_string()
+            || entry.artifact.media_type != PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE
+        {
+            bail!("JRC occurrence root contains an invalid tile entry");
+        }
+        let bytes = read_release_file(input_directory, &entry.artifact.path)?;
+        if u64::try_from(bytes.len())? != entry.artifact.byte_length
+            || Digest::sha256(&bytes) != entry.artifact.content_hash
+        {
+            bail!("JRC occurrence tile fails its root reference");
+        }
+        let tile = PackedScalarFieldTile::from_canonical_slice(&bytes)
+            .context("decode canonical JRC occurrence tile")?;
+        if tile.layer_id != layer_id
+            || tile.unit != "source_code"
+            || tile.decimal_places != 0
+            || tile.quadrature_points_per_axis != 1
+            || tile.container_s2_cell_id != expected_container
+            || tile.target_s2_level != target_s2_level
+        {
+            bail!("JRC occurrence tile has inconsistent packing metadata");
+        }
+        match source_inventory_digest {
+            Some(expected) if expected != tile.source_snapshot_digest => {
+                bail!("JRC occurrence tiles disagree on source inventory digest")
+            }
+            None => source_inventory_digest = Some(tile.source_snapshot_digest),
+            _ => {}
+        }
+        match source_artifact_set_digest {
+            Some(expected) if expected != tile.source_artifact_digest => {
+                bail!("JRC occurrence tiles disagree on source artifact-set digest")
+            }
+            None => source_artifact_set_digest = Some(tile.source_artifact_digest),
+            _ => {}
+        }
+        for cell in &tile.cells {
+            if cell.minimum_value != cell.mean_value || cell.mean_value != cell.maximum_value {
+                bail!("JRC centre-sampled occurrence cell contains a non-point range");
+            }
+            if !(-1..=255).contains(&cell.mean_value) {
+                bail!("JRC occurrence source code lies outside its retained byte range");
+            }
+            *source_code_counts.entry(cell.mean_value).or_default() += 1;
+        }
+        tile_byte_length = tile_byte_length
+            .checked_add(entry.artifact.byte_length)
+            .context("JRC occurrence tile byte total overflow")?;
+        target_cell_count = target_cell_count
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("JRC occurrence target cell total overflow")?;
+    }
+    let missing_source_cells = *source_code_counts.get(&-1).unwrap_or(&0);
+    println!(
+        "{}",
+        serde_json::to_string(&JrcOccurrenceLayerInspection {
+            inspection_schema_version: 1,
+            status: "provisional-not-scientifically-admitted",
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            source_inventory_digest: source_inventory_digest
+                .context("JRC occurrence root contains no tiles")?,
+            source_artifact_set_digest: source_artifact_set_digest
+                .context("JRC occurrence root contains no tiles")?,
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+            tile_count: u64::try_from(root.entries.len())?,
+            target_cell_count,
+            missing_source_cells,
+            source_code_counts,
+            tile_byte_length,
+        })?
+    );
+    Ok(())
+}
+
 const DAF_RECORD_BYTES: usize = 1024;
 
 #[derive(Debug, Serialize)]
@@ -1542,6 +2479,14 @@ impl CartesianKilometres {
             z: self.z - other.z,
         }
     }
+
+    fn to_fixed_millimetres(self) -> Result<CartesianMillimetres> {
+        Ok(CartesianMillimetres::new(
+            f64_bits_to_rounded_scaled_integer(self.x.to_bits(), 1_000_000)?,
+            f64_bits_to_rounded_scaled_integer(self.y.to_bits(), 1_000_000)?,
+            f64_bits_to_rounded_scaled_integer(self.z.to_bits(), 1_000_000)?,
+        ))
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -1555,6 +2500,7 @@ struct JplDe441EpochInspection {
     earth_barycentric: CartesianKilometres,
     sun_geocentric: CartesianKilometres,
     moon_geocentric: CartesianKilometres,
+    fixed_scale_boundary: CelestialState,
 }
 
 fn inspect_jpl_de441_epoch(input_directory: &Path, tdb_seconds: i64) -> Result<()> {
@@ -1569,6 +2515,8 @@ fn inspect_jpl_de441_epoch(input_directory: &Path, tdb_seconds: i64) -> Result<(
     let (earth_from_emb, source_399) = evaluate_de441_target(&files, 399, 3, epoch)?;
     let earth_barycentric = earth_moon_barycenter.add(earth_from_emb);
     let moon_barycentric = earth_moon_barycenter.add(moon_from_emb);
+    let sun_geocentric = sun_barycentric.subtract(earth_barycentric);
+    let moon_geocentric = moon_barycentric.subtract(earth_barycentric);
     let mut source_files = vec![source_3, source_10, source_301, source_399];
     source_files.sort();
     source_files.dedup();
@@ -1582,8 +2530,13 @@ fn inspect_jpl_de441_epoch(input_directory: &Path, tdb_seconds: i64) -> Result<(
             tdb_seconds_from_j2000: tdb_seconds,
             source_files,
             earth_barycentric,
-            sun_geocentric: sun_barycentric.subtract(earth_barycentric),
-            moon_geocentric: moon_barycentric.subtract(earth_barycentric),
+            sun_geocentric,
+            moon_geocentric,
+            fixed_scale_boundary: CelestialState::new(
+                TdbSecondsSinceJ2000::new(i128::from(tdb_seconds)),
+                sun_geocentric.to_fixed_millimetres()?,
+                moon_geocentric.to_fixed_millimetres()?,
+            ),
         })?
     );
     Ok(())
@@ -1934,9 +2887,27 @@ struct SoilgridsTopsoilInspection {
 struct SoilgridsArtifactInspection {
     property: String,
     quantile: String,
-    path: String,
-    byte_length: u64,
+    vrt_path: String,
+    vrt_byte_length: u64,
+    vrt_hash: Digest,
+    raster_width: u32,
+    raster_height: u32,
+    spatial_reference: String,
+    geotransform_ieee754_bits_hex: Vec<String>,
+    source_tile_count: usize,
+    overview_path: String,
+    overview_byte_length: u64,
+    overview_hash: Digest,
     image_directories: Vec<SoilgridsImageDirectoryInspection>,
+}
+
+#[derive(Debug)]
+struct SoilgridsVrtGeometry {
+    raster_width: u32,
+    raster_height: u32,
+    spatial_reference: String,
+    geotransform: [f64; 6],
+    source_tile_count: usize,
 }
 
 #[derive(Debug, Serialize, PartialEq, Eq)]
@@ -1970,6 +2941,251 @@ struct SoilgridsChunkInspection {
     non_finite_samples: usize,
 }
 
+fn text_between<'a>(text: &'a str, start: &str, end: &str, field: &str) -> Result<&'a str> {
+    let remainder = text
+        .split_once(start)
+        .map(|(_, remainder)| remainder)
+        .with_context(|| format!("SoilGrids VRT is missing {field}"))?;
+    remainder
+        .split_once(end)
+        .map(|(value, _)| value)
+        .with_context(|| format!("SoilGrids VRT has an unterminated {field}"))
+}
+
+fn parse_soilgrids_vrt_geometry(path: &Path) -> Result<SoilgridsVrtGeometry> {
+    let text = fs::read_to_string(path)
+        .with_context(|| format!("read SoilGrids VRT geometry {}", path.display()))?;
+    let header = text.lines().next().context("SoilGrids VRT is empty")?;
+    let parse_attribute = |name: &str| -> Result<u32> {
+        let marker = format!("{name}=\"");
+        let value = header
+            .split_once(&marker)
+            .map(|(_, remainder)| remainder)
+            .and_then(|remainder| remainder.split_once('"').map(|(value, _)| value))
+            .with_context(|| format!("SoilGrids VRT header is missing {name}"))?;
+        value
+            .parse::<u32>()
+            .with_context(|| format!("SoilGrids VRT {name} is not u32"))
+    };
+    let raster_width = parse_attribute("rasterXSize")?;
+    let raster_height = parse_attribute("rasterYSize")?;
+    let spatial_reference = text_between(&text, "<SRS>", "</SRS>", "SRS")?.to_owned();
+    if !spatial_reference.contains("Interrupted_Goode_Homolosine")
+        || !spatial_reference.contains("WGS_1984")
+        || !spatial_reference.contains("UNIT[\"Meter\",1]")
+    {
+        bail!("SoilGrids VRT does not declare the expected WGS84 Interrupted Goode Homolosine CRS");
+    }
+    let geotransform_values =
+        text_between(&text, "<GeoTransform>", "</GeoTransform>", "GeoTransform")?
+            .split(',')
+            .map(|value| {
+                value
+                    .trim()
+                    .parse::<f64>()
+                    .context("SoilGrids GeoTransform value is not binary64")
+            })
+            .collect::<Result<Vec<_>>>()?;
+    let geotransform: [f64; 6] = geotransform_values
+        .try_into()
+        .map_err(|_| anyhow::anyhow!("SoilGrids GeoTransform must contain six values"))?;
+    if geotransform != [-19_949_000.0, 250.0, 0.0, 8_361_000.0, 0.0, -250.0] {
+        bail!("SoilGrids VRT GeoTransform differs from the retained global grid contract");
+    }
+    if !text.contains("<NoDataValue>-32768</NoDataValue>") {
+        bail!("SoilGrids VRT does not retain the signed no-data sentinel");
+    }
+    let source_tile_count = text.matches("<ComplexSource>").count();
+    if source_tile_count == 0 {
+        bail!("SoilGrids VRT contains no source mosaic tiles");
+    }
+    Ok(SoilgridsVrtGeometry {
+        raster_width,
+        raster_height,
+        spatial_reference,
+        geotransform,
+        source_tile_count,
+    })
+}
+
+#[derive(Clone, Copy, Debug)]
+struct SoilgridsProjectedCell {
+    s2_cell_id: S2CellId,
+    overview_row: i64,
+    overview_column: i64,
+}
+
+struct SoilgridsProjection {
+    proj_version: String,
+    cells: Vec<SoilgridsProjectedCell>,
+}
+
+fn write_degrees_e7(output: &mut impl Write, value: i32) -> Result<()> {
+    let negative = value < 0;
+    let magnitude = i64::from(value).unsigned_abs();
+    if negative {
+        output.write_all(b"-")?;
+    }
+    write!(
+        output,
+        "{}.{:07}",
+        magnitude / 10_000_000,
+        magnitude % 10_000_000
+    )?;
+    Ok(())
+}
+
+fn parse_fixed_decimal(value: &str, decimal_places: u32) -> Result<i128> {
+    let (negative, unsigned) = match value.as_bytes().first() {
+        Some(b'-') => (true, &value[1..]),
+        Some(b'+') => (false, &value[1..]),
+        _ => (false, value),
+    };
+    let (whole, fraction) = unsigned.split_once('.').unwrap_or((unsigned, ""));
+    if whole.is_empty()
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fraction.bytes().all(|byte| byte.is_ascii_digit())
+        || fraction.len() > usize::try_from(decimal_places)?
+    {
+        bail!("projected coordinate is not a fixed decimal: {value:?}");
+    }
+    let scale = 10_i128
+        .checked_pow(decimal_places)
+        .context("projected coordinate scale overflow")?;
+    let whole = whole
+        .parse::<i128>()
+        .context("projected coordinate whole part overflow")?;
+    let fraction = if fraction.is_empty() {
+        0
+    } else {
+        fraction
+            .parse::<i128>()
+            .context("projected coordinate fraction overflow")?
+            .checked_mul(
+                10_i128
+                    .checked_pow(decimal_places - u32::try_from(fraction.len())?)
+                    .context("projected coordinate padding overflow")?,
+            )
+            .context("projected coordinate fraction scaling overflow")?
+    };
+    let magnitude = whole
+        .checked_mul(scale)
+        .and_then(|value| value.checked_add(fraction))
+        .context("projected coordinate overflow")?;
+    Ok(if negative { -magnitude } else { magnitude })
+}
+
+/// Project every L10 centre through the standard PROJ `igh` operation in one
+/// streaming child process. This is explicitly a provisional offline adapter; the
+/// output records the installed PROJ version and final admission will cross-check it
+/// against an independent implementation.
+fn project_global_s2_centres_to_soilgrids(target_s2_level: u8) -> Result<SoilgridsProjection> {
+    if target_s2_level != 10 {
+        bail!("provisional SoilGrids projection currently requires L10 targets");
+    }
+    let version_output = ProcessCommand::new("pkg-config")
+        .args(["--modversion", "proj"])
+        .output()
+        .context("query installed PROJ version through pkg-config")?;
+    if !version_output.status.success() {
+        bail!("pkg-config could not identify the installed PROJ version");
+    }
+    let proj_version = String::from_utf8(version_output.stdout)?.trim().to_owned();
+    if proj_version.is_empty() {
+        bail!("installed PROJ version is empty");
+    }
+
+    let targets = global_s2_cells_at_level(target_s2_level)?;
+    let mut input = BufWriter::new(Vec::with_capacity(targets.len().saturating_mul(32)));
+    for target in &targets {
+        let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(s2_face_ij_center_uv(
+            decode_s2_face_ij(*target),
+        )?)?)?;
+        write_degrees_e7(&mut input, coordinate.longitude_e7())?;
+        input.write_all(b" ")?;
+        write_degrees_e7(&mut input, coordinate.latitude_e7())?;
+        input.write_all(b"\n")?;
+    }
+    input.flush()?;
+    let input = input
+        .into_inner()
+        .map_err(|error| anyhow::anyhow!("finish PROJ input buffer: {error}"))?;
+
+    let mut child = ProcessCommand::new("cs2cs")
+        .args([
+            "-f",
+            "%.12f",
+            "+proj=longlat",
+            "+datum=WGS84",
+            "+to",
+            "+proj=igh",
+            "+ellps=WGS84",
+            "+units=m",
+            "+no_defs",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::inherit())
+        .spawn()
+        .context("start PROJ cs2cs SoilGrids transform")?;
+    let mut child_stdin = child.stdin.take().context("cs2cs stdin is unavailable")?;
+    let writer = thread::spawn(move || -> std::io::Result<()> {
+        child_stdin.write_all(&input)?;
+        child_stdin.flush()
+    });
+    let child_stdout = child.stdout.take().context("cs2cs stdout is unavailable")?;
+    let mut reader = BufReader::new(child_stdout);
+    let mut line = String::new();
+    let mut cells = Vec::with_capacity(targets.len());
+    let scale = 1_000_000_000_000_i128;
+    let west = -19_949_000_i128 * scale;
+    let north = 8_361_000_i128 * scale;
+    let pixel = 1_000_i128 * scale;
+    let read_result = (|| -> Result<()> {
+        for target in targets {
+            line.clear();
+            if reader.read_line(&mut line)? == 0 {
+                bail!("cs2cs ended before every S2 target was projected");
+            }
+            let mut fields = line.split_whitespace();
+            let x = parse_fixed_decimal(fields.next().context("cs2cs output has no easting")?, 12)?;
+            let y =
+                parse_fixed_decimal(fields.next().context("cs2cs output has no northing")?, 12)?;
+            let overview_column = i64::try_from((x - west).div_euclid(pixel))?;
+            let overview_row = i64::try_from((north - y).div_euclid(pixel))?;
+            cells.push(SoilgridsProjectedCell {
+                s2_cell_id: target,
+                overview_row,
+                overview_column,
+            });
+        }
+        line.clear();
+        while reader.read_line(&mut line)? != 0 {
+            if !line.trim().is_empty() {
+                bail!("cs2cs emitted more coordinates than requested");
+            }
+            line.clear();
+        }
+        Ok(())
+    })();
+    if read_result.is_err() {
+        let _ = child.kill();
+    }
+    let writer_result = writer
+        .join()
+        .map_err(|_| anyhow::anyhow!("PROJ input writer thread panicked"))?;
+    let status = child.wait().context("wait for PROJ cs2cs transform")?;
+    read_result?;
+    writer_result.context("write all coordinates to PROJ cs2cs")?;
+    if !status.success() {
+        bail!("PROJ cs2cs SoilGrids transform exited unsuccessfully");
+    }
+    Ok(SoilgridsProjection {
+        proj_version,
+        cells,
+    })
+}
+
 fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
     let mut artifacts =
         Vec::with_capacity(SOILGRIDS_TOPSOIL_PROPERTIES.len() * SOILGRIDS_TOPSOIL_QUANTILES.len());
@@ -1977,24 +3193,43 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
 
     for property in SOILGRIDS_TOPSOIL_PROPERTIES {
         for quantile in SOILGRIDS_TOPSOIL_QUANTILES {
-            let filename = format!("{property}_0-5cm_{quantile}.vrt.ovr");
-            let path = input_directory.join(property).join(&filename);
-            let metadata = fs::metadata(&path).with_context(|| {
-                format!("inspect retained SoilGrids artifact {}", path.display())
+            let vrt_filename = format!("{property}_0-5cm_{quantile}.vrt");
+            let overview_filename = format!("{vrt_filename}.ovr");
+            let vrt_path = input_directory.join(property).join(&vrt_filename);
+            let overview_path = input_directory.join(property).join(&overview_filename);
+            let vrt_geometry = parse_soilgrids_vrt_geometry(&vrt_path)?;
+            let (vrt_byte_length, vrt_hash) = digest_file(&vrt_path)?;
+            byte_length = byte_length
+                .checked_add(vrt_byte_length)
+                .context("SoilGrids retained byte length overflow")?;
+            let metadata = fs::metadata(&overview_path).with_context(|| {
+                format!(
+                    "inspect retained SoilGrids artifact {}",
+                    overview_path.display()
+                )
             })?;
             if !metadata.is_file() || metadata.len() == 0 {
                 bail!(
                     "SoilGrids artifact is not a nonempty regular file: {}",
-                    path.display()
+                    overview_path.display()
                 );
             }
             byte_length = byte_length
                 .checked_add(metadata.len())
                 .context("SoilGrids retained byte length overflow")?;
-            let file = File::open(&path)
-                .with_context(|| format!("open retained SoilGrids artifact {}", path.display()))?;
-            let mut decoder = TiffDecoder::new(file)
-                .with_context(|| format!("parse SoilGrids BigTIFF header {}", path.display()))?;
+            let (overview_byte_length, overview_hash) = digest_file(&overview_path)?;
+            if overview_byte_length != metadata.len() {
+                bail!("SoilGrids overview changed while it was inspected");
+            }
+            let file = File::open(&overview_path).with_context(|| {
+                format!(
+                    "open retained SoilGrids artifact {}",
+                    overview_path.display()
+                )
+            })?;
+            let mut decoder = TiffDecoder::new(file).with_context(|| {
+                format!("parse SoilGrids BigTIFF header {}", overview_path.display())
+            })?;
             let mut image_directories = Vec::new();
 
             loop {
@@ -2002,7 +3237,7 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
                 let (width, height) = decoder.dimensions().with_context(|| {
                     format!(
                         "read SoilGrids image {image_index} dimensions in {}",
-                        path.display()
+                        overview_path.display()
                     )
                 })?;
                 let color_type = format!(
@@ -2010,7 +3245,7 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
                     decoder.colortype().with_context(|| {
                         format!(
                             "read SoilGrids image {image_index} color type in {}",
-                            path.display()
+                            overview_path.display()
                         )
                     })?
                 );
@@ -2022,13 +3257,13 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
                 .with_context(|| {
                     format!(
                         "read SoilGrids image {image_index} chunk count in {}",
-                        path.display()
+                        overview_path.display()
                     )
                 })?;
                 if chunk_count == 0 {
                     bail!(
                         "SoilGrids image {image_index} has no chunks: {}",
-                        path.display()
+                        overview_path.display()
                     );
                 }
                 let (chunk_width, chunk_height) = decoder.chunk_dimensions();
@@ -2055,7 +3290,7 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
                     let decoded = decoder.read_chunk(chunk_index).with_context(|| {
                         format!(
                             "decode SoilGrids image {image_index} chunk {chunk_index} in {}",
-                            path.display()
+                            overview_path.display()
                         )
                     })?;
                     sampled_chunks.push(inspect_soilgrids_chunk(
@@ -2074,7 +3309,10 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
                     break;
                 }
                 decoder.next_image().with_context(|| {
-                    format!("advance SoilGrids image directory in {}", path.display())
+                    format!(
+                        "advance SoilGrids image directory in {}",
+                        overview_path.display()
+                    )
                 })?;
             }
 
@@ -2084,15 +3322,36 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
             }) {
                 bail!(
                     "SoilGrids overview dimensions do not descend monotonically: {}",
-                    path.display()
+                    overview_path.display()
                 );
+            }
+
+            let first_overview = image_directories
+                .first()
+                .context("SoilGrids overview has no image directories")?;
+            if first_overview.profile.width != vrt_geometry.raster_width.div_ceil(4)
+                || first_overview.profile.height != vrt_geometry.raster_height.div_ceil(4)
+            {
+                bail!("SoilGrids first overview is not the expected 4x source reduction");
             }
 
             artifacts.push(SoilgridsArtifactInspection {
                 property: property.to_owned(),
                 quantile: quantile.to_owned(),
-                path: format!("{property}/{filename}"),
-                byte_length: metadata.len(),
+                vrt_path: format!("{property}/{vrt_filename}"),
+                vrt_byte_length,
+                vrt_hash,
+                raster_width: vrt_geometry.raster_width,
+                raster_height: vrt_geometry.raster_height,
+                spatial_reference: vrt_geometry.spatial_reference,
+                geotransform_ieee754_bits_hex: vrt_geometry
+                    .geotransform
+                    .map(|value| format!("{:016x}", value.to_bits()))
+                    .to_vec(),
+                source_tile_count: vrt_geometry.source_tile_count,
+                overview_path: format!("{property}/{overview_filename}"),
+                overview_byte_length,
+                overview_hash,
                 image_directories,
             });
         }
@@ -2105,7 +3364,7 @@ fn inspect_soilgrids_topsoil(input_directory: &Path) -> Result<()> {
             source: "ISRIC SoilGrids 2.0 official global VRT overview pyramids",
             release: "latest (retained source bytes)",
             depth: "0-5cm",
-            artifact_count: artifacts.len(),
+            artifact_count: artifacts.len() * 2,
             byte_length,
             artifacts,
         })?
@@ -2182,6 +3441,845 @@ fn inspect_soilgrids_chunk(
         finite_maximum,
         non_finite_samples,
     }
+}
+
+const SOILGRIDS_INVENTORY_SCHEMA_VERSION: u16 = 1;
+const SOILGRIDS_RELEASE: &str = "latest";
+const SOILGRIDS_DEPTH: &str = "0-5cm";
+const SOILGRIDS_OVERVIEW_REDUCTION: u32 = 4;
+const SOILGRIDS_OVERVIEW_CHUNK_WIDTH: u32 = 128;
+const SOILGRIDS_OVERVIEW_CHUNK_HEIGHT: u32 = 128;
+const SOILGRIDS_SAMPLING_REPROJECTION_METHOD: &str = "s2-cell-centre-proj-igh-nearest-overview-v1";
+
+#[derive(Debug, Deserialize)]
+struct SoilgridsInventory {
+    inventory_schema_version: u16,
+    release: String,
+    depth: String,
+    artifact_count: usize,
+    byte_length: u64,
+    artifacts: Vec<SoilgridsInventoryArtifact>,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+struct SoilgridsInventoryArtifact {
+    artifact_path: String,
+    byte_length: u64,
+    content_hash: Digest,
+    download_url: String,
+    role: String,
+}
+
+#[derive(Clone, Debug)]
+struct SoilgridsSourceRasterArtifact {
+    artifact_path: String,
+    byte_length: u64,
+    width: u32,
+    height: u32,
+}
+
+struct SoilgridsSourceSet {
+    inventory_digest: Digest,
+    property_sources: Vec<SoilGridsPropertySource>,
+    rasters: Vec<SoilgridsSourceRasterArtifact>,
+    maximum_width: u32,
+    maximum_height: u32,
+}
+
+fn soilgrids_property(index: usize) -> Result<SoilGridsProperty> {
+    [
+        SoilGridsProperty::Bdod,
+        SoilGridsProperty::Cec,
+        SoilGridsProperty::Cfvo,
+        SoilGridsProperty::Clay,
+        SoilGridsProperty::Nitrogen,
+        SoilGridsProperty::Phh2o,
+        SoilGridsProperty::Sand,
+        SoilGridsProperty::Silt,
+        SoilGridsProperty::Soc,
+    ]
+    .get(index)
+    .copied()
+    .context("SoilGrids property index exceeds its canonical schema")
+}
+
+fn validate_soilgrids_inventory_artifact(
+    artifact: &SoilgridsInventoryArtifact,
+    expected_path: &str,
+    expected_url: &str,
+    expected_role: &str,
+) -> Result<()> {
+    if artifact.artifact_path != expected_path
+        || artifact.download_url != expected_url
+        || artifact.role != expected_role
+        || artifact.byte_length == 0
+        || artifact.content_hash == Digest::ZERO
+        || artifact
+            .artifact_path
+            .split('/')
+            .any(|component| component.is_empty() || component == "." || component == "..")
+    {
+        bail!("SoilGrids inventory artifact does not match its expected release identity");
+    }
+    Ok(())
+}
+
+fn load_verified_soilgrids_source_set(
+    inventory_path: &Path,
+    artifact_root: &Path,
+) -> Result<SoilgridsSourceSet> {
+    let inventory_bytes = fs::read(inventory_path).with_context(|| {
+        format!(
+            "read SoilGrids source inventory {}",
+            inventory_path.display()
+        )
+    })?;
+    let inventory: SoilgridsInventory =
+        serde_json::from_slice(&inventory_bytes).with_context(|| {
+            format!(
+                "parse SoilGrids source inventory {}",
+                inventory_path.display()
+            )
+        })?;
+    let expected_count = SOILGRIDS_TOPSOIL_PROPERTIES
+        .len()
+        .checked_mul(SOILGRIDS_TOPSOIL_QUANTILES.len())
+        .and_then(|count| count.checked_mul(2))
+        .context("SoilGrids expected artifact count overflow")?;
+    if inventory.inventory_schema_version != SOILGRIDS_INVENTORY_SCHEMA_VERSION
+        || inventory.release != SOILGRIDS_RELEASE
+        || inventory.depth != SOILGRIDS_DEPTH
+        || inventory.artifact_count != expected_count
+        || inventory.artifacts.len() != expected_count
+    {
+        bail!("SoilGrids inventory has an unsupported or incomplete release contract");
+    }
+
+    let mut seen_paths = HashSet::with_capacity(expected_count);
+    let mut actual_total = 0_u64;
+    let mut rasters = Vec::with_capacity(expected_count / 2);
+    let mut property_sources = Vec::with_capacity(SOILGRIDS_TOPSOIL_PROPERTIES.len());
+    let mut maximum_width = 0_u32;
+    let mut maximum_height = 0_u32;
+    for (property_index, property_name) in SOILGRIDS_TOPSOIL_PROPERTIES.iter().enumerate() {
+        let mut quantile_artifact_digests = [Digest::ZERO; 3];
+        for (quantile_index, quantile) in SOILGRIDS_TOPSOIL_QUANTILES.iter().enumerate() {
+            let vrt_filename = format!("{property_name}_0-5cm_{quantile}.vrt");
+            let overview_filename = format!("{vrt_filename}.ovr");
+            let vrt_relative_path =
+                format!("soilgrids-2-0-topsoil-overviews/{property_name}/{vrt_filename}");
+            let overview_relative_path =
+                format!("soilgrids-2-0-topsoil-overviews/{property_name}/{overview_filename}");
+            let base_url = format!("https://files.isric.org/soilgrids/latest/data/{property_name}");
+            let vrt_artifact = inventory
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_path == vrt_relative_path)
+                .with_context(|| format!("SoilGrids inventory is missing {vrt_relative_path}"))?;
+            let overview_artifact = inventory
+                .artifacts
+                .iter()
+                .find(|artifact| artifact.artifact_path == overview_relative_path)
+                .with_context(|| {
+                    format!("SoilGrids inventory is missing {overview_relative_path}")
+                })?;
+            validate_soilgrids_inventory_artifact(
+                vrt_artifact,
+                &vrt_relative_path,
+                &format!("{base_url}/{vrt_filename}"),
+                "geometry",
+            )?;
+            validate_soilgrids_inventory_artifact(
+                overview_artifact,
+                &overview_relative_path,
+                &format!("{base_url}/{overview_filename}"),
+                "data",
+            )?;
+            for artifact in [vrt_artifact, overview_artifact] {
+                if !seen_paths.insert(artifact.artifact_path.clone()) {
+                    bail!("SoilGrids inventory repeats an artifact path");
+                }
+                let path = artifact_root.join(&artifact.artifact_path);
+                let (actual_length, actual_hash) = digest_file(&path).with_context(|| {
+                    format!("verify retained SoilGrids artifact {}", path.display())
+                })?;
+                if actual_length != artifact.byte_length || actual_hash != artifact.content_hash {
+                    bail!(
+                        "retained SoilGrids artifact differs from its inventory: {}",
+                        path.display()
+                    );
+                }
+                actual_total = actual_total
+                    .checked_add(actual_length)
+                    .context("SoilGrids source byte total overflow")?;
+            }
+
+            let vrt_geometry =
+                parse_soilgrids_vrt_geometry(&artifact_root.join(&vrt_relative_path))?;
+            let expected_width = vrt_geometry
+                .raster_width
+                .div_ceil(SOILGRIDS_OVERVIEW_REDUCTION);
+            let expected_height = vrt_geometry
+                .raster_height
+                .div_ceil(SOILGRIDS_OVERVIEW_REDUCTION);
+            let overview_path = artifact_root.join(&overview_relative_path);
+            let mut decoder = TiffDecoder::new(File::open(&overview_path)?)
+                .with_context(|| format!("parse SoilGrids overview {}", overview_path.display()))?;
+            let dimensions = decoder.dimensions()?;
+            if dimensions != (expected_width, expected_height)
+                || decoder.colortype()? != tiff::ColorType::Gray(16)
+                || decoder.get_chunk_type() != TiffChunkType::Tile
+                || decoder.chunk_dimensions()
+                    != (
+                        SOILGRIDS_OVERVIEW_CHUNK_WIDTH,
+                        SOILGRIDS_OVERVIEW_CHUNK_HEIGHT,
+                    )
+                || decoder.tile_count()?
+                    != expected_width.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_WIDTH)
+                        * expected_height.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_HEIGHT)
+            {
+                bail!("SoilGrids overview has an unsupported first-image packing profile");
+            }
+            quantile_artifact_digests[quantile_index] = overview_artifact.content_hash;
+            maximum_width = maximum_width.max(expected_width);
+            maximum_height = maximum_height.max(expected_height);
+            rasters.push(SoilgridsSourceRasterArtifact {
+                artifact_path: overview_relative_path,
+                byte_length: overview_artifact.byte_length,
+                width: expected_width,
+                height: expected_height,
+            });
+        }
+        property_sources.push(SoilGridsPropertySource {
+            property: soilgrids_property(property_index)?,
+            quantile_artifact_digests,
+        });
+    }
+    if seen_paths.len() != expected_count || actual_total != inventory.byte_length {
+        bail!("SoilGrids inventory byte total or artifact membership is inconsistent");
+    }
+    Ok(SoilgridsSourceSet {
+        inventory_digest: Digest::sha256(&inventory_bytes),
+        property_sources,
+        rasters,
+        maximum_width,
+        maximum_height,
+    })
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct SoilgridsChunkSampleRequest {
+    target_index: u32,
+    row: u32,
+    column: u32,
+}
+
+struct SoilgridsChunkGroups {
+    chunks_across: u32,
+    requests: Vec<Vec<SoilgridsChunkSampleRequest>>,
+}
+
+fn group_soilgrids_projection_by_source_chunk(
+    projection: &[SoilgridsProjectedCell],
+    maximum_width: u32,
+    maximum_height: u32,
+) -> Result<SoilgridsChunkGroups> {
+    if maximum_width == 0 || maximum_height == 0 {
+        bail!("SoilGrids source grid must be nonempty");
+    }
+    let chunks_across = maximum_width.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_WIDTH);
+    let chunks_down = maximum_height.div_ceil(SOILGRIDS_OVERVIEW_CHUNK_HEIGHT);
+    let chunk_count = chunks_across
+        .checked_mul(chunks_down)
+        .context("SoilGrids chunk-group count overflow")?;
+    let mut requests = (0..chunk_count).map(|_| Vec::new()).collect::<Vec<_>>();
+    for (target_index, cell) in projection.iter().enumerate() {
+        let Ok(row) = u32::try_from(cell.overview_row) else {
+            continue;
+        };
+        let Ok(column) = u32::try_from(cell.overview_column) else {
+            continue;
+        };
+        if row >= maximum_height || column >= maximum_width {
+            continue;
+        }
+        let chunk_index = (row / SOILGRIDS_OVERVIEW_CHUNK_HEIGHT)
+            .checked_mul(chunks_across)
+            .and_then(|value| value.checked_add(column / SOILGRIDS_OVERVIEW_CHUNK_WIDTH))
+            .context("SoilGrids source chunk index overflow")?;
+        requests[usize::try_from(chunk_index)?].push(SoilgridsChunkSampleRequest {
+            target_index: u32::try_from(target_index)?,
+            row,
+            column,
+        });
+    }
+    Ok(SoilgridsChunkGroups {
+        chunks_across,
+        requests,
+    })
+}
+
+type SoilgridsRawCellValues = [[i16; 3]; 9];
+
+struct SoilgridsDecodedChunk<'a> {
+    decoded: &'a TiffDecodingResult,
+    data_width: u32,
+    data_height: u32,
+    source_width: u32,
+    source_height: u32,
+    property_index: usize,
+    quantile_index: usize,
+}
+
+fn apply_soilgrids_decoded_chunk(
+    chunk: SoilgridsDecodedChunk<'_>,
+    requests: &[SoilgridsChunkSampleRequest],
+    values: &mut [SoilgridsRawCellValues],
+) -> Result<()> {
+    let TiffDecodingResult::I16(decoded) = chunk.decoded else {
+        bail!("SoilGrids overview chunk is not signed i16");
+    };
+    if decoded.len()
+        != usize::try_from(
+            chunk
+                .data_width
+                .checked_mul(chunk.data_height)
+                .context("SoilGrids decoded chunk area overflow")?,
+        )?
+    {
+        bail!("SoilGrids decoded chunk length differs from its dimensions");
+    }
+    for request in requests {
+        if request.row >= chunk.source_height || request.column >= chunk.source_width {
+            continue;
+        }
+        let local_row = request.row % SOILGRIDS_OVERVIEW_CHUNK_HEIGHT;
+        let local_column = request.column % SOILGRIDS_OVERVIEW_CHUNK_WIDTH;
+        if local_row >= chunk.data_height || local_column >= chunk.data_width {
+            bail!("SoilGrids sample lies outside its decoded source chunk");
+        }
+        let source_index = local_row
+            .checked_mul(chunk.data_width)
+            .and_then(|value| value.checked_add(local_column))
+            .context("SoilGrids decoded sample index overflow")?;
+        values
+            .get_mut(usize::try_from(request.target_index)?)
+            .context("SoilGrids sample target index exceeds the global field")?
+            [chunk.property_index][chunk.quantile_index] = decoded[usize::try_from(source_index)?];
+    }
+    Ok(())
+}
+
+struct SoilgridsSampledField {
+    values: Vec<SoilgridsRawCellValues>,
+    decoded_source_chunks: u64,
+}
+
+fn sample_global_soilgrids_topsoil(
+    artifact_root: &Path,
+    source_set: &SoilgridsSourceSet,
+    projection: &[SoilgridsProjectedCell],
+) -> Result<SoilgridsSampledField> {
+    if source_set.rasters.len()
+        != SOILGRIDS_TOPSOIL_PROPERTIES.len() * SOILGRIDS_TOPSOIL_QUANTILES.len()
+    {
+        bail!("SoilGrids source raster set is incomplete");
+    }
+    let groups = group_soilgrids_projection_by_source_chunk(
+        projection,
+        source_set.maximum_width,
+        source_set.maximum_height,
+    )?;
+    let mut values = vec![[[SOILGRIDS_NO_DATA_VALUE; 3]; 9]; projection.len()];
+    let mut decoded_source_chunks = 0_u64;
+    for (raster_index, raster) in source_set.rasters.iter().enumerate() {
+        let property_index = raster_index / SOILGRIDS_TOPSOIL_QUANTILES.len();
+        let quantile_index = raster_index % SOILGRIDS_TOPSOIL_QUANTILES.len();
+        let path = artifact_root.join(&raster.artifact_path);
+        let metadata = fs::metadata(&path)?;
+        if metadata.len() != raster.byte_length {
+            bail!("SoilGrids overview changed after source verification");
+        }
+        let mut decoder = TiffDecoder::new(File::open(&path)?)
+            .with_context(|| format!("open SoilGrids overview {}", path.display()))?;
+        for (chunk_index, requests) in groups.requests.iter().enumerate() {
+            if requests.is_empty() {
+                continue;
+            }
+            let chunk_index = u32::try_from(chunk_index)?;
+            let chunk_row = chunk_index / groups.chunks_across;
+            let chunk_column = chunk_index % groups.chunks_across;
+            if chunk_row * SOILGRIDS_OVERVIEW_CHUNK_HEIGHT >= raster.height
+                || chunk_column * SOILGRIDS_OVERVIEW_CHUNK_WIDTH >= raster.width
+            {
+                continue;
+            }
+            let decoded = decoder.read_chunk(chunk_index).with_context(|| {
+                format!(
+                    "decode SoilGrids property {} quantile {} chunk {chunk_index}",
+                    SOILGRIDS_TOPSOIL_PROPERTIES[property_index],
+                    SOILGRIDS_TOPSOIL_QUANTILES[quantile_index]
+                )
+            })?;
+            let (data_width, data_height) = decoder.chunk_data_dimensions(chunk_index);
+            apply_soilgrids_decoded_chunk(
+                SoilgridsDecodedChunk {
+                    decoded: &decoded,
+                    data_width,
+                    data_height,
+                    source_width: raster.width,
+                    source_height: raster.height,
+                    property_index,
+                    quantile_index,
+                },
+                requests,
+                &mut values,
+            )?;
+            decoded_source_chunks = decoded_source_chunks
+                .checked_add(1)
+                .context("SoilGrids decoded source-chunk count overflow")?;
+        }
+        eprintln!(
+            "SoilGrids grouped sampling progress: {}/27 property-quantile rasters",
+            raster_index + 1
+        );
+    }
+    Ok(SoilgridsSampledField {
+        values,
+        decoded_source_chunks,
+    })
+}
+
+fn quantile_values(values: [i16; 3]) -> SoilGridsQuantileValues {
+    SoilGridsQuantileValues {
+        q0_05: values[0],
+        q0_5: values[1],
+        q0_95: values[2],
+    }
+}
+
+fn validate_resumable_soilgrids_tile(
+    bytes: &[u8],
+    layer_id: &str,
+    source_inventory_digest: Digest,
+    source_set_digest: Digest,
+    property_sources: &[SoilGridsPropertySource],
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+) -> Result<()> {
+    let tile = PackedSoilGridsTopsoilTile::from_canonical_slice(bytes)
+        .context("decode staged SoilGrids topsoil tile")?;
+    if tile.layer_id != layer_id
+        || tile.depth != SoilDepth::ZeroToFiveCentimeters
+        || tile.source_snapshot_digest != source_inventory_digest
+        || tile.source_set_digest != source_set_digest
+        || tile.property_sources != property_sources
+        || tile.sampling_reprojection_method != SOILGRIDS_SAMPLING_REPROJECTION_METHOD
+        || tile.container_s2_cell_id != container_s2_cell_id
+        || tile.target_s2_level != target_s2_level
+        || tile.cells.iter().any(|cell| cell.support_samples != 1)
+    {
+        bail!("staged SoilGrids topsoil tile differs from requested derivation");
+    }
+    Ok(())
+}
+
+struct SoilgridsLayerPackingProfile<'a> {
+    layer_id: &'a str,
+    source_inventory_digest: Digest,
+    source_set_digest: Digest,
+    property_sources: &'a [SoilGridsPropertySource],
+    container_s2_level: u8,
+    target_s2_level: u8,
+}
+
+fn write_packed_soilgrids_topsoil_layer(
+    output_directory: &Path,
+    profile: SoilgridsLayerPackingProfile<'_>,
+    projected_cells: &[SoilgridsProjectedCell],
+    values: &[SoilgridsRawCellValues],
+) -> Result<(String, Vec<u8>)> {
+    if projected_cells.len() != values.len() {
+        bail!("SoilGrids projected-cell and value counts differ");
+    }
+    let level_directory = format!("l{}", profile.container_s2_level);
+    let tile_directory = output_directory
+        .join("layers")
+        .join(profile.layer_id)
+        .join(&level_directory);
+    fs::create_dir_all(&tile_directory)?;
+    let containers = global_s2_cells_at_level(profile.container_s2_level)?;
+    let mut entries = Vec::with_capacity(containers.len());
+    let mut target_cursor = 0_usize;
+    for (position, container) in containers.into_iter().enumerate() {
+        let relative_path = format!(
+            "layers/{}/{level_directory}/{container}.tile",
+            profile.layer_id
+        );
+        let artifact_path = output_directory.join(&relative_path);
+        let expected_cells = enumerate_s2_descendants(container, profile.target_s2_level)?;
+        let bytes = match fs::read(&artifact_path) {
+            Ok(existing) => {
+                validate_resumable_soilgrids_tile(
+                    &existing,
+                    profile.layer_id,
+                    profile.source_inventory_digest,
+                    profile.source_set_digest,
+                    profile.property_sources,
+                    container,
+                    profile.target_s2_level,
+                )?;
+                existing
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let cells = expected_cells
+                    .iter()
+                    .enumerate()
+                    .map(|(cell_offset, expected_cell)| {
+                        let field_index = target_cursor
+                            .checked_add(cell_offset)
+                            .context("SoilGrids target index overflow")?;
+                        let projected = projected_cells
+                            .get(field_index)
+                            .context("SoilGrids projected field ended early")?;
+                        if projected.s2_cell_id != *expected_cell {
+                            bail!("SoilGrids projected field is not in canonical S2 order");
+                        }
+                        let property_values = values
+                            .get(field_index)
+                            .context("SoilGrids value field ended early")?
+                            .map(quantile_values);
+                        Ok(SoilGridsTopsoilCell {
+                            s2_cell_id: *expected_cell,
+                            support_samples: 1,
+                            property_values,
+                        })
+                    })
+                    .collect::<Result<Vec<_>>>()?;
+                let tile = PackedSoilGridsTopsoilTile {
+                    tile_schema_version: 1,
+                    layer_id: profile.layer_id.to_owned(),
+                    depth: SoilDepth::ZeroToFiveCentimeters,
+                    source_snapshot_digest: profile.source_inventory_digest,
+                    source_set_digest: profile.source_set_digest,
+                    property_sources: profile.property_sources.to_vec(),
+                    sampling_reprojection_method: SOILGRIDS_SAMPLING_REPROJECTION_METHOD.to_owned(),
+                    container_s2_cell_id: container,
+                    target_s2_level: profile.target_s2_level,
+                    cells,
+                };
+                let bytes = tile.canonical_bytes()?;
+                write_new_artifact(&artifact_path, &bytes)?;
+                bytes
+            }
+            Err(error) => return Err(error).context("read staged SoilGrids topsoil tile"),
+        };
+        target_cursor = target_cursor
+            .checked_add(expected_cells.len())
+            .context("SoilGrids target cursor overflow")?;
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: profile.container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+        if (position + 1) % 1_024 == 0 {
+            eprintln!(
+                "SoilGrids layer packing progress: {}/24576 containers",
+                position + 1
+            );
+        }
+    }
+    if target_cursor != projected_cells.len() {
+        bail!("SoilGrids projected field contains unconsumed target cells");
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: profile.layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{}/root.index", profile.layer_id);
+    let root_path = output_directory.join(&root_relative_path);
+    match fs::read(&root_path) {
+        Ok(existing) if existing == root_bytes => {}
+        Ok(_) => bail!("staged SoilGrids root differs from requested derivation"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_new_artifact(&root_path, &root_bytes)?;
+        }
+        Err(error) => return Err(error).context("read staged SoilGrids root"),
+    }
+    Ok((root_relative_path, root_bytes))
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsTopsoilLayerDerivation {
+    derivation_schema_version: u16,
+    status: &'static str,
+    source_inventory_digest: Digest,
+    source_set_digest: Digest,
+    proj_version: String,
+    sampling_reprojection_method: &'static str,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    target_cells: u64,
+    decoded_source_chunks: u64,
+    output_directory: String,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+}
+
+fn derive_soilgrids_topsoil_layer(
+    source_inventory: &Path,
+    artifact_root: &Path,
+    layer_id: &str,
+    output_directory: &Path,
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<()> {
+    if container_s2_level != 6 || target_s2_level != 10 {
+        bail!("provisional SoilGrids topsoil layer v1 requires L6 containers and L10 targets");
+    }
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!("SoilGrids topsoil output directory already exists");
+    }
+    let source_set = load_verified_soilgrids_source_set(source_inventory, artifact_root)?;
+    let source_set_digest = soilgrids_source_set_digest(&source_set.property_sources);
+    let projection = project_global_s2_centres_to_soilgrids(target_s2_level)?;
+    let sampled = sample_global_soilgrids_topsoil(artifact_root, &source_set, &projection.cells)?;
+    let staging_directory =
+        prepare_or_resume_layer_staging_directory(output_directory, "SoilGrids topsoil")?;
+    let (root_index_path, root_bytes) = write_packed_soilgrids_topsoil_layer(
+        &staging_directory,
+        SoilgridsLayerPackingProfile {
+            layer_id,
+            source_inventory_digest: source_set.inventory_digest,
+            source_set_digest,
+            property_sources: &source_set.property_sources,
+            container_s2_level,
+            target_s2_level,
+        },
+        &projection.cells,
+        &sampled.values,
+    )?;
+    fs::rename(&staging_directory, output_directory).with_context(|| {
+        format!(
+            "atomically publish SoilGrids topsoil directory {}",
+            output_directory.display()
+        )
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string(&SoilgridsTopsoilLayerDerivation {
+            derivation_schema_version: 1,
+            status: "provisional-not-scientifically-admitted",
+            source_inventory_digest: source_set.inventory_digest,
+            source_set_digest,
+            proj_version: projection.proj_version,
+            sampling_reprojection_method: SOILGRIDS_SAMPLING_REPROJECTION_METHOD,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            target_cells: u64::try_from(sampled.values.len())?,
+            decoded_source_chunks: sampled.decoded_source_chunks,
+            output_directory: output_directory.display().to_string(),
+            root_index_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Default, Serialize)]
+struct SoilgridsQuantileInspection {
+    no_data_cells: u64,
+    minimum_source_value: Option<i16>,
+    maximum_source_value: Option<i16>,
+}
+
+impl SoilgridsQuantileInspection {
+    fn observe(&mut self, value: i16) -> Result<()> {
+        if value == SOILGRIDS_NO_DATA_VALUE {
+            self.no_data_cells = self
+                .no_data_cells
+                .checked_add(1)
+                .context("SoilGrids no-data count overflow")?;
+        } else {
+            self.minimum_source_value = Some(
+                self.minimum_source_value
+                    .map_or(value, |minimum| minimum.min(value)),
+            );
+            self.maximum_source_value = Some(
+                self.maximum_source_value
+                    .map_or(value, |maximum| maximum.max(value)),
+            );
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsPropertyInspection {
+    property: &'static str,
+    quantiles: Vec<SoilgridsNamedQuantileInspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsNamedQuantileInspection {
+    quantile: &'static str,
+    #[serde(flatten)]
+    summary: SoilgridsQuantileInspection,
+}
+
+#[derive(Debug, Serialize)]
+struct SoilgridsTopsoilLayerInspection {
+    inspection_schema_version: u16,
+    status: &'static str,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    depth: &'static str,
+    sampling_reprojection_method: String,
+    source_inventory_digest: Digest,
+    source_set_digest: Digest,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+    tile_count: u64,
+    target_cell_count: u64,
+    tile_byte_length: u64,
+    properties: Vec<SoilgridsPropertyInspection>,
+}
+
+fn inspect_soilgrids_topsoil_layer(
+    input_directory: &Path,
+    layer_id: &str,
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<()> {
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_bytes = read_release_file(input_directory, &root_relative_path)?;
+    let root = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical SoilGrids topsoil root")?;
+    if root.layer_id != layer_id {
+        bail!("SoilGrids root declares an unexpected layer identifier");
+    }
+    let expected_containers = global_s2_cells_at_level(container_s2_level)?;
+    if root.entries.len() != expected_containers.len() {
+        bail!("SoilGrids root does not cover every expected container");
+    }
+    let mut source_inventory_digest = None;
+    let mut source_set_digest = None;
+    let mut property_sources: Option<Vec<SoilGridsPropertySource>> = None;
+    let mut sampling_reprojection_method = None;
+    let mut summaries = [[SoilgridsQuantileInspection::default(); 3]; 9];
+    let mut tile_byte_length = 0_u64;
+    let mut target_cell_count = 0_u64;
+    for (entry, expected_container) in root.entries.iter().zip(expected_containers) {
+        if entry.kind != TileTreeEntryKind::Tile
+            || entry.s2_level != container_s2_level
+            || entry.s2_cell_id != expected_container.to_string()
+            || entry.artifact.media_type != PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE
+        {
+            bail!("SoilGrids root contains an invalid tile entry");
+        }
+        let bytes = read_release_file(input_directory, &entry.artifact.path)?;
+        if u64::try_from(bytes.len())? != entry.artifact.byte_length
+            || Digest::sha256(&bytes) != entry.artifact.content_hash
+        {
+            bail!("SoilGrids tile fails its root reference");
+        }
+        let tile = PackedSoilGridsTopsoilTile::from_canonical_slice(&bytes)
+            .context("decode canonical SoilGrids topsoil tile")?;
+        if tile.layer_id != layer_id
+            || tile.depth != SoilDepth::ZeroToFiveCentimeters
+            || tile.container_s2_cell_id != expected_container
+            || tile.target_s2_level != target_s2_level
+            || tile.sampling_reprojection_method != SOILGRIDS_SAMPLING_REPROJECTION_METHOD
+            || tile.cells.iter().any(|cell| cell.support_samples != 1)
+        {
+            bail!("SoilGrids tile has inconsistent packing metadata");
+        }
+        if source_inventory_digest.is_some_and(|expected| expected != tile.source_snapshot_digest)
+            || source_set_digest.is_some_and(|expected| expected != tile.source_set_digest)
+            || property_sources
+                .as_ref()
+                .is_some_and(|expected| expected != &tile.property_sources)
+            || sampling_reprojection_method
+                .as_ref()
+                .is_some_and(|expected| expected != &tile.sampling_reprojection_method)
+        {
+            bail!("SoilGrids tiles disagree on provenance or sampling metadata");
+        }
+        source_inventory_digest.get_or_insert(tile.source_snapshot_digest);
+        source_set_digest.get_or_insert(tile.source_set_digest);
+        property_sources.get_or_insert(tile.property_sources);
+        sampling_reprojection_method.get_or_insert(tile.sampling_reprojection_method);
+        for cell in &tile.cells {
+            for (property_index, property) in cell.property_values.iter().enumerate() {
+                for (quantile_index, value) in [property.q0_05, property.q0_5, property.q0_95]
+                    .into_iter()
+                    .enumerate()
+                {
+                    summaries[property_index][quantile_index].observe(value)?;
+                }
+            }
+        }
+        tile_byte_length = tile_byte_length
+            .checked_add(entry.artifact.byte_length)
+            .context("SoilGrids tile byte total overflow")?;
+        target_cell_count = target_cell_count
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("SoilGrids target-cell total overflow")?;
+    }
+    let properties = SOILGRIDS_TOPSOIL_PROPERTIES
+        .iter()
+        .enumerate()
+        .map(|(property_index, property)| SoilgridsPropertyInspection {
+            property,
+            quantiles: SOILGRIDS_TOPSOIL_QUANTILES
+                .iter()
+                .enumerate()
+                .map(
+                    |(quantile_index, quantile)| SoilgridsNamedQuantileInspection {
+                        quantile,
+                        summary: summaries[property_index][quantile_index],
+                    },
+                )
+                .collect(),
+        })
+        .collect();
+    println!(
+        "{}",
+        serde_json::to_string(&SoilgridsTopsoilLayerInspection {
+            inspection_schema_version: 1,
+            status: "provisional-not-scientifically-admitted",
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            depth: SOILGRIDS_DEPTH,
+            sampling_reprojection_method: sampling_reprojection_method
+                .context("SoilGrids root is empty")?,
+            source_inventory_digest: source_inventory_digest.context("SoilGrids root is empty")?,
+            source_set_digest: source_set_digest.context("SoilGrids root is empty")?,
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+            tile_count: u64::try_from(root.entries.len())?,
+            target_cell_count,
+            tile_byte_length,
+            properties,
+        })?
+    );
+    Ok(())
 }
 
 #[derive(Serialize)]
@@ -4295,6 +6393,49 @@ fn f32_bits_to_rounded_millimetres(bits: u32) -> Result<i64> {
     i64::try_from(millimetres).context("ETOPO value is outside signed millimetre range")
 }
 
+/// Convert a finite IEEE-754 binary64 source value to a nearest-even fixed integer
+/// without performing host floating-point multiplication or casting at the boundary.
+fn f64_bits_to_rounded_scaled_integer(bits: u64, scale: i128) -> Result<i128> {
+    if scale <= 0 {
+        bail!("fixed-point scale must be positive");
+    }
+    let sign = if bits >> 63 == 0 { 1_i128 } else { -1_i128 };
+    let exponent = ((bits >> 52) & 0x7ff) as i32;
+    let fraction = bits & 0x000f_ffff_ffff_ffff;
+    if exponent == 0x7ff {
+        bail!("binary64 source value is not finite");
+    }
+    let (significand, power) = if exponent == 0 {
+        (i128::from(fraction), -1074)
+    } else {
+        (i128::from((1_u64 << 52) | fraction), exponent - 1075)
+    };
+    let numerator = sign
+        .checked_mul(significand)
+        .and_then(|value| value.checked_mul(scale))
+        .context("binary64 fixed-point numerator overflow")?;
+    if power >= 0 {
+        numerator
+            .checked_shl(u32::try_from(power)?)
+            .context("binary64 fixed-point conversion overflow")
+    } else {
+        let divisor_shift = u32::try_from(-power)?;
+        if divisor_shift > 127 {
+            Ok(0)
+        } else if divisor_shift == 127 {
+            let half = 1_u128 << 126;
+            Ok(if numerator.unsigned_abs() > half {
+                numerator.signum()
+            } else {
+                // Exactly one half ties to the even integer zero.
+                0
+            })
+        } else {
+            Ok(round_divide_i128(numerator, 1_i128 << divisor_shift))
+        }
+    }
+}
+
 fn round_divide_i128(numerator: i128, denominator: i128) -> i128 {
     debug_assert!(denominator > 0);
     let quotient = numerator / denominator;
@@ -4408,6 +6549,8 @@ struct EtopoVariableInspection {
 
 const CHELSA_LATITUDE_CELLS: u64 = 20_880;
 const CHELSA_LONGITUDE_CELLS: u64 = 43_200;
+const CHELSA_SOURCE_CHUNK_CELLS: u32 = 500;
+const CHELSA_MISSING_MILLICELSIUS: i64 = i64::MIN;
 
 #[derive(Serialize)]
 struct ChelsaJanuaryTemperatureInspection {
@@ -6216,6 +8359,35 @@ impl ChelsaGridAxes {
         let column = nearest_sorted_e7_index(&self.longitudes_e7, coordinate.longitude_e7())?;
         Ok((u64::try_from(row)?, u64::try_from(column)?))
     }
+
+    fn nearest_cell_if_covered(
+        &self,
+        coordinate: GeographicCoordinateE7,
+    ) -> Result<Option<(u32, u32)>> {
+        let latitude = coordinate.latitude_e7();
+        let longitude = coordinate.longitude_e7();
+        if self
+            .latitudes_e7
+            .first()
+            .is_none_or(|minimum| latitude < *minimum)
+            || self
+                .latitudes_e7
+                .last()
+                .is_none_or(|maximum| latitude > *maximum)
+            || self
+                .longitudes_e7
+                .first()
+                .is_none_or(|minimum| longitude < *minimum)
+            || self
+                .longitudes_e7
+                .last()
+                .is_none_or(|maximum| longitude > *maximum)
+        {
+            return Ok(None);
+        }
+        let (row, column) = self.nearest_cell(coordinate)?;
+        Ok(Some((u32::try_from(row)?, u32::try_from(column)?)))
+    }
 }
 
 fn inspect_chelsa_january_temperature(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
@@ -6530,6 +8702,603 @@ fn chelsa_annual_temperature_artifacts(
         }
     }
     Ok(artifacts)
+}
+
+struct VerifiedChelsaAnnualTemperature {
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_set_digest: Digest,
+    source_artifacts: Vec<SeasonalSourceArtifact>,
+    axes: ChelsaGridAxes,
+    files: Vec<NcFile>,
+}
+
+fn open_verified_chelsa_annual_temperature(
+    manifest_path: &Path,
+    artifact_root: &Path,
+) -> Result<VerifiedChelsaAnnualTemperature> {
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let artifacts = chelsa_annual_temperature_artifacts(&snapshot)?;
+    let mut artifact_set_hasher = Sha256::new();
+    artifact_set_hasher.update(b"a-tiny-civilization:chelsa-monthly-tas-artifact-set:v1\0");
+    let mut files = Vec::with_capacity(12);
+    let mut source_artifacts = Vec::with_capacity(12);
+    for (month, artifact) in artifacts.into_iter().enumerate() {
+        artifact_set_hasher.update(u64::try_from(artifact.artifact_path.len())?.to_le_bytes());
+        artifact_set_hasher.update(artifact.artifact_path.as_bytes());
+        artifact_set_hasher.update(artifact.byte_length.to_le_bytes());
+        artifact_set_hasher.update(artifact.content_hash.as_bytes());
+        let file = NcFile::open(artifact_root.join(&artifact.artifact_path))
+            .with_context(|| format!("open CHELSA monthly normal {}", artifact.artifact_path))?;
+        validate_chelsa_january_temperature_schema(&file)?;
+        files.push(file);
+        source_artifacts.push(SeasonalSourceArtifact {
+            digest: artifact.content_hash,
+            phase_mask: 1_u16 << month,
+        });
+    }
+    source_artifacts.sort_by_key(|artifact| artifact.digest);
+    let axes = read_chelsa_grid_axes(files.first().context("CHELSA annual source has no files")?)?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    Ok(VerifiedChelsaAnnualTemperature {
+        source_snapshot_id: snapshot.snapshot_id,
+        source_snapshot_digest,
+        source_artifact_set_digest: Digest::from_bytes(artifact_set_hasher.finalize().into()),
+        source_artifacts,
+        axes,
+        files,
+    })
+}
+
+struct ChelsaMonthlyTemperatureChunk {
+    last_used: u64,
+    width: u32,
+    height: u32,
+    monthly_raw: Vec<Vec<f32>>,
+}
+
+struct ChelsaMonthlyTemperatureChunkCache<'a> {
+    files: &'a [NcFile],
+    capacity: usize,
+    access_clock: u64,
+    chunks_loaded: u64,
+    cache_hits: u64,
+    chunks: HashMap<(u32, u32), ChelsaMonthlyTemperatureChunk>,
+}
+
+impl<'a> ChelsaMonthlyTemperatureChunkCache<'a> {
+    fn new(files: &'a [NcFile], capacity: usize) -> Result<Self> {
+        if files.len() != 12 {
+            bail!("CHELSA monthly temperature cache requires twelve source files");
+        }
+        if !(1..=32).contains(&capacity) {
+            bail!("CHELSA source chunk cache must retain 1 through 32 monthly chunks");
+        }
+        Ok(Self {
+            files,
+            capacity,
+            access_clock: 0,
+            chunks_loaded: 0,
+            cache_hits: 0,
+            chunks: HashMap::new(),
+        })
+    }
+
+    fn load_chunk(
+        &self,
+        chunk_row: u32,
+        chunk_column: u32,
+    ) -> Result<ChelsaMonthlyTemperatureChunk> {
+        let latitude_start = u64::from(chunk_row) * u64::from(CHELSA_SOURCE_CHUNK_CELLS);
+        let longitude_start = u64::from(chunk_column) * u64::from(CHELSA_SOURCE_CHUNK_CELLS);
+        if latitude_start >= CHELSA_LATITUDE_CELLS || longitude_start >= CHELSA_LONGITUDE_CELLS {
+            bail!("CHELSA chunk address lies outside the source raster");
+        }
+        let latitude_end = latitude_start
+            .checked_add(u64::from(CHELSA_SOURCE_CHUNK_CELLS))
+            .context("CHELSA latitude chunk overflow")?
+            .min(CHELSA_LATITUDE_CELLS);
+        let longitude_end = longitude_start
+            .checked_add(u64::from(CHELSA_SOURCE_CHUNK_CELLS))
+            .context("CHELSA longitude chunk overflow")?
+            .min(CHELSA_LONGITUDE_CELLS);
+        let width = u32::try_from(longitude_end - longitude_start)?;
+        let height = u32::try_from(latitude_end - latitude_start)?;
+        let expected_values = usize::try_from(u64::from(width) * u64::from(height))?;
+        let selection = NcSliceInfo {
+            selections: vec![
+                NcSliceInfoElem::Slice {
+                    start: latitude_start,
+                    end: latitude_end,
+                    step: 1,
+                },
+                NcSliceInfoElem::Slice {
+                    start: longitude_start,
+                    end: longitude_end,
+                    step: 1,
+                },
+            ],
+        };
+        let mut monthly_raw = Vec::with_capacity(12);
+        for (offset, file) in self.files.iter().enumerate() {
+            let values = file
+                .read_variable_slice::<f32>("Band1", &selection)
+                .with_context(|| {
+                    format!(
+                        "read CHELSA month {} source chunk {chunk_row},{chunk_column}",
+                        offset + 1
+                    )
+                })?;
+            let values = values
+                .as_slice()
+                .context("CHELSA monthly source chunk is not contiguous")?;
+            if values.len() != expected_values {
+                bail!("CHELSA monthly source chunk has an unexpected sample count");
+            }
+            monthly_raw.push(values.to_vec());
+        }
+        Ok(ChelsaMonthlyTemperatureChunk {
+            last_used: 0,
+            width,
+            height,
+            monthly_raw,
+        })
+    }
+
+    fn lookup(&mut self, row: u32, column: u32) -> Result<[i64; 12]> {
+        if u64::from(row) >= CHELSA_LATITUDE_CELLS || u64::from(column) >= CHELSA_LONGITUDE_CELLS {
+            bail!("CHELSA source lookup lies outside its raster");
+        }
+        let key = (
+            row / CHELSA_SOURCE_CHUNK_CELLS,
+            column / CHELSA_SOURCE_CHUNK_CELLS,
+        );
+        if !self.chunks.contains_key(&key) {
+            if self.chunks.len() == self.capacity {
+                let oldest = self
+                    .chunks
+                    .iter()
+                    .min_by_key(|(_, chunk)| chunk.last_used)
+                    .map(|(key, _)| *key)
+                    .context("nonempty CHELSA cache has no oldest chunk")?;
+                self.chunks.remove(&oldest);
+            }
+            let chunk = self.load_chunk(key.0, key.1)?;
+            self.chunks.insert(key, chunk);
+            self.chunks_loaded = self
+                .chunks_loaded
+                .checked_add(1)
+                .context("CHELSA source chunk load count overflow")?;
+        } else {
+            self.cache_hits = self
+                .cache_hits
+                .checked_add(1)
+                .context("CHELSA source cache hit count overflow")?;
+        }
+        self.access_clock = self
+            .access_clock
+            .checked_add(1)
+            .context("CHELSA source cache clock overflow")?;
+        let chunk = self
+            .chunks
+            .get_mut(&key)
+            .context("CHELSA source chunk disappeared from cache")?;
+        chunk.last_used = self.access_clock;
+        let local_row = row % CHELSA_SOURCE_CHUNK_CELLS;
+        let local_column = column % CHELSA_SOURCE_CHUNK_CELLS;
+        if local_row >= chunk.height || local_column >= chunk.width {
+            bail!("CHELSA local source address exceeds an edge chunk");
+        }
+        let index = usize::try_from(
+            u64::from(local_row)
+                .checked_mul(u64::from(chunk.width))
+                .and_then(|value| value.checked_add(u64::from(local_column)))
+                .context("CHELSA chunk index overflow")?,
+        )?;
+        let monthly = chunk
+            .monthly_raw
+            .iter()
+            .map(|values| {
+                let raw = *values.get(index).context("CHELSA chunk sample is absent")?;
+                if raw.to_bits() == (-2_147_483_648_f32).to_bits() {
+                    Ok(CHELSA_MISSING_MILLICELSIUS)
+                } else {
+                    chelsa_raw_tas_to_millicelsius(raw)
+                }
+            })
+            .collect::<Result<Vec<_>>>()?;
+        monthly
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("CHELSA monthly vector does not contain twelve values"))
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct ChelsaAnnualTemperatureLayerDerivation {
+    derivation_schema_version: u16,
+    status: &'static str,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    source_artifact_set_digest: Digest,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    sample_policy: &'static str,
+    missing_value: String,
+    target_cells: u64,
+    source_chunks_loaded: u64,
+    source_chunk_cache_hits: u64,
+    output_directory: String,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+}
+
+fn derive_chelsa_annual_temperature_layer(
+    source_snapshot: &Path,
+    artifact_root: &Path,
+    layer_id: &str,
+    output_directory: &Path,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    source_chunk_cache: usize,
+) -> Result<()> {
+    if container_s2_level != 6 || target_s2_level != 10 {
+        bail!(
+            "provisional CHELSA annual-temperature layer v1 requires L6 containers and L10 targets"
+        );
+    }
+    if fs::symlink_metadata(output_directory).is_ok() {
+        bail!("CHELSA annual-temperature output directory already exists");
+    }
+    let source = open_verified_chelsa_annual_temperature(source_snapshot, artifact_root)?;
+    let mut cache = ChelsaMonthlyTemperatureChunkCache::new(&source.files, source_chunk_cache)?;
+    let staging_directory =
+        prepare_or_resume_layer_staging_directory(output_directory, "CHELSA annual temperature")?;
+    let (root_index_path, root_bytes) = write_packed_chelsa_annual_temperature_layer(
+        &staging_directory,
+        layer_id,
+        source.source_snapshot_digest,
+        &source.source_artifacts,
+        &source.axes,
+        container_s2_level,
+        target_s2_level,
+        &mut cache,
+    )?;
+    let source_chunks_loaded = cache.chunks_loaded;
+    let source_chunk_cache_hits = cache.cache_hits;
+    drop(cache);
+    fs::rename(&staging_directory, output_directory).with_context(|| {
+        format!(
+            "atomically publish CHELSA annual-temperature directory {}",
+            output_directory.display()
+        )
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaAnnualTemperatureLayerDerivation {
+            derivation_schema_version: 1,
+            status: "provisional-not-scientifically-admitted",
+            source_snapshot_id: source.source_snapshot_id,
+            source_snapshot_digest: source.source_snapshot_digest,
+            source_artifact_set_digest: source.source_artifact_set_digest,
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            sample_policy: "s2-cell-centre-nearest-chelsa-axis-cell-v1",
+            missing_value: CHELSA_MISSING_MILLICELSIUS.to_string(),
+            target_cells: u64::try_from(global_s2_cells_at_level(target_s2_level)?.len())?,
+            source_chunks_loaded,
+            source_chunk_cache_hits,
+            output_directory: output_directory.display().to_string(),
+            root_index_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+        })?
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn write_packed_chelsa_annual_temperature_layer(
+    output_directory: &Path,
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifacts: &[SeasonalSourceArtifact],
+    axes: &ChelsaGridAxes,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    cache: &mut ChelsaMonthlyTemperatureChunkCache<'_>,
+) -> Result<(String, Vec<u8>)> {
+    let level_directory = format!("l{container_s2_level}");
+    let tile_directory = output_directory
+        .join("layers")
+        .join(layer_id)
+        .join(&level_directory);
+    fs::create_dir_all(&tile_directory)?;
+    let containers = global_s2_cells_at_level(container_s2_level)?;
+    let mut entries = Vec::with_capacity(containers.len());
+    for (position, container) in containers.into_iter().enumerate() {
+        let relative_path = format!("layers/{layer_id}/{level_directory}/{container}.tile");
+        let artifact_path = output_directory.join(&relative_path);
+        let bytes = match fs::read(&artifact_path) {
+            Ok(existing) => {
+                validate_resumable_chelsa_annual_temperature_tile(
+                    &existing,
+                    layer_id,
+                    source_snapshot_digest,
+                    source_artifacts,
+                    container,
+                    target_s2_level,
+                )?;
+                existing
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let tile = pack_chelsa_annual_temperature_tile(
+                    layer_id,
+                    source_snapshot_digest,
+                    source_artifacts,
+                    axes,
+                    container,
+                    target_s2_level,
+                    cache,
+                )?;
+                let bytes = tile.canonical_bytes()?;
+                write_new_artifact(&artifact_path, &bytes)?;
+                bytes
+            }
+            Err(error) => return Err(error).context("read staged CHELSA temperature tile"),
+        };
+        entries.push(TileTreeEntry {
+            kind: TileTreeEntryKind::Tile,
+            s2_cell_id: container.to_string(),
+            s2_level: container_s2_level,
+            artifact: TileArtifactReference {
+                path: relative_path,
+                media_type: PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE.to_owned(),
+                content_hash: Digest::sha256(&bytes),
+                byte_length: u64::try_from(bytes.len())?,
+            },
+        });
+        if (position + 1) % 1_024 == 0 {
+            eprintln!(
+                "CHELSA annual-temperature normalization progress: {}/24576 containers",
+                position + 1
+            );
+        }
+    }
+    let root = TileTreeIndex {
+        index_schema_version: 1,
+        layer_id: layer_id.to_owned(),
+        entries,
+    };
+    let root_bytes = root.canonical_bytes()?;
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_path = output_directory.join(&root_relative_path);
+    match fs::read(&root_path) {
+        Ok(existing) if existing == root_bytes => {}
+        Ok(_) => bail!("staged CHELSA annual-temperature root differs from requested derivation"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            write_new_artifact(&root_path, &root_bytes)?;
+        }
+        Err(error) => return Err(error).context("read staged CHELSA annual-temperature root"),
+    }
+    Ok((root_relative_path, root_bytes))
+}
+
+fn validate_resumable_chelsa_annual_temperature_tile(
+    bytes: &[u8],
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifacts: &[SeasonalSourceArtifact],
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+) -> Result<()> {
+    let tile = PackedSeasonalScalarFieldTile::from_canonical_slice(bytes)
+        .context("decode staged CHELSA annual-temperature tile")?;
+    if tile.layer_id != layer_id
+        || tile.unit != "degC"
+        || tile.decimal_places != 3
+        || tile.phases_per_cycle != 12
+        || tile.source_snapshot_digest != source_snapshot_digest
+        || tile.source_artifacts != source_artifacts
+        || tile.quadrature_points_per_axis != 1
+        || tile.container_s2_cell_id != container_s2_cell_id
+        || tile.target_s2_level != target_s2_level
+    {
+        bail!("staged CHELSA annual-temperature tile differs from requested derivation");
+    }
+    Ok(())
+}
+
+fn pack_chelsa_annual_temperature_tile(
+    layer_id: &str,
+    source_snapshot_digest: Digest,
+    source_artifacts: &[SeasonalSourceArtifact],
+    axes: &ChelsaGridAxes,
+    container_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+    cache: &mut ChelsaMonthlyTemperatureChunkCache<'_>,
+) -> Result<PackedSeasonalScalarFieldTile> {
+    let cells = enumerate_s2_descendants(container_s2_cell_id, target_s2_level)?
+        .into_iter()
+        .map(|s2_cell_id| {
+            let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(s2_face_ij_center_uv(
+                decode_s2_face_ij(s2_cell_id),
+            )?)?)?;
+            let monthly = if let Some((row, column)) = axes.nearest_cell_if_covered(coordinate)? {
+                cache.lookup(row, column)?
+            } else {
+                [CHELSA_MISSING_MILLICELSIUS; 12]
+            };
+            let values = monthly.to_vec();
+            Ok(SeasonalScalarFieldCell {
+                s2_cell_id,
+                support_samples_per_phase: 1,
+                minimum_values: values.clone(),
+                mean_values: values.clone(),
+                maximum_values: values,
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let tile = PackedSeasonalScalarFieldTile {
+        tile_schema_version: 2,
+        layer_id: layer_id.to_owned(),
+        unit: "degC".to_owned(),
+        decimal_places: 3,
+        phases_per_cycle: 12,
+        source_snapshot_digest,
+        source_artifacts: source_artifacts.to_vec(),
+        quadrature_points_per_axis: 1,
+        container_s2_cell_id,
+        target_s2_level,
+        cells,
+    };
+    tile.validate()
+        .context("packed CHELSA annual-temperature tile is invalid")?;
+    Ok(tile)
+}
+
+#[derive(Debug, Serialize)]
+struct ChelsaAnnualTemperatureLayerInspection {
+    inspection_schema_version: u16,
+    status: &'static str,
+    layer_id: String,
+    container_s2_level: u8,
+    target_s2_level: u8,
+    source_snapshot_digest: Digest,
+    source_artifacts: Vec<SeasonalSourceArtifact>,
+    root_index_path: String,
+    root_index_hash: Digest,
+    root_index_byte_length: u64,
+    tile_count: u64,
+    target_cell_count: u64,
+    missing_source_cells: u64,
+    monthly_minimum_millicelsius: Vec<i64>,
+    monthly_maximum_millicelsius: Vec<i64>,
+    tile_byte_length: u64,
+}
+
+fn inspect_chelsa_annual_temperature_layer(
+    input_directory: &Path,
+    layer_id: &str,
+    container_s2_level: u8,
+    target_s2_level: u8,
+) -> Result<()> {
+    let root_relative_path = format!("layers/{layer_id}/root.index");
+    let root_bytes = read_release_file(input_directory, &root_relative_path)?;
+    let root = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical CHELSA annual-temperature root")?;
+    if root.layer_id != layer_id {
+        bail!("CHELSA annual-temperature root declares an unexpected layer identifier");
+    }
+    let expected_containers = global_s2_cells_at_level(container_s2_level)?;
+    if root.entries.len() != expected_containers.len() {
+        bail!("CHELSA annual-temperature root does not cover every expected container");
+    }
+    let mut source_snapshot_digest = None;
+    let mut source_artifacts = None;
+    let mut tile_byte_length = 0_u64;
+    let mut target_cell_count = 0_u64;
+    let mut missing_source_cells = 0_u64;
+    let mut monthly_minimum = [i64::MAX; 12];
+    let mut monthly_maximum = [i64::MIN; 12];
+    for (entry, expected_container) in root.entries.iter().zip(expected_containers) {
+        if entry.kind != TileTreeEntryKind::Tile
+            || entry.s2_level != container_s2_level
+            || entry.s2_cell_id != expected_container.to_string()
+            || entry.artifact.media_type != PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE
+        {
+            bail!("CHELSA annual-temperature root contains an invalid tile entry");
+        }
+        let bytes = read_release_file(input_directory, &entry.artifact.path)?;
+        if u64::try_from(bytes.len())? != entry.artifact.byte_length
+            || Digest::sha256(&bytes) != entry.artifact.content_hash
+        {
+            bail!("CHELSA annual-temperature tile fails its root reference");
+        }
+        let tile = PackedSeasonalScalarFieldTile::from_canonical_slice(&bytes)
+            .context("decode canonical CHELSA annual-temperature tile")?;
+        if tile.layer_id != layer_id
+            || tile.unit != "degC"
+            || tile.decimal_places != 3
+            || tile.phases_per_cycle != 12
+            || tile.quadrature_points_per_axis != 1
+            || tile.container_s2_cell_id != expected_container
+            || tile.target_s2_level != target_s2_level
+        {
+            bail!("CHELSA annual-temperature tile has inconsistent packing metadata");
+        }
+        match source_snapshot_digest {
+            Some(expected) if expected != tile.source_snapshot_digest => {
+                bail!("CHELSA annual-temperature tiles disagree on source snapshot")
+            }
+            None => source_snapshot_digest = Some(tile.source_snapshot_digest),
+            _ => {}
+        }
+        match source_artifacts.as_ref() {
+            Some(expected) if expected != &tile.source_artifacts => {
+                bail!("CHELSA annual-temperature tiles disagree on source artifacts")
+            }
+            None => source_artifacts = Some(tile.source_artifacts.clone()),
+            _ => {}
+        }
+        for cell in &tile.cells {
+            if cell.minimum_values != cell.mean_values || cell.mean_values != cell.maximum_values {
+                bail!("CHELSA centre-sampled temperature cell contains a non-point range");
+            }
+            if cell
+                .mean_values
+                .iter()
+                .all(|value| *value == CHELSA_MISSING_MILLICELSIUS)
+            {
+                missing_source_cells = missing_source_cells
+                    .checked_add(1)
+                    .context("CHELSA missing-cell count overflow")?;
+                continue;
+            }
+            for (month, value) in cell.mean_values.iter().copied().enumerate() {
+                if value != CHELSA_MISSING_MILLICELSIUS {
+                    monthly_minimum[month] = monthly_minimum[month].min(value);
+                    monthly_maximum[month] = monthly_maximum[month].max(value);
+                }
+            }
+        }
+        tile_byte_length = tile_byte_length
+            .checked_add(entry.artifact.byte_length)
+            .context("CHELSA annual-temperature tile byte total overflow")?;
+        target_cell_count = target_cell_count
+            .checked_add(u64::try_from(tile.cells.len())?)
+            .context("CHELSA annual-temperature target cell total overflow")?;
+    }
+    if monthly_minimum.contains(&i64::MAX) || monthly_maximum.contains(&i64::MIN) {
+        bail!("CHELSA annual-temperature release contains no observed source values");
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&ChelsaAnnualTemperatureLayerInspection {
+            inspection_schema_version: 1,
+            status: "provisional-not-scientifically-admitted",
+            layer_id: layer_id.to_owned(),
+            container_s2_level,
+            target_s2_level,
+            source_snapshot_digest: source_snapshot_digest
+                .context("CHELSA annual-temperature root contains no tiles")?,
+            source_artifacts: source_artifacts
+                .context("CHELSA annual-temperature root contains no tiles")?,
+            root_index_path: root_relative_path,
+            root_index_hash: Digest::sha256(&root_bytes),
+            root_index_byte_length: u64::try_from(root_bytes.len())?,
+            tile_count: u64::try_from(root.entries.len())?,
+            target_cell_count,
+            missing_source_cells,
+            monthly_minimum_millicelsius: monthly_minimum.to_vec(),
+            monthly_maximum_millicelsius: monthly_maximum.to_vec(),
+            tile_byte_length,
+        })?
+    );
+    Ok(())
 }
 
 fn read_chelsa_grid_axes(file: &NcFile) -> Result<ChelsaGridAxes> {
@@ -7918,6 +10687,29 @@ mod tests {
     }
 
     #[test]
+    fn ephemeris_binary64_values_cross_to_fixed_scale_with_nearest_even_rounding() {
+        assert_eq!(
+            f64_bits_to_rounded_scaled_integer(1.5_f64.to_bits(), 1).expect("exact positive tie"),
+            2
+        );
+        assert_eq!(
+            f64_bits_to_rounded_scaled_integer(2.5_f64.to_bits(), 1).expect("exact even tie"),
+            2
+        );
+        assert_eq!(
+            f64_bits_to_rounded_scaled_integer((-1.5_f64).to_bits(), 1)
+                .expect("exact negative tie"),
+            -2
+        );
+        assert_eq!(
+            f64_bits_to_rounded_scaled_integer(42.0_f64.to_bits(), 1_000_000)
+                .expect("kilometres to millimetres"),
+            42_000_000
+        );
+        assert!(f64_bits_to_rounded_scaled_integer(f64::NAN.to_bits(), 1_000_000).is_err());
+    }
+
+    #[test]
     fn etopo_cell_centres_keep_the_pinned_area_raster_lattice() {
         let first_support = etopo_cell_support(0, 0).expect("first cell support");
         let first = first_support.centre;
@@ -8336,6 +11128,132 @@ mod tests {
     }
 
     #[test]
+    fn soilgrids_grouped_sampling_reads_each_source_chunk_for_all_requested_targets() {
+        let cells = global_s2_cells_at_level(1).expect("miniature target grid");
+        let projection = vec![
+            SoilgridsProjectedCell {
+                s2_cell_id: cells[0],
+                overview_row: 0,
+                overview_column: 0,
+            },
+            SoilgridsProjectedCell {
+                s2_cell_id: cells[1],
+                overview_row: 1,
+                overview_column: 1,
+            },
+            SoilgridsProjectedCell {
+                s2_cell_id: cells[2],
+                overview_row: 129,
+                overview_column: 130,
+            },
+            SoilgridsProjectedCell {
+                s2_cell_id: cells[3],
+                overview_row: -1,
+                overview_column: 0,
+            },
+        ];
+        let groups = group_soilgrids_projection_by_source_chunk(&projection, 256, 256)
+            .expect("group projected targets");
+        assert_eq!(groups.chunks_across, 2);
+        assert_eq!(groups.requests.len(), 4);
+        assert_eq!(groups.requests[0].len(), 2);
+        assert_eq!(groups.requests[3].len(), 1);
+        assert!(groups.requests[1].is_empty());
+        assert!(groups.requests[2].is_empty());
+
+        let mut values = vec![[[SOILGRIDS_NO_DATA_VALUE; 3]; 9]; projection.len()];
+        apply_soilgrids_decoded_chunk(
+            SoilgridsDecodedChunk {
+                decoded: &TiffDecodingResult::I16(vec![11, 12, 13, 14]),
+                data_width: 2,
+                data_height: 2,
+                source_width: 2,
+                source_height: 2,
+                property_index: 0,
+                quantile_index: 1,
+            },
+            &groups.requests[0],
+            &mut values,
+        )
+        .expect("apply one decoded source chunk");
+        assert_eq!(values[0][0][1], 11);
+        assert_eq!(values[1][0][1], 14);
+        assert_eq!(values[2][0][1], SOILGRIDS_NO_DATA_VALUE);
+        assert_eq!(values[3][0][1], SOILGRIDS_NO_DATA_VALUE);
+    }
+
+    #[test]
+    fn miniature_soilgrids_layer_round_trips_through_independent_inspection() {
+        let root = temporary_root("soilgrids-layer");
+        let projected_cells = global_s2_cells_at_level(1)
+            .expect("miniature target grid")
+            .into_iter()
+            .map(|s2_cell_id| SoilgridsProjectedCell {
+                s2_cell_id,
+                overview_row: 0,
+                overview_column: 0,
+            })
+            .collect::<Vec<_>>();
+        let values = projected_cells
+            .iter()
+            .enumerate()
+            .map(|(cell_index, _)| {
+                std::array::from_fn(|property_index| {
+                    std::array::from_fn(|quantile_index| {
+                        if cell_index == 0 && property_index == 0 && quantile_index == 0 {
+                            SOILGRIDS_NO_DATA_VALUE
+                        } else {
+                            i16::try_from(property_index * 100 + quantile_index * 10 + cell_index)
+                                .expect("miniature source value")
+                        }
+                    })
+                })
+            })
+            .collect::<Vec<SoilgridsRawCellValues>>();
+        let property_sources = (0..SOILGRIDS_TOPSOIL_PROPERTIES.len())
+            .map(|property_index| SoilGridsPropertySource {
+                property: soilgrids_property(property_index).expect("canonical property"),
+                quantile_artifact_digests: std::array::from_fn(|quantile_index| {
+                    Digest::sha256(&[property_index as u8, quantile_index as u8])
+                }),
+            })
+            .collect::<Vec<_>>();
+        let source_set_digest = soilgrids_source_set_digest(&property_sources);
+        let (root_path, root_bytes) = write_packed_soilgrids_topsoil_layer(
+            &root,
+            SoilgridsLayerPackingProfile {
+                layer_id: "soilgrids-topsoil",
+                source_inventory_digest: Digest::sha256(b"inventory"),
+                source_set_digest,
+                property_sources: &property_sources,
+                container_s2_level: 0,
+                target_s2_level: 1,
+            },
+            &projected_cells,
+            &values,
+        )
+        .expect("write miniature SoilGrids layer");
+        assert_eq!(
+            fs::read(root.join(root_path)).expect("root bytes"),
+            root_bytes
+        );
+        inspect_soilgrids_topsoil_layer(&root, "soilgrids-topsoil", 0, 1)
+            .expect("independently inspect miniature SoilGrids layer");
+        let index = TileTreeIndex::from_canonical_slice(&root_bytes).expect("root index");
+        assert_eq!(index.entries.len(), 6);
+        let first_tile = PackedSoilGridsTopsoilTile::from_canonical_slice(
+            &fs::read(root.join(&index.entries[0].artifact.path)).expect("first tile bytes"),
+        )
+        .expect("first tile");
+        assert_eq!(first_tile.cells.len(), 4);
+        assert_eq!(
+            first_tile.cells[0].property_values[0].q0_05,
+            SOILGRIDS_NO_DATA_VALUE
+        );
+        fs::remove_dir_all(root).expect("remove SoilGrids test root");
+    }
+
+    #[test]
     fn gbif_catalog_strings_round_trip_utf8_without_delimiter_assumptions() {
         let mut bytes = Vec::new();
         write_length_prefixed_utf8(&mut bytes, "Loxodonta africana\t🐘")
@@ -8355,6 +11273,41 @@ mod tests {
         assert_eq!(differences, [10, 12, 10, 15]);
         assert_eq!(jrc_coordinate_code(-180, 'W', 'E'), "180W");
         assert_eq!(jrc_coordinate_code(0, 'S', 'N'), "0N");
+    }
+
+    #[test]
+    fn jrc_coordinate_lookup_preserves_tile_boundaries_and_polar_absence() {
+        let address = jrc_occurrence_sample_address(
+            GeographicCoordinateE7::new(351_234_567, -927_654_321).expect("coordinate"),
+        )
+        .expect("covered JRC coordinate");
+        assert_eq!(address.tile.west_degrees, -100);
+        assert_eq!(address.tile.north_degrees, 40);
+        assert_eq!(address.row, 19_506);
+        assert_eq!(address.column, 28_938);
+        assert_eq!(
+            address.tile.relative_path(),
+            "jrc-global-surface-water-v1-5-2024/occurrence/occurrence_100W_40N_v1_5_2024.tif"
+        );
+
+        let equator =
+            jrc_occurrence_sample_address(GeographicCoordinateE7::new(0, 0).expect("equator"))
+                .expect("equator is covered");
+        assert_eq!(equator.tile.north_degrees, 0);
+        assert_eq!(equator.row, 0);
+        assert_eq!(equator.column, 0);
+        assert!(
+            jrc_occurrence_sample_address(
+                GeographicCoordinateE7::new(-600_000_000, 0).expect("60 south")
+            )
+            .is_none()
+        );
+        assert!(
+            jrc_occurrence_sample_address(
+                GeographicCoordinateE7::new(800_000_001, 0).expect("north gap")
+            )
+            .is_none()
+        );
     }
 
     #[test]

@@ -1,15 +1,23 @@
 //! Durable, replay-safe domain primitives shared by the engine and its adapters.
 
+mod celestial;
 mod configuration;
 mod embodiment;
 mod event;
 mod geographic;
 mod hash;
 mod identity;
+mod illumination;
 mod manifest;
+mod solar;
 mod spatial;
+mod tide;
 mod time;
 
+pub use celestial::{
+    CartesianAxis, CartesianMillimetres, CelestialError, CelestialState, TdbSecondsSinceJ2000,
+    TickDurationSeconds, tdb_seconds_at_tick,
+};
 pub use configuration::{
     CapacityExhaustionPolicy, EarthResolutionLevels, ExecutionScale, FullEarthGrid,
     LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION, PartitionedExecution, PersonRepresentation,
@@ -32,8 +40,20 @@ pub use geographic::{
 };
 pub use hash::{CanonicalHashError, Digest};
 pub use identity::{EntityId, EventId, WorldId};
+pub use illumination::{
+    EarthFixedSunVector, EcefSurfacePosition, IlluminationGeometryError, LocalIlluminationGeometry,
+    RadialHorizonClassification, SunVectorFrame,
+};
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
+pub use solar::{
+    CanonicalPositiveRational, PinnedSolarReferenceDistance, SolarDistanceForcing,
+    SolarDistanceForcingError,
+};
 pub use spatial::{MAX_S2_LEVEL, S2CellId, S2CellIdError};
+pub use tide::{
+    SignedSquaredMillimetres, SquaredMillimetres, TideBody, TideBodyGeometry, TideGeometry,
+    TideGeometryError,
+};
 pub use time::{EventSequence, SequenceOverflow, SimTick, TimeOverflow, WorldSeed};
 
 use serde::{Deserialize, Serialize};
