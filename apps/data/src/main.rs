@@ -21,17 +21,18 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, FaunaRangeCandidateSet, LandCoverClassCount,
-    LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
-    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
-    PackedScalarFieldTile, PackedScalarTerrainTile, PackedSeasonalScalarFieldTile,
-    PackedSoilGridsTopsoilTile, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
-    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
-    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
-    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
-    WorldDataBundle, soilgrids_source_set_digest,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, FaunaRangeCandidateSet, FaunaSeededSelection,
+    LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
+    PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+    PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
+    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
+    PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
+    SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell,
+    SeasonalSourceArtifact, SoilDepth, SoilGridsProperty, SoilGridsPropertySource,
+    SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact, SourceSnapshotManifest,
+    TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
+    soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -40,8 +41,9 @@ use world_data_filesystem::{
 use world_domain::{
     CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
     GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId, S2FaceUv, TdbSecondsSinceJ2000,
-    WorldConfiguration, decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
-    s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
+    WorldConfiguration, WorldSeed, decode_s2_face_ij, route_geographic_to_s2,
+    route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray,
+    s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -105,6 +107,13 @@ enum InspectCommand {
     FaunaRangeCandidateSet {
         #[arg(long)]
         input: PathBuf,
+    },
+    /// Validate a canonical seed-derived fauna selection against its candidate pool.
+    FaunaSeededSelection {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
     },
     /// Compare retained fauna-source names against the frozen accepted GBIF catalog.
     /// This only reports exact-name matches; it never guesses synonym mappings.
@@ -399,6 +408,24 @@ enum InspectCommand {
 
 #[derive(Debug, Subcommand)]
 enum DeriveCommand {
+    /// Select a bounded, seed-derived subset of one exact local modeled-range pool.
+    ///
+    /// This creates no organisms and makes no abundance claim. It only makes the
+    /// later population planner's source candidates and selection procedure auditable.
+    FaunaSeededSelection {
+        /// Canonical `FaunaRangeCandidateSet` bytes from the range-query tool.
+        #[arg(long)]
+        candidates: PathBuf,
+        /// Publicly committed world seed used for the deterministic ranking.
+        #[arg(long)]
+        world_seed: u64,
+        /// Maximum number of species candidates to retain. Must be nonzero.
+        #[arg(long)]
+        species_limit: u32,
+        /// New output path. Existing artifacts are never replaced.
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Preserve a regular, evenly sampled ETOPO elevation grid as portable canonical bytes.
     ///
     /// This is a provenance-bound intermediate artifact, not yet a canonical world-data
@@ -621,6 +648,9 @@ async fn main() -> Result<()> {
             InspectCommand::FaunaRangeCandidateSet { input } => {
                 inspect_fauna_range_candidate_set(&input)
             }
+            InspectCommand::FaunaSeededSelection { input, candidates } => {
+                inspect_fauna_seeded_selection(&input, &candidates)
+            }
             InspectCommand::NaturalEarthLand {
                 source_snapshot,
                 artifact_root,
@@ -827,6 +857,17 @@ async fn main() -> Result<()> {
             } => inspect_jpl_de441_epoch(&input_directory, tdb_seconds_from_j2000),
         },
         Command::Derive { command } => match command {
+            DeriveCommand::FaunaSeededSelection {
+                candidates,
+                world_seed,
+                species_limit,
+                output,
+            } => derive_fauna_seeded_selection(
+                &candidates,
+                WorldSeed::new(world_seed),
+                species_limit,
+                &output,
+            ),
             DeriveCommand::EtopoGrid {
                 source_snapshot,
                 artifact_root,
@@ -1443,6 +1484,80 @@ fn inspect_fauna_range_candidate_set(input: &Path) -> Result<()> {
             "latitude_e7": candidates.query_point.latitude_e7,
             "longitude_e7": candidates.query_point.longitude_e7,
             "status": "modeled-range-candidates-not-population-or-abundance",
+        }))?
+    );
+    Ok(())
+}
+
+fn derive_fauna_seeded_selection(
+    candidates_path: &Path,
+    world_seed: WorldSeed,
+    species_limit: u32,
+    output_path: &Path,
+) -> Result<()> {
+    let candidate_bytes = fs::read(candidates_path).with_context(|| {
+        format!(
+            "read fauna range candidate set {}",
+            candidates_path.display()
+        )
+    })?;
+    let candidates =
+        FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes).with_context(|| {
+            format!(
+                "validate fauna range candidate set {}",
+                candidates_path.display()
+            )
+        })?;
+    let selection = candidates
+        .select_seeded_candidates(world_seed, species_limit)
+        .context("derive deterministic fauna seeded selection")?;
+    let selection_bytes = selection
+        .canonical_bytes_against(&candidates)
+        .context("encode canonical fauna seeded selection")?;
+    write_new_artifact(output_path, &selection_bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "candidate_set_id": candidates.candidate_set_id,
+            "candidate_set_digest": selection.candidate_set_digest,
+            "content_hash": Digest::sha256(&selection_bytes),
+            "selected_candidate_count": selection.selected_candidates.len(),
+            "species_limit": selection.species_limit,
+            "status": "seeded-range-selection-not-population-or-organism-creation",
+            "world_seed": selection.world_seed,
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_fauna_seeded_selection(input: &Path, candidates_path: &Path) -> Result<()> {
+    let candidate_bytes = fs::read(candidates_path).with_context(|| {
+        format!(
+            "read fauna range candidate set {}",
+            candidates_path.display()
+        )
+    })?;
+    let candidates =
+        FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes).with_context(|| {
+            format!(
+                "validate fauna range candidate set {}",
+                candidates_path.display()
+            )
+        })?;
+    let selection_bytes = fs::read(input)
+        .with_context(|| format!("read fauna seeded selection {}", input.display()))?;
+    let selection =
+        FaunaSeededSelection::from_canonical_slice_against(&selection_bytes, &candidates)
+            .with_context(|| format!("validate fauna seeded selection {}", input.display()))?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "candidate_set_digest": selection.candidate_set_digest,
+            "content_hash": Digest::sha256(&selection_bytes),
+            "selected_candidate_count": selection.selected_candidates.len(),
+            "species_limit": selection.species_limit,
+            "status": "verified-seeded-range-selection-not-population-or-organism-creation",
+            "world_seed": selection.world_seed,
         }))?
     );
     Ok(())
