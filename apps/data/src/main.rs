@@ -1,8 +1,8 @@
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::{BTreeMap, HashMap, HashSet},
     ffi::OsStr,
     fs::{self, File, OpenOptions},
-    io::{Read, Write},
+    io::{BufRead, BufReader, Read, Seek, SeekFrom, Write},
     path::{Component, Path, PathBuf},
     time::{Duration, Instant},
 };
@@ -302,6 +302,16 @@ enum InspectCommand {
         #[arg(long)]
         input_directory: PathBuf,
     },
+    /// Inspect the frozen GBIF Backbone archive inventory before taxon normalization.
+    GbifBackbone {
+        #[arg(long)]
+        archive: PathBuf,
+    },
+    /// Verify every record in a compact derived accepted-Animalia catalog.
+    GbifAnimaliaCatalog {
+        #[arg(long)]
+        input: PathBuf,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -434,6 +444,14 @@ enum DeriveCommand {
         /// Maximum decompressed 2,025 × 2,025 source chunks retained in memory.
         #[arg(long, default_value_t = 32)]
         source_chunk_cache: usize,
+    },
+    /// Stream the frozen GBIF core into a compact catalog of accepted Animalia species.
+    GbifAnimaliaCatalog {
+        #[arg(long)]
+        archive: PathBuf,
+        /// New output path. Existing artifacts are never replaced.
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 
@@ -611,6 +629,8 @@ async fn main() -> Result<()> {
             InspectCommand::SoilgridsTopsoil { input_directory } => {
                 inspect_soilgrids_topsoil(&input_directory)
             }
+            InspectCommand::GbifBackbone { archive } => inspect_gbif_backbone(&archive),
+            InspectCommand::GbifAnimaliaCatalog { input } => inspect_gbif_animalia_catalog(&input),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -708,8 +728,453 @@ async fn main() -> Result<()> {
                 points_per_axis,
                 source_chunk_cache,
             }),
+            DeriveCommand::GbifAnimaliaCatalog { archive, output } => {
+                derive_gbif_animalia_catalog(&archive, &output)
+            }
         },
     }
+}
+
+#[derive(Debug, Serialize)]
+struct GbifBackboneInspection {
+    inspection_schema_version: u16,
+    release: &'static str,
+    archive_path: String,
+    archive_byte_length: u64,
+    member_count: usize,
+    dataset_metadata_member_count: usize,
+    uncompressed_byte_length: u64,
+    taxon_columns: Vec<String>,
+    taxon_first_record: BTreeMap<String, String>,
+    members: Vec<GbifBackboneMemberInspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct GbifBackboneMemberInspection {
+    path: String,
+    directory: bool,
+    compression: String,
+    compressed_byte_length: u64,
+    uncompressed_byte_length: u64,
+    crc32: u32,
+}
+
+fn inspect_gbif_backbone(archive_path: &Path) -> Result<()> {
+    let metadata = fs::metadata(archive_path)
+        .with_context(|| format!("inspect GBIF archive {}", archive_path.display()))?;
+    if !metadata.is_file() || metadata.len() == 0 {
+        bail!(
+            "GBIF archive is not a nonempty regular file: {}",
+            archive_path.display()
+        );
+    }
+    let file = File::open(archive_path)
+        .with_context(|| format!("open GBIF archive {}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(file)
+        .with_context(|| format!("parse GBIF archive {}", archive_path.display()))?;
+    let mut members = Vec::with_capacity(archive.len());
+    let mut dataset_metadata_member_count = 0_usize;
+    let mut uncompressed_byte_length = 0_u64;
+    for index in 0..archive.len() {
+        let member = archive
+            .by_index(index)
+            .with_context(|| format!("inspect GBIF archive member {index}"))?;
+        if member.enclosed_name().is_none() {
+            bail!(
+                "GBIF archive member has an unsafe path: {:?}",
+                member.name()
+            );
+        }
+        uncompressed_byte_length = uncompressed_byte_length
+            .checked_add(member.size())
+            .context("GBIF archive uncompressed byte length overflow")?;
+        if member.name().starts_with("dataset/") && member.name().ends_with(".xml") {
+            dataset_metadata_member_count += 1;
+        } else {
+            members.push(GbifBackboneMemberInspection {
+                path: member.name().to_owned(),
+                directory: member.is_dir(),
+                compression: format!("{:?}", member.compression()),
+                compressed_byte_length: member.compressed_size(),
+                uncompressed_byte_length: member.size(),
+                crc32: member.crc32(),
+            });
+        }
+    }
+    members.sort_by(|left, right| left.path.cmp(&right.path));
+    let (taxon_columns, taxon_first_record) = {
+        let mut member = archive
+            .by_name("Taxon.tsv")
+            .context("GBIF Backbone archive is missing Taxon.tsv")?;
+        let mut reader = BufReader::new(&mut member);
+        let mut header = String::new();
+        reader
+            .read_line(&mut header)
+            .context("read GBIF Taxon.tsv header")?;
+        let columns = header
+            .trim_end_matches(['\r', '\n'])
+            .split('\t')
+            .map(ToOwned::to_owned)
+            .collect::<Vec<_>>();
+        let mut first_record = String::new();
+        reader
+            .read_line(&mut first_record)
+            .context("read first GBIF Taxon.tsv record")?;
+        let values = first_record
+            .trim_end_matches(['\r', '\n'])
+            .split('\t')
+            .collect::<Vec<_>>();
+        if values.len() != columns.len() {
+            bail!("first GBIF Taxon.tsv record does not match its header");
+        }
+        let record = columns
+            .iter()
+            .cloned()
+            .zip(values.into_iter().map(ToOwned::to_owned))
+            .collect::<BTreeMap<_, _>>();
+        (columns, record)
+    };
+    println!(
+        "{}",
+        serde_json::to_string(&GbifBackboneInspection {
+            inspection_schema_version: 1,
+            release: "2023-08-28",
+            archive_path: archive_path.display().to_string(),
+            archive_byte_length: metadata.len(),
+            member_count: archive.len(),
+            dataset_metadata_member_count,
+            uncompressed_byte_length,
+            taxon_columns,
+            taxon_first_record,
+            members,
+        })?
+    );
+    Ok(())
+}
+
+const GBIF_ANIMALIA_CATALOG_MAGIC: &[u8; 8] = b"ATCGBF01";
+const GBIF_ANIMALIA_CATALOG_SCHEMA_VERSION: u16 = 1;
+const GBIF_ANIMALIA_CATALOG_RECORD_COUNT_OFFSET: u64 = 8 + 2 + 32;
+
+#[derive(Debug, Serialize)]
+struct GbifAnimaliaCatalogDerivation {
+    derivation_schema_version: u16,
+    source_release: &'static str,
+    source_archive_hash: Digest,
+    source_archive_byte_length: u64,
+    source_taxon_records: u64,
+    accepted_animalia_species: u64,
+    output_path: String,
+    output_hash: Digest,
+    output_byte_length: u64,
+    ordering: &'static str,
+}
+
+fn derive_gbif_animalia_catalog(archive_path: &Path, output_path: &Path) -> Result<()> {
+    let (source_archive_byte_length, source_archive_hash) = digest_file(archive_path)
+        .with_context(|| format!("hash frozen GBIF archive {}", archive_path.display()))?;
+    let archive_file = File::open(archive_path)
+        .with_context(|| format!("open frozen GBIF archive {}", archive_path.display()))?;
+    let mut archive = zip::ZipArchive::new(archive_file)
+        .with_context(|| format!("parse frozen GBIF archive {}", archive_path.display()))?;
+    let taxon_member = archive
+        .by_name("Taxon.tsv")
+        .context("GBIF Backbone archive is missing Taxon.tsv")?;
+    let mut reader = BufReader::new(taxon_member);
+
+    let parent = output_path
+        .parent()
+        .context("GBIF catalog output has no parent directory")?
+        .canonicalize()
+        .with_context(|| {
+            format!(
+                "resolve GBIF catalog output directory {}",
+                output_path.display()
+            )
+        })?;
+    let file_name = output_path
+        .file_name()
+        .and_then(OsStr::to_str)
+        .context("GBIF catalog output filename is not UTF-8")?;
+    let destination = parent.join(file_name);
+    if fs::symlink_metadata(&destination).is_ok() {
+        bail!(
+            "GBIF catalog output already exists: {}",
+            destination.display()
+        );
+    }
+    let mut partial = PartialDownload::create(&parent, file_name)?;
+    partial.file.write_all(GBIF_ANIMALIA_CATALOG_MAGIC)?;
+    partial
+        .file
+        .write_all(&GBIF_ANIMALIA_CATALOG_SCHEMA_VERSION.to_le_bytes())?;
+    partial.file.write_all(source_archive_hash.as_bytes())?;
+    partial.file.write_all(&0_u64.to_le_bytes())?;
+
+    let mut line = String::new();
+    if reader.read_line(&mut line)? == 0 {
+        bail!("GBIF Taxon.tsv is empty");
+    }
+    let columns = line
+        .trim_end_matches(['\r', '\n'])
+        .split('\t')
+        .enumerate()
+        .map(|(index, name)| (name.to_owned(), index))
+        .collect::<HashMap<_, _>>();
+    let required = |name: &str| -> Result<usize> {
+        columns
+            .get(name)
+            .copied()
+            .with_context(|| format!("GBIF Taxon.tsv is missing column {name}"))
+    };
+    let taxon_id_index = required("taxonID")?;
+    let scientific_name_index = required("scientificName")?;
+    let canonical_name_index = required("canonicalName")?;
+    let taxon_rank_index = required("taxonRank")?;
+    let taxonomic_status_index = required("taxonomicStatus")?;
+    let kingdom_index = required("kingdom")?;
+    let phylum_index = required("phylum")?;
+    let class_index = required("class")?;
+    let order_index = required("order")?;
+    let family_index = required("family")?;
+    let genus_index = required("genus")?;
+    let column_count = columns.len();
+
+    let mut source_taxon_records = 0_u64;
+    let mut accepted_animalia_species = 0_u64;
+    let mut accepted_keys = HashSet::new();
+    loop {
+        line.clear();
+        if reader.read_line(&mut line)? == 0 {
+            break;
+        }
+        source_taxon_records = source_taxon_records
+            .checked_add(1)
+            .context("GBIF source record count overflow")?;
+        let fields = line
+            .trim_end_matches(['\r', '\n'])
+            .split('\t')
+            .collect::<Vec<_>>();
+        if fields.len() != column_count {
+            bail!(
+                "GBIF Taxon.tsv record {} has {} fields, expected {}",
+                source_taxon_records,
+                fields.len(),
+                column_count
+            );
+        }
+        if fields[kingdom_index] != "Animalia"
+            || fields[taxon_rank_index] != "species"
+            || fields[taxonomic_status_index] != "accepted"
+        {
+            continue;
+        }
+        let taxon_key = fields[taxon_id_index].parse::<u64>().with_context(|| {
+            format!(
+                "accepted Animalia species has invalid GBIF taxonID at record {}",
+                source_taxon_records
+            )
+        })?;
+        if taxon_key == 0 || !accepted_keys.insert(taxon_key) {
+            bail!("accepted Animalia species has a zero or duplicate GBIF key {taxon_key}");
+        }
+        if fields[scientific_name_index].is_empty() {
+            bail!("accepted Animalia species {taxon_key} has no scientific name");
+        }
+        partial.file.write_all(&taxon_key.to_le_bytes())?;
+        for value in [
+            fields[scientific_name_index],
+            fields[canonical_name_index],
+            fields[phylum_index],
+            fields[class_index],
+            fields[order_index],
+            fields[family_index],
+            fields[genus_index],
+        ] {
+            write_length_prefixed_utf8(&mut partial.file, value)?;
+        }
+        accepted_animalia_species = accepted_animalia_species
+            .checked_add(1)
+            .context("GBIF Animalia species count overflow")?;
+        if source_taxon_records.is_multiple_of(1_000_000) {
+            eprintln!(
+                "GBIF Animalia catalog progress: {source_taxon_records} source records, {accepted_animalia_species} accepted species"
+            );
+        }
+    }
+    if accepted_animalia_species == 0 {
+        bail!("GBIF derivation found no accepted Animalia species");
+    }
+    partial
+        .file
+        .seek(SeekFrom::Start(GBIF_ANIMALIA_CATALOG_RECORD_COUNT_OFFSET))?;
+    partial
+        .file
+        .write_all(&accepted_animalia_species.to_le_bytes())?;
+    partial.file.sync_all()?;
+    let (output_byte_length, output_hash) = digest_file(&partial.path)?;
+    partial.persist_without_replacement(&destination)?;
+
+    println!(
+        "{}",
+        serde_json::to_string(&GbifAnimaliaCatalogDerivation {
+            derivation_schema_version: 1,
+            source_release: "GBIF Backbone 2023-08-28",
+            source_archive_hash,
+            source_archive_byte_length,
+            source_taxon_records,
+            accepted_animalia_species,
+            output_path: destination.display().to_string(),
+            output_hash,
+            output_byte_length,
+            ordering: "exact retained Taxon.tsv record order; taxonID uniqueness enforced",
+        })?
+    );
+    Ok(())
+}
+
+fn write_length_prefixed_utf8(writer: &mut impl Write, value: &str) -> Result<()> {
+    let bytes = value.as_bytes();
+    writer.write_all(&u32::try_from(bytes.len())?.to_le_bytes())?;
+    writer.write_all(bytes)?;
+    Ok(())
+}
+
+fn digest_file(path: &Path) -> Result<(u64, Digest)> {
+    let mut reader = BufReader::new(
+        File::open(path).with_context(|| format!("open artifact {}", path.display()))?,
+    );
+    let mut hasher = Sha256::new();
+    let mut byte_length = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .with_context(|| format!("read artifact {}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        byte_length = byte_length
+            .checked_add(u64::try_from(read)?)
+            .context("artifact byte length overflow")?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((byte_length, Digest::from_bytes(hasher.finalize().into())))
+}
+
+#[derive(Debug, Serialize)]
+struct GbifAnimaliaCatalogInspection {
+    inspection_schema_version: u16,
+    source_archive_hash: Digest,
+    record_count: u64,
+    distinct_taxon_keys: usize,
+    input_path: String,
+    input_hash: Digest,
+    input_byte_length: u64,
+    first_species: GbifCatalogSpeciesInspection,
+    last_species: GbifCatalogSpeciesInspection,
+}
+
+#[derive(Clone, Debug, Serialize)]
+struct GbifCatalogSpeciesInspection {
+    gbif_taxon_key: u64,
+    scientific_name: String,
+    canonical_name: String,
+    phylum: String,
+    class: String,
+    order: String,
+    family: String,
+    genus: String,
+}
+
+fn inspect_gbif_animalia_catalog(input_path: &Path) -> Result<()> {
+    let (input_byte_length, input_hash) = digest_file(input_path)?;
+    let mut reader = BufReader::new(
+        File::open(input_path)
+            .with_context(|| format!("open GBIF Animalia catalog {}", input_path.display()))?,
+    );
+    let mut magic = [0_u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != GBIF_ANIMALIA_CATALOG_MAGIC {
+        bail!("GBIF Animalia catalog magic is invalid");
+    }
+    let mut schema_bytes = [0_u8; 2];
+    reader.read_exact(&mut schema_bytes)?;
+    let schema_version = u16::from_le_bytes(schema_bytes);
+    if schema_version != GBIF_ANIMALIA_CATALOG_SCHEMA_VERSION {
+        bail!("GBIF Animalia catalog schema {schema_version} is unsupported");
+    }
+    let mut source_hash_bytes = [0_u8; 32];
+    reader.read_exact(&mut source_hash_bytes)?;
+    let source_archive_hash = Digest::from_bytes(source_hash_bytes);
+    let mut record_count_bytes = [0_u8; 8];
+    reader.read_exact(&mut record_count_bytes)?;
+    let record_count = u64::from_le_bytes(record_count_bytes);
+    if record_count == 0 {
+        bail!("GBIF Animalia catalog has no species");
+    }
+
+    let mut keys = HashSet::with_capacity(usize::try_from(record_count)?);
+    let mut first_species = None;
+    let mut last_species = None;
+    for index in 0..record_count {
+        let mut key_bytes = [0_u8; 8];
+        reader
+            .read_exact(&mut key_bytes)
+            .with_context(|| format!("read GBIF catalog species {index} key"))?;
+        let gbif_taxon_key = u64::from_le_bytes(key_bytes);
+        if gbif_taxon_key == 0 || !keys.insert(gbif_taxon_key) {
+            bail!("GBIF Animalia catalog has zero or duplicate key {gbif_taxon_key}");
+        }
+        let species = GbifCatalogSpeciesInspection {
+            gbif_taxon_key,
+            scientific_name: read_length_prefixed_utf8(&mut reader)?,
+            canonical_name: read_length_prefixed_utf8(&mut reader)?,
+            phylum: read_length_prefixed_utf8(&mut reader)?,
+            class: read_length_prefixed_utf8(&mut reader)?,
+            order: read_length_prefixed_utf8(&mut reader)?,
+            family: read_length_prefixed_utf8(&mut reader)?,
+            genus: read_length_prefixed_utf8(&mut reader)?,
+        };
+        if species.scientific_name.is_empty() {
+            bail!("GBIF Animalia catalog species {gbif_taxon_key} has no scientific name");
+        }
+        if first_species.is_none() {
+            first_species = Some(species.clone());
+        }
+        last_species = Some(species);
+    }
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        bail!("GBIF Animalia catalog contains trailing bytes");
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&GbifAnimaliaCatalogInspection {
+            inspection_schema_version: 1,
+            source_archive_hash,
+            record_count,
+            distinct_taxon_keys: keys.len(),
+            input_path: input_path.display().to_string(),
+            input_hash,
+            input_byte_length,
+            first_species: first_species.context("GBIF Animalia catalog first species missing")?,
+            last_species: last_species.context("GBIF Animalia catalog last species missing")?,
+        })?
+    );
+    Ok(())
+}
+
+fn read_length_prefixed_utf8(reader: &mut impl Read) -> Result<String> {
+    let mut length_bytes = [0_u8; 4];
+    reader.read_exact(&mut length_bytes)?;
+    let length = usize::try_from(u32::from_le_bytes(length_bytes))?;
+    if length > 1024 * 1024 {
+        bail!("GBIF catalog string exceeds the one-megabyte safety bound");
+    }
+    let mut bytes = vec![0_u8; length];
+    reader.read_exact(&mut bytes)?;
+    String::from_utf8(bytes).context("GBIF catalog string is not UTF-8")
 }
 
 const SOILGRIDS_TOPSOIL_PROPERTIES: [&str; 9] = [
@@ -7131,6 +7596,19 @@ mod tests {
         assert_eq!(floats.finite_minimum.as_deref(), Some("-1.5"));
         assert_eq!(floats.finite_maximum.as_deref(), Some("4.25"));
         assert_eq!(floats.non_finite_samples, 1);
+    }
+
+    #[test]
+    fn gbif_catalog_strings_round_trip_utf8_without_delimiter_assumptions() {
+        let mut bytes = Vec::new();
+        write_length_prefixed_utf8(&mut bytes, "Loxodonta africana\t🐘")
+            .expect("write catalog string");
+        let mut input = bytes.as_slice();
+        assert_eq!(
+            read_length_prefixed_utf8(&mut input).expect("read catalog string"),
+            "Loxodonta africana\t🐘"
+        );
+        assert!(input.is_empty());
     }
 
     #[test]

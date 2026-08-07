@@ -142,8 +142,10 @@ byte fingerprint. The mixed-class L6/L10 payload now conserves class proportions
 all four sampled quality signals, while ADR 0036 pins a 32 × 32 exact face-UV target
 quadrature and integer source-area lookup. The bounded-cache, parallel-address,
 resumable and atomically published global normalizer plus independent release inspector
-are implemented. The full global observed-class release and the inferred habitat/
-coastline evidence roots remain pending.
+are implemented. The complete observed-class release now contains 24,576 tiles and
+6,291,456 target cells under independently traversed root SHA-256
+`ca93fa8f3c6d2876bdb4e45f4a4229ddad3e34167e9652cd1cb019f00cc186cc`.
+The inferred habitat/coastline evidence roots remain pending.
 
 The public JRC Global Surface Water v1.5 10-degree release now has a deterministic,
 network-free 1,512-artifact inventory and a bounded-parallel, no-replacement acquisition
@@ -157,18 +159,28 @@ artifacts: nine physical/chemical properties for 0–5 cm topsoil at the 5th, 50
 95th prediction quantiles. The acquisition helper is resumable and refuses replacement.
 It deliberately gets a real global uncertainty-bearing soil vector wired before the
 final pass expands to all six native-depth products and validates scientific coupling.
+All 27 retained rasters (3,619,187,287 bytes) now pass a portable BigTIFF pyramid and
+bounded-chunk inspection; source-specific one-pixel footprint differences and the
+signed no-data sentinel remain explicit rather than being silently harmonized.
 
-Fauna now has a commercially compatible source boundary and a credential-free exact
-taxonomy acquisition path: the frozen CC BY 4.0 GBIF Backbone supplies stable real
-taxon identities, while distribution will come from a separate DOI-backed occurrence
-extract filtered to CC0/CC BY records. ADR 0037 prevents the convenient noncommercial
-cloud snapshot, modern observation density, or missing traits from silently becoming
-canonical animal truth.
+Fauna now has a commercially compatible source boundary and retained exact taxonomy:
+the 971,465,842-byte frozen CC BY 4.0 GBIF Backbone supplies stable real taxon
+identities. Its full Darwin Core archive inventory and `Taxon.tsv` schema are parsed by
+the Rust data tool. A streaming derivation scanned all 7,746,724 taxon records and
+emitted a 256,508,217-byte, duplicate-checked catalog of 1,822,234 accepted Animalia
+species under SHA-256
+`b0597d47bc616b8ed2c18e7ba625a460538e9bac4bbae920f3f016095b966fa0`.
+Distribution will come from a separate
+DOI-backed occurrence extract filtered to CC0/CC BY records. ADR 0037 prevents the
+convenient noncommercial cloud snapshot, modern observation density, or missing traits
+from silently becoming canonical animal truth.
 
-The heavens now have an account-free long-range source path and a causal contract.
-JPL DE441 supplies actual Sun/Earth/Moon and planetary positions across roughly 30,000
-years; genesis pins the epoch, deterministic interpolation drives light and seasons,
-and Sun/Moon equilibrium potential drives the first tide model. ADR 0038 forbids a
+The heavens now have an account-free long-range source path, retained bytes, and a
+causal contract. Both JPL DE441 ephemeris halves and their technical/orientation
+evidence are locally retained and content-hashed (3,308,141,318 bytes total). DE441
+supplies actual Sun/Earth/Moon and planetary positions across roughly 30,000 years;
+genesis pins the epoch, deterministic interpolation drives light and seasons, and
+Sun/Moon equilibrium potential drives the first tide model. ADR 0038 forbids a
 decorative calendar, wall-clock sky, agent-visible astronomy labels, or silent
 extrapolation beyond source coverage.
 
