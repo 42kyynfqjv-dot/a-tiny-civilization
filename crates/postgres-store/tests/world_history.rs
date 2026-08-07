@@ -1,7 +1,11 @@
 use anyhow::Result;
 use application::{
-    CognitionJobStore, MemoryFactKind, MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest,
-    MemoryRetain, MemoryRetainReceipt, RecalledMemory, StoreError, TransitionEffects, WorldStore,
+    COGNITION_MODEL_CONTRACT_VERSION, CognitionAttemptPersistenceState, CognitionJobEntry,
+    CognitionJobStore, CognitionModelRoute, CognitionRecallRecord, CognitionRouteAttempt,
+    CognitionRouteAttemptStatus, CognitionRoutePurpose, CognitionRouteRegistry, MemoryFactKind,
+    MemoryOutboxStore, MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt,
+    ModelCognitionLadderResult, ModelCognitionRequest, PaidCognitionReservationDecision,
+    RecallUnavailableReason, RecalledMemory, StoreError, TransitionEffects, WorldStore,
     advance_world, initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
 };
 use observer_projection::{
@@ -204,6 +208,86 @@ fn cognition_initial_person(world_id: WorldId) -> InitialOrganism {
         mutation_max_step: 2,
     });
     person
+}
+
+async fn claimed_cognition_job(
+    pool: &PgPool,
+    seed: u64,
+    worker_id: &str,
+) -> Result<(PostgresStore, CognitionJobEntry)> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let world_id = WorldId::from_uuid(Uuid::new_v4());
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(seed), COGNITION_RULESET_VERSION);
+    let person = cognition_initial_person(world_id);
+    let person_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let initial = EngineState::new(manifest);
+    let genesis_events =
+        initial.plan_configured_genesis(cognition_configuration(), vec![person])?;
+    let (running, genesis_batch) =
+        initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;
+    let genesis_snapshot = Snapshot::new(
+        running.clone(),
+        genesis_batch.sequence,
+        genesis_batch.batch_hash,
+    )?;
+    let persisted = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let selection_events = running.plan_cognition_request(person_id)?;
+    let (pending, selection_batch) = running.commit(
+        EventSequence::new(2),
+        genesis_batch.batch_hash,
+        selection_events,
+    )?;
+    let selection_snapshot = Snapshot::new(
+        pending,
+        selection_batch.sequence,
+        selection_batch.batch_hash,
+    )?;
+    store
+        .commit_transition(
+            persisted.cursor,
+            &selection_batch,
+            &selection_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let entry = store
+        .claim_next_cognition_request(worker_id, 60)
+        .await?
+        .expect("committed cognition selection is claimable");
+    Ok((store, entry))
+}
+
+fn unavailable_cognition_recall(entry: &CognitionJobEntry) -> Result<CognitionRecallRecord> {
+    let request = MemoryRecallRequest::from_cognition_selection(&entry.selection)?;
+    let outcome = MemoryRecallOutcome::unavailable(&request, RecallUnavailableReason::Disabled)?;
+    Ok(CognitionRecallRecord {
+        request,
+        outcome,
+        admitted_memories: Vec::new(),
+    })
+}
+
+fn route_attempt(
+    registry: &CognitionRouteRegistry,
+    route_index: usize,
+    status: CognitionRouteAttemptStatus,
+) -> CognitionRouteAttempt {
+    let route = &registry.routes[route_index];
+    CognitionRouteAttempt {
+        route_index: u16::try_from(route_index).expect("small route registry"),
+        provider: route.provider.clone(),
+        requested_model: route.requested_model.clone(),
+        billing_class: route.billing_class,
+        status,
+    }
 }
 
 fn genesis(
@@ -1021,5 +1105,256 @@ async fn cognition_selection_creates_one_immutable_leased_job_atomically(
         .load_event_batches(world_id, EventSequence::ZERO)
         .await?;
     assert_eq!(batches, vec![genesis_batch, selection_batch]);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cognition_recall_is_recorded_once_and_is_immutable(pool: PgPool) -> Result<()> {
+    let (store, entry) = claimed_cognition_job(&pool, 601, "recall-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+
+    store
+        .record_cognition_recall("recall-worker", &entry, &recall)
+        .await?;
+    assert_eq!(
+        store.load_cognition_recall(&entry).await?,
+        Some(recall.clone())
+    );
+    assert!(
+        store
+            .record_cognition_recall("recall-worker", &entry, &recall)
+            .await
+            .is_err(),
+        "even an identical second admission must conflict rather than hide a retry"
+    );
+    let mutation = sqlx::query(
+        "UPDATE cognition_recall_outcomes SET recall_outcome = recall_outcome WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .execute(&pool)
+    .await;
+    assert!(mutation.is_err(), "recorded recall is append-only");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cognition_dispatch_survives_a_crash_before_the_next_route(pool: PgPool) -> Result<()> {
+    let (store, entry) = claimed_cognition_job(&pool, 602, "dispatch-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+    store
+        .record_cognition_recall("dispatch-worker", &entry, &recall)
+        .await?;
+    let registry = CognitionRouteRegistry::production_default();
+
+    store
+        .begin_cognition_route_attempt("dispatch-worker", &entry, 0, &registry.routes[0])
+        .await?;
+    let persisted_state: (String, bool) = sqlx::query_as(
+        "SELECT dispatch_state, network_dispatched FROM cognition_route_attempts WHERE request_id = $1 AND route_index = 0",
+    )
+    .bind(entry.selection.request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(persisted_state, ("dispatched".to_owned(), true));
+    assert!(
+        store
+            .begin_cognition_route_attempt("dispatch-worker", &entry, 1, &registry.routes[1],)
+            .await
+            .is_err(),
+        "the durable in-flight attempt must be resolved before advancing"
+    );
+
+    store
+        .abandon_cognition_route_attempt("dispatch-worker", &entry, 0)
+        .await?;
+    store
+        .begin_cognition_route_attempt("dispatch-worker", &entry, 1, &registry.routes[1])
+        .await?;
+    let attempts = store.list_cognition_route_attempts(&entry).await?;
+    assert_eq!(attempts.len(), 2);
+    assert_eq!(
+        attempts[0].persistence_state,
+        CognitionAttemptPersistenceState::Abandoned
+    );
+    assert_eq!(
+        attempts[0]
+            .attempt
+            .as_ref()
+            .expect("abandoned attempt payload")
+            .status,
+        CognitionRouteAttemptStatus::Unavailable
+    );
+    assert_eq!(
+        attempts[1].persistence_state,
+        CognitionAttemptPersistenceState::Dispatched
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn paid_dispatch_requires_a_durable_reservation_and_release_restores_budget(
+    pool: PgPool,
+) -> Result<()> {
+    let (store, entry) = claimed_cognition_job(&pool, 603, "paid-release-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+    store
+        .record_cognition_recall("paid-release-worker", &entry, &recall)
+        .await?;
+    let paid_route = CognitionModelRoute::openrouter_deepseek_v4_flash();
+
+    assert!(
+        store
+            .begin_cognition_route_attempt("paid-release-worker", &entry, 0, &paid_route)
+            .await
+            .is_err(),
+        "a paid call cannot be marked dispatched before funds are reserved"
+    );
+    let authorization = match store
+        .reserve_paid_cognition("paid-release-worker", &entry, &paid_route, 25_000)
+        .await?
+    {
+        PaidCognitionReservationDecision::Authorized(authorization) => authorization,
+        PaidCognitionReservationDecision::DeniedHardStop => {
+            panic!("a fresh monthly cost account has budget")
+        }
+    };
+    let reserved: i64 = sqlx::query_scalar(
+        "SELECT reserved_micro_usd FROM cognition_cost_accounts WHERE billing_month = $1",
+    )
+    .bind(authorization.billing_month)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(reserved, 25_000);
+
+    store
+        .release_paid_cognition("paid-release-worker", &entry, &authorization)
+        .await?;
+    let account: (i64, i64) = sqlx::query_as(
+        "SELECT reserved_micro_usd, spent_micro_usd FROM cognition_cost_accounts WHERE billing_month = $1",
+    )
+    .bind(authorization.billing_month)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(account, (0, 0));
+    let reservation_status: String =
+        sqlx::query_scalar("SELECT status FROM cognition_cost_reservations WHERE request_id = $1")
+            .bind(entry.selection.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(reservation_status, "released");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn indeterminate_paid_dispatch_keeps_budget_reserved(pool: PgPool) -> Result<()> {
+    let (store, entry) = claimed_cognition_job(&pool, 604, "paid-crash-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+    store
+        .record_cognition_recall("paid-crash-worker", &entry, &recall)
+        .await?;
+    let paid_route = CognitionModelRoute::openrouter_deepseek_v4_flash();
+    let authorization = match store
+        .reserve_paid_cognition("paid-crash-worker", &entry, &paid_route, 30_000)
+        .await?
+    {
+        PaidCognitionReservationDecision::Authorized(authorization) => authorization,
+        PaidCognitionReservationDecision::DeniedHardStop => {
+            panic!("a fresh monthly cost account has budget")
+        }
+    };
+    store
+        .begin_cognition_route_attempt("paid-crash-worker", &entry, 0, &paid_route)
+        .await?;
+    assert!(
+        store
+            .release_paid_cognition("paid-crash-worker", &entry, &authorization)
+            .await
+            .is_err(),
+        "a possibly billed call cannot release its reservation"
+    );
+    store
+        .mark_paid_cognition_indeterminate("paid-crash-worker", &entry, &authorization)
+        .await?;
+
+    let reservation: (String, Option<i64>) = sqlx::query_as(
+        "SELECT status, actual_micro_usd FROM cognition_cost_reservations WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(reservation, ("indeterminate".to_owned(), None));
+    let reserved: i64 = sqlx::query_scalar(
+        "SELECT reserved_micro_usd FROM cognition_cost_accounts WHERE billing_month = $1",
+    )
+    .bind(authorization.billing_month)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(reserved, 30_000);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cognition_result_must_equal_the_durable_attempt_prefix(pool: PgPool) -> Result<()> {
+    let (store, entry) = claimed_cognition_job(&pool, 605, "result-worker").await?;
+    let recall = unavailable_cognition_recall(&entry)?;
+    store
+        .record_cognition_recall("result-worker", &entry, &recall)
+        .await?;
+    let request =
+        ModelCognitionRequest::from_selection(&entry.selection, recall.admitted_memories.clone())?;
+    let registry = CognitionRouteRegistry::production_default();
+    let first = route_attempt(
+        &registry,
+        0,
+        CognitionRouteAttemptStatus::SkippedUnconfigured,
+    );
+    let second = route_attempt(&registry, 1, CognitionRouteAttemptStatus::SkippedCooldown);
+    store
+        .record_cognition_route_skip("result-worker", &entry, &first)
+        .await?;
+    store
+        .record_cognition_route_skip("result-worker", &entry, &second)
+        .await?;
+
+    let result = ModelCognitionLadderResult {
+        contract_version: COGNITION_MODEL_CONTRACT_VERSION,
+        request_id: entry.selection.request_id,
+        route_policy_version: registry.policy_version,
+        route_registry_hash: registry.canonical_hash(CognitionRoutePurpose::ProductionWorld)?,
+        attempts: vec![first.clone(), second.clone()],
+        receipt: None,
+    };
+    let mut forged = result.clone();
+    forged.attempts[1].status = CognitionRouteAttemptStatus::SkippedDisabled;
+    assert!(
+        store
+            .complete_cognition_request(
+                "result-worker",
+                &entry,
+                &registry,
+                CognitionRoutePurpose::ProductionWorld,
+                &request,
+                &forged,
+            )
+            .await
+            .is_err(),
+        "a valid-looking result cannot differ from durable attempt history"
+    );
+    store
+        .complete_cognition_request(
+            "result-worker",
+            &entry,
+            &registry,
+            CognitionRoutePurpose::ProductionWorld,
+            &request,
+            &result,
+        )
+        .await?;
+    let persisted: serde_json::Value =
+        sqlx::query_scalar("SELECT result_payload FROM cognition_results WHERE request_id = $1")
+            .bind(entry.selection.request_id)
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(persisted, serde_json::to_value(result)?);
     Ok(())
 }

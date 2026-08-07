@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use thiserror::Error;
@@ -12,6 +13,9 @@ pub use world_domain::{CognitionReading as CognitionInputReading, cognition_requ
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 1;
 pub const MAX_COGNITION_ROUTES: usize = 256;
+pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 7_500_000;
+pub const COGNITION_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 9_500_000;
+pub const MAX_PAID_COGNITION_RESERVATION_MICRO_USD: u64 = 50_000;
 const MAX_INPUT_READINGS: usize = 32;
 pub const MAX_COGNITION_RECALLED_MEMORIES: usize = 8;
 const MAX_MEMORY_CONTENT_BYTES: usize = 4 * 1024;
@@ -376,6 +380,31 @@ pub struct ModelCognitionRequest {
 }
 
 impl ModelCognitionRequest {
+    pub fn from_selection(
+        selection: &CognitionRequestSelection,
+        recalled_memories: Vec<CognitionMemoryInput>,
+    ) -> Result<Self, CognitionContractError> {
+        selection
+            .validate()
+            .map_err(|error| CognitionContractError::InvalidJob(error.to_string()))?;
+        let request = Self {
+            contract_version: COGNITION_MODEL_CONTRACT_VERSION,
+            request_id: selection.request_id,
+            world_id: selection.world_id,
+            agent_id: selection.organism_id,
+            ordinal: selection.ordinal,
+            selected_at_tick: selection.selected_at_tick,
+            deadline_tick: selection.deadline_tick,
+            bodily_needs: selection.bodily_needs,
+            readings: selection.readings.clone(),
+            action_values: selection.action_values.clone(),
+            recalled_memories,
+            max_output_tokens: selection.model_max_output_tokens,
+        };
+        request.validate()?;
+        Ok(request)
+    }
+
     pub fn validate(&self) -> Result<(), CognitionContractError> {
         if self.contract_version != COGNITION_MODEL_CONTRACT_VERSION {
             return Err(CognitionContractError::UnsupportedContractVersion(
@@ -643,6 +672,10 @@ pub enum CognitionContractError {
     InvalidMemories,
     #[error("cognition job is invalid: {0}")]
     InvalidJob(String),
+    #[error("persisted cognition route attempt is invalid")]
+    InvalidAttemptRecord,
+    #[error("paid cognition authorization is invalid")]
+    InvalidPaidAuthorization,
     #[error("cognition receipt does not match its route and request")]
     InvalidReceipt,
     #[error("cognition route-ladder result is not a canonical prefix of its registry")]
@@ -684,6 +717,169 @@ pub struct CognitionJobEntry {
     pub claim_count: u32,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CognitionRecallRecord {
+    pub request: crate::MemoryRecallRequest,
+    pub outcome: crate::MemoryRecallOutcome,
+    pub admitted_memories: Vec<CognitionMemoryInput>,
+}
+
+impl CognitionRecallRecord {
+    pub fn validate_against(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<(), CognitionContractError> {
+        entry.validate()?;
+        let expected_request =
+            crate::MemoryRecallRequest::from_cognition_selection(&entry.selection)
+                .map_err(|error| CognitionContractError::InvalidJob(error.to_string()))?;
+        if self.request != expected_request || self.outcome.validate_against(&self.request).is_err()
+        {
+            return Err(CognitionContractError::InvalidJob(
+                "recall request or outcome differs from its cognition selection".to_owned(),
+            ));
+        }
+        let expected_memories = match &self.outcome {
+            crate::MemoryRecallOutcome::Available { results, .. } => {
+                let mut memories = results
+                    .iter()
+                    .take(MAX_COGNITION_RECALLED_MEMORIES)
+                    .map(|memory| CognitionMemoryInput {
+                        document_id: memory.document_id,
+                        source_sequence: memory.source_sequence,
+                        sim_tick: memory.sim_tick,
+                        content: memory.text.clone(),
+                        context: memory.context.clone(),
+                    })
+                    .collect::<Vec<_>>();
+                memories.sort_by_key(|memory| memory.document_id);
+                memories
+            }
+            crate::MemoryRecallOutcome::Unavailable { .. } => Vec::new(),
+        };
+        if self.admitted_memories != expected_memories {
+            return Err(CognitionContractError::InvalidJob(
+                "admitted memories differ from the normalized recall outcome".to_owned(),
+            ));
+        }
+        ModelCognitionRequest::from_selection(&entry.selection, self.admitted_memories.clone())?;
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitionAttemptPersistenceState {
+    Skipped,
+    Dispatched,
+    Completed,
+    Abandoned,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CognitionRouteAttemptRecord {
+    pub route_index: u16,
+    pub route: CognitionModelRoute,
+    pub persistence_state: CognitionAttemptPersistenceState,
+    pub attempt: Option<CognitionRouteAttempt>,
+    pub receipt: Option<ModelCognitionReceipt>,
+}
+
+impl CognitionRouteAttemptRecord {
+    pub fn validate(&self) -> Result<(), CognitionContractError> {
+        self.route.validate()?;
+        let terminal = self.attempt.as_ref();
+        if terminal.is_some_and(|attempt| {
+            attempt.route_index != self.route_index
+                || attempt.provider != self.route.provider
+                || attempt.requested_model != self.route.requested_model
+                || attempt.billing_class != self.route.billing_class
+        }) {
+            return Err(CognitionContractError::InvalidAttemptRecord);
+        }
+        let valid = match self.persistence_state {
+            CognitionAttemptPersistenceState::Dispatched => {
+                self.attempt.is_none() && self.receipt.is_none()
+            }
+            CognitionAttemptPersistenceState::Skipped => terminal
+                .is_some_and(|attempt| is_skip_status(attempt.status) && self.receipt.is_none()),
+            CognitionAttemptPersistenceState::Completed => terminal.is_some_and(|attempt| {
+                is_network_terminal_status(attempt.status)
+                    && ((attempt.status == CognitionRouteAttemptStatus::Succeeded)
+                        == self.receipt.is_some())
+            }),
+            CognitionAttemptPersistenceState::Abandoned => terminal.is_some_and(|attempt| {
+                is_network_terminal_status(attempt.status)
+                    && attempt.status == CognitionRouteAttemptStatus::Unavailable
+                    && self.receipt.is_none()
+            }),
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(CognitionContractError::InvalidAttemptRecord)
+        }
+    }
+}
+
+#[must_use]
+pub const fn is_skip_status(status: CognitionRouteAttemptStatus) -> bool {
+    matches!(
+        status,
+        CognitionRouteAttemptStatus::SkippedUnconfigured
+            | CognitionRouteAttemptStatus::SkippedCooldown
+            | CognitionRouteAttemptStatus::SkippedQuotaExhausted
+            | CognitionRouteAttemptStatus::SkippedDisabled
+            | CognitionRouteAttemptStatus::SkippedPaidUnauthorized
+            | CognitionRouteAttemptStatus::StoppedAttemptLimit
+    )
+}
+
+#[must_use]
+pub const fn is_network_terminal_status(status: CognitionRouteAttemptStatus) -> bool {
+    matches!(
+        status,
+        CognitionRouteAttemptStatus::Succeeded
+            | CognitionRouteAttemptStatus::Unavailable
+            | CognitionRouteAttemptStatus::Rejected
+            | CognitionRouteAttemptStatus::InvalidResponse
+    )
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PaidCognitionAuthorization {
+    pub request_id: Uuid,
+    pub billing_month: NaiveDate,
+    pub reserved_micro_usd: u64,
+}
+
+impl PaidCognitionAuthorization {
+    pub fn validate_against(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<(), CognitionContractError> {
+        entry.validate()?;
+        if self.request_id != entry.selection.request_id
+            || self.billing_month.day() != 1
+            || self.reserved_micro_usd == 0
+            || self.reserved_micro_usd > MAX_PAID_COGNITION_RESERVATION_MICRO_USD
+        {
+            return Err(CognitionContractError::InvalidPaidAuthorization);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PaidCognitionReservationDecision {
+    Authorized(PaidCognitionAuthorization),
+    DeniedHardStop,
+}
+
 impl CognitionJobEntry {
     pub fn validate(&self) -> Result<(), CognitionContractError> {
         self.selection
@@ -720,6 +916,95 @@ pub trait CognitionJobStore: Send + Sync {
         entry: &CognitionJobEntry,
         error: &str,
         retry_after_seconds: u32,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn record_cognition_recall(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        recall: &CognitionRecallRecord,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn load_cognition_recall(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<Option<CognitionRecallRecord>, crate::StoreError>;
+
+    async fn begin_cognition_route_attempt(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        route_index: u16,
+        route: &CognitionModelRoute,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn record_cognition_route_skip(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        attempt: &CognitionRouteAttempt,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn finish_cognition_route_attempt(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        request: &ModelCognitionRequest,
+        attempt: &CognitionRouteAttempt,
+        receipt: Option<&ModelCognitionReceipt>,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn abandon_cognition_route_attempt(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        route_index: u16,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn list_cognition_route_attempts(
+        &self,
+        entry: &CognitionJobEntry,
+    ) -> Result<Vec<CognitionRouteAttemptRecord>, crate::StoreError>;
+
+    #[allow(clippy::too_many_arguments)]
+    async fn complete_cognition_request(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        registry: &CognitionRouteRegistry,
+        purpose: CognitionRoutePurpose,
+        request: &ModelCognitionRequest,
+        result: &ModelCognitionLadderResult,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn reserve_paid_cognition(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        route: &CognitionModelRoute,
+        reserved_micro_usd: u64,
+    ) -> Result<PaidCognitionReservationDecision, crate::StoreError>;
+
+    async fn settle_paid_cognition(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        authorization: &PaidCognitionAuthorization,
+        receipt: &ModelCognitionReceipt,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn release_paid_cognition(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        authorization: &PaidCognitionAuthorization,
+    ) -> Result<(), crate::StoreError>;
+
+    async fn mark_paid_cognition_indeterminate(
+        &self,
+        worker_id: &str,
+        entry: &CognitionJobEntry,
+        authorization: &PaidCognitionAuthorization,
     ) -> Result<(), crate::StoreError>;
 }
 

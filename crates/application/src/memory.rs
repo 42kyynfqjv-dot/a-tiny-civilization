@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
-use world_domain::{Digest, EntityId, EventSequence, SimTick, WorldId};
+use world_domain::{CognitionRequestSelection, Digest, EntityId, EventSequence, SimTick, WorldId};
 
 use crate::CognitionMemoryInput;
 
@@ -179,6 +179,23 @@ pub struct MemoryRecallRequest {
 }
 
 impl MemoryRecallRequest {
+    pub fn from_cognition_selection(
+        selection: &CognitionRequestSelection,
+    ) -> Result<Self, MemoryContractError> {
+        selection
+            .validate()
+            .map_err(|error| MemoryContractError::InvalidCognitionSelection(error.to_string()))?;
+        Self::new(
+            selection.world_id,
+            selection.organism_id,
+            selection.selected_at_tick,
+            selection.deadline_tick,
+            selection.ordinal,
+            selection.memory_query.clone(),
+            selection.memory_max_tokens,
+        )
+    }
+
     pub fn new(
         world_id: WorldId,
         agent_id: EntityId,
@@ -430,6 +447,8 @@ pub enum MemoryContractError {
     InvalidRecallOutcome,
     #[error("recalled memory lacks canonical life-local source provenance")]
     InvalidRecalledMemory,
+    #[error("cognition selection cannot form a recall request: {0}")]
+    InvalidCognitionSelection(String),
     #[error("memory contract hashing failed: {0}")]
     Hash(String),
 }
