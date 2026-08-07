@@ -4,7 +4,7 @@
   "manifest": {
     "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
     "seed": "7640891576956012809",
-    "ruleset_version": 1,
+    "ruleset_version": 2,
     "identity_policy_version": 1,
     "scientific_datasets": {
       "gbif_taxon_2436436": "accessed_2026-08-06"
@@ -16,7 +16,7 @@
       "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
       "sequence": "1",
       "tick": "0",
-      "ruleset_version": 1,
+      "ruleset_version": 2,
       "previous_hash": "0000000000000000000000000000000000000000000000000000000000000000",
       "events": [
         {
@@ -28,7 +28,7 @@
               "manifest": {
                 "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
                 "seed": "7640891576956012809",
-                "ruleset_version": 1,
+                "ruleset_version": 2,
                 "identity_policy_version": 1,
                 "scientific_datasets": {
                   "gbif_taxon_2436436": "accessed_2026-08-06"
@@ -58,16 +58,16 @@
           }
         }
       ],
-      "post_state_hash": "421f3e912d5a6827da434ed098da140b1b0c31d3e7adfaa825c909afa9593514",
-      "batch_hash": "27cf4adcbfc35c89e0d97e0060ad2d932375d3462cd827649502e587611daeec"
+      "post_state_hash": "308fca964cdf50435096b46a79cd4a92c3daeb9684f8a4c283208845b76c4237",
+      "batch_hash": "6e6c5faeedf1d553aca0f84514361bd2d2c6d09ab55d19e0974e94f6b3d8a24d"
     },
     {
       "event_schema_version": 1,
       "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
       "sequence": "2",
       "tick": "1",
-      "ruleset_version": 1,
-      "previous_hash": "27cf4adcbfc35c89e0d97e0060ad2d932375d3462cd827649502e587611daeec",
+      "ruleset_version": 2,
+      "previous_hash": "6e6c5faeedf1d553aca0f84514361bd2d2c6d09ab55d19e0974e94f6b3d8a24d",
       "events": [
         {
           "event_id": "618223aa-0f1f-509f-8479-a6efd802a246",
@@ -81,16 +81,16 @@
           }
         }
       ],
-      "post_state_hash": "de44226d427a51d7d77713b62ef7179be63390f87529dc6de521d8e43ee5361a",
-      "batch_hash": "37cca90cb2fd9e35a784ca8c64e26aa3bb32a8afae3759dd0a06dd16f597afc6"
+      "post_state_hash": "6646c792eb90e9fa3bd17e4e74df64e129bdc4dff47c7e594e44233b343dd4ea",
+      "batch_hash": "9d77018c9b617946252151ee030546860d589aba7239e1c145f22af967d329d4"
     },
     {
       "event_schema_version": 1,
       "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
       "sequence": "3",
       "tick": "1",
-      "ruleset_version": 1,
-      "previous_hash": "37cca90cb2fd9e35a784ca8c64e26aa3bb32a8afae3759dd0a06dd16f597afc6",
+      "ruleset_version": 2,
+      "previous_hash": "9d77018c9b617946252151ee030546860d589aba7239e1c145f22af967d329d4",
       "events": [
         {
           "event_id": "0b7dd3fe-034c-5f82-be98-d858b5870b1b",
@@ -120,21 +120,21 @@
           }
         }
       ],
-      "post_state_hash": "995c42881bbac668c11d8b15052f151ac3b4261d967c6d70f2e8a01d3b21bba1",
-      "batch_hash": "5d6a3f3461b3f9332bae90cebba819324ef2d07f1a4e404a67fbe8e35a85bcc9"
+      "post_state_hash": "7d01139b8d640c90b7f0a262de1e1dda8704df99f46c545bd40e0786c6676043",
+      "batch_hash": "2e7bec76efe34d506abc9c596e94e84cbdb16988d9121179e7fd4290461f6d5a"
     }
   ],
   "snapshot": {
     "snapshot_schema_version": 1,
     "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
     "through_sequence": "2",
-    "last_event_hash": "37cca90cb2fd9e35a784ca8c64e26aa3bb32a8afae3759dd0a06dd16f597afc6",
-    "state_hash": "de44226d427a51d7d77713b62ef7179be63390f87529dc6de521d8e43ee5361a",
+    "last_event_hash": "9d77018c9b617946252151ee030546860d589aba7239e1c145f22af967d329d4",
+    "state_hash": "6646c792eb90e9fa3bd17e4e74df64e129bdc4dff47c7e594e44233b343dd4ea",
     "state": {
       "manifest": {
         "world_id": "019fd4a9-b7f9-7891-ab51-cdf71d2b7688",
         "seed": "7640891576956012809",
-        "ruleset_version": 1,
+        "ruleset_version": 2,
         "identity_policy_version": 1,
         "scientific_datasets": {
           "gbif_taxon_2436436": "accessed_2026-08-06"
@@ -157,6 +157,7 @@
           "initialized_at": "0",
           "born_at": null,
           "initial_age_ticks": 0,
+          "age_ticks": 0,
           "location_id": null,
           "death": null
         }
@@ -167,7 +168,7 @@
     "through_sequence": "3",
     "tick": "1",
     "status": "archived",
-    "last_event_hash": "5d6a3f3461b3f9332bae90cebba819324ef2d07f1a4e404a67fbe8e35a85bcc9",
-    "state_hash": "995c42881bbac668c11d8b15052f151ac3b4261d967c6d70f2e8a01d3b21bba1"
+    "last_event_hash": "2e7bec76efe34d506abc9c596e94e84cbdb16988d9121179e7fd4290461f6d5a",
+    "state_hash": "7d01139b8d640c90b7f0a262de1e1dda8704df99f46c545bd40e0786c6676043"
   }
 }
