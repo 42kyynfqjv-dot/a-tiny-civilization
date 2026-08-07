@@ -195,9 +195,15 @@ path for global occurrence, 2024 seasonality, and transitions. All 504 occurrenc
 are retained (18,639,906,940 bytes) and pass a complete structural GeoTIFF inventory:
 40,000 × 40,000 cells per tile, 0.00025-degree pixels, LZW row strips, and horizontal
 differencing. The portable reader decodes bounded source rows without depending on a
-system GIS installation. This is breadth-first source plumbing, not an admitted
-hydrography layer; exact snapshot publication, terrain routing, palette-code semantics,
-reconstruction policy, and integrated scientific validation remain pending.
+system GIS installation. The provisional occurrence-code release has now been
+generated and independently traversed across 24,576 tiles and all 6,291,456 L10 cells
+under root-index SHA-256
+`82d77b6cdfa56109fee93560e60790890b1e276a11d22c067cce01b16024e02f`.
+It preserves all source codes without interpretation, including 426,256 explicit
+out-of-source cells and 4,054,698 code-255 cells. This is breadth-first water evidence,
+not an admitted hydrography layer; exact snapshot publication, terrain coupling,
+palette-code semantics, reconstruction policy, and integrated scientific validation
+remain pending.
 
 The breadth-first soil path now enumerates 27 official SoilGrids global overview
 artifacts: nine physical/chemical properties for 0–5 cm topsoil at the 5th, 50th, and
