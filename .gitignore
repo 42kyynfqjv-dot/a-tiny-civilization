@@ -5,7 +5,7 @@
 /.tools/
 /data/source-cache/
 /data/derived-cache/
-/runtime-artifacts/
+/runtime-artifacts*/
 /web/node_modules/
 /web/dist/
 /.idea/
