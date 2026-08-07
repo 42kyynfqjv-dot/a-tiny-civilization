@@ -152,6 +152,12 @@ source plumbing, not a pinned snapshot or admitted hydrography layer; exact acqu
 hashes, terrain routing, reconstruction policy, and integrated scientific validation
 remain pending.
 
+The breadth-first soil path now enumerates 27 official SoilGrids global overview
+artifacts: nine physical/chemical properties for 0–5 cm topsoil at the 5th, 50th, and
+95th prediction quantiles. The acquisition helper is resumable and refuses replacement.
+It deliberately gets a real global uncertainty-bearing soil vector wired before the
+final pass expands to all six native-depth products and validates scientific coupling.
+
 ### 3. Situated memory and bounded cognition
 
 - local deterministic working memory plus the asynchronous Hindsight adapter;

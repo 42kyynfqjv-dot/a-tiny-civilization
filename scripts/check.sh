@@ -19,6 +19,7 @@ python3 ./scripts/acquire-cds-land-cover.py \
   --output-directory data/source-cache/copernicus-land-cover-2022 --dry-run >/dev/null
 python3 ./scripts/verify-cds-land-cover-tools.py
 python3 ./scripts/acquire-jrc-surface-water.py --layers occurrence >/dev/null
+python3 ./scripts/acquire-soilgrids-topsoil.py >/dev/null
 ./scripts/check-boundaries.sh
 ./scripts/verify-demo.sh
 

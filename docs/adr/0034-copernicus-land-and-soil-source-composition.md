@@ -50,6 +50,12 @@ source response becomes a canonical layer merely because it was downloaded.
 The observed-class target-support and packed quality schema are fixed separately in
 [ADR 0036](0036-copernicus-land-cover-l10-target-support.md).
 
+For the breadth-first integration pass, the repository can now acquire the official
+SoilGrids global BigTIFF overview pyramids for nine 0–5 cm properties at Q0.05, Q0.5,
+and Q0.95. Their first image is approximately one-kilometre support (39,811 × 14,509
+in the Homolosine grid), appropriate for plumbing a provisional L10 soil vector. This
+does not replace the final six-depth, native-250 m evidence pass or authorize genesis.
+
 References: [CDS satellite land cover](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=documentation),
 [ERA5-Land monthly means](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means?tab=overview),
 and [SoilGrids](https://docs.isric.org/globaldata/soilgrids/index.html).
