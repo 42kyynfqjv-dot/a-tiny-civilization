@@ -25,7 +25,7 @@ use world_data_filesystem::{
 use world_domain::{
     BirthCategory, CapacityExhaustionPolicy, CelestialState, EntityId, OrganismRole,
     PartitionedExecution, PersonRepresentation, S2CellId, SchedulerKind, SpeciesIdentity,
-    WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
+    TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -339,7 +339,7 @@ fn evaluate_pinned_de441(session: &WorldSession) -> Result<CelestialState> {
         .context("celestial epoch overflow")?;
     let tdb_seconds =
         i64::try_from(tdb_seconds).context("celestial epoch exceeds DE441 CLI range")?;
-    let tdb_seconds = tdb_seconds.to_string();
+    let tdb_seconds_text = tdb_seconds.to_string();
     let output = ProcessCommand::new("/app/civilization-data")
         .args([
             "inspect",
@@ -347,7 +347,7 @@ fn evaluate_pinned_de441(session: &WorldSession) -> Result<CelestialState> {
             "--input-directory",
             "/runtime/data/source-cache/jpl-de441",
             "--tdb-seconds-from-j2000",
-            &tdb_seconds,
+            &tdb_seconds_text,
         ])
         .output()
         .context("evaluate pinned DE441 source")?;
@@ -359,6 +359,11 @@ fn evaluate_pinned_de441(session: &WorldSession) -> Result<CelestialState> {
     }
     let inspection: JplEpochInspection =
         serde_json::from_slice(&output.stdout).context("decode pinned DE441 evaluator output")?;
+    if inspection.fixed_scale_boundary.tdb_seconds_since_j2000()
+        != TdbSecondsSinceJ2000::new(i128::from(tdb_seconds))
+    {
+        anyhow::bail!("pinned DE441 evaluator returned a state for the wrong TDB epoch");
+    }
     Ok(inspection.fixed_scale_boundary)
 }
 
