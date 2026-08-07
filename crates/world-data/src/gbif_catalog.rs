@@ -172,3 +172,83 @@ pub enum GbifAnimaliaCatalogError {
     #[error("invalid GBIF species identity: {0}")]
     InvalidSpecies(String),
 }
+
+#[cfg(test)]
+mod tests {
+    use std::{fs, io::Write};
+
+    use super::*;
+
+    fn write_string(writer: &mut impl Write, value: &str) {
+        writer
+            .write_all(&(value.len() as u32).to_le_bytes())
+            .expect("length");
+        writer.write_all(value.as_bytes()).expect("value");
+    }
+
+    fn fixture_path() -> std::path::PathBuf {
+        std::env::temp_dir().join(format!(
+            "atiny-gbif-catalog-{}-{}.bin",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("system clock")
+                .as_nanos()
+        ))
+    }
+
+    fn write_fixture(path: &Path) {
+        let mut file = File::create(path).expect("fixture file");
+        file.write_all(GBIF_ANIMALIA_CATALOG_MAGIC).expect("magic");
+        file.write_all(&1_u16.to_le_bytes()).expect("schema");
+        file.write_all(Digest::sha256(b"snapshot").as_bytes())
+            .expect("digest");
+        file.write_all(&2_u64.to_le_bytes()).expect("count");
+        for (key, name) in [(2441176_u64, "Bison bison"), (5219173, "Canis lupus")] {
+            file.write_all(&key.to_le_bytes()).expect("key");
+            for value in [
+                name,
+                name,
+                "Chordata",
+                "Mammalia",
+                "Carnivora",
+                "Canidae",
+                "Canis",
+            ] {
+                write_string(&mut file, value);
+            }
+        }
+    }
+
+    #[test]
+    fn streams_and_finds_real_source_species_without_materializing_the_catalog() {
+        let path = fixture_path();
+        write_fixture(&path);
+        let reader = GbifAnimaliaCatalogReader::open(&path).expect("open fixture");
+        assert_eq!(reader.header().record_count, 2);
+        let species = reader
+            .find_taxon(5219173)
+            .expect("stream fixture")
+            .expect("wolf is present");
+        assert_eq!(species.scientific_name, "Canis lupus");
+        assert_eq!(
+            species
+                .species_identity()
+                .expect("citable identity")
+                .identifier,
+            "5219173"
+        );
+        fs::remove_file(path).expect("remove fixture");
+    }
+
+    #[test]
+    fn rejects_malformed_catalog_header() {
+        let path = fixture_path();
+        fs::write(&path, b"not-a-catalog").expect("write malformed fixture");
+        assert!(matches!(
+            GbifAnimaliaCatalogReader::open(&path),
+            Err(GbifAnimaliaCatalogError::Io(_)) | Err(GbifAnimaliaCatalogError::InvalidMagic)
+        ));
+        fs::remove_file(path).expect("remove fixture");
+    }
+}
