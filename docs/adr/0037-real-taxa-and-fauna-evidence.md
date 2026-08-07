@@ -105,6 +105,16 @@ find potential features and then applies point-in-MULTIPOLYGON geometry, includi
 holes and dateline unwrapping. The result is still only modeled-range evidence; a
 later ecological normalizer decides whether and how a species may populate a patch.
 
+`civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
+bridge. It preserves the original artifact hash while decoding EltonTraits' published
+Windows-1252 files and their quoted multiline reference cells, then compares only
+trimmed scientific names to accepted GBIF canonical names. It records every missing or
+unmatched name rather than guessing synonyms. The current retained files contain 3,580
+AnimalTraits records (1,614 exact GBIF matches), 9,995 Elton bird records (8,599 exact
+matches and two missing scientific-name cells), and 5,403 Elton mammal records (5,063
+exact matches and three missing scientific-name cells). Those counts are evidence
+coverage, not a claim that the unmatched taxa are absent from Earth.
+
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
 [GBIF citation guidance](https://www.gbif.org/citation-guidelines),

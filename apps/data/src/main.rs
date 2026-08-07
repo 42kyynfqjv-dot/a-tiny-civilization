@@ -1435,6 +1435,7 @@ struct FaunaTraitSourceTaxaInspection {
     input_hash: Digest,
     input_byte_length: u64,
     source_records: u64,
+    records_without_scientific_name: u64,
     distinct_scientific_names: usize,
     exact_accepted_matches: usize,
     ambiguous_accepted_matches: usize,
@@ -1456,25 +1457,28 @@ fn inspect_fauna_trait_taxa(
             animaltraits_path,
             b',' as char,
             "species",
+            SourceTextEncoding::Utf8,
         ),
         (
             "elton-traits-1.0-birds",
             elton_birds_path,
             b'\t' as char,
             "Scientific",
+            SourceTextEncoding::Windows1252,
         ),
         (
             "elton-traits-1.0-mammals",
             elton_mammals_path,
             b'\t' as char,
             "Scientific",
+            SourceTextEncoding::Windows1252,
         ),
     ];
     let mut inspections = Vec::with_capacity(sources.len());
-    for (source_id, path, delimiter, scientific_column) in sources {
+    for (source_id, path, delimiter, scientific_column, encoding) in sources {
         let (byte_length, hash) = digest_file(path)?;
-        let (source_records, names) =
-            read_source_scientific_names(path, delimiter, scientific_column)?;
+        let (source_records, records_without_scientific_name, names) =
+            read_source_scientific_names(path, delimiter, scientific_column, encoding)?;
         let mut exact_accepted_matches = 0_usize;
         let mut ambiguous_accepted_matches = 0_usize;
         let mut unmatched = Vec::new();
@@ -1491,6 +1495,7 @@ fn inspect_fauna_trait_taxa(
             input_hash: hash,
             input_byte_length: byte_length,
             source_records,
+            records_without_scientific_name,
             distinct_scientific_names: names.len(),
             exact_accepted_matches,
             ambiguous_accepted_matches,
@@ -1548,14 +1553,15 @@ fn load_gbif_accepted_species_names(path: &Path) -> Result<(u64, BTreeMap<String
         if taxon_key == 0 {
             bail!("GBIF Animalia catalog has zero taxon key");
         }
-        let scientific_name = read_length_prefixed_utf8(&mut reader)?;
-        for _ in 0..6 {
+        let _authored_scientific_name = read_length_prefixed_utf8(&mut reader)?;
+        let canonical_name = read_length_prefixed_utf8(&mut reader)?;
+        for _ in 0..5 {
             let _ = read_length_prefixed_utf8(&mut reader)?;
         }
-        if scientific_name.is_empty() {
-            bail!("GBIF Animalia catalog has an empty scientific name");
+        if canonical_name.is_empty() {
+            continue;
         }
-        names.entry(scientific_name).or_default().push(taxon_key);
+        names.entry(canonical_name).or_default().push(taxon_key);
     }
     let mut trailing = [0_u8; 1];
     if reader.read(&mut trailing)? != 0 {
@@ -1568,14 +1574,25 @@ fn read_source_scientific_names(
     path: &Path,
     delimiter: char,
     scientific_column: &str,
-) -> Result<(u64, BTreeSet<String>)> {
-    let input = fs::read_to_string(path)
-        .with_context(|| format!("read retained fauna source {}", path.display()))?;
-    let mut lines = input.lines();
-    let header = lines
-        .next()
+    encoding: SourceTextEncoding,
+) -> Result<(u64, u64, BTreeSet<String>)> {
+    let raw =
+        fs::read(path).with_context(|| format!("read retained fauna source {}", path.display()))?;
+    let input = match encoding {
+        SourceTextEncoding::Utf8 => String::from_utf8(raw).with_context(|| {
+            format!(
+                "retained fauna source {} is not valid UTF-8",
+                path.display()
+            )
+        })?,
+        SourceTextEncoding::Windows1252 => decode_windows_1252(&raw),
+    };
+    let mut rows = parse_delimited_records(&input, delimiter)?;
+    let columns = rows
+        .first()
+        .cloned()
         .context("retained fauna source has no header row")?;
-    let columns = parse_delimited_row(header, delimiter)?;
+    rows.remove(0);
     let scientific_index = columns
         .iter()
         .position(|column| column == scientific_column)
@@ -1583,17 +1600,16 @@ fn read_source_scientific_names(
             format!("retained fauna source is missing {scientific_column:?} column")
         })?;
     let mut records = 0_u64;
+    let mut records_without_scientific_name = 0_u64;
     let mut names = BTreeSet::new();
-    for (line_index, line) in lines.enumerate() {
-        if line.is_empty() {
+    for (record_index, fields) in rows.into_iter().enumerate() {
+        if fields.len() == 1 && fields[0].is_empty() {
             continue;
         }
-        let fields = parse_delimited_row(line, delimiter)
-            .with_context(|| format!("parse fauna source record {}", line_index + 2))?;
         if fields.len() != columns.len() {
             bail!(
                 "fauna source record {} has {} fields, expected {}",
-                line_index + 2,
+                record_index + 2,
                 fields.len(),
                 columns.len()
             );
@@ -1604,25 +1620,70 @@ fn read_source_scientific_names(
         let name = fields[scientific_index]
             .trim_matches(|character: char| character.is_ascii_whitespace());
         if name.is_empty() {
-            bail!(
-                "fauna source record {} has no scientific name",
-                line_index + 2
-            );
+            records_without_scientific_name = records_without_scientific_name
+                .checked_add(1)
+                .context("fauna source unnamed-record count overflow")?;
+            continue;
         }
         names.insert(name.to_owned());
     }
     if records == 0 || names.is_empty() {
         bail!("retained fauna source has no data records");
     }
-    Ok((records, names))
+    Ok((records, records_without_scientific_name, names))
 }
 
-fn parse_delimited_row(line: &str, delimiter: char) -> Result<Vec<String>> {
+#[derive(Clone, Copy)]
+enum SourceTextEncoding {
+    Utf8,
+    Windows1252,
+}
+
+/// Decodes the legacy Windows-1252 text files published by EltonTraits without
+/// changing the source bytes used for provenance hashing.
+fn decode_windows_1252(bytes: &[u8]) -> String {
+    bytes
+        .iter()
+        .map(|byte| match *byte {
+            0x80 => '\u{20AC}',
+            0x82 => '\u{201A}',
+            0x83 => '\u{0192}',
+            0x84 => '\u{201E}',
+            0x85 => '\u{2026}',
+            0x86 => '\u{2020}',
+            0x87 => '\u{2021}',
+            0x88 => '\u{02C6}',
+            0x89 => '\u{2030}',
+            0x8A => '\u{0160}',
+            0x8B => '\u{2039}',
+            0x8C => '\u{0152}',
+            0x8E => '\u{017D}',
+            0x91 => '\u{2018}',
+            0x92 => '\u{2019}',
+            0x93 => '\u{201C}',
+            0x94 => '\u{201D}',
+            0x95 => '\u{2022}',
+            0x96 => '\u{2013}',
+            0x97 => '\u{2014}',
+            0x98 => '\u{02DC}',
+            0x99 => '\u{2122}',
+            0x9A => '\u{0161}',
+            0x9B => '\u{203A}',
+            0x9C => '\u{0153}',
+            0x9E => '\u{017E}',
+            0x9F => '\u{0178}',
+            byte => char::from(byte),
+        })
+        .collect()
+}
+
+fn parse_delimited_records(input: &str, delimiter: char) -> Result<Vec<Vec<String>>> {
+    let mut records = Vec::new();
     let mut fields = Vec::new();
     let mut field = String::new();
     let mut quoted = false;
     let mut at_field_start = true;
-    let mut characters = line.chars().peekable();
+    let mut characters = input.chars().peekable();
     while let Some(character) = characters.next() {
         if quoted {
             if character == '"' {
@@ -1638,6 +1699,17 @@ fn parse_delimited_row(line: &str, delimiter: char) -> Result<Vec<String>> {
         } else if character == delimiter {
             fields.push(std::mem::take(&mut field));
             at_field_start = true;
+        } else if character == '\n' {
+            fields.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut fields));
+            at_field_start = true;
+        } else if character == '\r' {
+            if characters.peek().copied() == Some('\n') {
+                let _ = characters.next();
+            }
+            fields.push(std::mem::take(&mut field));
+            records.push(std::mem::take(&mut fields));
+            at_field_start = true;
         } else if character == '"' && at_field_start {
             quoted = true;
             at_field_start = false;
@@ -1649,8 +1721,11 @@ fn parse_delimited_row(line: &str, delimiter: char) -> Result<Vec<String>> {
     if quoted {
         bail!("unterminated quoted field");
     }
-    fields.push(field);
-    Ok(fields)
+    if !field.is_empty() || !fields.is_empty() {
+        fields.push(field);
+        records.push(fields);
+    }
+    Ok(records)
 }
 
 const JRC_OCCURRENCE_LONGITUDES: std::ops::Range<i32> = -18..18;
@@ -11596,6 +11671,22 @@ mod tests {
             "Loxodonta africana\t🐘"
         );
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn fauna_trait_parser_preserves_legacy_encoding_and_quoted_newlines() {
+        assert_eq!(decode_windows_1252(b"range\x96map"), "range–map");
+        assert_eq!(
+            parse_delimited_records(
+                "Scientific\tReference\nTestus animalia\t\"Ref_1\n\"\n",
+                '\t'
+            )
+            .expect("parse retained trait rows"),
+            vec![
+                vec!["Scientific".to_owned(), "Reference".to_owned()],
+                vec!["Testus animalia".to_owned(), "Ref_1\n".to_owned()],
+            ]
+        );
     }
 
     #[test]
