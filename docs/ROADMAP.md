@@ -44,6 +44,29 @@ is present in the log:
 Every projection has its own version and durable cursor. It can be discarded and
 rebuilt without changing a world.
 
+## Delivery order: complete first, admit second
+
+Development is breadth-first until a provisional full-Earth world runs end to end.
+The order is:
+
+1. retain and plumb a real global source for every required Earth domain;
+2. wire real species identities, provisional ecology, animal behavior, and the
+   source-backed sky and tide drivers;
+3. compose the provisional bundle, execute the partitioned world, and expose it in
+   the observatory;
+4. finish deployment, backup, recovery, and public-operation plumbing;
+5. perform the integrated scientific admission pass: independent rebuilds, source
+   and unit review, uncertainty propagation, cross-layer coupling checks, ecological
+   calibration, and publication of the assumption ledger.
+
+Basic integrity, licensing, schema, range, and content-hash checks still gate every
+ingest. They prevent corrupt or unusable inputs from contaminating later work, but
+publication-grade scientific validation does not hold up the next domain. Until the
+final admission pass succeeds, outputs are explicitly **provisional**, cannot become a
+canonical public world, and must not be described as scientifically validated. This
+sequencing makes validation test the complete coupled system instead of polishing
+isolated layers that may change when they are integrated.
+
 ## Checkpoints
 
 ### 0. Public foundation — complete

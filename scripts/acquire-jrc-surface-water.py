@@ -121,6 +121,45 @@ def sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
+def portable_report(results: list[dict[str, str | int]]) -> dict[str, object]:
+    """Return stable source facts, excluding run-specific download status."""
+    artifacts = [
+        {
+            "artifact_path": str(item["artifact_path"]),
+            "byte_length": int(item["byte_length"]),
+            "content_hash": str(item["content_hash"]),
+            "download_url": str(item["download_url"]),
+        }
+        for item in results
+    ]
+    artifacts.sort(key=lambda item: item["artifact_path"])
+    return {
+        "inventory_schema_version": 1,
+        "release": RELEASE,
+        "version": VERSION,
+        "artifact_count": len(artifacts),
+        "byte_length": sum(int(item["byte_length"]) for item in artifacts),
+        "artifacts": artifacts,
+    }
+
+
+def write_new_report(path: Path, report: dict[str, object]) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    encoded = (
+        json.dumps(report, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+        + "\n"
+    ).encode("utf-8")
+    descriptor = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o644)
+    try:
+        with os.fdopen(descriptor, "wb") as stream:
+            stream.write(encoded)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        path.unlink(missing_ok=True)
+        raise
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -130,6 +169,11 @@ def main() -> int:
         help="comma-separated layers (default: occurrence,seasonality,transitions)",
     )
     parser.add_argument("--output-directory", type=Path, default=Path("data/source-cache"))
+    parser.add_argument(
+        "--report-output",
+        type=Path,
+        help="write stable hashes and lengths to a new JSON file",
+    )
     parser.add_argument("--workers", type=int, default=8)
     parser.add_argument("--download", action="store_true")
     args = parser.parse_args()
@@ -144,17 +188,22 @@ def main() -> int:
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         results = list(executor.map(lambda item: download_one(args.output_directory, item), items))
     results.sort(key=lambda item: str(item["artifact_path"]))
-    print(
-        json.dumps(
-            {
-                "release": RELEASE,
-                "version": VERSION,
-                "artifact_count": len(results),
-                "byte_length": sum(int(item["byte_length"]) for item in results),
-                "artifacts": results,
-            }
+    report = portable_report(results)
+    if args.report_output is not None:
+        write_new_report(args.report_output, report)
+        print(
+            json.dumps(
+                {
+                    "release": report["release"],
+                    "version": report["version"],
+                    "artifact_count": report["artifact_count"],
+                    "byte_length": report["byte_length"],
+                    "report_output": str(args.report_output),
+                }
+            )
         )
-    )
+    else:
+        print(json.dumps(report))
     return 0
 
 

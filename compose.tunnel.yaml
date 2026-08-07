@@ -1,5 +1,3 @@
-version: "2.4"
-
 # Production edge overlay. It is deliberately separate from compose.yaml so a local
 # `make up` never creates a public route. Cloudflare manages the hostname-to-origin
 # mapping for this remotely managed tunnel; configure that route as http://web:3000.
