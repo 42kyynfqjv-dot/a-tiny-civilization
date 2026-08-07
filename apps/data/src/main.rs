@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem};
+use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{
@@ -164,6 +164,13 @@ enum InspectCommand {
         artifact_root: PathBuf,
         #[arg(long, default_value_t = 1981)]
         year: u16,
+    },
+    /// Inspect the verified 2022 Copernicus land-cover ZIP and NetCDF schema.
+    CopernicusLandCover {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
     },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
@@ -434,6 +441,10 @@ async fn main() -> Result<()> {
                 artifact_root,
                 year,
             } => inspect_era5_annual_archive(&source_snapshot, &artifact_root, year),
+            InspectCommand::CopernicusLandCover {
+                source_snapshot,
+                artifact_root,
+            } => inspect_copernicus_land_cover(&source_snapshot, &artifact_root),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -2854,6 +2865,333 @@ fn inspect_era5_annual_archive(
     Ok(())
 }
 
+const COPERNICUS_LAND_COVER_MEMBER: &str = "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1.nc";
+const COPERNICUS_LAND_COVER_SNAPSHOT_ID: &str = "copernicus-satellite-land-cover-v2-1-1-2022";
+const COPERNICUS_LAND_COVER_ARTIFACT_PATH: &str =
+    "copernicus-land-cover-2022/copernicus-satellite-land-cover-v2.1.1-2022.zip";
+const COPERNICUS_LAND_COVER_ARTIFACT_HASH: &str =
+    "993500e18307b5ea0811394355199937b8305081d08b6a7f6909d73a3eadbac7";
+const COPERNICUS_LAND_COVER_ARTIFACT_BYTES: u64 = 2_352_123_142;
+const COPERNICUS_LAND_COVER_MEMBER_BYTES: u64 = 2_351_763_989;
+const COPERNICUS_LAND_COVER_MEMBER_CRC32: u32 = 3_844_043_699;
+const COPERNICUS_LAND_COVER_MEMBER_HASH: &str =
+    "38149d655e27c0d353dac61eb8e5997cf951566cb52071a3fc4a63b260063e42";
+const COPERNICUS_LAND_COVER_LATITUDE_CELLS: u64 = 64_800;
+const COPERNICUS_LAND_COVER_LONGITUDE_CELLS: u64 = 129_600;
+const COPERNICUS_LAND_COVER_LATITUDE_ENDPOINT_BITS: [u64; 2] =
+    [0x4056_7fe9_3e93_e940, 0xc056_7fe9_3e93_e93f];
+const COPERNICUS_LAND_COVER_LONGITUDE_ENDPOINT_BITS: [u64; 2] =
+    [0xc066_7ff4_9f49_f49f, 0x4066_7ff4_9f49_f4a0];
+
+#[derive(Serialize)]
+struct CopernicusLandCoverInspection {
+    inspection_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+    archive_member: String,
+    archive_member_byte_length: u64,
+    archive_member_crc32: u32,
+    archive_member_hash: Digest,
+    latitude_endpoint_ieee754_bits_hex: [String; 2],
+    longitude_endpoint_ieee754_bits_hex: [String; 2],
+    global_attributes: BTreeMap<String, String>,
+    variables: Vec<LandCoverVariableInspection>,
+}
+
+#[derive(Serialize)]
+struct LandCoverVariableInspection {
+    name: String,
+    data_type: String,
+    shape: Vec<u64>,
+}
+
+fn expected_copernicus_land_cover_variables() -> BTreeMap<&'static str, (NcType, Vec<u64>)> {
+    let raster = vec![
+        1,
+        COPERNICUS_LAND_COVER_LATITUDE_CELLS,
+        COPERNICUS_LAND_COVER_LONGITUDE_CELLS,
+    ];
+    BTreeMap::from([
+        ("change_count", (NcType::UByte, raster.clone())),
+        ("crs", (NcType::Int, Vec::new())),
+        ("current_pixel_state", (NcType::Byte, raster.clone())),
+        (
+            "lat",
+            (NcType::Double, vec![COPERNICUS_LAND_COVER_LATITUDE_CELLS]),
+        ),
+        (
+            "lat_bounds",
+            (
+                NcType::Double,
+                vec![COPERNICUS_LAND_COVER_LATITUDE_CELLS, 2],
+            ),
+        ),
+        ("lccs_class", (NcType::UByte, raster.clone())),
+        (
+            "lon",
+            (NcType::Double, vec![COPERNICUS_LAND_COVER_LONGITUDE_CELLS]),
+        ),
+        (
+            "lon_bounds",
+            (
+                NcType::Double,
+                vec![COPERNICUS_LAND_COVER_LONGITUDE_CELLS, 2],
+            ),
+        ),
+        ("observation_count", (NcType::UShort, raster.clone())),
+        ("processed_flag", (NcType::Byte, raster)),
+        ("time", (NcType::Double, vec![1])),
+        ("time_bounds", (NcType::Double, vec![1, 2])),
+    ])
+}
+
+fn expected_copernicus_land_cover_global_attributes() -> BTreeMap<&'static str, &'static str> {
+    BTreeMap::from([
+        ("id", "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1"),
+        ("license", "EC C3S Land cover Data Policy"),
+        ("product_version", "2.1.1"),
+        ("source", "Sentinel-3 OLCI"),
+        ("spatial_resolution", "300m"),
+        ("time_coverage_end", "20221231"),
+        ("time_coverage_start", "20220101"),
+        ("tracking_id", "cbc0983e-a0fd-4277-9023-2e618c0c2067"),
+    ])
+}
+
+fn validate_copernicus_land_cover_schema(file: &NcFile) -> Result<()> {
+    let expected = expected_copernicus_land_cover_variables();
+    let observed = file
+        .variables()
+        .context("enumerate Copernicus land-cover variables")?
+        .iter()
+        .map(|variable| {
+            (
+                variable.name(),
+                (variable.dtype().clone(), variable.shape().to_vec()),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    if observed != expected {
+        bail!(
+            "Copernicus land-cover variable schema changed: expected {expected:?}, observed {observed:?}"
+        );
+    }
+    Ok(())
+}
+
+fn netcdf_type_name(value: &NcType) -> Result<&'static str> {
+    match value {
+        NcType::Byte => Ok("i8"),
+        NcType::Char => Ok("char"),
+        NcType::Short => Ok("i16"),
+        NcType::Int => Ok("i32"),
+        NcType::Float => Ok("f32"),
+        NcType::Double => Ok("f64"),
+        NcType::UByte => Ok("u8"),
+        NcType::UShort => Ok("u16"),
+        NcType::UInt => Ok("u32"),
+        NcType::Int64 => Ok("i64"),
+        NcType::UInt64 => Ok("u64"),
+        NcType::String => Ok("string"),
+        _ => bail!("land-cover schema contains an unsupported compound NetCDF type"),
+    }
+}
+
+fn required_global_attribute(file: &NcFile, name: &str) -> Result<String> {
+    file.global_attributes()
+        .context("enumerate Copernicus land-cover global attributes")?
+        .iter()
+        .find(|attribute| attribute.name == name)
+        .with_context(|| format!("Copernicus land-cover file is missing global attribute {name}"))?
+        .value
+        .as_string()
+        .with_context(|| format!("Copernicus land-cover global attribute {name} is not text"))
+}
+
+fn inspect_land_cover_axis_endpoints(
+    file: &NcFile,
+    variable_name: &str,
+    expected_length: u64,
+) -> Result<[u64; 2]> {
+    let values = file
+        .read_variable::<f64>(variable_name)
+        .with_context(|| format!("read Copernicus land-cover {variable_name} coordinate axis"))?;
+    let values = values.as_slice().with_context(|| {
+        format!("Copernicus land-cover {variable_name} coordinate axis is not contiguous")
+    })?;
+    if values.len() != usize::try_from(expected_length)? {
+        bail!("Copernicus land-cover {variable_name} axis has an unexpected length");
+    }
+    let first = values
+        .first()
+        .context("Copernicus land-cover coordinate axis is empty")?;
+    let last = values
+        .last()
+        .context("Copernicus land-cover coordinate axis is empty")?;
+    Ok([first.to_bits(), last.to_bits()])
+}
+
+fn inspect_copernicus_land_cover(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+    let snapshot = load_source_manifest(manifest_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    if snapshot.snapshot_id != COPERNICUS_LAND_COVER_SNAPSHOT_ID {
+        bail!(
+            "expected Copernicus land-cover snapshot {COPERNICUS_LAND_COVER_SNAPSHOT_ID}, observed {}",
+            snapshot.snapshot_id
+        );
+    }
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let mut data_artifacts = snapshot.artifacts.iter().filter(|artifact| {
+        artifact.role == world_data::SourceSnapshotArtifactRole::Data
+            && artifact.artifact_path.ends_with(".zip")
+    });
+    let artifact = data_artifacts
+        .next()
+        .context("source snapshot has no Copernicus land-cover ZIP response")?;
+    if data_artifacts.next().is_some() {
+        bail!("Copernicus land-cover source snapshot has multiple data responses");
+    }
+    let expected_artifact_hash = COPERNICUS_LAND_COVER_ARTIFACT_HASH
+        .parse::<Digest>()
+        .context("parse pinned Copernicus land-cover artifact digest")?;
+    if artifact.artifact_path != COPERNICUS_LAND_COVER_ARTIFACT_PATH
+        || artifact.content_hash != expected_artifact_hash
+        || artifact.byte_length != COPERNICUS_LAND_COVER_ARTIFACT_BYTES
+    {
+        bail!("Copernicus land-cover data artifact identity changed");
+    }
+    let archive_path = artifact_root.join(&artifact.artifact_path);
+    let archive_file = File::open(&archive_path).with_context(|| {
+        format!(
+            "open verified Copernicus land-cover archive {}",
+            archive_path.display()
+        )
+    })?;
+    let mut archive = zip::ZipArchive::new(archive_file)
+        .context("open verified Copernicus land-cover ZIP archive")?;
+    if archive.len() != 1 {
+        bail!("Copernicus land-cover ZIP archive has an unexpected member count");
+    }
+    let mut member = archive
+        .by_index(0)
+        .context("open Copernicus land-cover ZIP member")?;
+    if member.name() != COPERNICUS_LAND_COVER_MEMBER {
+        bail!("Copernicus land-cover ZIP member name changed");
+    }
+    if member.size() != COPERNICUS_LAND_COVER_MEMBER_BYTES {
+        bail!("Copernicus land-cover ZIP member byte length changed");
+    }
+    let archive_member_crc32 = member.crc32();
+    if archive_member_crc32 != COPERNICUS_LAND_COVER_MEMBER_CRC32 {
+        bail!("Copernicus land-cover ZIP member CRC-32 changed");
+    }
+    let mut extracted = PartialDownload::create(
+        &std::env::temp_dir(),
+        "a-tiny-civilization-copernicus-land-cover-inspection.nc",
+    )?;
+    let mut member_hasher = Sha256::new();
+    let mut member_bytes = 0_u64;
+    let mut buffer = vec![0_u8; 1024 * 1024];
+    loop {
+        let read = member
+            .read(&mut buffer)
+            .context("read Copernicus land-cover ZIP member")?;
+        if read == 0 {
+            break;
+        }
+        member_bytes = member_bytes
+            .checked_add(u64::try_from(read)?)
+            .context("Copernicus land-cover member length overflow")?;
+        member_hasher.update(&buffer[..read]);
+        extracted
+            .file
+            .write_all(&buffer[..read])
+            .context("write temporary Copernicus land-cover NetCDF")?;
+    }
+    if member_bytes != COPERNICUS_LAND_COVER_MEMBER_BYTES {
+        bail!("Copernicus land-cover ZIP member yielded an unexpected byte length");
+    }
+    extracted
+        .file
+        .sync_all()
+        .context("sync temporary Copernicus land-cover NetCDF")?;
+    let archive_member_hash = Digest::from_bytes(member_hasher.finalize().into());
+    let expected_member_hash = COPERNICUS_LAND_COVER_MEMBER_HASH
+        .parse::<Digest>()
+        .context("parse pinned Copernicus land-cover member digest")?;
+    if archive_member_hash != expected_member_hash {
+        bail!("Copernicus land-cover ZIP member SHA-256 changed");
+    }
+    drop(member);
+    drop(archive);
+
+    let file = NcFile::open(&extracted.path)
+        .context("parse Copernicus land-cover NetCDF through the pure-Rust reader")?;
+    validate_copernicus_land_cover_schema(&file)?;
+    let latitude_endpoint_bits =
+        inspect_land_cover_axis_endpoints(&file, "lat", COPERNICUS_LAND_COVER_LATITUDE_CELLS)?;
+    if latitude_endpoint_bits != COPERNICUS_LAND_COVER_LATITUDE_ENDPOINT_BITS {
+        bail!("Copernicus land-cover latitude endpoints changed");
+    }
+    let longitude_endpoint_bits =
+        inspect_land_cover_axis_endpoints(&file, "lon", COPERNICUS_LAND_COVER_LONGITUDE_CELLS)?;
+    if longitude_endpoint_bits != COPERNICUS_LAND_COVER_LONGITUDE_ENDPOINT_BITS {
+        bail!("Copernicus land-cover longitude endpoints changed");
+    }
+    let expected_global_attributes = expected_copernicus_land_cover_global_attributes();
+    let global_attributes = expected_global_attributes
+        .keys()
+        .map(|name| Ok(((*name).to_owned(), required_global_attribute(&file, name)?)))
+        .collect::<Result<BTreeMap<_, _>>>()?;
+    let observed_global_attributes = global_attributes
+        .iter()
+        .map(|(name, value)| (name.as_str(), value.as_str()))
+        .collect::<BTreeMap<_, _>>();
+    if observed_global_attributes != expected_global_attributes {
+        bail!(
+            "Copernicus land-cover global attributes changed: expected {expected_global_attributes:?}, observed {observed_global_attributes:?}"
+        );
+    }
+    let mut variables = file
+        .variables()
+        .context("enumerate Copernicus land-cover variables")?
+        .iter()
+        .map(|variable| {
+            Ok(LandCoverVariableInspection {
+                name: variable.name().to_owned(),
+                data_type: netcdf_type_name(variable.dtype())?.to_owned(),
+                shape: variable.shape().to_vec(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    variables.sort_by(|left, right| left.name.cmp(&right.name));
+    println!(
+        "{}",
+        serde_json::to_string(&CopernicusLandCoverInspection {
+            inspection_schema_version: 1,
+            source_snapshot_id: snapshot.snapshot_id,
+            source_snapshot_digest,
+            artifact_path: artifact.artifact_path.clone(),
+            artifact_hash: artifact.content_hash,
+            artifact_byte_length: artifact.byte_length,
+            archive_member: COPERNICUS_LAND_COVER_MEMBER.to_owned(),
+            archive_member_byte_length: member_bytes,
+            archive_member_crc32,
+            archive_member_hash,
+            latitude_endpoint_ieee754_bits_hex: latitude_endpoint_bits
+                .map(|value| format!("{value:016x}")),
+            longitude_endpoint_ieee754_bits_hex: longitude_endpoint_bits
+                .map(|value| format!("{value:016x}")),
+            global_attributes,
+            variables,
+        })?
+    );
+    Ok(())
+}
+
 #[derive(Serialize)]
 struct ChelsaJanuaryCellInspection {
     inspection_schema_version: u16,
@@ -4161,6 +4499,46 @@ mod tests {
         assert_eq!(accumulated.get("tp"), Some(&vec![12, 721, 1_440]));
         assert!(!accumulated.contains_key("t2m"));
         assert!(expected_era5_member_variables("unexpected.nc").is_err());
+    }
+
+    #[test]
+    fn copernicus_land_cover_contract_keeps_classes_and_quality_fields_separate() {
+        let variables = expected_copernicus_land_cover_variables();
+        let expected_raster = vec![1, 64_800, 129_600];
+        assert_eq!(
+            variables.get("lccs_class"),
+            Some(&(NcType::UByte, expected_raster.clone()))
+        );
+        assert_eq!(
+            variables.get("processed_flag"),
+            Some(&(NcType::Byte, expected_raster.clone()))
+        );
+        assert_eq!(
+            variables.get("current_pixel_state"),
+            Some(&(NcType::Byte, expected_raster.clone()))
+        );
+        assert_eq!(
+            variables.get("observation_count"),
+            Some(&(NcType::UShort, expected_raster.clone()))
+        );
+        assert_eq!(
+            variables.get("change_count"),
+            Some(&(NcType::UByte, expected_raster))
+        );
+        assert_eq!(variables.len(), 12);
+        assert_eq!(
+            expected_copernicus_land_cover_global_attributes(),
+            BTreeMap::from([
+                ("id", "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1"),
+                ("license", "EC C3S Land cover Data Policy"),
+                ("product_version", "2.1.1"),
+                ("source", "Sentinel-3 OLCI"),
+                ("spatial_resolution", "300m"),
+                ("time_coverage_end", "20221231"),
+                ("time_coverage_start", "20220101"),
+                ("tracking_id", "cbc0983e-a0fd-4277-9023-2e618c0c2067"),
+            ])
+        );
     }
 
     fn temporary_root(label: &str) -> PathBuf {

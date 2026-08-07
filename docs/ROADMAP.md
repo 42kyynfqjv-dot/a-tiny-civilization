@@ -134,8 +134,10 @@ terrain release over the same 6,291,456 target cells, with root-index SHA-256
 `0794832d533a81e0889779a78aa39d730a3b09a98edff37b57ef76f394504876`.
 The acquired Copernicus land-cover artifact contains one verified 2,351,763,989-byte
 NetCDF member on its documented 64,800 × 129,600 grid, with LCCS class and all four
-quality fields. Deterministic L10 aggregation, independent class-count inspection, and
-the habitat/coastline evidence roots remain pending.
+quality fields. Its portable inspector independently verifies the complete snapshot,
+archive/member digests, ZIP CRC, exact axes, variable types, and pinned product
+metadata. Deterministic L10 aggregation, independent class-count inspection, and the
+habitat/coastline evidence roots remain pending.
 
 ### 3. Situated memory and bounded cognition
 

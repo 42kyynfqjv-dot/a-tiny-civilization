@@ -186,6 +186,18 @@ cargo run --locked -p civilization-data -- inspect chelsa-january-temperature \
   --artifact-root data/source-cache
 ```
 
+The Copernicus 2022 land-cover archive has an equally strict portable inspector. It
+verifies every source-snapshot artifact, the exact ZIP member identity, length, CRC-32
+and SHA-256, the 64,800 × 129,600 NetCDF axes, all classification and quality-field
+types, exact axis endpoints, and the pinned product metadata. The output remains a raw
+source inspection: it is not yet a class census, an S2 habitat layer, or a coastline.
+
+```bash
+cargo run --release --locked -p civilization-data -- inspect copernicus-land-cover \
+  --source-snapshot data/source-snapshots/copernicus-satellite-land-cover-v2-1-1-2022.json \
+  --artifact-root data/source-cache
+```
+
 One raw grid cell can be examined without a GIS dependency. The zero-based row and
 column refer only to the retained source-axis order; the result emits raw coordinate
 and `Band1` IEEE-754 bits, not a converted temperature or an S2 assignment. See
