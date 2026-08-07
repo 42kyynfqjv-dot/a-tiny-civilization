@@ -71,6 +71,16 @@ inventory. Schedule it daily with the host's service manager. Do not add automat
 retention deletion until the recovery window and legal/operational retention policy
 are explicitly recorded; WAL-G deletion is deliberately absent from this repository.
 
+Monitor the remote base-backup age and PostgreSQL archiver state with:
+
+```bash
+./scripts/backup-status.sh
+```
+
+It fails when archive mode is off, the latest archive attempt failed, no remote base
+backup exists, or the newest base backup exceeds 26 hours. Override that last threshold
+only through a documented `BACKUP_MAX_AGE_SECONDS` operating-policy change.
+
 ## Restore drill acceptance
 
 A restore drill is successful only when it restores a selected committed cursor into an
