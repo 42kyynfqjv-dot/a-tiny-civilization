@@ -319,6 +319,18 @@ enum InspectCommand {
         #[arg(long)]
         input_directory: PathBuf,
     },
+    /// Inspect both retained JPL DE441 DAF/SPK segment directories.
+    JplDe441 {
+        #[arg(long)]
+        input_directory: PathBuf,
+    },
+    /// Evaluate actual DE441 Sun/Earth/Moon positions at one exact integral TDB second.
+    JplDe441Epoch {
+        #[arg(long)]
+        input_directory: PathBuf,
+        #[arg(long, default_value_t = 0)]
+        tdb_seconds_from_j2000: i64,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -641,6 +653,11 @@ async fn main() -> Result<()> {
             InspectCommand::JrcSurfaceWaterOccurrence { input_directory } => {
                 inspect_jrc_surface_water_occurrence(&input_directory)
             }
+            InspectCommand::JplDe441 { input_directory } => inspect_jpl_de441(&input_directory),
+            InspectCommand::JplDe441Epoch {
+                input_directory,
+                tdb_seconds_from_j2000,
+            } => inspect_jpl_de441_epoch(&input_directory, tdb_seconds_from_j2000),
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -1443,6 +1460,458 @@ fn undo_horizontal_u8_predictor(values: &mut [u8]) {
         *value = value.wrapping_add(previous);
         previous = *value;
     }
+}
+
+const DAF_RECORD_BYTES: usize = 1024;
+
+#[derive(Debug, Serialize)]
+struct JplDe441Inspection {
+    inspection_schema_version: u16,
+    release: &'static str,
+    files: Vec<DafSpkFileInspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct DafSpkFileInspection {
+    path: String,
+    byte_length: u64,
+    id_word: String,
+    internal_name: String,
+    binary_format: String,
+    double_components: u32,
+    integer_components: u32,
+    first_summary_record: u32,
+    last_summary_record: u32,
+    first_free_double_word_address: u32,
+    summary_record_count: usize,
+    segment_count: usize,
+    segments: Vec<DafSpkSegmentInspection>,
+}
+
+#[derive(Debug, Serialize)]
+struct DafSpkSegmentInspection {
+    name: String,
+    start_tdb_seconds_from_j2000: f64,
+    end_tdb_seconds_from_j2000: f64,
+    start_tdb_ieee754_bits_hex: String,
+    end_tdb_ieee754_bits_hex: String,
+    target_naif_id: i32,
+    center_naif_id: i32,
+    reference_frame_naif_id: i32,
+    spk_data_type: i32,
+    initial_double_word_address: u32,
+    final_double_word_address: u32,
+}
+
+fn inspect_jpl_de441(input_directory: &Path) -> Result<()> {
+    let mut files = Vec::new();
+    for filename in ["de441_part-1.bsp", "de441_part-2.bsp"] {
+        files.push(inspect_daf_spk_file(&input_directory.join(filename))?);
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&JplDe441Inspection {
+            inspection_schema_version: 1,
+            release: "JPL DE441",
+            files,
+        })?
+    );
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+struct CartesianKilometres {
+    x: f64,
+    y: f64,
+    z: f64,
+}
+
+impl CartesianKilometres {
+    fn add(self, other: Self) -> Self {
+        Self {
+            x: self.x + other.x,
+            y: self.y + other.y,
+            z: self.z + other.z,
+        }
+    }
+
+    fn subtract(self, other: Self) -> Self {
+        Self {
+            x: self.x - other.x,
+            y: self.y - other.y,
+            z: self.z - other.z,
+        }
+    }
+}
+
+#[derive(Debug, Serialize)]
+struct JplDe441EpochInspection {
+    inspection_schema_version: u16,
+    release: &'static str,
+    reference_frame: &'static str,
+    coordinate_unit: &'static str,
+    tdb_seconds_from_j2000: i64,
+    source_files: Vec<String>,
+    earth_barycentric: CartesianKilometres,
+    sun_geocentric: CartesianKilometres,
+    moon_geocentric: CartesianKilometres,
+}
+
+fn inspect_jpl_de441_epoch(input_directory: &Path, tdb_seconds: i64) -> Result<()> {
+    let files = ["de441_part-1.bsp", "de441_part-2.bsp"]
+        .into_iter()
+        .map(|filename| inspect_daf_spk_file(&input_directory.join(filename)))
+        .collect::<Result<Vec<_>>>()?;
+    let epoch = tdb_seconds as f64;
+    let (earth_moon_barycenter, source_3) = evaluate_de441_target(&files, 3, 0, epoch)?;
+    let (sun_barycentric, source_10) = evaluate_de441_target(&files, 10, 0, epoch)?;
+    let (moon_from_emb, source_301) = evaluate_de441_target(&files, 301, 3, epoch)?;
+    let (earth_from_emb, source_399) = evaluate_de441_target(&files, 399, 3, epoch)?;
+    let earth_barycentric = earth_moon_barycenter.add(earth_from_emb);
+    let moon_barycentric = earth_moon_barycenter.add(moon_from_emb);
+    let mut source_files = vec![source_3, source_10, source_301, source_399];
+    source_files.sort();
+    source_files.dedup();
+    println!(
+        "{}",
+        serde_json::to_string(&JplDe441EpochInspection {
+            inspection_schema_version: 1,
+            release: "JPL DE441",
+            reference_frame: "ICRF/J2000 (NAIF frame 1)",
+            coordinate_unit: "kilometres",
+            tdb_seconds_from_j2000: tdb_seconds,
+            source_files,
+            earth_barycentric,
+            sun_geocentric: sun_barycentric.subtract(earth_barycentric),
+            moon_geocentric: moon_barycentric.subtract(earth_barycentric),
+        })?
+    );
+    Ok(())
+}
+
+fn evaluate_de441_target(
+    files: &[DafSpkFileInspection],
+    target: i32,
+    center: i32,
+    epoch: f64,
+) -> Result<(CartesianKilometres, String)> {
+    let selected = files
+        .iter()
+        .flat_map(|file| {
+            file.segments
+                .iter()
+                .filter(move |segment| {
+                    segment.target_naif_id == target
+                        && segment.center_naif_id == center
+                        && epoch >= segment.start_tdb_seconds_from_j2000
+                        && epoch <= segment.end_tdb_seconds_from_j2000
+                })
+                .map(move |segment| (file, segment))
+        })
+        .max_by(|(_, left), (_, right)| {
+            left.start_tdb_seconds_from_j2000
+                .total_cmp(&right.start_tdb_seconds_from_j2000)
+        })
+        .with_context(|| {
+            format!("DE441 has no target {target} relative to {center} at epoch {epoch}")
+        })?;
+    let vector = evaluate_spk_type_2(Path::new(&selected.0.path), selected.1, epoch)?;
+    Ok((vector, selected.0.path.clone()))
+}
+
+fn evaluate_spk_type_2(
+    path: &Path,
+    segment: &DafSpkSegmentInspection,
+    epoch: f64,
+) -> Result<CartesianKilometres> {
+    if segment.spk_data_type != 2 {
+        bail!(
+            "SPK segment type {} is not supported",
+            segment.spk_data_type
+        );
+    }
+    let mut file = File::open(path)?;
+    let footer_address = segment
+        .final_double_word_address
+        .checked_sub(3)
+        .context("SPK type 2 segment is too short for its footer")?;
+    let footer = read_daf_double_words(&mut file, footer_address, 4)?;
+    let initial_epoch = footer[0];
+    let interval_length = footer[1];
+    let record_size = daf_control_integer(footer[2], "SPK record size")?;
+    let record_count = daf_control_integer(footer[3], "SPK record count")?;
+    if !initial_epoch.is_finite()
+        || !interval_length.is_finite()
+        || interval_length <= 0.0
+        || record_size < 5
+        || record_count == 0
+        || (record_size - 2) % 3 != 0
+    {
+        bail!("SPK type 2 segment footer is invalid");
+    }
+    let relative = (epoch - initial_epoch) / interval_length;
+    if !relative.is_finite() || relative < 0.0 || relative > f64::from(record_count) {
+        bail!("epoch lies outside the SPK type 2 record table");
+    }
+    let record_index = if relative == f64::from(record_count) {
+        record_count - 1
+    } else {
+        relative.floor() as u32
+    };
+    let record_address = segment
+        .initial_double_word_address
+        .checked_add(
+            record_index
+                .checked_mul(record_size)
+                .context("SPK record offset overflow")?,
+        )
+        .context("SPK record address overflow")?;
+    let record = read_daf_double_words(&mut file, record_address, record_size)?;
+    let midpoint = record[0];
+    let radius = record[1];
+    if !midpoint.is_finite() || !radius.is_finite() || radius <= 0.0 {
+        bail!("SPK type 2 record interval is invalid");
+    }
+    let normalized_epoch = (epoch - midpoint) / radius;
+    if !normalized_epoch.is_finite() || normalized_epoch.abs() > 1.0 + 1e-12 {
+        bail!("SPK type 2 record does not contain the requested epoch");
+    }
+    let coefficient_count = usize::try_from((record_size - 2) / 3)?;
+    let coefficients = &record[2..];
+    let x = evaluate_chebyshev(&coefficients[..coefficient_count], normalized_epoch)?;
+    let y = evaluate_chebyshev(
+        &coefficients[coefficient_count..coefficient_count * 2],
+        normalized_epoch,
+    )?;
+    let z = evaluate_chebyshev(
+        &coefficients[coefficient_count * 2..coefficient_count * 3],
+        normalized_epoch,
+    )?;
+    Ok(CartesianKilometres { x, y, z })
+}
+
+fn read_daf_double_words(file: &mut File, first_address: u32, count: u32) -> Result<Vec<f64>> {
+    if first_address == 0 || count == 0 {
+        bail!("DAF double-word reads use positive one-based addresses and counts");
+    }
+    let offset = u64::from(first_address - 1)
+        .checked_mul(8)
+        .context("DAF double-word offset overflow")?;
+    file.seek(SeekFrom::Start(offset))?;
+    let mut bytes = vec![
+        0_u8;
+        usize::try_from(count)?
+            .checked_mul(8)
+            .context("DAF read overflow")?
+    ];
+    file.read_exact(&mut bytes)?;
+    bytes
+        .chunks_exact(8)
+        .map(le_f64)
+        .collect::<Result<Vec<_>>>()
+}
+
+fn evaluate_chebyshev(coefficients: &[f64], x: f64) -> Result<f64> {
+    if coefficients.is_empty() || !x.is_finite() {
+        bail!("Chebyshev evaluation needs coefficients and a finite coordinate");
+    }
+    let mut next = 0.0;
+    let mut after_next = 0.0;
+    for coefficient in coefficients.iter().skip(1).rev() {
+        if !coefficient.is_finite() {
+            bail!("Chebyshev coefficient is not finite");
+        }
+        let current = 2.0 * x * next - after_next + coefficient;
+        after_next = next;
+        next = current;
+    }
+    if !coefficients[0].is_finite() {
+        bail!("Chebyshev coefficient is not finite");
+    }
+    Ok(x * next - after_next + coefficients[0])
+}
+
+fn inspect_daf_spk_file(path: &Path) -> Result<DafSpkFileInspection> {
+    let metadata =
+        fs::metadata(path).with_context(|| format!("inspect DAF/SPK file {}", path.display()))?;
+    if !metadata.is_file() || metadata.len() < DAF_RECORD_BYTES as u64 {
+        bail!("DAF/SPK file is missing or too small: {}", path.display());
+    }
+    let mut file =
+        File::open(path).with_context(|| format!("open DAF/SPK file {}", path.display()))?;
+    let file_record = read_daf_record(&mut file, 1, metadata.len())?;
+    let id_word = parse_fixed_ascii(&file_record[0..8], "DAF ID word")?;
+    if id_word != "DAF/SPK" {
+        bail!("{} is not a DAF/SPK file", path.display());
+    }
+    let double_components = u32::try_from(le_i32(&file_record[8..12])?)?;
+    let integer_components = u32::try_from(le_i32(&file_record[12..16])?)?;
+    if double_components != 2 || integer_components != 6 {
+        bail!(
+            "DE441 DAF summary shape is ND={double_components}, NI={integer_components}, expected 2/6"
+        );
+    }
+    let internal_name = parse_fixed_ascii(&file_record[16..76], "DAF internal name")?;
+    let first_summary_record = u32::try_from(le_i32(&file_record[76..80])?)?;
+    let last_summary_record = u32::try_from(le_i32(&file_record[80..84])?)?;
+    let first_free_double_word_address = u32::try_from(le_i32(&file_record[84..88])?)?;
+    let binary_format = parse_fixed_ascii(&file_record[88..96], "DAF binary format")?;
+    if binary_format != "LTL-IEEE" {
+        bail!("DE441 DAF binary format {binary_format:?} is unsupported");
+    }
+    if first_summary_record == 0 || last_summary_record == 0 || first_free_double_word_address == 0
+    {
+        bail!("DE441 DAF file record has a zero directory pointer");
+    }
+
+    let summary_double_words = double_components + integer_components.div_ceil(2);
+    let summary_bytes = usize::try_from(summary_double_words)?
+        .checked_mul(8)
+        .context("DAF summary byte length overflow")?;
+    let name_bytes = summary_bytes;
+    let maximum_summaries = (DAF_RECORD_BYTES - 24) / summary_bytes;
+    let mut summary_record = first_summary_record;
+    let mut previous_summary_record = 0_u32;
+    let mut visited = HashSet::new();
+    let mut summary_record_count = 0_usize;
+    let mut segments = Vec::new();
+
+    loop {
+        if !visited.insert(summary_record) {
+            bail!("DE441 DAF summary record chain contains a cycle");
+        }
+        let summary = read_daf_record(&mut file, summary_record, metadata.len())?;
+        let next = daf_control_integer(le_f64(&summary[0..8])?, "next summary record")?;
+        let previous = daf_control_integer(le_f64(&summary[8..16])?, "previous summary record")?;
+        let summary_count = daf_control_integer(le_f64(&summary[16..24])?, "summary count")?;
+        if previous != previous_summary_record
+            || usize::try_from(summary_count)? > maximum_summaries
+        {
+            bail!("DE441 DAF summary record links or count are invalid");
+        }
+        let names = read_daf_record(
+            &mut file,
+            summary_record
+                .checked_add(1)
+                .context("DAF name-record number overflow")?,
+            metadata.len(),
+        )?;
+        for index in 0..usize::try_from(summary_count)? {
+            let offset = 24 + index * summary_bytes;
+            let packed = &summary[offset..offset + summary_bytes];
+            let start = le_f64(&packed[0..8])?;
+            let end = le_f64(&packed[8..16])?;
+            if !start.is_finite() || !end.is_finite() || start >= end {
+                bail!("DE441 DAF segment has an invalid epoch interval");
+            }
+            let target_naif_id = le_i32(&packed[16..20])?;
+            let center_naif_id = le_i32(&packed[20..24])?;
+            let reference_frame_naif_id = le_i32(&packed[24..28])?;
+            let spk_data_type = le_i32(&packed[28..32])?;
+            let initial_double_word_address = u32::try_from(le_i32(&packed[32..36])?)?;
+            let final_double_word_address = u32::try_from(le_i32(&packed[36..40])?)?;
+            if initial_double_word_address == 0
+                || initial_double_word_address > final_double_word_address
+                || final_double_word_address >= first_free_double_word_address
+                || u64::from(final_double_word_address)
+                    .checked_mul(8)
+                    .is_none_or(|bytes| bytes > metadata.len())
+            {
+                bail!("DE441 DAF segment address range is invalid");
+            }
+            let name_offset = index * name_bytes;
+            let name = parse_fixed_ascii(
+                &names[name_offset..name_offset + name_bytes],
+                "DAF segment name",
+            )?;
+            if name.is_empty() {
+                bail!("DE441 DAF segment name is empty");
+            }
+            segments.push(DafSpkSegmentInspection {
+                name,
+                start_tdb_seconds_from_j2000: start,
+                end_tdb_seconds_from_j2000: end,
+                start_tdb_ieee754_bits_hex: format!("{:016x}", start.to_bits()),
+                end_tdb_ieee754_bits_hex: format!("{:016x}", end.to_bits()),
+                target_naif_id,
+                center_naif_id,
+                reference_frame_naif_id,
+                spk_data_type,
+                initial_double_word_address,
+                final_double_word_address,
+            });
+        }
+        summary_record_count += 1;
+        if next == 0 {
+            if summary_record != last_summary_record {
+                bail!("DE441 DAF last-summary pointer disagrees with the record chain");
+            }
+            break;
+        }
+        previous_summary_record = summary_record;
+        summary_record = next;
+    }
+    if segments.is_empty() {
+        bail!("DE441 DAF file contains no SPK segments");
+    }
+    Ok(DafSpkFileInspection {
+        path: path.display().to_string(),
+        byte_length: metadata.len(),
+        id_word,
+        internal_name,
+        binary_format,
+        double_components,
+        integer_components,
+        first_summary_record,
+        last_summary_record,
+        first_free_double_word_address,
+        summary_record_count,
+        segment_count: segments.len(),
+        segments,
+    })
+}
+
+fn read_daf_record(file: &mut File, record_number: u32, file_length: u64) -> Result<[u8; 1024]> {
+    if record_number == 0 {
+        bail!("DAF record numbers are one-based");
+    }
+    let offset = u64::from(record_number - 1)
+        .checked_mul(DAF_RECORD_BYTES as u64)
+        .context("DAF record offset overflow")?;
+    if offset
+        .checked_add(DAF_RECORD_BYTES as u64)
+        .is_none_or(|end| end > file_length)
+    {
+        bail!("DAF record {record_number} lies outside the file");
+    }
+    file.seek(SeekFrom::Start(offset))?;
+    let mut record = [0_u8; DAF_RECORD_BYTES];
+    file.read_exact(&mut record)?;
+    Ok(record)
+}
+
+fn parse_fixed_ascii(bytes: &[u8], field: &str) -> Result<String> {
+    if !bytes.iter().all(u8::is_ascii) {
+        bail!("{field} is not ASCII");
+    }
+    Ok(String::from_utf8(bytes.to_vec())?
+        .trim_matches(['\0', ' '])
+        .to_owned())
+}
+
+fn daf_control_integer(value: f64, field: &str) -> Result<u32> {
+    if !value.is_finite() || value < 0.0 || value.fract() != 0.0 || value > f64::from(u32::MAX) {
+        bail!("DAF {field} is not a nonnegative exact u32");
+    }
+    Ok(value as u32)
+}
+
+fn le_i32(bytes: &[u8]) -> Result<i32> {
+    Ok(i32::from_le_bytes(bytes.try_into()?))
+}
+
+fn le_f64(bytes: &[u8]) -> Result<f64> {
+    Ok(f64::from_bits(u64::from_le_bytes(bytes.try_into()?)))
 }
 
 const SOILGRIDS_TOPSOIL_PROPERTIES: [&str; 9] = [
@@ -7886,6 +8355,20 @@ mod tests {
         assert_eq!(differences, [10, 12, 10, 15]);
         assert_eq!(jrc_coordinate_code(-180, 'W', 'E'), "180W");
         assert_eq!(jrc_coordinate_code(0, 'S', 'N'), "0N");
+    }
+
+    #[test]
+    fn spk_chebyshev_evaluation_matches_the_defining_polynomials() {
+        // 1*T0(x) + 2*T1(x) + 3*T2(x), at x=0.5, is 0.5.
+        assert_eq!(
+            evaluate_chebyshev(&[1.0, 2.0, 3.0], 0.5).expect("Chebyshev evaluation"),
+            0.5
+        );
+        assert_eq!(
+            daf_control_integer(62.0, "test").expect("integer control"),
+            62
+        );
+        assert!(daf_control_integer(1.5, "test").is_err());
     }
 
     #[test]

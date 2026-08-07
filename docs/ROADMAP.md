@@ -185,7 +185,11 @@ supplies actual Sun/Earth/Moon and planetary positions across roughly 30,000 yea
 genesis pins the epoch, deterministic interpolation drives light and seasons, and
 Sun/Moon equilibrium potential drives the first tide model. ADR 0038 forbids a
 decorative calendar, wall-clock sky, agent-visible astronomy labels, or silent
-extrapolation beyond source coverage.
+extrapolation beyond source coverage. The portable Rust reader now verifies both
+little-endian DAF/SPK directories, all 28 type-2 segments, NAIF target/center/frame
+identities, epoch intervals, and one-based data ranges. Its bounded Chebyshev evaluator
+already resolves actual barycentric Earth plus geocentric Sun and Moon vectors at an
+exact integral TDB second; fixed-scale tick-boundary normalization remains pending.
 
 ### 3. Situated memory and bounded cognition
 
