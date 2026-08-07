@@ -41,6 +41,9 @@ pub const CELESTIAL_DRIVER_RULESET_VERSION: u32 = 3;
 /// contracts execute at the deterministic partition barrier. It is deliberately an
 /// integration slice, not a claim that a scientifically admitted ecology exists.
 pub const EMBODIED_ACTIVITY_RULESET_VERSION: u32 = 4;
+/// Ruleset five admits only source-pinned local physical readings, not weather or
+/// ecological conclusions, into the organism execution barrier.
+pub const LOCAL_ENVIRONMENT_RULESET_VERSION: u32 = 5;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -79,6 +82,15 @@ fn motor_action_for_phase(phase: u16) -> PrimitiveActionKind {
         2 => PrimitiveActionKind::Reach,
         _ => PrimitiveActionKind::EmitSignal,
     }
+}
+
+fn normal_year_phase(tick: SimTick, tick_duration_seconds: u32) -> usize {
+    const NORMAL_PHASE_SECONDS: u64 = 30 * 86_400;
+    let elapsed_seconds = tick
+        .get()
+        .checked_mul(u64::from(tick_duration_seconds))
+        .unwrap_or(u64::MAX);
+    ((elapsed_seconds / NORMAL_PHASE_SECONDS) % 12) as usize
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -550,10 +562,60 @@ impl EngineState {
                                     },
                                 },
                             ));
+                            if self.uses_local_environment_driver() {
+                                let configuration =
+                                    self.configuration.as_ref().ok_or_else(|| {
+                                        EngineError::PartitionScheduleState(
+                                            "environmental ruleset has no configuration".to_owned(),
+                                        )
+                                    })?;
+                                let baseline = configuration
+                                    .local_environment_baseline()
+                                    .ok_or_else(|| {
+                                        EngineError::PartitionScheduleState(
+                                            "environmental ruleset has no local baseline"
+                                                .to_owned(),
+                                        )
+                                    })?;
+                                let temperature = baseline
+                                    .mean_at_normal_phase(normal_year_phase(
+                                        self.tick,
+                                        configuration.tick_duration_seconds,
+                                    ))
+                                    .map_err(|error| {
+                                        EngineError::PartitionScheduleState(error.to_string())
+                                    })?;
+                                let temperature = i32::try_from(temperature).map_err(|_| {
+                                    EngineError::PartitionScheduleState(
+                                        "temperature does not fit perception range".to_owned(),
+                                    )
+                                })?;
+                                events.push(Emission::new(
+                                    partition.partition(),
+                                    work.key(),
+                                    2,
+                                    DomainEvent::OrganismPerceived {
+                                        organism_id: organism.organism_id,
+                                        perception: SituatedPerception {
+                                            subject_id: None,
+                                            readings: vec![PropertyReading {
+                                                channel: PerceptionChannel::Touch,
+                                                property_code: "temperature".to_owned(),
+                                                quantized_value: temperature,
+                                                uncertainty: 0,
+                                            }],
+                                        },
+                                    },
+                                ));
+                            }
                             events.push(Emission::new(
                                 partition.partition(),
                                 work.key(),
-                                2,
+                                if self.uses_local_environment_driver() {
+                                    3
+                                } else {
+                                    2
+                                },
                                 DomainEvent::OrganismActed {
                                     organism_id: organism.organism_id,
                                     action: PrimitiveAction {
@@ -671,6 +733,10 @@ impl EngineState {
 
     fn uses_embodied_activity_driver(&self) -> bool {
         self.manifest.ruleset_version >= EMBODIED_ACTIVITY_RULESET_VERSION
+    }
+
+    fn uses_local_environment_driver(&self) -> bool {
+        self.manifest.ruleset_version >= LOCAL_ENVIRONMENT_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -1596,9 +1662,9 @@ mod tests {
     use world_domain::{
         CapacityExhaustionPolicy, CartesianMillimetres, CelestialState, EarthResolutionLevels,
         FullEarthGrid, PartitionedExecution, PerceptionChannel, PersonRepresentation,
-        PrimitiveActionKind, PropertyReading, ProvisionalWorldCompositionReference, S2Projection,
-        SchedulerKind, SituatedPerception, SpatialGrid, TdbSecondsSinceJ2000,
-        WorldDataBundleReference, WorldSeed, WorldStatus,
+        PrimitiveActionKind, PropertyReading, ProvisionalLocalEnvironmentBaseline,
+        ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
+        SpatialGrid, TdbSecondsSinceJ2000, WorldDataBundleReference, WorldSeed, WorldStatus,
     };
 
     fn manifest() -> WorldManifest {
@@ -1714,6 +1780,35 @@ mod tests {
                 .clone(),
         )
         .expect("valid provisional full-Earth configuration")
+    }
+
+    fn environmental_provisional_full_earth_configuration() -> WorldConfiguration {
+        let provisional = provisional_full_earth_configuration();
+        let active_patch: S2CellId = "0000000000004000".parse().expect("L23 patch");
+        WorldConfiguration::new_provisional_full_earth_with_environment_baseline(
+            300,
+            provisional.full_earth_grid().expect("grid").clone(),
+            provisional
+                .provisional_world_composition()
+                .expect("composition")
+                .clone(),
+            provisional
+                .partitioned_execution()
+                .expect("execution")
+                .clone(),
+            ProvisionalLocalEnvironmentBaseline {
+                status: "provisional-evidence-only".to_owned(),
+                source_evidence_digest: Digest::sha256(b"local evidence"),
+                evidence_patch: active_patch.ancestor(10).expect("L10 ancestor"),
+                active_patch,
+                air_temperature_unit: "degC".to_owned(),
+                air_temperature_decimal_places: 1,
+                air_temperature_normal_minimum: [1; 12],
+                air_temperature_normal_mean: [2; 12],
+                air_temperature_normal_maximum: [3; 12],
+            },
+        )
+        .expect("environmental provisional config")
     }
 
     fn full_earth_person(world_id: WorldId) -> InitialOrganism {
@@ -2059,6 +2154,41 @@ mod tests {
             replay(manifest, &[genesis, tick])
                 .expect("activity replay")
                 .state,
+            after_tick
+        );
+    }
+
+    #[test]
+    fn local_environment_ruleset_replays_source_bound_temperature_perceptions() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = LOCAL_ENVIRONMENT_RULESET_VERSION;
+        let initial = EngineState::new(manifest.clone());
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial
+                    .plan_configured_genesis(
+                        environmental_provisional_full_earth_configuration(),
+                        vec![full_earth_person(manifest.world_id)],
+                    )
+                    .expect("genesis"),
+            )
+            .expect("commit genesis");
+        let celestial = CelestialState::new(
+            TdbSecondsSinceJ2000::new(123),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        );
+        let events = running
+            .plan_next_tick_with_celestial(celestial)
+            .expect("tick");
+        assert!(events.iter().any(|event| matches!(event, DomainEvent::OrganismPerceived { perception, .. } if perception.readings[0].property_code == "temperature" && perception.readings[0].quantized_value == 2)));
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, events)
+            .expect("commit tick");
+        assert_eq!(
+            replay(manifest, &[genesis, tick]).expect("replay").state,
             after_tick
         );
     }

@@ -17,7 +17,7 @@ use postgres_store::PostgresStore;
 use serde::Deserialize;
 use serde_json::json;
 use sim_engine::{
-    CELESTIAL_DRIVER_RULESET_VERSION, EMBODIED_ACTIVITY_RULESET_VERSION, InitialOrganism,
+    CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, LOCAL_ENVIRONMENT_RULESET_VERSION,
     RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -38,7 +38,7 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = EMBODIED_ACTIVITY_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = LOCAL_ENVIRONMENT_RULESET_VERSION;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization simulation runner")]
@@ -1198,7 +1198,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_source_backed_activity_ruleset() {
+    fn provisional_full_earth_defaults_to_the_source_backed_environment_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -1220,7 +1220,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, EMBODIED_ACTIVITY_RULESET_VERSION);
+        assert_eq!(ruleset_version, LOCAL_ENVIRONMENT_RULESET_VERSION);
     }
 
     #[test]
