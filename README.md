@@ -57,8 +57,11 @@ presented as pristine or prehistoric Earth. See the
 
 The [Lower Buffalo–Ozark river valley](docs/science/FIRST_BIOME.md) is the first sourced
 high-resolution conformance tile, not a world boundary or selected starting site.
-Canonical genesis remains blocked until the complete content-addressed global bundle,
-causal refinement, and deterministic partition scheduler pass their published gates.
+The next public genesis may use an openly labelled experimental, not-scientifically-
+admitted bundle under [ADR 0049](docs/adr/0049-experimental-genesis-science-policy.md).
+It remains blocked until that complete content-addressed provisional global bundle,
+causal refinement, deterministic partition scheduler, replay, privacy, and operational
+gates pass; exhaustive scientific calibration moves to a successor world.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network,
 including exhaustive content-hash traversal of global tile indexes and leaves.

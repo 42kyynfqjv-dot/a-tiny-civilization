@@ -70,14 +70,16 @@ the durable cursor.
 
 The first projector is `civilization-projector`: it derives a bounded public timeline
 from committed batches, atomically advances a versioned projection cursor, and stores
-append-only observer rows. It withholds reproductive, mortality-mechanism, parentage,
-location, and internal-identity detail from public copy. The observer API only reads
-that projection. See [ADR 0018](adr/0018-public-timeline-projection.md).
+append-only observer rows. It withholds reproductive, heritable-disposition,
+mortality-mechanism, parentage, location, and internal-identity detail from public
+copy. The observer API only reads that projection. See
+[ADR 0018](adr/0018-public-timeline-projection.md).
 
 The same process independently maintains `public-organism-v1`: immutable organism
 introduction and ending facts join into safe people/animal records with sourced species
 citations and event provenance. It omits reproductive category, parentage, location,
-mortality mechanism, and supporter aliases. See [ADR 0019](adr/0019-public-organism-index.md).
+mortality mechanism, inherited weights, and supporter aliases. See
+[ADR 0019](adr/0019-public-organism-index.md).
 
 The API also exposes a bounded read-only world index so the public web client can
 select a current world without receiving a simulation write capability. Each public
@@ -199,10 +201,11 @@ measurement demonstrates a need. The single-process engine remains the determini
 reference implementation. Its pure L10 ordering/barrier kernel, synthetic
 dense-equivalence proof, exact ECEF-to-S2 address router, exact conserved L10-to-L14
 scalar-refinement proof, durable embodied positions, and a ruleset-two per-organism
-body-clock partition schedule are implemented. The engine-level foundation replays, but production
-canonical genesis remains gated on exact source admission, coupled ecological state,
-retained refinements and deltas, source-backed physiology and locomotion, horizontal-worker
-equivalence, and the persistence barrier. Every person remains an individual;
+body-clock partition schedule are implemented. The engine-level foundation replays.
+An ADR 0049 experimental genesis is gated on real entity identity, cited and
+content-addressed provisional inputs, an assumption ledger, coupled ecological state,
+retained refinements and deltas, horizontal-worker equivalence, and the persistence
+barrier—not exhaustive scientific admission. Every person remains an individual;
 infrastructure pressure may slow or pause wall-clock advancement at a committed hash
 boundary but cannot change causal rules or discard lives. See
 [ADR 0011](adr/0011-population-scale-and-capacity.md) and

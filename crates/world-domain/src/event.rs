@@ -3,10 +3,10 @@ use thiserror::Error;
 
 use crate::{
     ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId,
-    EventId, EventSequence, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
-    PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
-    ReproductivePhysiologyCommitment, S2CellId, SimTick, SituatedPerception, SpeciesIdentity,
-    WorldConfiguration, WorldId, WorldManifest,
+    EventId, EventSequence, HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
+    MetabolicRateCommitment, OralTransferCommitment, PhysiologicalRegulationCommitment,
+    PrimitiveAction, ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId,
+    SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -46,6 +46,9 @@ pub const ACTION_LEARNING_EVENT_SCHEMA_VERSION: u16 = 15;
 /// Adds species-bound reproductive commitments, neutral pending development, and
 /// development-bound births.
 pub const REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION: u16 = 16;
+/// Adds immutable species-bound disposition profiles and deterministic inherited
+/// individual action weights.
+pub const HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION: u16 = 17;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -124,6 +127,10 @@ pub enum DomainEvent {
         physiological_regulation: Option<PhysiologicalRegulationCommitment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heritable_disposition_profile: Option<HeritableDispositionProfile>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heritable_disposition: Option<HeritableDisposition>,
     },
     /// A physical material instance. Its identity is citable, but its affordances
     /// and effects are intentionally not inferred by this event.
@@ -178,6 +185,10 @@ pub enum DomainEvent {
         physiological_regulation: Option<PhysiologicalRegulationCommitment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heritable_disposition_profile: Option<HeritableDispositionProfile>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heritable_disposition: Option<HeritableDisposition>,
     },
     /// A private physiological process began. It carries only canonical identifiers,
     /// timing, and a committed profile—not prose or agent-facing reproductive labels.
@@ -192,6 +203,10 @@ pub enum DomainEvent {
         profile_digest: Digest,
         due_tick: SimTick,
         parents_available_at: SimTick,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        heritable_disposition_profile: Option<HeritableDispositionProfile>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        offspring_heritable_disposition: Option<HeritableDisposition>,
     },
     /// A pending private process ended without a birth.
     ReproductiveDevelopmentEnded {
@@ -395,6 +410,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
             | ACTION_LEARNING_EVENT_SCHEMA_VERSION
             | REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
+            | HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -540,17 +556,49 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismInitialized {
+                heritable_disposition_profile: Some(_),
+                ..
+            } | DomainEvent::OrganismInitialized {
+                heritable_disposition: Some(_),
+                ..
+            } | DomainEvent::OrganismBorn {
+                heritable_disposition_profile: Some(_),
+                ..
+            } | DomainEvent::OrganismBorn {
+                heritable_disposition: Some(_),
+                ..
+            } | DomainEvent::ReproductiveDevelopmentStarted {
+                heritable_disposition_profile: Some(_),
+                ..
+            } | DomainEvent::ReproductiveDevelopmentStarted {
+                offspring_heritable_disposition: Some(_),
+                ..
+            }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
+            species,
             metabolic_rate,
             physiological_regulation,
             reproductive_physiology,
+            heritable_disposition_profile,
+            heritable_disposition,
             ..
         }
         | DomainEvent::OrganismBorn {
+            species,
             metabolic_rate,
             physiological_regulation,
             reproductive_physiology,
+            heritable_disposition_profile,
+            heritable_disposition,
             ..
         } => {
             if let Some(metabolic_rate) = metabolic_rate {
@@ -567,6 +615,26 @@ fn validate_event_for_schema(
                 reproduction
                     .validate()
                     .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+            match (heritable_disposition_profile, heritable_disposition) {
+                (Some(profile), Some(disposition)) => {
+                    if profile.species != *species {
+                        return Err(EventBatchError::InvalidEmbodiedEvent(
+                            "heritable-disposition profile species does not match organism"
+                                .to_owned(),
+                        ));
+                    }
+                    disposition.validate_against(profile).map_err(|error| {
+                        EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                    })?;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(EventBatchError::InvalidEmbodiedEvent(
+                        "heritable-disposition profile and state must be committed together"
+                            .to_owned(),
+                    ));
+                }
             }
         }
         DomainEvent::OrganismPerceived { perception, .. } => perception
@@ -643,6 +711,8 @@ fn validate_event_for_schema(
             profile_digest,
             due_tick,
             parents_available_at,
+            heritable_disposition_profile,
+            offspring_heritable_disposition,
             ..
         } => {
             species
@@ -659,6 +729,29 @@ fn validate_event_for_schema(
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "invalid reproductive-development commitment".to_owned(),
                 ));
+            }
+            match (
+                heritable_disposition_profile,
+                offspring_heritable_disposition,
+            ) {
+                (Some(profile), Some(disposition)) => {
+                    if profile.species != *species {
+                        return Err(EventBatchError::InvalidEmbodiedEvent(
+                            "offspring disposition profile species does not match development"
+                                .to_owned(),
+                        ));
+                    }
+                    disposition.validate_against(profile).map_err(|error| {
+                        EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                    })?;
+                }
+                (None, None) => {}
+                _ => {
+                    return Err(EventBatchError::InvalidEmbodiedEvent(
+                        "offspring disposition profile and state must be committed together"
+                            .to_owned(),
+                    ));
+                }
             }
         }
         DomainEvent::OrganismNeedsChanged { from, to, .. } if from == to => {
@@ -762,10 +855,12 @@ pub enum EventBatchError {
 mod tests {
     use super::*;
     use crate::{
-        CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
-        PerceptionChannel, PersonRepresentation, PrimitiveAction, PrimitiveActionKind,
-        PropertyReading, ProvisionalWorldCompositionReference, S2Projection, SchedulerKind,
-        SituatedPerception, SpatialGrid, WorldConfiguration, WorldDataBundleReference, WorldSeed,
+        CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, HERITABLE_ACTION_KINDS,
+        HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
+        HeritableActionWeight, PartitionedExecution, PerceptionChannel, PersonRepresentation,
+        PhysiologicalEvidenceBasis, PrimitiveAction, PrimitiveActionKind, PropertyReading,
+        ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
+        SpatialGrid, WorldConfiguration, WorldDataBundleReference, WorldSeed,
     };
     use uuid::Uuid;
 
@@ -1277,6 +1372,8 @@ mod tests {
             profile_digest: Digest::sha256(b"reproductive profile"),
             due_tick: SimTick::new(2),
             parents_available_at: SimTick::new(3),
+            heritable_disposition_profile: None,
+            offspring_heritable_disposition: None,
         };
         assert!(matches!(
             EventBatch::new(
@@ -1302,5 +1399,75 @@ mod tests {
             Digest::sha256(b"reproductive state"),
         )
         .expect("schema sixteen accepts private reproductive development");
+    }
+
+    #[test]
+    fn heritable_dispositions_require_schema_seventeen_and_exact_profile_pairing() {
+        let manifest = manifest();
+        let species = species();
+        let profile = HeritableDispositionProfile {
+            profile_schema_version: HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+            profile_id: "event-heredity-fixture".to_owned(),
+            profile_digest: Digest::sha256(b"event heredity fixture"),
+            species: species.clone(),
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            minimum_action_weight: 4,
+            neutral_action_weight: 16,
+            maximum_action_weight: 28,
+            founder_variation_steps: 3,
+            mutation_probability_millionths: 100_000,
+            mutation_max_step: 2,
+        };
+        let disposition = HeritableDisposition {
+            disposition_schema_version: HERITABLE_DISPOSITION_SCHEMA_VERSION,
+            profile_digest: profile.profile_digest,
+            generation: 0,
+            derived_at: SimTick::ZERO,
+            action_weights: HERITABLE_ACTION_KINDS
+                .into_iter()
+                .map(|action_kind| HeritableActionWeight {
+                    action_kind,
+                    weight: profile.neutral_action_weight,
+                })
+                .collect(),
+        };
+        let event = DomainEvent::OrganismInitialized {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0xA18)),
+            species,
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("female").expect("category"),
+            initial_age_ticks: 20,
+            location_id: None,
+            embodied_patch: None,
+            metabolic_rate: None,
+            physiological_regulation: None,
+            reproductive_physiology: None,
+            heritable_disposition_profile: Some(profile),
+            heritable_disposition: Some(disposition),
+        };
+        assert!(matches!(
+            EventBatch::new(
+                REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                15,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"heritable state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            15,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"heritable state"),
+        )
+        .expect("schema seventeen accepts a bounded paired disposition");
     }
 }

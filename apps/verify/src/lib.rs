@@ -76,6 +76,7 @@ impl VerificationBundle {
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
         }])?;
         let (running, genesis_batch) =
             initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;

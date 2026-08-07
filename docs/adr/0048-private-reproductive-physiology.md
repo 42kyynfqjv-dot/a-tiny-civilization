@@ -67,6 +67,7 @@ Birth is now delayed, causal, replayable, and independent of supporters. The fir
 profile fixtures are explicit engineering assumptions, not scientific admission. ADR
 0049 permits such profiles only in an openly labelled experimental world with their
 assumptions pinned and published.
-Learned courtship, partner preference, caregiving, asexual modes, litter size, loss
-mechanics beyond an unavailable developing parent, and individual genetic variation
-remain later rulesets.
+Ruleset fifteen, specified by ADR 0050, now supplies bounded inherited action
+dispositions without claiming a molecular genome. Learned courtship, partner
+preference, caregiving, asexual modes, litter size, richer loss mechanics, and
+molecular genetics remain later rulesets.

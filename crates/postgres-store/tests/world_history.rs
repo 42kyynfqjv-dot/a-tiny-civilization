@@ -47,6 +47,7 @@ fn initial_person(world_id: WorldId) -> InitialOrganism {
         metabolic_rate: None,
         physiological_regulation: None,
         reproductive_physiology: None,
+        heritable_disposition_profile: None,
     }
 }
 

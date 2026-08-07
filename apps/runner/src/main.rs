@@ -17,7 +17,8 @@ use postgres_store::PostgresStore;
 use serde::Deserialize;
 use serde_json::json;
 use sim_engine::{
-    BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism,
+    BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION,
+    HERITABLE_DISPOSITION_RULESET_VERSION, InitialOrganism,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RESOLVED_MOVEMENT_RULESET_VERSION, RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -490,6 +491,7 @@ async fn init_proof_world(
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
         },
         InitialOrganism {
             organism_id: EntityId::deterministic(world_id, b"proof-person-male"),
@@ -502,6 +504,7 @@ async fn init_proof_world(
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
         },
     ];
     let session =
@@ -631,6 +634,7 @@ async fn init_provisional_full_earth_world(
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
         })
     })
     .collect::<Result<Vec<_>>>()?;
@@ -1014,6 +1018,7 @@ fn load_provisional_fauna_initial_organisms(
                 metabolic_rate: metabolic_rate.clone(),
                 physiological_regulation: None,
                 reproductive_physiology: None,
+                heritable_disposition_profile: None,
             });
         }
     }
@@ -1099,6 +1104,23 @@ fn apply_provisional_organism_body_profiles(
         organism.reproductive_physiology = (ruleset_version
             >= REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION)
             .then(|| profile.reproductive_physiology.clone());
+        organism.heritable_disposition_profile = if ruleset_version
+            >= HERITABLE_DISPOSITION_RULESET_VERSION
+        {
+            Some(
+                profile
+                    .heritable_disposition_profile
+                    .clone()
+                    .with_context(|| {
+                        format!(
+                            "ruleset {ruleset_version} requires a heritable-disposition profile for {}:{}",
+                            organism.species.catalog, organism.species.identifier
+                        )
+                    })?,
+            )
+        } else {
+            None
+        };
     }
 
     Ok(Some(Digest::sha256(&bytes)))
@@ -1292,7 +1314,7 @@ mod tests {
                     world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
                 profile_id: "runner-body-profile-test-reproduction".to_owned(),
                 profile_digest: Digest::sha256(b"runner body-profile test reproduction"),
-                species,
+                species: species.clone(),
                 evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
                 tick_duration_seconds: 300,
                 maturity_age_ticks: 10,
@@ -1316,6 +1338,19 @@ mod tests {
                     },
                 ],
             },
+            heritable_disposition_profile: Some(world_domain::HeritableDispositionProfile {
+                profile_schema_version: world_domain::HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+                profile_id: "runner-body-profile-test-heredity".to_owned(),
+                profile_digest: Digest::sha256(b"runner body-profile test heredity"),
+                species,
+                evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+                minimum_action_weight: 4,
+                neutral_action_weight: 16,
+                maximum_action_weight: 28,
+                founder_variation_steps: 3,
+                mutation_probability_millionths: 100_000,
+                mutation_max_step: 2,
+            }),
         }
     }
 
@@ -1352,6 +1387,7 @@ mod tests {
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
         }];
 
         let digest = apply_provisional_organism_body_profiles(
@@ -1366,6 +1402,20 @@ mod tests {
         assert!(organisms[0].metabolic_rate.is_some());
         assert!(organisms[0].physiological_regulation.is_some());
         assert!(organisms[0].reproductive_physiology.is_some());
+        assert!(organisms[0].heritable_disposition_profile.is_none());
+
+        let mut heritable_organisms = organisms.clone();
+        apply_provisional_organism_body_profiles(
+            &mut heritable_organisms,
+            HERITABLE_DISPOSITION_RULESET_VERSION,
+            300,
+            Some(&path),
+        )
+        .expect("ruleset fifteen applies the pinned heritable profile");
+        assert_eq!(
+            heritable_organisms[0].heritable_disposition_profile,
+            plan.entries[0].heritable_disposition_profile
+        );
 
         let mut wrong_tick = organisms.clone();
         assert!(

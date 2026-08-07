@@ -78,6 +78,7 @@ pub use provisional::{
     ProvisionalWorldCompositionError, ProvisionalWorldCompositionStatus,
 };
 pub use provisional_body_profiles::{
+    LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_MEDIA_TYPE,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, ProvisionalOrganismBodyProfileEntry,

@@ -19,6 +19,8 @@ These are write-side commitments and must be active before the first durable wor
   only to pause after a committed boundary;
 - sourced real-world entities and an explicit assumption ledger;
 - label-free perceptions and primitive actions rather than invention names;
+- bounded inherited dispositions that cannot contain learned knowledge, cultural
+  concepts, observer labels, or model output;
 - exact external cognition and memory inputs, including timeout or absence;
 - a one-way dependency boundary from world events to observer projections;
 - mechanical extinction and a one-time transition to an immutable archive;
@@ -164,8 +166,8 @@ selection uses only canonical world state, bodily pressure, exact local reachabi
 and ordered identities; it never reads a material or species label, observer state,
 wall time, or model output. The selected act and its physical effects remain ordinary
 replayable events behind new event, snapshot, and state-hash schema boundaries. This
-is a freeform baseline, not learned cognition: imitation, reproduction, heredity, and
-coupled ecology remain subsequent causal checkpoints.
+is a freeform baseline, not learned cognition: imitation and coupled ecology remain
+subsequent causal checkpoints.
 
 Ruleset twelve adds the first neutral ingestion effect without leaking a food or water
 label into action selection. Material instances can retain exact mass plus ordered,
@@ -201,6 +203,20 @@ supported full-Earth initializer one exact, content-addressed source for every
 founder's and selected fauna taxon's initial age, metabolism, regulation, and
 reproductive commitment; later bodily rulesets fail closed when that plan or a taxon
 entry is absent.
+
+Ruleset fifteen adds bounded individual variation over the same eleven use-neutral
+primitive actions. Founder dispositions derive from the world seed, stable identity,
+action kind, and canonical species-profile fingerprint. Each offspring selects one
+parental weight per action and may receive tightly bounded novel variation; learned
+values, perceptions, memories, categories, observer state, and model output are
+excluded. Development commits the offspring disposition and birth copies it exactly
+while starting all life-local learned and bodily state empty. Genesis, apply,
+snapshots, and replay recompute every disposition; mixed profiles for the same species
+fail closed. Public projections expose none of this private detail. Event schema
+seventeen, snapshot/state-hash schema eighteen, and body-profile plan schema two
+isolate the boundary while ruleset-fourteen/schema-one history remains readable.
+These are explicitly engineering-assumption phenotypic priors for an ADR 0049
+experimental world, not genes, personality, intelligence, or scientific admission.
 
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one

@@ -22,13 +22,15 @@ use world_domain::{
     CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError,
     CelestialState, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
-    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
-    LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
-    MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION,
-    MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
-    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
-    PrimitiveAction, PrimitiveActionKind, PropertyReading,
-    REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
+    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
+    HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
+    HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
+    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
+    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity, MetabolicRateCommitment,
+    OralTransferCommitment, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
+    PerceptionChannel, PhysiologicalRegulationCommitment, PrimitiveAction, PrimitiveActionKind,
+    PropertyReading, REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
@@ -79,6 +81,9 @@ pub const ACTION_LEARNING_RULESET_VERSION: u32 = 13;
 /// Ruleset fourteen adds deterministic species-bound reproductive physiology and
 /// private development whose only safe public outcome is an ordinary birth.
 pub const REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION: u32 = 14;
+/// Ruleset fifteen gives every organism an immutable, species-bound inherited
+/// disposition over the neutral action grammar. Learned state remains life-local.
+pub const HERITABLE_DISPOSITION_RULESET_VERSION: u32 = 15;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -96,6 +101,7 @@ pub const DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION: u16 = 14;
 pub const MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION: u16 = 15;
 pub const ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 16;
 pub const REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION: u16 = 17;
+pub const HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 18;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -118,6 +124,7 @@ const DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION: u16 = 14;
 const MATERIAL_INGESTION_STATE_HASH_SCHEMA_VERSION: u16 = 15;
 const ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 16;
 const REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION: u16 = 17;
+const HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION: u16 = 18;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -250,10 +257,29 @@ struct ReproductiveDraw<'a> {
     parent_ids: &'a [EntityId],
 }
 
+#[derive(Serialize)]
+struct HeritableDispositionDraw<'a> {
+    driver_version: u16,
+    stream: &'static str,
+    world_seed: u64,
+    derived_at: SimTick,
+    organism_id: EntityId,
+    parent_ids: &'a [EntityId],
+    profile_fingerprint: Digest,
+    action_kind: PrimitiveActionKind,
+}
+
 fn first_digest_u64(digest: Digest) -> u64 {
     let bytes: [u8; 8] = digest.as_bytes()[..8]
         .try_into()
         .expect("SHA-256 has at least eight bytes");
+    u64::from_be_bytes(bytes)
+}
+
+fn second_digest_u64(digest: Digest) -> u64 {
+    let bytes: [u8; 8] = digest.as_bytes()[8..16]
+        .try_into()
+        .expect("SHA-256 has at least sixteen bytes");
     u64::from_be_bytes(bytes)
 }
 
@@ -300,6 +326,34 @@ fn learned_candidate_weight(base: u32, value: Option<ActionValueState>) -> u32 {
     }
 }
 
+fn inherited_candidate_weight(
+    base: u32,
+    disposition: &HeritableDisposition,
+    action_kind: PrimitiveActionKind,
+) -> Result<u32, EngineError> {
+    let inherited = disposition
+        .action_weight(action_kind)
+        .ok_or(EngineError::InvalidHeritableDisposition)?;
+    let numerator = u64::from(base)
+        .checked_mul(u64::from(inherited))
+        .ok_or(EngineError::TooManyEvents)?;
+    u32::try_from(numerator).map_err(|_| EngineError::TooManyEvents)
+}
+
+fn bounded_mutated_weight(
+    weight: u16,
+    magnitude: u16,
+    increase: bool,
+    profile: &HeritableDispositionProfile,
+) -> u16 {
+    if increase {
+        weight.saturating_add(magnitude)
+    } else {
+        weight.saturating_sub(magnitude)
+    }
+    .clamp(profile.minimum_action_weight, profile.maximum_action_weight)
+}
+
 fn decimal_to_millicelsius(value: i64, decimal_places: u8) -> Result<i64, EngineError> {
     if decimal_places <= 3 {
         let factor = 10_i128.pow(u32::from(3 - decimal_places));
@@ -335,6 +389,8 @@ pub struct InitialOrganism {
     pub physiological_regulation: Option<PhysiologicalRegulationCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub heritable_disposition_profile: Option<HeritableDispositionProfile>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -366,6 +422,10 @@ pub struct OrganismState {
     reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reproductive_available_at: Option<SimTick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heritable_disposition_profile: Option<HeritableDispositionProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heritable_disposition: Option<HeritableDisposition>,
     #[serde(default, skip_serializing_if = "BodilyRegulationState::is_clear")]
     bodily_regulation: BodilyRegulationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -420,6 +480,10 @@ pub struct PendingReproductiveDevelopment {
     started_at: SimTick,
     due_tick: SimTick,
     parents_available_at: SimTick,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    heritable_disposition_profile: Option<HeritableDispositionProfile>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    offspring_heritable_disposition: Option<HeritableDisposition>,
 }
 
 impl MaterialInstanceState {
@@ -680,6 +744,33 @@ impl EngineState {
         {
             return Err(EngineError::MissingInitialPeople);
         }
+        if self.uses_heritable_disposition_driver() {
+            let mut profiles_by_species = BTreeMap::new();
+            for organism in &initial_organisms {
+                let profile = organism.heritable_disposition_profile.as_ref().ok_or(
+                    EngineError::MissingHeritableDispositionProfile(organism.organism_id),
+                )?;
+                profile
+                    .validate()
+                    .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+                if profile.species != organism.species {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+                let key = (
+                    organism.species.catalog.clone(),
+                    organism.species.identifier.clone(),
+                    organism.species.scientific_name.clone(),
+                    organism.species.source_url.clone(),
+                );
+                let fingerprint = Digest::canonical(profile)?;
+                if profiles_by_species
+                    .insert(key, fingerprint)
+                    .is_some_and(|previous| previous != fingerprint)
+                {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+            }
+        }
 
         let mut events = Vec::with_capacity(
             initial_organisms
@@ -766,6 +857,27 @@ impl EngineState {
             {
                 return Err(EngineError::ReproductivePhysiologyUnsupported);
             }
+            let (heritable_disposition_profile, heritable_disposition) =
+                if self.uses_heritable_disposition_driver() {
+                    let profile = organism.heritable_disposition_profile.as_ref().ok_or(
+                        EngineError::MissingHeritableDispositionProfile(organism.organism_id),
+                    )?;
+                    profile
+                        .validate()
+                        .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+                    if profile.species != organism.species {
+                        return Err(EngineError::InvalidHeritableDisposition);
+                    }
+                    (
+                        Some(profile.clone()),
+                        Some(self.founder_heritable_disposition(organism.organism_id, profile)?),
+                    )
+                } else {
+                    if organism.heritable_disposition_profile.is_some() {
+                        return Err(EngineError::HeritableDispositionUnsupported);
+                    }
+                    (None, None)
+                };
             events.push(DomainEvent::OrganismInitialized {
                 organism_id: organism.organism_id,
                 species: organism.species,
@@ -777,6 +889,8 @@ impl EngineState {
                 metabolic_rate: organism.metabolic_rate,
                 physiological_regulation: organism.physiological_regulation,
                 reproductive_physiology: organism.reproductive_physiology,
+                heritable_disposition_profile,
+                heritable_disposition,
             });
         }
         Ok(events)
@@ -1131,6 +1245,26 @@ impl EngineState {
             },
         ]);
 
+        if self.uses_heritable_disposition_driver() {
+            let profile = organism.heritable_disposition_profile.as_ref().ok_or(
+                EngineError::MissingHeritableDispositionProfile(organism.organism_id),
+            )?;
+            let disposition = organism
+                .heritable_disposition
+                .as_ref()
+                .ok_or(EngineError::InvalidHeritableDisposition)?;
+            disposition
+                .validate_against(profile)
+                .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+            for candidate in &mut candidates {
+                candidate.weight = inherited_candidate_weight(
+                    candidate.weight,
+                    disposition,
+                    candidate.action.kind,
+                )?;
+            }
+        }
+
         if self.uses_action_learning_driver() {
             for candidate in &mut candidates {
                 candidate.weight = learned_candidate_weight(
@@ -1152,7 +1286,9 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_action_learning_driver() {
+            policy_version: if self.uses_heritable_disposition_driver() {
+                3
+            } else if self.uses_action_learning_driver() {
                 2
             } else {
                 1
@@ -1288,6 +1424,168 @@ impl EngineState {
         .map_err(EngineError::from)
     }
 
+    fn heritable_disposition_draw(
+        &self,
+        stream: &'static str,
+        derived_at: SimTick,
+        organism_id: EntityId,
+        parent_ids: &[EntityId],
+        profile: &HeritableDispositionProfile,
+        action_kind: PrimitiveActionKind,
+    ) -> Result<Digest, EngineError> {
+        Digest::canonical(&HeritableDispositionDraw {
+            driver_version: 1,
+            stream,
+            world_seed: self.manifest.seed.get(),
+            derived_at,
+            organism_id,
+            parent_ids,
+            profile_fingerprint: Digest::canonical(profile)?,
+            action_kind,
+        })
+        .map_err(EngineError::from)
+    }
+
+    fn founder_heritable_disposition(
+        &self,
+        organism_id: EntityId,
+        profile: &HeritableDispositionProfile,
+    ) -> Result<HeritableDisposition, EngineError> {
+        profile
+            .validate()
+            .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+        let spread = u64::from(profile.founder_variation_steps);
+        let width = spread
+            .checked_mul(2)
+            .and_then(|value| value.checked_add(1))
+            .ok_or(EngineError::HeritableDispositionArithmetic)?;
+        let mut action_weights = Vec::with_capacity(HERITABLE_ACTION_KINDS.len());
+        for action_kind in HERITABLE_ACTION_KINDS {
+            let draw = first_digest_u64(self.heritable_disposition_draw(
+                "founder",
+                SimTick::ZERO,
+                organism_id,
+                &[],
+                profile,
+                action_kind,
+            )?);
+            let offset = i64::try_from(draw % width).expect("bounded founder variation fits i64")
+                - i64::try_from(spread).expect("u16 spread fits i64");
+            let weight = i64::from(profile.neutral_action_weight)
+                .checked_add(offset)
+                .and_then(|value| u16::try_from(value).ok())
+                .ok_or(EngineError::HeritableDispositionArithmetic)?;
+            action_weights.push(HeritableActionWeight {
+                action_kind,
+                weight,
+            });
+        }
+        let disposition = HeritableDisposition {
+            disposition_schema_version: HERITABLE_DISPOSITION_SCHEMA_VERSION,
+            profile_digest: profile.profile_digest,
+            generation: 0,
+            derived_at: SimTick::ZERO,
+            action_weights,
+        };
+        disposition
+            .validate_against(profile)
+            .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+        Ok(disposition)
+    }
+
+    fn offspring_heritable_disposition(
+        &self,
+        offspring_id: EntityId,
+        parent_ids: &[EntityId],
+        derived_at: SimTick,
+        profile: &HeritableDispositionProfile,
+    ) -> Result<HeritableDisposition, EngineError> {
+        if parent_ids.len() != 2 || parent_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
+            return Err(EngineError::InvalidHeritableDisposition);
+        }
+        profile
+            .validate()
+            .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+        let parents = parent_ids
+            .iter()
+            .map(|parent_id| {
+                let parent = self
+                    .organisms
+                    .get(parent_id)
+                    .ok_or(EngineError::UnknownParent(*parent_id))?;
+                if parent.heritable_disposition_profile.as_ref() != Some(profile) {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+                let disposition = parent
+                    .heritable_disposition
+                    .as_ref()
+                    .ok_or(EngineError::InvalidHeritableDisposition)?;
+                disposition
+                    .validate_against(profile)
+                    .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+                Ok(disposition)
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?;
+        let generation = parents
+            .iter()
+            .map(|parent| parent.generation)
+            .max()
+            .expect("two parents")
+            .checked_add(1)
+            .ok_or(EngineError::HeritableDispositionArithmetic)?;
+        let mut action_weights = Vec::with_capacity(HERITABLE_ACTION_KINDS.len());
+        for action_kind in HERITABLE_ACTION_KINDS {
+            let inheritance = self.heritable_disposition_draw(
+                "inheritance",
+                derived_at,
+                offspring_id,
+                parent_ids,
+                profile,
+                action_kind,
+            )?;
+            let inherited_parent = usize::from(inheritance.as_bytes()[0] & 1);
+            let mut weight = parents[inherited_parent]
+                .action_weight(action_kind)
+                .ok_or(EngineError::InvalidHeritableDisposition)?;
+            let mutation = self.heritable_disposition_draw(
+                "mutation",
+                derived_at,
+                offspring_id,
+                parent_ids,
+                profile,
+                action_kind,
+            )?;
+            let mutation_roll = first_digest_u64(mutation) % u64::from(HERITABLE_PROBABILITY_SCALE);
+            if mutation_roll < u64::from(profile.mutation_probability_millionths) {
+                let magnitude = u16::try_from(
+                    second_digest_u64(mutation) % u64::from(profile.mutation_max_step) + 1,
+                )
+                .expect("bounded mutation magnitude fits u16");
+                weight = bounded_mutated_weight(
+                    weight,
+                    magnitude,
+                    mutation.as_bytes()[16] & 1 != 0,
+                    profile,
+                );
+            }
+            action_weights.push(HeritableActionWeight {
+                action_kind,
+                weight,
+            });
+        }
+        let disposition = HeritableDisposition {
+            disposition_schema_version: HERITABLE_DISPOSITION_SCHEMA_VERSION,
+            profile_digest: profile.profile_digest,
+            generation,
+            derived_at,
+            action_weights,
+        };
+        disposition
+            .validate_against(profile)
+            .map_err(|_| EngineError::InvalidHeritableDisposition)?;
+        Ok(disposition)
+    }
+
     fn reproductive_opportunity_succeeds_at(
         &self,
         profile: &ReproductivePhysiologyCommitment,
@@ -1373,6 +1671,26 @@ impl EngineState {
         let available = due
             .checked_add(profile.recovery_ticks)
             .ok_or(EngineError::ReproductiveArithmetic)?;
+        let (heritable_disposition_profile, offspring_heritable_disposition) =
+            if self.uses_heritable_disposition_driver() {
+                let heritable_profile = left.heritable_disposition_profile.as_ref().ok_or(
+                    EngineError::MissingHeritableDispositionProfile(left.organism_id),
+                )?;
+                if right.heritable_disposition_profile.as_ref() != Some(heritable_profile) {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+                (
+                    Some(heritable_profile.clone()),
+                    Some(self.offspring_heritable_disposition(
+                        offspring_id,
+                        &parent_ids,
+                        self.tick,
+                        heritable_profile,
+                    )?),
+                )
+            } else {
+                (None, None)
+            };
         Ok(Some(DomainEvent::ReproductiveDevelopmentStarted {
             development_id,
             offspring_id,
@@ -1384,6 +1702,8 @@ impl EngineState {
             profile_digest: profile.profile_digest,
             due_tick: SimTick::new(due),
             parents_available_at: SimTick::new(available),
+            heritable_disposition_profile,
+            offspring_heritable_disposition,
         }))
     }
 
@@ -1432,11 +1752,14 @@ impl EngineState {
                     metabolic_rate: parent.metabolic_rate.clone(),
                     physiological_regulation: parent.physiological_regulation.clone(),
                     reproductive_physiology: parent.reproductive_physiology.clone(),
+                    heritable_disposition_profile: pending.heritable_disposition_profile.clone(),
+                    heritable_disposition: pending.offspring_heritable_disposition.clone(),
                 });
             }
         }
 
-        let mut groups = BTreeMap::<(S2CellId, &str, &str, u8, Digest), Vec<&OrganismState>>::new();
+        let mut groups =
+            BTreeMap::<(S2CellId, &str, &str, u8, Digest, Digest), Vec<&OrganismState>>::new();
         for organism in self
             .organisms
             .values()
@@ -1453,6 +1776,13 @@ impl EngineState {
                 OrganismRole::Fauna => 1,
             };
             let profile_fingerprint = Digest::canonical(profile)?;
+            let heritable_profile_fingerprint = if self.uses_heritable_disposition_driver() {
+                Digest::canonical(organism.heritable_disposition_profile.as_ref().ok_or(
+                    EngineError::MissingHeritableDispositionProfile(organism.organism_id),
+                )?)?
+            } else {
+                Digest::ZERO
+            };
             groups
                 .entry((
                     patch,
@@ -1460,6 +1790,7 @@ impl EngineState {
                     organism.species.identifier.as_str(),
                     role,
                     profile_fingerprint,
+                    heritable_profile_fingerprint,
                 ))
                 .or_default()
                 .push(organism);
@@ -1477,6 +1808,16 @@ impl EngineState {
                 return Err(EngineError::InvalidReproductiveCommitment(
                     organisms[0].organism_id,
                 ));
+            }
+            if self.uses_heritable_disposition_driver() {
+                let heritable_profile = organisms[0].heritable_disposition_profile.as_ref().ok_or(
+                    EngineError::MissingHeritableDispositionProfile(organisms[0].organism_id),
+                )?;
+                if organisms.iter().any(|organism| {
+                    organism.heritable_disposition_profile.as_ref() != Some(heritable_profile)
+                }) {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
             }
             let mut categories = BTreeMap::<&BirthCategory, Vec<&OrganismState>>::new();
             for organism in organisms {
@@ -2374,6 +2715,10 @@ impl EngineState {
         self.manifest.ruleset_version >= REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION
     }
 
+    fn uses_heritable_disposition_driver(&self) -> bool {
+        self.manifest.ruleset_version >= HERITABLE_DISPOSITION_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -2822,7 +3167,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_reproductive_physiology_driver() {
+        if self.uses_heritable_disposition_driver() {
+            HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
+        } else if self.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
         } else if self.uses_action_learning_driver() {
             ACTION_LEARNING_EVENT_SCHEMA_VERSION
@@ -2883,7 +3230,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_reproductive_physiology_driver() {
+        if self.uses_heritable_disposition_driver() {
+            HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_action_learning_driver() {
             ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION
@@ -2977,6 +3326,8 @@ impl EngineState {
                 metabolic_rate,
                 physiological_regulation,
                 reproductive_physiology,
+                heritable_disposition_profile,
+                heritable_disposition,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
@@ -3030,6 +3381,23 @@ impl EngineState {
                 {
                     return Err(EngineError::ReproductivePhysiologyUnsupported);
                 }
+                if self.uses_heritable_disposition_driver() {
+                    let profile = heritable_disposition_profile.as_ref().ok_or(
+                        EngineError::MissingHeritableDispositionProfile(*organism_id),
+                    )?;
+                    let disposition = heritable_disposition
+                        .as_ref()
+                        .ok_or(EngineError::InvalidHeritableDisposition)?;
+                    if profile.species != *species
+                        || disposition
+                            != &self.founder_heritable_disposition(*organism_id, profile)?
+                    {
+                        return Err(EngineError::InvalidHeritableDisposition);
+                    }
+                } else if heritable_disposition_profile.is_some() || heritable_disposition.is_some()
+                {
+                    return Err(EngineError::HeritableDispositionUnsupported);
+                }
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
                     species: species.clone(),
@@ -3048,6 +3416,8 @@ impl EngineState {
                     physiological_regulation: physiological_regulation.clone(),
                     reproductive_physiology: reproductive_physiology.clone(),
                     reproductive_available_at: None,
+                    heritable_disposition_profile: heritable_disposition_profile.clone(),
+                    heritable_disposition: heritable_disposition.clone(),
                     bodily_regulation: BodilyRegulationState::default(),
                     bodily_regulated_at: None,
                     perception_memory: Vec::new(),
@@ -3185,6 +3555,8 @@ impl EngineState {
                 profile_digest,
                 due_tick,
                 parents_available_at,
+                heritable_disposition_profile,
+                offspring_heritable_disposition,
             } => {
                 if !self.uses_reproductive_physiology_driver() {
                     return Err(EngineError::ReproductivePhysiologyUnsupported);
@@ -3229,6 +3601,22 @@ impl EngineState {
                     self.reproductive_draw("offspring-identity", self.tick, parent_ids)?
                         .as_bytes(),
                 );
+                let expected_heritable_disposition = if self.uses_heritable_disposition_driver() {
+                    let heritable_profile = left.heritable_disposition_profile.as_ref().ok_or(
+                        EngineError::MissingHeritableDispositionProfile(left.organism_id),
+                    )?;
+                    if right.heritable_disposition_profile.as_ref() != Some(heritable_profile) {
+                        return Err(EngineError::InvalidHeritableDisposition);
+                    }
+                    Some(self.offspring_heritable_disposition(
+                        *offspring_id,
+                        parent_ids,
+                        self.tick,
+                        heritable_profile,
+                    )?)
+                } else {
+                    None
+                };
                 if !self.reproductively_ready(left, &profile)
                     || !self.reproductively_ready(right, &profile)
                     || !self
@@ -3243,6 +3631,15 @@ impl EngineState {
                     || expected_offspring_id != *offspring_id
                     || *due_tick != SimTick::new(expected_due)
                     || *parents_available_at != SimTick::new(expected_available)
+                    || if self.uses_heritable_disposition_driver() {
+                        left.heritable_disposition_profile.as_ref()
+                            != heritable_disposition_profile.as_ref()
+                            || expected_heritable_disposition.as_ref()
+                                != offspring_heritable_disposition.as_ref()
+                    } else {
+                        heritable_disposition_profile.is_some()
+                            || offspring_heritable_disposition.is_some()
+                    }
                 {
                     return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
                 }
@@ -3266,6 +3663,8 @@ impl EngineState {
                         started_at: self.tick,
                         due_tick: *due_tick,
                         parents_available_at: *parents_available_at,
+                        heritable_disposition_profile: heritable_disposition_profile.clone(),
+                        offspring_heritable_disposition: offspring_heritable_disposition.clone(),
                     },
                 );
             }
@@ -3304,6 +3703,8 @@ impl EngineState {
                 metabolic_rate,
                 physiological_regulation,
                 reproductive_physiology,
+                heritable_disposition_profile,
+                heritable_disposition,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
@@ -3395,6 +3796,8 @@ impl EngineState {
                         || developing_parent.metabolic_rate != *metabolic_rate
                         || developing_parent.physiological_regulation != *physiological_regulation
                         || developing_parent.reproductive_physiology != *reproductive_physiology
+                        || pending.heritable_disposition_profile != *heritable_disposition_profile
+                        || pending.offspring_heritable_disposition != *heritable_disposition
                         || reproductive_physiology
                             .as_ref()
                             .is_none_or(|profile| profile.profile_digest != pending.profile_digest)
@@ -3405,6 +3808,23 @@ impl EngineState {
                         .remove(&development_id);
                 } else if development_id.is_some() || reproductive_physiology.is_some() {
                     return Err(EngineError::ReproductivePhysiologyUnsupported);
+                }
+                if self.uses_heritable_disposition_driver() {
+                    let profile = heritable_disposition_profile.as_ref().ok_or(
+                        EngineError::MissingHeritableDispositionProfile(*organism_id),
+                    )?;
+                    let disposition = heritable_disposition
+                        .as_ref()
+                        .ok_or(EngineError::InvalidHeritableDisposition)?;
+                    if profile.species != *species
+                        || disposition.validate_against(profile).is_err()
+                        || disposition.derived_at >= self.tick
+                    {
+                        return Err(EngineError::InvalidHeritableDisposition);
+                    }
+                } else if heritable_disposition_profile.is_some() || heritable_disposition.is_some()
+                {
+                    return Err(EngineError::HeritableDispositionUnsupported);
                 }
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
@@ -3422,6 +3842,8 @@ impl EngineState {
                     physiological_regulation: physiological_regulation.clone(),
                     reproductive_physiology: reproductive_physiology.clone(),
                     reproductive_available_at: None,
+                    heritable_disposition_profile: heritable_disposition_profile.clone(),
+                    heritable_disposition: heritable_disposition.clone(),
                     bodily_regulation: BodilyRegulationState::default(),
                     bodily_regulated_at: None,
                     perception_memory: Vec::new(),
@@ -3846,6 +4268,7 @@ impl EngineState {
                 ));
             }
         }
+        let mut heritable_profiles_by_species = BTreeMap::new();
         for (id, organism) in &self.organisms {
             if id != &organism.organism_id {
                 return Err(EngineError::OrganismKeyMismatch(*id));
@@ -3930,6 +4353,67 @@ impl EngineState {
             {
                 return Err(EngineError::ReproductivePhysiologyUnsupported);
             }
+            if self.uses_heritable_disposition_driver() {
+                let profile = organism.heritable_disposition_profile.as_ref().ok_or(
+                    EngineError::MissingHeritableDispositionProfile(organism.organism_id),
+                )?;
+                let disposition = organism
+                    .heritable_disposition
+                    .as_ref()
+                    .ok_or(EngineError::InvalidHeritableDisposition)?;
+                if profile.species != organism.species
+                    || disposition.validate_against(profile).is_err()
+                {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+                let species_key = (
+                    organism.species.catalog.clone(),
+                    organism.species.identifier.clone(),
+                    organism.species.scientific_name.clone(),
+                    organism.species.source_url.clone(),
+                );
+                let profile_fingerprint = Digest::canonical(profile)?;
+                if heritable_profiles_by_species
+                    .insert(species_key, profile_fingerprint)
+                    .is_some_and(|previous| previous != profile_fingerprint)
+                {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+                let expected = match (organism.born_at, organism.parent_ids.as_slice()) {
+                    (None, []) if organism.initialized_at == SimTick::ZERO => {
+                        self.founder_heritable_disposition(organism.organism_id, profile)?
+                    }
+                    (Some(born_at), [_, _]) if organism.initialized_at == born_at => {
+                        let development_ticks = organism
+                            .reproductive_physiology
+                            .as_ref()
+                            .ok_or(EngineError::MissingReproductiveCommitment(
+                                organism.organism_id,
+                            ))?
+                            .development_ticks;
+                        let derived_at = SimTick::new(
+                            born_at
+                                .get()
+                                .checked_sub(development_ticks)
+                                .ok_or(EngineError::InvalidHeritableDisposition)?,
+                        );
+                        self.offspring_heritable_disposition(
+                            organism.organism_id,
+                            &organism.parent_ids,
+                            derived_at,
+                            profile,
+                        )?
+                    }
+                    _ => return Err(EngineError::InvalidHeritableDisposition),
+                };
+                if disposition != &expected {
+                    return Err(EngineError::InvalidHeritableDisposition);
+                }
+            } else if organism.heritable_disposition_profile.is_some()
+                || organism.heritable_disposition.is_some()
+            {
+                return Err(EngineError::HeritableDispositionUnsupported);
+            }
             if organism.perception_memory.len() > MAX_PERCEPTION_MEMORY_ENTRIES
                 || organism
                     .perception_memory
@@ -4000,6 +4484,23 @@ impl EngineState {
                 .organisms
                 .get(&pending.parent_ids[1])
                 .ok_or(EngineError::UnknownParent(pending.parent_ids[1]))?;
+            let heredity_valid = if self.uses_heritable_disposition_driver() {
+                let heritable_profile = left.heritable_disposition_profile.as_ref().ok_or(
+                    EngineError::MissingHeritableDispositionProfile(left.organism_id),
+                )?;
+                right.heritable_disposition_profile.as_ref() == Some(heritable_profile)
+                    && pending.heritable_disposition_profile.as_ref() == Some(heritable_profile)
+                    && pending.offspring_heritable_disposition.as_ref()
+                        == Some(&self.offspring_heritable_disposition(
+                            pending.offspring_id,
+                            &pending.parent_ids,
+                            pending.started_at,
+                            heritable_profile,
+                        )?)
+            } else {
+                pending.heritable_disposition_profile.is_none()
+                    && pending.offspring_heritable_disposition.is_none()
+            };
             let expected_due = pending
                 .started_at
                 .get()
@@ -4030,6 +4531,7 @@ impl EngineState {
                 || pending.development_id == pending.offspring_id
                 || self.organisms.contains_key(&pending.offspring_id)
                 || pending.parent_ids.len() != 2
+                || !heredity_valid
                 || pending.parent_ids.windows(2).any(|pair| pair[0] >= pair[1])
                 || !pending.parent_ids.contains(&pending.developing_parent_id)
                 || pending.started_at == SimTick::ZERO
@@ -4182,7 +4684,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_reproductive_physiology_driver() {
+        let snapshot_schema_version = if state.uses_heritable_disposition_driver() {
+            HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_action_learning_driver() {
             ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
@@ -4256,12 +4760,15 @@ impl Snapshot {
                 | MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
                 | ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
                 | REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
+                | HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_reproductive_physiology_driver() {
+        let expected_schema_version = if self.state.uses_heritable_disposition_driver() {
+            HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_action_learning_driver() {
             ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
@@ -4444,7 +4951,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_reproductive_physiology_driver() {
+        let expected_schema = if state.uses_heritable_disposition_driver() {
+            HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
+        } else if state.uses_reproductive_physiology_driver() {
             REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
         } else if state.uses_action_learning_driver() {
             ACTION_LEARNING_EVENT_SCHEMA_VERSION
@@ -4493,7 +5002,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
         } else if expected_schema == ACTION_LEARNING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == ACTION_LEARNING_EVENT_SCHEMA_VERSION
@@ -4592,6 +5103,14 @@ pub enum EngineError {
     InvalidTickAdvanceEventSet,
     #[error("a ruleset-fourteen world without living people must be archived")]
     UnarchivedWorldExtinction,
+    #[error("organism {0} is missing its species-bound heritable-disposition profile")]
+    MissingHeritableDispositionProfile(EntityId),
+    #[error("heritable-disposition data is invalid or does not match its deterministic derivation")]
+    InvalidHeritableDisposition,
+    #[error("heritable-disposition arithmetic overflowed")]
+    HeritableDispositionArithmetic,
+    #[error("heritable-disposition data is not supported by this ruleset")]
+    HeritableDispositionUnsupported,
     #[error("world configuration must be committed before initial organisms")]
     ConfigurationAfterOrganisms,
     #[error("world configuration was already committed")]
@@ -4835,6 +5354,7 @@ mod tests {
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
         }
     }
 
@@ -5025,6 +5545,22 @@ mod tests {
                     weight: 1,
                 },
             ],
+        }
+    }
+
+    fn heritable_fixture_profile(species: SpeciesIdentity) -> HeritableDispositionProfile {
+        HeritableDispositionProfile {
+            profile_schema_version: world_domain::HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+            profile_id: "heritable-fixture-v1".to_owned(),
+            profile_digest: Digest::sha256(b"explicit heritable disposition fixture assumptions"),
+            species,
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+            minimum_action_weight: 4,
+            neutral_action_weight: 16,
+            maximum_action_weight: 28,
+            founder_variation_steps: 3,
+            mutation_probability_millionths: 100_000,
+            mutation_max_step: 2,
         }
     }
 
@@ -5312,6 +5848,8 @@ mod tests {
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
+            heritable_disposition: None,
         };
         assert!(matches!(
             running.commit(EventSequence::new(2), genesis.batch_hash, vec![birth]),
@@ -5769,6 +6307,8 @@ mod tests {
             metabolic_rate: None,
             physiological_regulation: None,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
+            heritable_disposition: None,
         };
         assert!(matches!(
             running.commit(
@@ -6885,6 +7425,8 @@ mod tests {
             metabolic_rate: developing_parent.metabolic_rate.clone(),
             physiological_regulation: developing_parent.physiological_regulation.clone(),
             reproductive_physiology: developing_parent.reproductive_physiology.clone(),
+            heritable_disposition_profile: None,
+            heritable_disposition: None,
         };
         assert!(matches!(
             running.commit(EventSequence::new(2), genesis.batch_hash, vec![injected]),
@@ -7213,6 +7755,442 @@ mod tests {
     }
 
     #[test]
+    fn ruleset_fifteen_inherits_only_bounded_dispositions_and_replays() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x120));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478591),
+            HERITABLE_DISPOSITION_RULESET_VERSION,
+        );
+        let mut developing_parent =
+            regulated_full_earth_person(world_id, 0x701, 10_000_000_000, 10_000_000);
+        developing_parent.birth_category = BirthCategory::new("female").expect("category");
+        developing_parent.initial_age_ticks = 20;
+        let reproductive_profile = reproductive_fixture_profile(developing_parent.species.clone());
+        let heritable_profile = heritable_fixture_profile(developing_parent.species.clone());
+        assert_eq!(
+            bounded_mutated_weight(
+                heritable_profile.minimum_action_weight,
+                heritable_profile.mutation_max_step,
+                false,
+                &heritable_profile,
+            ),
+            heritable_profile.minimum_action_weight
+        );
+        assert_eq!(
+            bounded_mutated_weight(
+                heritable_profile.maximum_action_weight,
+                heritable_profile.mutation_max_step,
+                true,
+                &heritable_profile,
+            ),
+            heritable_profile.maximum_action_weight
+        );
+        developing_parent.reproductive_physiology = Some(reproductive_profile.clone());
+        developing_parent.heritable_disposition_profile = Some(heritable_profile.clone());
+
+        let mut other_parent =
+            regulated_full_earth_person(world_id, 0x702, 10_000_000_000, 10_000_000);
+        other_parent.birth_category = BirthCategory::new("male").expect("category");
+        other_parent.initial_age_ticks = 20;
+        other_parent.reproductive_physiology = Some(reproductive_profile);
+        other_parent.heritable_disposition_profile = Some(heritable_profile.clone());
+
+        let mut missing_profile = developing_parent.clone();
+        missing_profile.heritable_disposition_profile = None;
+        assert!(matches!(
+            EngineState::new(manifest.clone()).plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![missing_profile, other_parent.clone()],
+            ),
+            Err(EngineError::MissingHeritableDispositionProfile(id))
+                if id == developing_parent.organism_id
+        ));
+
+        let mut mixed_profile_parent = other_parent.clone();
+        let mut mixed_profile = heritable_profile.clone();
+        mixed_profile.profile_id = "heritable-fixture-v2".to_owned();
+        mixed_profile.profile_digest = Digest::sha256(b"different disposition assumptions");
+        mixed_profile_parent.heritable_disposition_profile = Some(mixed_profile);
+        assert!(matches!(
+            EngineState::new(manifest.clone()).plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![developing_parent.clone(), mixed_profile_parent],
+            ),
+            Err(EngineError::InvalidHeritableDisposition)
+        ));
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![developing_parent.clone(), other_parent.clone()],
+            )
+            .expect("heritable genesis plan");
+        let reverse_events = EngineState::new(manifest.clone())
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![other_parent.clone(), developing_parent.clone()],
+            )
+            .expect("input-order-independent heritable genesis plan");
+        assert_eq!(genesis_events, reverse_events);
+
+        let founder_dispositions = genesis_events
+            .iter()
+            .filter_map(|event| match event {
+                DomainEvent::OrganismInitialized {
+                    organism_id,
+                    heritable_disposition: Some(disposition),
+                    ..
+                } => Some((*organism_id, disposition.clone())),
+                _ => None,
+            })
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(founder_dispositions.len(), 2);
+        assert_ne!(
+            founder_dispositions[&developing_parent.organism_id],
+            founder_dispositions[&other_parent.organism_id]
+        );
+        assert!(
+            founder_dispositions
+                .values()
+                .all(|disposition| disposition.generation == 0
+                    && disposition.derived_at == SimTick::ZERO)
+        );
+
+        let mut tampered_genesis = genesis_events.clone();
+        let tampered_founder = tampered_genesis
+            .iter_mut()
+            .find_map(|event| match event {
+                DomainEvent::OrganismInitialized {
+                    heritable_disposition: Some(disposition),
+                    ..
+                } => Some(disposition),
+                _ => None,
+            })
+            .expect("founder disposition");
+        let founder_weight = &mut tampered_founder.action_weights[0].weight;
+        *founder_weight = if *founder_weight < heritable_profile.maximum_action_weight {
+            *founder_weight + 1
+        } else {
+            *founder_weight - 1
+        };
+        assert!(matches!(
+            EngineState::new(manifest.clone()).commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                tampered_genesis,
+            ),
+            Err(EngineError::InvalidHeritableDisposition)
+        ));
+
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("heritable genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.state_hash_schema_version(),
+            HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION
+        );
+        let founder_candidates = [developing_parent.organism_id, other_parent.organism_id]
+            .into_iter()
+            .map(|organism_id| {
+                let organism = running.organisms.get(&organism_id).expect("founder");
+                let disposition = organism
+                    .heritable_disposition
+                    .as_ref()
+                    .expect("founder disposition");
+                let candidates = running
+                    .deterministic_policy_candidates(organism, organism.initial_age_ticks)
+                    .expect("heritable policy candidates");
+                for candidate in &candidates {
+                    let base = match candidate.action.kind {
+                        PrimitiveActionKind::Move
+                        | PrimitiveActionKind::Orient
+                        | PrimitiveActionKind::EmitSignal => 2,
+                        PrimitiveActionKind::Reach | PrimitiveActionKind::Rest => 1,
+                        _ => panic!("no material-dependent candidate at genesis"),
+                    };
+                    assert_eq!(
+                        candidate.weight,
+                        base * u32::from(
+                            disposition
+                                .action_weight(candidate.action.kind)
+                                .expect("complete disposition"),
+                        )
+                    );
+                }
+                candidates
+            })
+            .collect::<Vec<_>>();
+        assert_ne!(founder_candidates[0], founder_candidates[1]);
+
+        let mut parent_ids = vec![developing_parent.organism_id, other_parent.organism_id];
+        parent_ids.sort_unstable();
+        let probe_offspring = EntityId::deterministic(world_id, b"heredity-learning-probe");
+        let before_learning = running
+            .offspring_heritable_disposition(
+                probe_offspring,
+                &parent_ids,
+                SimTick::new(1),
+                &heritable_profile,
+            )
+            .expect("offspring disposition without learned state");
+        let mut learned_variant = running.clone();
+        learned_variant
+            .organisms
+            .get_mut(&developing_parent.organism_id)
+            .expect("parent")
+            .action_values = vec![ActionValueState {
+            value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+            action_kind: PrimitiveActionKind::EmitSignal,
+            observations: 999,
+            value: ACTION_VALUE_MAX,
+        }];
+        assert_eq!(
+            learned_variant
+                .offspring_heritable_disposition(
+                    probe_offspring,
+                    &parent_ids,
+                    SimTick::new(1),
+                    &heritable_profile,
+                )
+                .expect("learned history cannot enter heredity"),
+            before_learning
+        );
+
+        let first_tick_events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(300),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("first heritable tick");
+        let (development_id, offspring_id, committed_offspring) = first_tick_events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::ReproductiveDevelopmentStarted {
+                    development_id,
+                    offspring_id,
+                    heritable_disposition_profile: Some(profile),
+                    offspring_heritable_disposition: Some(disposition),
+                    ..
+                } => Some((
+                    *development_id,
+                    *offspring_id,
+                    (profile.clone(), disposition.clone()),
+                )),
+                _ => None,
+            })
+            .expect("development commits offspring disposition");
+        assert_eq!(committed_offspring.0, heritable_profile);
+        assert_eq!(committed_offspring.1.generation, 1);
+        assert_eq!(committed_offspring.1.derived_at, SimTick::new(1));
+
+        let mut tampered_start = first_tick_events.clone();
+        let tampered_child = tampered_start
+            .iter_mut()
+            .find_map(|event| match event {
+                DomainEvent::ReproductiveDevelopmentStarted {
+                    offspring_heritable_disposition: Some(disposition),
+                    ..
+                } => Some(disposition),
+                _ => None,
+            })
+            .expect("offspring disposition");
+        let child_weight = &mut tampered_child.action_weights[0].weight;
+        *child_weight = if *child_weight < heritable_profile.maximum_action_weight {
+            *child_weight + 1
+        } else {
+            *child_weight - 1
+        };
+        assert!(
+            running
+                .clone()
+                .commit(EventSequence::new(2), genesis.batch_hash, tampered_start)
+                .is_err()
+        );
+
+        let (after_start, first_tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, first_tick_events)
+            .expect("committed inherited development");
+        let pending = after_start
+            .pending_reproductive_developments
+            .get(&development_id)
+            .expect("pending development");
+        assert_eq!(
+            pending.offspring_heritable_disposition.as_ref(),
+            Some(&committed_offspring.1)
+        );
+        let mut tampered_pending = after_start.clone();
+        tampered_pending
+            .pending_reproductive_developments
+            .get_mut(&development_id)
+            .expect("pending development")
+            .offspring_heritable_disposition
+            .as_mut()
+            .expect("pending disposition")
+            .generation = 2;
+        assert!(
+            Snapshot::new(tampered_pending, first_tick.sequence, first_tick.batch_hash,).is_err()
+        );
+        let pending_snapshot = Snapshot::new(
+            after_start.clone(),
+            first_tick.sequence,
+            first_tick.batch_hash,
+        )
+        .expect("pending heredity snapshot");
+
+        let second_tick_events = after_start
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(600),
+                CartesianMillimetres::new(2, 3, 4),
+                CartesianMillimetres::new(5, 6, 7),
+            ))
+            .expect("second heritable tick");
+        let (after_second, second_tick) = after_start
+            .commit(
+                EventSequence::new(3),
+                first_tick.batch_hash,
+                second_tick_events,
+            )
+            .expect("second heritable tick commit");
+        let birth_events = after_second
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(900),
+                CartesianMillimetres::new(3, 4, 5),
+                CartesianMillimetres::new(6, 7, 8),
+            ))
+            .expect("heritable birth tick");
+        let born_disposition = birth_events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::OrganismBorn {
+                    organism_id,
+                    development_id: Some(event_development_id),
+                    heritable_disposition_profile: Some(profile),
+                    heritable_disposition: Some(disposition),
+                    ..
+                } if *organism_id == offspring_id && *event_development_id == development_id => {
+                    Some((profile.clone(), disposition.clone()))
+                }
+                _ => None,
+            })
+            .expect("birth copies committed disposition");
+        assert_eq!(born_disposition, committed_offspring);
+
+        let mut tampered_birth = birth_events.clone();
+        tampered_birth
+            .iter_mut()
+            .find_map(|event| match event {
+                DomainEvent::OrganismBorn {
+                    organism_id,
+                    heritable_disposition: Some(disposition),
+                    ..
+                } if *organism_id == offspring_id => Some(disposition),
+                _ => None,
+            })
+            .expect("birth disposition")
+            .generation = 2;
+        assert!(
+            after_second
+                .clone()
+                .commit(
+                    EventSequence::new(4),
+                    second_tick.batch_hash,
+                    tampered_birth,
+                )
+                .is_err()
+        );
+
+        let (after_birth, birth_tick) = after_second
+            .commit(EventSequence::new(4), second_tick.batch_hash, birth_events)
+            .expect("heritable birth commit");
+        let newborn = after_birth.organisms.get(&offspring_id).expect("newborn");
+        assert_eq!(
+            newborn.heritable_disposition.as_ref(),
+            Some(&committed_offspring.1)
+        );
+        assert!(newborn.perception_memory.is_empty());
+        assert!(newborn.action_values.is_empty());
+        assert!(newborn.bodily_regulation.is_clear());
+        assert_eq!(newborn.bodily_regulated_at, None);
+        assert_eq!(newborn.action_values_updated_at, None);
+
+        let mut tampered_born_state = after_birth.clone();
+        tampered_born_state
+            .organisms
+            .get_mut(&offspring_id)
+            .expect("newborn")
+            .heritable_disposition
+            .as_mut()
+            .expect("newborn disposition")
+            .generation = 2;
+        assert!(
+            Snapshot::new(
+                tampered_born_state,
+                birth_tick.sequence,
+                birth_tick.batch_hash,
+            )
+            .is_err()
+        );
+
+        let snapshot = Snapshot::new(
+            after_birth.clone(),
+            birth_tick.sequence,
+            birth_tick.batch_hash,
+        )
+        .expect("heritable snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot.verify_integrity().expect("snapshot integrity");
+        assert_eq!(
+            replay_from_snapshot(
+                &pending_snapshot,
+                &[second_tick.clone(), birth_tick.clone()],
+            )
+            .expect("heritable snapshot plus tail replay")
+            .state,
+            after_birth
+        );
+        assert_eq!(
+            replay(
+                manifest.clone(),
+                &[genesis.clone(), first_tick, second_tick, birth_tick],
+            )
+            .expect("heritable replay")
+            .state,
+            after_birth
+        );
+
+        let downgraded = EventBatch::new(
+            REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            HERITABLE_DISPOSITION_RULESET_VERSION,
+            Digest::ZERO,
+            vec![DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            }],
+            Digest::sha256(b"downgraded heredity state"),
+        )
+        .expect("internally valid pre-heredity batch");
+        assert!(matches!(
+            replay(manifest, &[downgraded]),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
+                actual: REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    #[test]
     fn ruleset_thirteen_preserves_legacy_post_genesis_initialization_replay() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x119));
         let manifest = WorldManifest::new(
@@ -7244,6 +8222,8 @@ mod tests {
             metabolic_rate: later_founder.metabolic_rate,
             physiological_regulation: later_founder.physiological_regulation,
             reproductive_physiology: None,
+            heritable_disposition_profile: None,
+            heritable_disposition: None,
         };
         let (with_legacy_initialization, initialization_batch) = running
             .commit(
@@ -7616,6 +8596,8 @@ mod tests {
                         metabolic_rate: None,
                         physiological_regulation: None,
                         reproductive_physiology: None,
+                        heritable_disposition_profile: None,
+                        heritable_disposition: None,
                     },
                 ],
             ),

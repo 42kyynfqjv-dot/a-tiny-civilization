@@ -558,7 +558,10 @@ mod tests {
     use world_domain::{
         ACTION_LEARNING_EVENT_SCHEMA_VERSION, ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState,
         BODILY_REGULATION_EVENT_SCHEMA_VERSION, BodilyNeedState, BodilyRegulationState, Digest,
-        EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, PrimitiveActionKind,
+        EVENT_SCHEMA_VERSION, HERITABLE_ACTION_KINDS, HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
+        HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
+        HeritableActionWeight, HeritableDisposition, HeritableDispositionProfile,
+        MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis, PrimitiveActionKind,
         REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, ReproductiveDevelopmentEnd, WorldManifest,
         WorldSeed,
     };
@@ -584,6 +587,36 @@ mod tests {
             species: species(),
             birth_category: BirthCategory::new("female").expect("valid category"),
         }
+    }
+
+    fn private_heredity() -> (HeritableDispositionProfile, HeritableDisposition) {
+        let profile = HeritableDispositionProfile {
+            profile_schema_version: HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+            profile_id: "private-heredity-fixture".to_owned(),
+            profile_digest: Digest::sha256(b"private heredity fixture"),
+            species: species(),
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            minimum_action_weight: 4,
+            neutral_action_weight: 16,
+            maximum_action_weight: 28,
+            founder_variation_steps: 3,
+            mutation_probability_millionths: 100_000,
+            mutation_max_step: 2,
+        };
+        let disposition = HeritableDisposition {
+            disposition_schema_version: HERITABLE_DISPOSITION_SCHEMA_VERSION,
+            profile_digest: profile.profile_digest,
+            generation: 1,
+            derived_at: SimTick::new(5),
+            action_weights: HERITABLE_ACTION_KINDS
+                .into_iter()
+                .map(|action_kind| HeritableActionWeight {
+                    action_kind,
+                    weight: profile.neutral_action_weight,
+                })
+                .collect(),
+        };
+        (profile, disposition)
     }
 
     #[test]
@@ -631,7 +664,8 @@ mod tests {
     #[test]
     fn public_timeline_is_deterministic_and_withholds_sensitive_mechanism_detail() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(11));
-        let manifest = WorldManifest::new(world_id, WorldSeed::new(42), 1);
+        let manifest = WorldManifest::new(world_id, WorldSeed::new(42), 15);
+        let (private_profile, private_disposition) = private_heredity();
         let events = vec![
             DomainEvent::WorldStarted { manifest },
             DomainEvent::OrganismBorn {
@@ -646,6 +680,8 @@ mod tests {
                 metabolic_rate: None,
                 physiological_regulation: None,
                 reproductive_physiology: None,
+                heritable_disposition_profile: Some(private_profile),
+                heritable_disposition: Some(private_disposition),
             },
             DomainEvent::OrganismDied {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
@@ -659,11 +695,11 @@ mod tests {
             },
         ];
         let batch = EventBatch::new(
-            EVENT_SCHEMA_VERSION,
+            HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
             world_id,
             EventSequence::new(8),
             SimTick::new(7),
-            1,
+            15,
             Digest::ZERO,
             events,
             Digest::sha256(b"projection state"),
@@ -682,7 +718,16 @@ mod tests {
             .map(|item| format!("{} {}", item.title, item.summary))
             .collect::<String>()
             .to_ascii_lowercase();
-        for withheld in ["female", "falling_rock", "parent", "location"] {
+        for withheld in [
+            "female",
+            "falling_rock",
+            "parent",
+            "location",
+            "heritable",
+            "generation",
+            "weight",
+            "mutation",
+        ] {
             assert!(!rendered.contains(withheld), "must withhold {withheld}");
         }
     }
@@ -709,6 +754,8 @@ mod tests {
                 metabolic_rate: None,
                 physiological_regulation: None,
                 reproductive_physiology: None,
+                heritable_disposition_profile: None,
+                heritable_disposition: None,
             }],
             Digest::sha256(b"organism projection state"),
         )
@@ -829,6 +876,8 @@ mod tests {
                     profile_digest: Digest::sha256(b"private reproductive profile"),
                     due_tick: SimTick::new(6),
                     parents_available_at: SimTick::new(7),
+                    heritable_disposition_profile: None,
+                    offspring_heritable_disposition: None,
                 },
                 DomainEvent::ReproductiveDevelopmentEnded {
                     development_id,
