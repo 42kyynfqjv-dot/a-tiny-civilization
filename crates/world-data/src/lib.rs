@@ -8,6 +8,7 @@ mod gbif_catalog;
 mod land_cover;
 mod origin;
 mod origin_environment;
+mod physiology;
 mod provisional;
 mod scalar_field;
 mod seasonal_field;
@@ -60,6 +61,10 @@ pub use origin_environment::{
     ProvisionalOriginEnvironment, ProvisionalOriginEnvironmentError,
 };
 
+pub use physiology::{
+    FAUNA_PHYSIOLOGY_PROFILE_SET_MEDIA_TYPE, FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
+    FaunaPhysiologyProfile, FaunaPhysiologyProfileError, FaunaPhysiologyProfileSet,
+};
 pub use provisional::{
     PROVISIONAL_WORLD_COMPOSITION_MEDIA_TYPE, PROVISIONAL_WORLD_COMPOSITION_SCHEMA_VERSION,
     ProvisionalArtifactReference, ProvisionalEarthLayerReference, ProvisionalWorldComponentKind,
