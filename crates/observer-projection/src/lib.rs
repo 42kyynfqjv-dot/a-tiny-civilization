@@ -122,6 +122,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
                 | DomainEvent::MaterialInstanceReleased { .. }
+                | DomainEvent::MaterialOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }
@@ -315,6 +316,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::MaterialInstanceInitialized { .. }
             | DomainEvent::MaterialInstanceHeld { .. }
             | DomainEvent::MaterialInstanceReleased { .. }
+            | DomainEvent::MaterialOralPortionTransferred { .. }
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::OrganismPerceived { .. }
             | DomainEvent::OrganismActed { .. }
@@ -549,7 +551,7 @@ mod tests {
     use uuid::Uuid;
     use world_domain::{
         BODILY_REGULATION_EVENT_SCHEMA_VERSION, BodilyNeedState, BodilyRegulationState, Digest,
-        EVENT_SCHEMA_VERSION, WorldManifest, WorldSeed,
+        EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, WorldManifest, WorldSeed,
     };
 
     fn species() -> SpeciesIdentity {
@@ -733,6 +735,31 @@ mod tests {
             Digest::sha256(b"private bodily state"),
         )
         .expect("valid internal body event");
+        assert!(project_public_timeline(&batch).is_empty());
+        assert!(project_public_organisms(&batch).is_empty());
+    }
+
+    #[test]
+    fn oral_material_transfer_is_private_mechanism_not_public_narrative() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(33));
+        let batch = EventBatch::new(
+            MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(5),
+            SimTick::new(4),
+            12,
+            Digest::ZERO,
+            vec![DomainEvent::MaterialOralPortionTransferred {
+                object_id: EntityId::from_uuid(Uuid::from_u128(34)),
+                organism_id: EntityId::from_uuid(Uuid::from_u128(35)),
+                profile_digest: Digest::sha256(b"private oral profile"),
+                from_mass_milligrams: 250_000,
+                transferred_mass_milligrams: 250_000,
+                to_mass_milligrams: 0,
+            }],
+            Digest::sha256(b"private oral transfer state"),
+        )
+        .expect("valid internal oral-transfer event");
         assert!(project_public_timeline(&batch).is_empty());
         assert!(project_public_organisms(&batch).is_empty());
     }

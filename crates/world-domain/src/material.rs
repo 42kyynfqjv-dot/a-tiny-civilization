@@ -7,6 +7,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
+use crate::{Digest, SpeciesIdentity};
+
+pub const ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+
 /// A stable, citable identity for a real-world physical material.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MaterialIdentity {
@@ -55,6 +59,70 @@ pub enum MaterialIdentityError {
     NonHttpsSource,
 }
 
+/// Weakest evidence class used by the physical oral-transfer profile. The profile is
+/// canonical world evidence, never a property or conclusion exposed to an organism.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OralTransferEvidenceBasis {
+    SourceMeasurement,
+    LiteratureApproximation,
+    EngineeringAssumption,
+}
+
+/// Species-specific physical consequences of transferring one retained portion of a
+/// material through the mouth. This deliberately does not say that the material is
+/// food, safe, desirable, or known. Version one models only exact energy and hydration
+/// recovery; toxicity and injury require later, separately versioned causal state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OralTransferCommitment {
+    pub commitment_schema_version: u16,
+    pub profile_id: String,
+    pub profile_digest: Digest,
+    pub material: MaterialIdentity,
+    pub species: SpeciesIdentity,
+    pub evidence_basis: OralTransferEvidenceBasis,
+    pub transfer_mass_milligrams: u64,
+    pub recoverable_energy_joules: u64,
+    /// Exact reduction in the target regulator's hydration-failure time load.
+    pub hydration_recovery_seconds: u64,
+}
+
+impl OralTransferCommitment {
+    pub fn validate(&self) -> Result<(), OralTransferCommitmentError> {
+        if self.commitment_schema_version != ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION {
+            return Err(OralTransferCommitmentError::UnsupportedSchema);
+        }
+        if !is_technical(&self.profile_id)
+            || self.profile_digest == Digest::ZERO
+            || self.transfer_mass_milligrams == 0
+        {
+            return Err(OralTransferCommitmentError::InvalidCommitment);
+        }
+        self.material
+            .validate()
+            .map_err(|_| OralTransferCommitmentError::InvalidCommitment)?;
+        self.species
+            .validate()
+            .map_err(|_| OralTransferCommitmentError::InvalidCommitment)?;
+        Ok(())
+    }
+}
+
+fn is_technical(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b'-' | b'.'))
+}
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum OralTransferCommitmentError {
+    #[error("unsupported oral-transfer commitment schema")]
+    UnsupportedSchema,
+    #[error("invalid oral-transfer commitment")]
+    InvalidCommitment,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -73,5 +141,48 @@ mod tests {
             MaterialIdentity::new("", "962", "water", "https://example.test/material"),
             Err(MaterialIdentityError::MissingIdentityField)
         ));
+    }
+
+    #[test]
+    fn oral_transfer_profiles_bind_material_species_and_evidence() {
+        let material = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("citable material");
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("citable species");
+        let profile = OralTransferCommitment {
+            commitment_schema_version: ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "water-human-fixture-v1".to_owned(),
+            profile_digest: Digest::sha256(b"oral transfer fixture"),
+            material,
+            species,
+            evidence_basis: OralTransferEvidenceBasis::EngineeringAssumption,
+            transfer_mass_milligrams: 250_000,
+            recoverable_energy_joules: 0,
+            hydration_recovery_seconds: 14_400,
+        };
+        profile.validate().expect("valid oral transfer profile");
+
+        let mut unsupported = profile.clone();
+        unsupported.commitment_schema_version = 2;
+        assert_eq!(
+            unsupported.validate(),
+            Err(OralTransferCommitmentError::UnsupportedSchema)
+        );
+        let mut zero_mass = profile;
+        zero_mass.transfer_mass_milligrams = 0;
+        assert_eq!(
+            zero_mass.validate(),
+            Err(OralTransferCommitmentError::InvalidCommitment)
+        );
     }
 }

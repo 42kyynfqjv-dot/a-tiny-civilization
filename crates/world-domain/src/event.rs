@@ -3,9 +3,9 @@ use thiserror::Error;
 
 use crate::{
     BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId, EventId,
-    EventSequence, MaterialIdentity, MetabolicRateCommitment, PhysiologicalRegulationCommitment,
-    PrimitiveAction, S2CellId, SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration,
-    WorldId, WorldManifest,
+    EventSequence, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
+    PhysiologicalRegulationCommitment, PrimitiveAction, S2CellId, SimTick, SituatedPerception,
+    SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -36,6 +36,9 @@ pub const BODILY_REGULATION_EVENT_SCHEMA_VERSION: u16 = 12;
 /// Changes live action selection to the seeded, situated baseline policy. No new
 /// payload is added, but the semantic boundary is explicit for audit and replay.
 pub const DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION: u16 = 13;
+/// Adds retained material mass, species-bound oral-transfer commitments, and exact
+/// resolved oral mass transfers.
+pub const MATERIAL_INGESTION_EVENT_SCHEMA_VERSION: u16 = 14;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,6 +122,10 @@ pub enum DomainEvent {
         object_id: EntityId,
         material: MaterialIdentity,
         embodied_patch: S2CellId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        initial_mass_milligrams: Option<u64>,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        oral_transfer_profiles: Vec<OralTransferCommitment>,
     },
     /// A material instance became physically held after a neutral grasp action.
     MaterialInstanceHeld {
@@ -130,6 +137,16 @@ pub enum DomainEvent {
         object_id: EntityId,
         holder_id: EntityId,
         embodied_patch: S2CellId,
+    },
+    /// Exact physical mass transferred from a held material through one organism's
+    /// mouth. The event says nothing about desirability, safety, knowledge, or use.
+    MaterialOralPortionTransferred {
+        object_id: EntityId,
+        organism_id: EntityId,
+        profile_digest: Digest,
+        from_mass_milligrams: u64,
+        transferred_mass_milligrams: u64,
+        to_mass_milligrams: u64,
     },
     TickAdvanced {
         from: SimTick,
@@ -335,6 +352,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
             | BODILY_REGULATION_EVENT_SCHEMA_VERSION
             | DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
+            | MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -436,6 +454,24 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    let has_material_ingestion_commitment = match event {
+        DomainEvent::MaterialInstanceInitialized {
+            initial_mass_milligrams,
+            oral_transfer_profiles,
+            ..
+        } => initial_mass_milligrams.is_some() || !oral_transfer_profiles.is_empty(),
+        _ => false,
+    };
+    if event_schema_version < MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
+        && has_material_ingestion_commitment
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::MaterialOralPortionTransferred { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             metabolic_rate,
@@ -464,9 +500,38 @@ fn validate_event_for_schema(
         DomainEvent::OrganismActed { action, .. } => action
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
-        DomainEvent::MaterialInstanceInitialized { material, .. } => material
-            .validate()
-            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::MaterialInstanceInitialized {
+            material,
+            initial_mass_milligrams,
+            oral_transfer_profiles,
+            ..
+        } => {
+            material
+                .validate()
+                .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            validate_oral_transfer_profiles(
+                material,
+                *initial_mass_milligrams,
+                oral_transfer_profiles,
+            )?;
+        }
+        DomainEvent::MaterialOralPortionTransferred {
+            profile_digest,
+            from_mass_milligrams,
+            transferred_mass_milligrams,
+            to_mass_milligrams,
+            ..
+        } => {
+            if *profile_digest == Digest::ZERO
+                || *transferred_mass_milligrams == 0
+                || from_mass_milligrams.checked_sub(*transferred_mass_milligrams)
+                    != Some(*to_mass_milligrams)
+            {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "invalid material oral-transfer arithmetic".to_owned(),
+                ));
+            }
+        }
         DomainEvent::OrganismNeedsChanged { from, to, .. } if from == to => {
             return Err(EventBatchError::InvalidEmbodiedEvent(
                 "bodily-need transition must change state".to_owned(),
@@ -475,6 +540,54 @@ fn validate_event_for_schema(
         _ => {}
     }
     Ok(())
+}
+
+fn validate_oral_transfer_profiles(
+    material: &MaterialIdentity,
+    initial_mass_milligrams: Option<u64>,
+    profiles: &[OralTransferCommitment],
+) -> Result<(), EventBatchError> {
+    if initial_mass_milligrams == Some(0)
+        || (initial_mass_milligrams.is_none() && !profiles.is_empty())
+    {
+        return Err(EventBatchError::InvalidEmbodiedEvent(
+            "oral-transfer profiles require positive retained material mass".to_owned(),
+        ));
+    }
+    let mut previous_species_key = None;
+    for profile in profiles {
+        profile
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+        if profile.material != *material {
+            return Err(EventBatchError::InvalidEmbodiedEvent(
+                "oral-transfer material does not match its instance".to_owned(),
+            ));
+        }
+        let mass = initial_mass_milligrams.expect("profiles require retained mass");
+        if mass < profile.transfer_mass_milligrams {
+            return Err(EventBatchError::InvalidEmbodiedEvent(
+                "material mass must contain at least one whole oral-transfer portion".to_owned(),
+            ));
+        }
+        let species_key = species_identity_key(&profile.species);
+        if previous_species_key.is_some_and(|previous| previous >= species_key) {
+            return Err(EventBatchError::InvalidEmbodiedEvent(
+                "oral-transfer profiles must be strictly species ordered".to_owned(),
+            ));
+        }
+        previous_species_key = Some(species_key);
+    }
+    Ok(())
+}
+
+fn species_identity_key(species: &SpeciesIdentity) -> (&str, &str, &str, &str) {
+    (
+        &species.catalog,
+        &species.identifier,
+        &species.scientific_name,
+        &species.source_url,
+    )
 }
 
 #[derive(Serialize)]
@@ -862,5 +975,88 @@ mod tests {
             Digest::sha256(b"body state"),
         )
         .expect("schema twelve accepts an exact body transition");
+    }
+
+    #[test]
+    fn retained_mass_and_oral_transfers_require_schema_fourteen() {
+        let manifest = manifest();
+        let material = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("citable water");
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("citable species");
+        let profile = OralTransferCommitment {
+            commitment_schema_version: crate::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "event-water-human-v1".to_owned(),
+            profile_digest: Digest::sha256(b"event oral transfer profile"),
+            material: material.clone(),
+            species,
+            evidence_basis: crate::OralTransferEvidenceBasis::EngineeringAssumption,
+            transfer_mass_milligrams: 250_000,
+            recoverable_energy_joules: 0,
+            hydration_recovery_seconds: 200,
+        };
+        let initialization = DomainEvent::MaterialInstanceInitialized {
+            object_id: EntityId::from_uuid(Uuid::from_u128(0x0A11)),
+            material,
+            embodied_patch: S2CellId::new(1_u64 << 60).expect("face root"),
+            initial_mass_milligrams: Some(500_000),
+            oral_transfer_profiles: vec![profile.clone()],
+        };
+        assert!(matches!(
+            EventBatch::new(
+                DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                12,
+                Digest::ZERO,
+                vec![initialization.clone()],
+                Digest::sha256(b"oral state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            12,
+            Digest::ZERO,
+            vec![initialization],
+            Digest::sha256(b"oral state"),
+        )
+        .expect("schema fourteen accepts retained mass and its response profile");
+
+        let invalid_transfer = DomainEvent::MaterialOralPortionTransferred {
+            object_id: EntityId::from_uuid(Uuid::from_u128(0x0A11)),
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0x0B0D)),
+            profile_digest: profile.profile_digest,
+            from_mass_milligrams: 500_000,
+            transferred_mass_milligrams: 250_000,
+            to_mass_milligrams: 1,
+        };
+        assert!(matches!(
+            EventBatch::new(
+                MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(2),
+                SimTick::new(1),
+                12,
+                Digest::ZERO,
+                vec![invalid_transfer],
+                Digest::sha256(b"invalid oral state"),
+            ),
+            Err(EventBatchError::InvalidEmbodiedEvent(_))
+        ));
     }
 }

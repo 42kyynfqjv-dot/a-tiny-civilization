@@ -45,8 +45,9 @@ pub use event::{
     DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EventBatch, EventBatchError,
     EventRecord, LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
-    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
+    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
@@ -61,7 +62,10 @@ pub use illumination::{
     RadialHorizonClassification, SunVectorFrame,
 };
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
-pub use material::{MaterialIdentity, MaterialIdentityError};
+pub use material::{
+    MaterialIdentity, MaterialIdentityError, ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+    OralTransferCommitment, OralTransferCommitmentError, OralTransferEvidenceBasis,
+};
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,
     SolarDistanceForcing, SolarDistanceForcingError,

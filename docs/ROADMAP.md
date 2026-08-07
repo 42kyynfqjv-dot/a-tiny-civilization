@@ -161,9 +161,17 @@ selection uses only canonical world state, bodily pressure, exact local reachabi
 and ordered identities; it never reads a material or species label, observer state,
 wall time, or model output. The selected act and its physical effects remain ordinary
 replayable events behind new event, snapshot, and state-hash schema boundaries. This
-is a freeform baseline, not learned cognition: neutral ingestion effects, action-value
-learning, imitation, reproduction/heredity, and coupled ecology remain subsequent
-causal checkpoints.
+is a freeform baseline, not learned cognition: action-value learning, imitation,
+reproduction/heredity, and coupled ecology remain subsequent causal checkpoints.
+
+Ruleset twelve adds the first neutral ingestion effect without leaking a food or water
+label into action selection. Material instances can retain exact mass plus ordered,
+species-bound oral-transfer profiles; a matching held-object swallow records conserved
+mass before applying exact energy and hydration recovery to that tick's bodily state.
+Depletion, replay, snapshots, schema downgrades, causal action/effect ordering, and
+observer privacy are enforced. The committed profiles in tests are explicit engineering
+assumptions: toxicity, injury, digestion detail, and learned action values remain open,
+and no response profile is public-genesis eligible before scientific admission.
 
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one

@@ -152,6 +152,7 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
                 | DomainEvent::MaterialInstanceReleased { .. }
+                | DomainEvent::MaterialOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }
