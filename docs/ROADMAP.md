@@ -158,6 +158,13 @@ artifacts: nine physical/chemical properties for 0–5 cm topsoil at the 5th, 50
 It deliberately gets a real global uncertainty-bearing soil vector wired before the
 final pass expands to all six native-depth products and validates scientific coupling.
 
+Fauna now has a commercially compatible source boundary and a credential-free exact
+taxonomy acquisition path: the frozen CC BY 4.0 GBIF Backbone supplies stable real
+taxon identities, while distribution will come from a separate DOI-backed occurrence
+extract filtered to CC0/CC BY records. ADR 0037 prevents the convenient noncommercial
+cloud snapshot, modern observation density, or missing traits from silently becoming
+canonical animal truth.
+
 ### 3. Situated memory and bounded cognition
 
 - local deterministic working memory plus the asynchronous Hindsight adapter;

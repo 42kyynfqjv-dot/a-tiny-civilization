@@ -63,6 +63,8 @@ The Copernicus observed-class target-support and quality-preserving L10 payload 
 fixed in [ADR 0036](../adr/0036-copernicus-land-cover-l10-target-support.md).
 The open-evidence composition for freshwater storage and drainage is fixed in
 [ADR 0035](../adr/0035-open-global-hydrography-composition.md).
+The real-taxon identity, occurrence-licensing, trait-evidence, and fauna-tier boundary
+is fixed in [ADR 0037](../adr/0037-real-taxa-and-fauna-evidence.md).
 
 ## Removing inherited modern information
 
