@@ -32,6 +32,11 @@ use world_domain::{
     TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
+/// New full-Earth worlds start with the source-backed sky driver. Older worlds retain
+/// the ruleset committed at genesis, and non-production proof worlds keep the engine
+/// baseline ruleset.
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = CELESTIAL_DRIVER_RULESET_VERSION;
+
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization simulation runner")]
 struct Cli {
@@ -125,7 +130,7 @@ enum Command {
 
         /// Immutable causal ruleset for this new or resumed provisional world.
         /// Ruleset three requires the pinned DE441 source driver at every tick.
-        #[arg(long, default_value_t = RULESET_VERSION)]
+        #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
         ruleset_version: u32,
     },
     /// Replay one stored world from genesis and verify its snapshot, cursor, and hashes.
@@ -279,7 +284,8 @@ async fn serve(
         service_name: "simulation-runner".to_owned(),
         instance_id,
         metadata: json!({
-            "ruleset_version": RULESET_VERSION,
+            "baseline_ruleset_version": RULESET_VERSION,
+            "default_provisional_ruleset_version": DEFAULT_PROVISIONAL_RULESET_VERSION,
             "runner_version": env!("CARGO_PKG_VERSION"),
             "mode": "deterministic-ticks",
         }),
@@ -293,7 +299,8 @@ async fn serve(
 
     tracing::info!(
         %instance_id,
-        ruleset_version = RULESET_VERSION,
+        baseline_ruleset_version = RULESET_VERSION,
+        default_provisional_ruleset_version = DEFAULT_PROVISIONAL_RULESET_VERSION,
         tick_milliseconds = tick_milliseconds.max(1),
         "runner started"
     );
@@ -1082,5 +1089,31 @@ mod tests {
             .is_err()
         );
         std::fs::remove_dir_all(directory).expect("remove test directory");
+    }
+
+    #[test]
+    fn provisional_full_earth_defaults_to_the_source_backed_sky_ruleset() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "--database-url",
+            "postgres://example",
+            "init-provisional-full-earth",
+            "--world-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--seed",
+            "1",
+            "--composition",
+            "composition.json",
+            "--artifact-root",
+            "artifacts",
+        ])
+        .expect("parse provisional command");
+        let Some(Command::InitProvisionalFullEarth {
+            ruleset_version, ..
+        }) = cli.command
+        else {
+            panic!("expected provisional initialization command");
+        };
+        assert_eq!(ruleset_version, CELESTIAL_DRIVER_RULESET_VERSION);
     }
 }

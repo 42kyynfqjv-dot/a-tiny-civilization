@@ -270,8 +270,9 @@ replay-safe Sun/Moon tide geometry, local radial-horizon illumination, and a red
 inverse-square solar-distance forcing ratio are now implemented with checked integer
 arithmetic. Ruleset three now executes the pinned DE441 evaluator at each simulation
 tick, records its fixed-scale Sun/Moon state in the hash chain, and replays without
-opening source files. It remains opt-in until its downstream physical effects are
-implemented. Earth-orientation transforms and the coupled ocean response remain pending.
+opening source files. It is the default for new provisional worlds; older worlds retain
+their committed ruleset. Earth-orientation transforms and the coupled ocean response
+remain pending.
 
 ### 3. Situated memory and bounded cognition
 

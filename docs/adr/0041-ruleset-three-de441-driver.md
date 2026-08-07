@@ -17,9 +17,10 @@ This is a source-execution boundary, not scientific admission. It does not yet
 apply Earth orientation, atmospheric forcing, illumination, ocean response, animal
 behaviour, or ecological effects. Public projections discard the event entirely.
 
-The current runner default remains ruleset two. A new provisional world must
-explicitly select ruleset three, and must have the staged DE441 artifacts available.
-This avoids retroactively changing an existing world's committed causal rules.
+Ruleset three is now the runner default for newly initialized provisional worlds. Its
+DE441 artifacts are part of the required staged provisional composition. Existing
+worlds retain their immutable older ruleset version, so changing this default cannot
+rewrite committed history.
 
 ## Verification
 

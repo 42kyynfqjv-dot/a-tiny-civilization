@@ -31,11 +31,11 @@ pub const LEGACY_RULESET_VERSION: u32 = 1;
 /// Ruleset two adds the executable per-organism barrier while preserving
 /// ruleset-one replay byte-for-byte.
 pub const ORGANISM_EXECUTION_RULESET_VERSION: u32 = 2;
-/// Current executable ruleset. Ruleset three is deliberately held back until its
-/// source adapter is wired into the runner; existing provisional worlds continue to
-/// use the verified body-clock kernel.
+/// Current executable ruleset. Existing provisional worlds continue to use the
+/// verified body-clock kernel; the runner selects its own default for newly
+/// initialized full-Earth worlds.
 pub const RULESET_VERSION: u32 = ORGANISM_EXECUTION_RULESET_VERSION;
-/// A future opt-in ruleset requiring one source-backed celestial input per tick.
+/// Ruleset three requires one source-backed celestial input per tick.
 pub const CELESTIAL_DRIVER_RULESET_VERSION: u32 = 3;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
