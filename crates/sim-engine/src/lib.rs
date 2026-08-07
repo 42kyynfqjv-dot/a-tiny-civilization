@@ -88,10 +88,7 @@ fn motor_action_for_phase(phase: u16) -> PrimitiveActionKind {
 
 fn normal_year_phase(tick: SimTick, tick_duration_seconds: u32) -> usize {
     const NORMAL_PHASE_SECONDS: u64 = 30 * 86_400;
-    let elapsed_seconds = tick
-        .get()
-        .checked_mul(u64::from(tick_duration_seconds))
-        .unwrap_or(u64::MAX);
+    let elapsed_seconds = tick.get().saturating_mul(u64::from(tick_duration_seconds));
     ((elapsed_seconds / NORMAL_PHASE_SECONDS) % 12) as usize
 }
 
@@ -635,9 +632,9 @@ impl EngineState {
                                 },
                             ));
                             if action_kind == PrimitiveActionKind::Move {
-                                let from_patch = organism.embodied_patch.ok_or_else(|| {
-                                    EngineError::MissingEmbodiedPatch(organism.organism_id)
-                                })?;
+                                let from_patch = organism.embodied_patch.ok_or(
+                                    EngineError::MissingEmbodiedPatch(organism.organism_id),
+                                )?;
                                 let direction = usize::try_from(
                                     (organism.organism_id.as_uuid().as_u128() >> 2) & 3,
                                 )
