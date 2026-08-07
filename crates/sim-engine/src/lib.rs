@@ -24,9 +24,10 @@ use world_domain::{
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity, MetabolicRateCommitment,
     OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
     PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
-    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
+    TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
+    s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -53,6 +54,8 @@ pub const RESOLVED_MOVEMENT_RULESET_VERSION: u32 = 6;
 pub const PERSISTENT_PERCEPTION_RULESET_VERSION: u32 = 7;
 /// Ruleset eight resolves neutral grasp and release actions against local material.
 pub const MATERIAL_HANDLING_RULESET_VERSION: u32 = 8;
+/// Ruleset nine delivers neutral emitted signals to living same-patch recipients.
+pub const SIGNAL_PROPAGATION_RULESET_VERSION: u32 = 9;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -64,6 +67,7 @@ pub const BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 8;
 pub const PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION: u16 = 9;
 pub const MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 10;
 pub const MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION: u16 = 11;
+pub const SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION: u16 = 12;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -80,6 +84,7 @@ const BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION: u16 = 8;
 const PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION: u16 = 9;
 const MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION: u16 = 10;
 const MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION: u16 = 11;
+const SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION: u16 = 12;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -532,7 +537,45 @@ impl EngineState {
                 _ => {}
             }
         }
+        if self.uses_signal_propagation_driver() && action.kind == PrimitiveActionKind::EmitSignal {
+            events.extend(self.local_signal_perceptions(organism_id, action.intensity)?);
+        }
         Ok(events)
+    }
+
+    /// Resolve a signal into label-free local sound observations. BTreeMap iteration
+    /// fixes recipient order; the signal carries no word, intent, or learned meaning.
+    fn local_signal_perceptions(
+        &self,
+        source_id: EntityId,
+        intensity: u16,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        let source_patch = self
+            .organisms
+            .get(&source_id)
+            .and_then(|organism| organism.embodied_patch)
+            .ok_or(EngineError::MissingEmbodiedPatch(source_id))?;
+        Ok(self
+            .organisms
+            .values()
+            .filter(|recipient| {
+                recipient.organism_id != source_id
+                    && recipient.is_alive()
+                    && recipient.embodied_patch == Some(source_patch)
+            })
+            .map(|recipient| DomainEvent::OrganismPerceived {
+                organism_id: recipient.organism_id,
+                perception: SituatedPerception {
+                    subject_id: Some(source_id),
+                    readings: vec![PropertyReading {
+                        channel: PerceptionChannel::Sound,
+                        property_code: "signal_amplitude".to_owned(),
+                        quantized_value: i32::from(intensity),
+                        uncertainty: 0,
+                    }],
+                },
+            })
+            .collect())
     }
 
     /// Record a resolved relocation between two full-Earth embodied patches. The
@@ -733,8 +776,10 @@ impl EngineState {
                                     },
                                 ));
                             }
-                            let action_kind = if self.uses_resolved_movement_driver() && phase == 3
+                            let action_kind = if self.uses_signal_propagation_driver() && phase == 2
                             {
+                                PrimitiveActionKind::EmitSignal
+                            } else if self.uses_resolved_movement_driver() && phase == 3 {
                                 PrimitiveActionKind::Move
                             } else {
                                 motor_action_for_phase(phase)
@@ -757,7 +802,28 @@ impl EngineState {
                                     },
                                 },
                             ));
-                            if action_kind == PrimitiveActionKind::Move {
+                            if action_kind == PrimitiveActionKind::EmitSignal
+                                && self.uses_signal_propagation_driver()
+                            {
+                                for (offset, perception) in self
+                                    .local_signal_perceptions(organism.organism_id, 1)?
+                                    .into_iter()
+                                    .enumerate()
+                                {
+                                    let offset = u32::try_from(offset)
+                                        .map_err(|_| EngineError::TooManyEvents)?;
+                                    let emission_index = action_index
+                                        .checked_add(1)
+                                        .and_then(|index| index.checked_add(offset))
+                                        .ok_or(EngineError::TooManyEvents)?;
+                                    events.push(Emission::new(
+                                        partition.partition(),
+                                        work.key(),
+                                        emission_index,
+                                        perception,
+                                    ));
+                                }
+                            } else if action_kind == PrimitiveActionKind::Move {
                                 let from_patch = organism.embodied_patch.ok_or(
                                     EngineError::MissingEmbodiedPatch(organism.organism_id),
                                 )?;
@@ -904,6 +970,10 @@ impl EngineState {
         self.manifest.ruleset_version >= MATERIAL_HANDLING_RULESET_VERSION
     }
 
+    fn uses_signal_propagation_driver(&self) -> bool {
+        self.manifest.ruleset_version >= SIGNAL_PROPAGATION_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -992,7 +1062,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_material_handling_driver() {
+        if self.uses_signal_propagation_driver() {
+            SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
+        } else if self.uses_material_handling_driver() {
             MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
         } else if !self.material_instances.is_empty() {
             MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
@@ -1041,7 +1113,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_material_handling_driver() {
+        if self.uses_signal_propagation_driver() {
+            SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_material_handling_driver() {
             MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION
         } else if !self.material_instances.is_empty() {
             MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION
@@ -1659,7 +1733,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_material_handling_driver() {
+        let snapshot_schema_version = if state.uses_signal_propagation_driver() {
+            SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_material_handling_driver() {
             MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
         } else if !state.material_instances.is_empty() {
             MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
@@ -1715,12 +1791,15 @@ impl Snapshot {
                 | PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
+                | SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_material_handling_driver() {
+        let expected_schema_version = if self.state.uses_signal_propagation_driver() {
+            SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_material_handling_driver() {
             MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
         } else if !self.state.material_instances.is_empty() {
             MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
@@ -1891,9 +1970,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_material_handling_driver()
-            || batch_has_material_handling
-        {
+        let expected_schema = if state.uses_signal_propagation_driver() {
+            SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
+        } else if state.uses_material_handling_driver() || batch_has_material_handling {
             MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
         } else if !state.material_instances.is_empty() || batch_has_material_instance {
             MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
@@ -1930,7 +2009,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
         } else if expected_schema == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
@@ -2796,6 +2877,185 @@ mod tests {
         )
         .expect("handling replay");
         assert_eq!(replayed.state, after_release);
+    }
+
+    #[test]
+    fn local_signals_reach_only_same_patch_living_recipients_and_replay() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x109));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012818),
+            SIGNAL_PROPAGATION_RULESET_VERSION,
+        );
+        let patch: S2CellId = "0000000000004000".parse().expect("L23 patch");
+        let remote_patch = s2_edge_neighbors(patch).expect("neighbors")[0];
+        let mut source = full_earth_person(world_id);
+        source.organism_id = EntityId::from_uuid(Uuid::from_u128(0x101));
+        let mut local = full_earth_person(world_id);
+        local.organism_id = EntityId::from_uuid(Uuid::from_u128(0x102));
+        let mut remote = full_earth_person(world_id);
+        remote.organism_id = EntityId::from_uuid(Uuid::from_u128(0x103));
+        remote.embodied_patch = Some(remote_patch);
+        let mut dead_local = full_earth_person(world_id);
+        dead_local.organism_id = EntityId::from_uuid(Uuid::from_u128(0x104));
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![
+                    source.clone(),
+                    local.clone(),
+                    remote.clone(),
+                    dead_local.clone(),
+                ],
+            )
+            .expect("signal genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("signal genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
+        );
+        let death_events = running
+            .plan_death(
+                dead_local.organism_id,
+                DeathCause {
+                    mechanism: "test_fixture".to_owned(),
+                },
+            )
+            .expect("local death plan");
+        let (after_death, death_batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, death_events)
+            .expect("local death commit");
+
+        let signal_events = after_death
+            .plan_action(
+                source.organism_id,
+                PrimitiveAction {
+                    kind: PrimitiveActionKind::EmitSignal,
+                    target_id: None,
+                    intensity: 7,
+                },
+            )
+            .expect("signal plan");
+        assert!(matches!(
+            signal_events.as_slice(),
+            [
+                DomainEvent::OrganismActed { organism_id, .. },
+                DomainEvent::OrganismPerceived {
+                    organism_id: recipient_id,
+                    perception: SituatedPerception {
+                        subject_id: Some(subject_id),
+                        ..
+                    },
+                }
+            ] if *organism_id == source.organism_id
+                && *recipient_id == local.organism_id
+                && *subject_id == source.organism_id
+        ));
+        let (after_signal, signal_batch) = after_death
+            .commit(EventSequence::new(3), death_batch.batch_hash, signal_events)
+            .expect("signal commit");
+        let downgraded_signal = EventBatch::new(
+            MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
+            signal_batch.world_id,
+            signal_batch.sequence,
+            signal_batch.tick,
+            signal_batch.ruleset_version,
+            signal_batch.previous_hash,
+            signal_batch
+                .events
+                .iter()
+                .map(|record| record.event.clone())
+                .collect(),
+            signal_batch.post_state_hash,
+        )
+        .expect("internally valid pre-signal-schema batch");
+        assert!(matches!(
+            replay(
+                manifest.clone(),
+                &[genesis.clone(), death_batch.clone(), downgraded_signal]
+            ),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+                actual: MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
+            })
+        ));
+        let local_state = after_signal
+            .organisms()
+            .find(|organism| organism.organism_id() == local.organism_id)
+            .expect("local recipient");
+        assert!(local_state.has_perception_memory_at(
+            Some(source.organism_id),
+            PerceptionChannel::Sound,
+            "signal_amplitude"
+        ));
+        let remote_state = after_signal
+            .organisms()
+            .find(|organism| organism.organism_id() == remote.organism_id)
+            .expect("remote organism");
+        assert!(!remote_state.has_perception_memory_at(
+            Some(source.organism_id),
+            PerceptionChannel::Sound,
+            "signal_amplitude"
+        ));
+        let snapshot = Snapshot::new(
+            after_signal.clone(),
+            signal_batch.sequence,
+            signal_batch.batch_hash,
+        )
+        .expect("signal snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("signal snapshot verifies");
+        let replayed = replay(
+            manifest.clone(),
+            &[genesis.clone(), death_batch.clone(), signal_batch],
+        )
+        .expect("signal replay");
+        assert_eq!(replayed.state, after_signal);
+
+        let celestial = CelestialState::new(
+            TdbSecondsSinceJ2000::new(123),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        );
+        let scheduled_events = after_death
+            .plan_next_tick_with_celestial(celestial)
+            .expect("scheduled signal tick");
+        assert!(scheduled_events.iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismActed { organism_id, action }
+                if *organism_id == source.organism_id
+                    && action.kind == PrimitiveActionKind::EmitSignal
+        )));
+        assert!(scheduled_events.iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismPerceived { organism_id, perception }
+                if *organism_id == local.organism_id
+                    && perception.subject_id == Some(source.organism_id)
+                    && perception.readings[0].channel == PerceptionChannel::Sound
+                    && perception.readings[0].property_code == "signal_amplitude"
+        )));
+        let (after_tick, tick_batch) = after_death
+            .commit(
+                EventSequence::new(3),
+                death_batch.batch_hash,
+                scheduled_events,
+            )
+            .expect("scheduled signal commit");
+        assert_eq!(
+            replay(manifest, &[genesis, death_batch, tick_batch])
+                .expect("scheduled signal replay")
+                .state,
+            after_tick
+        );
     }
 
     #[test]

@@ -28,6 +28,8 @@ pub const BODY_PROVENANCE_EVENT_SCHEMA_VERSION: u16 = 8;
 pub const MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION: u16 = 9;
 /// Adds resolved neutral handling transitions for material instances.
 pub const MATERIAL_HANDLING_EVENT_SCHEMA_VERSION: u16 = 10;
+/// Adds deterministic same-patch propagation of neutral emitted signals.
+pub const SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION: u16 = 11;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -313,6 +315,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | BODY_PROVENANCE_EVENT_SCHEMA_VERSION
             | MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
             | MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
+            | SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
