@@ -100,7 +100,7 @@ export default function Home() {
       <main className="main-content" id="live">
         <section className="hero-copy">
           <div>
-            <p className="eyebrow accent">A living world, beginning soon</p>
+            <p className="eyebrow accent">A living world · now unfolding</p>
             <h1>A little world with a life of its own.</h1>
           </div>
           <p className="hero-intro">
@@ -112,8 +112,9 @@ export default function Home() {
         <details className="preview-note">
           <summary>This is a public preview. What does that mean?</summary>
           <p>
-            The world is still being checked before its first moment. The Earth model is
-            provisional—not yet scientifically admitted—and no lives or location have been chosen.
+            A provisional integration world is live and recording its own history now. The Earth
+            model remains provisional—not yet scientifically admitted—and this is not the final
+            canonical genesis.
           </p>
         </details>
 
@@ -121,7 +122,7 @@ export default function Home() {
           <div className="panel-toolbar">
             <div>
               <p className="eyebrow">The whole world</p>
-              <h2 id="world-panel-title">Waiting for its first sunrise</h2>
+              <h2 id="world-panel-title">One world is moving through time</h2>
             </div>
             <div className="map-controls" aria-label="Map display status">
               <span>Land and water</span>
@@ -129,7 +130,7 @@ export default function Home() {
             </div>
           </div>
 
-          <div className="world-map" role="img" aria-label="Abstract global reference field before a world is created">
+          <div className="world-map" role="img" aria-label="Abstract global reference field for the live provisional world">
             <div className="terrain terrain-one" />
             <div className="terrain terrain-two" />
             <div className="river river-main" />
@@ -140,12 +141,12 @@ export default function Home() {
             <span className="map-point animal point-three" />
             <span className="map-point animal point-four" />
             <div className="map-coordinate coordinate-north">One shared Earth</div>
-            <div className="map-coordinate coordinate-scale">Waiting quietly</div>
+            <div className="map-coordinate coordinate-scale">History is recording</div>
             <div className="genesis-marker">
               <span className="marker-pulse" />
               <div>
-                <strong>The world is waiting</strong>
-                <small>No lives have begun here yet</small>
+                <strong>The world is live</strong>
+                <small>Follow its committed history below</small>
               </div>
             </div>
           </div>
@@ -153,23 +154,23 @@ export default function Home() {
           <div className="world-stats">
             <article>
               <span>People</span>
-              <strong>0</strong>
-              <small>no one here yet</small>
+              <strong>Live</strong>
+              <small>current inhabitants appear below</small>
             </article>
             <article>
               <span>World age</span>
-              <strong>—</strong>
-              <small>not begun</small>
+              <strong>Now</strong>
+              <small>the live record shows its current tick</small>
             </article>
             <article>
               <span>Animals</span>
-              <strong>0</strong>
-              <small>habitats are waiting</small>
+              <strong>Active</strong>
+              <small>source-backed lives are recorded below</small>
             </article>
             <article>
               <span>Discoveries</span>
-              <strong>—</strong>
-              <small>the future is unwritten</small>
+              <strong>Open</strong>
+              <small>nothing is scripted</small>
             </article>
           </div>
         </section>
@@ -179,9 +180,9 @@ export default function Home() {
             <div className="section-heading">
               <div>
                 <p className="eyebrow">What happened</p>
-                <h2>Nothing yet. That is the point.</h2>
+                <h2>The newest committed moments.</h2>
               </div>
-              <span className="live-tag">Awaiting genesis</span>
+              <span className="live-tag">Live record below</span>
             </div>
             <div className="empty-timeline">
               <span className="timeline-rule" />
@@ -189,8 +190,8 @@ export default function Home() {
               <div>
                 <strong>Tick 0</strong>
                 <p>
-                  When the world begins, its first footsteps, meetings, losses, and surprises will
-                  appear here as they happen.
+                  The live record below refreshes from committed history. Quiet moments are still
+                  part of the experiment; nothing is staged for the audience.
                 </p>
               </div>
             </div>
