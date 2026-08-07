@@ -33,6 +33,7 @@ pub use event::{
     BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CategoryError, DeathCause, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EventBatch, EventBatchError,
     EventRecord, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,

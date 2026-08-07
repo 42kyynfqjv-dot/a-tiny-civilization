@@ -10,8 +10,8 @@ mod spatial;
 use std::collections::BTreeMap;
 
 use partition::{
-    PartitionOutput, PartitionSchedule, ScheduledWork, SchedulerError, SubjectKey, WorkKey,
-    WorkOutput,
+    Emission, PartitionOutput, PartitionSchedule, ScheduledWork, SchedulerError, SubjectKey,
+    WorkKey, WorkOutput,
 };
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -20,17 +20,22 @@ use world_domain::{
     DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
     EventBatch, EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION,
     OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PrimitiveAction, S2CellId, S2CellIdError,
-    SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
-    TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
+    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
 };
 
-/// Version pinned to each world so old histories are never silently reinterpreted.
-pub const RULESET_VERSION: u32 = 1;
+/// Ruleset one has the original empty full-Earth execution schedule.
+pub const LEGACY_RULESET_VERSION: u32 = 1;
+/// Version pinned to each new world. Ruleset two adds the executable per-organism
+/// barrier while preserving ruleset-one replay byte-for-byte.
+pub const RULESET_VERSION: u32 = 2;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
 pub const PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION: u16 = 4;
 pub const PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION: u16 = 5;
+pub const SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION: u16 = 6;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -41,6 +46,7 @@ const STATE_HASH_SCHEMA_VERSION: u16 = 2;
 const EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION: u16 = 3;
 const PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION: u16 = 4;
 const PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION: u16 = 5;
+const SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION: u16 = 6;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -69,6 +75,8 @@ pub struct OrganismState {
     initialized_at: SimTick,
     born_at: Option<SimTick>,
     initial_age_ticks: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    age_ticks: Option<u64>,
     location_id: Option<EntityId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     embodied_patch: Option<S2CellId>,
@@ -104,6 +112,10 @@ impl OrganismState {
     #[must_use]
     pub const fn embodied_patch(&self) -> Option<S2CellId> {
         self.embodied_patch
+    }
+
+    fn age_ticks(&self) -> Option<u64> {
+        self.age_ticks
     }
 }
 
@@ -244,11 +256,12 @@ impl EngineState {
     pub fn plan_next_tick(&self) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_status(WorldStatus::Running)?;
         let next = self.tick.checked_next()?;
-        self.resolve_partition_tick()?;
+        let scheduled_events = self.plan_partition_tick_events()?;
         let mut events = vec![DomainEvent::TickAdvanced {
             from: self.tick,
             to: next,
         }];
+        events.extend(scheduled_events);
         if self.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
@@ -387,6 +400,80 @@ impl EngineState {
             })
     }
 
+    fn plan_partition_tick_events(&self) -> Result<Vec<DomainEvent>, EngineError> {
+        let Some((partition_level, maximum_events)) = self.partition_profile() else {
+            return Ok(Vec::new());
+        };
+        if !self.uses_organism_execution_kernel() {
+            return Ok(Vec::new());
+        }
+        let schedule = self.partition_schedule.as_ref().ok_or_else(|| {
+            EngineError::PartitionScheduleState(
+                "full-Earth state has no durable partition schedule".to_owned(),
+            )
+        })?;
+        if schedule != &self.expected_partition_schedule(partition_level)? {
+            return Err(EngineError::PartitionScheduleState(
+                "partition schedule does not exactly cover every living embodied organism"
+                    .to_owned(),
+            ));
+        }
+        let plan = schedule.plan_next_tick(self.tick)?;
+        let outputs = plan
+            .partitions()
+            .iter()
+            .map(|partition| {
+                let work_outputs = partition
+                    .work()
+                    .iter()
+                    .map(|work| {
+                        let organism = self
+                            .organisms
+                            .values()
+                            .find(|organism| {
+                                SubjectKey::from_entity(organism.organism_id)
+                                    == work.key().subject()
+                            })
+                            .ok_or_else(|| {
+                                EngineError::PartitionScheduleState(
+                                    "scheduled work has no matching organism".to_owned(),
+                                )
+                            })?;
+                        let from_age_ticks = organism.age_ticks().ok_or_else(|| {
+                            EngineError::PartitionScheduleState(
+                                "ruleset-two organism has no durable age state".to_owned(),
+                            )
+                        })?;
+                        let to_age_ticks = from_age_ticks
+                            .checked_add(1)
+                            .ok_or(EngineError::AgeOverflow(organism.organism_id))?;
+                        Ok(WorkOutput::new(
+                            work.key(),
+                            vec![Emission::new(
+                                partition.partition(),
+                                work.key(),
+                                0,
+                                DomainEvent::OrganismAgeAdvanced {
+                                    organism_id: organism.organism_id,
+                                    from_age_ticks,
+                                    to_age_ticks,
+                                },
+                            )],
+                            Vec::new(),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, EngineError>>()?;
+                Ok(PartitionOutput::new(partition.partition(), work_outputs))
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?;
+        let resolved = plan.complete(outputs, maximum_events)?;
+        Ok(resolved
+            .emissions()
+            .iter()
+            .map(|emission| emission.event().clone())
+            .collect())
+    }
+
     fn resolve_partition_tick(&self) -> Result<Option<PartitionSchedule>, EngineError> {
         let Some((partition_level, maximum_events)) = self.partition_profile() else {
             return Ok(None);
@@ -435,6 +522,9 @@ impl EngineState {
         &self,
         partition_level: u8,
     ) -> Result<PartitionSchedule, EngineError> {
+        if !self.uses_organism_execution_kernel() {
+            return Ok(PartitionSchedule::new(partition_level, Vec::new())?);
+        }
         let due_tick = self.tick.checked_next()?;
         let entries = self
             .organisms
@@ -465,6 +555,10 @@ impl EngineState {
         };
         self.partition_schedule = Some(self.expected_partition_schedule(partition_level)?);
         Ok(())
+    }
+
+    fn uses_organism_execution_kernel(&self) -> bool {
+        self.manifest.ruleset_version >= RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -519,6 +613,7 @@ impl EngineState {
             | DomainEvent::OrganismBorn { embodied_patch, .. } => *embodied_patch,
             DomainEvent::OrganismMoved { to_patch, .. } => Some(*to_patch),
             DomainEvent::OrganismDied { organism_id, .. }
+            | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
             | DomainEvent::OrganismPerceived { organism_id, .. }
             | DomainEvent::OrganismActed { organism_id, .. } => self
                 .organisms
@@ -544,7 +639,15 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self
+        if self.uses_organism_execution_kernel()
+            && self
+                .configuration
+                .as_ref()
+                .and_then(WorldConfiguration::embodied_patch_s2_level)
+                .is_some()
+        {
+            SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+        } else if self
             .configuration
             .as_ref()
             .is_some_and(WorldConfiguration::is_provisional_execution)
@@ -565,7 +668,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self
+        if self.uses_organism_execution_kernel() && self.partition_schedule.is_some() {
+            SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION
+        } else if self
             .configuration
             .as_ref()
             .is_some_and(WorldConfiguration::is_provisional_execution)
@@ -637,6 +742,9 @@ impl EngineState {
                     initialized_at: self.tick,
                     born_at: None,
                     initial_age_ticks: *initial_age_ticks,
+                    age_ticks: self
+                        .uses_organism_execution_kernel()
+                        .then_some(*initial_age_ticks),
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     death: None,
@@ -687,6 +795,7 @@ impl EngineState {
                     initialized_at: self.tick,
                     born_at: Some(self.tick),
                     initial_age_ticks: 0,
+                    age_ticks: self.uses_organism_execution_kernel().then_some(0),
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     death: None,
@@ -742,6 +851,27 @@ impl EngineState {
                 }
                 organism.embodied_patch = Some(*to_patch);
                 self.refresh_partition_schedule()?;
+            }
+            DomainEvent::OrganismAgeAdvanced {
+                organism_id,
+                from_age_ticks,
+                to_age_ticks,
+            } => {
+                self.require_living_organism(*organism_id)?;
+                let expected = from_age_ticks
+                    .checked_add(1)
+                    .ok_or(EngineError::AgeOverflow(*organism_id))?;
+                if to_age_ticks != &expected {
+                    return Err(EngineError::InvalidAgeTransition(*organism_id));
+                }
+                let organism = self
+                    .organisms
+                    .get_mut(organism_id)
+                    .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                if organism.age_ticks != Some(*from_age_ticks) {
+                    return Err(EngineError::InvalidAgeTransition(*organism_id));
+                }
+                organism.age_ticks = Some(*to_age_ticks);
             }
             DomainEvent::WorldExtinct => {
                 self.require_status(WorldStatus::Running)?;
@@ -918,26 +1048,29 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state
-            .configuration
-            .as_ref()
-            .is_some_and(WorldConfiguration::is_provisional_execution)
-        {
-            PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
-        } else if state.partition_schedule.is_some() {
-            PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
-        } else if state
-            .configuration
-            .as_ref()
-            .and_then(WorldConfiguration::embodied_patch_s2_level)
-            .is_some()
-        {
-            EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
-        } else if state.configuration.is_some() {
-            SNAPSHOT_SCHEMA_VERSION
-        } else {
-            LEGACY_SNAPSHOT_SCHEMA_VERSION
-        };
+        let snapshot_schema_version =
+            if state.uses_organism_execution_kernel() && state.partition_schedule.is_some() {
+                SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
+            } else if state
+                .configuration
+                .as_ref()
+                .is_some_and(WorldConfiguration::is_provisional_execution)
+            {
+                PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+            } else if state.partition_schedule.is_some() {
+                PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+            } else if state
+                .configuration
+                .as_ref()
+                .and_then(WorldConfiguration::embodied_patch_s2_level)
+                .is_some()
+            {
+                EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
+            } else if state.configuration.is_some() {
+                SNAPSHOT_SCHEMA_VERSION
+            } else {
+                LEGACY_SNAPSHOT_SCHEMA_VERSION
+            };
         Ok(Self {
             snapshot_schema_version,
             world_id: state.world_id(),
@@ -956,12 +1089,17 @@ impl Snapshot {
                 | EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
                 | PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
                 | PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+                | SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self
+        let expected_schema_version = if self.state.uses_organism_execution_kernel()
+            && self.state.partition_schedule.is_some()
+        {
+            SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
+        } else if self
             .state
             .configuration
             .as_ref()
@@ -1086,7 +1224,23 @@ fn replay_from_cursor(
                     if configuration.is_provisional_execution()
             )
         });
-        let expected_schema = if state
+        let configures_embodied_world = batch.events.iter().any(|record| {
+            matches!(
+                &record.event,
+                DomainEvent::WorldConfigured { configuration }
+                    if configuration.embodied_patch_s2_level().is_some()
+            )
+        });
+        let expected_schema = if state.uses_organism_execution_kernel()
+            && (state
+                .configuration
+                .as_ref()
+                .and_then(WorldConfiguration::embodied_patch_s2_level)
+                .is_some()
+                || configures_embodied_world)
+        {
+            SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+        } else if state
             .configuration
             .as_ref()
             .is_some_and(WorldConfiguration::is_provisional_execution)
@@ -1098,13 +1252,7 @@ fn replay_from_cursor(
             .as_ref()
             .and_then(WorldConfiguration::embodied_patch_s2_level)
             .is_some()
-            || batch.events.iter().any(|record| {
-                matches!(
-                    &record.event,
-                    DomainEvent::WorldConfigured { configuration }
-                        if configuration.embodied_patch_s2_level().is_some()
-                )
-            })
+            || configures_embodied_world
         {
             EMBODIED_POSITION_EVENT_SCHEMA_VERSION
         } else if is_configured {
@@ -1112,7 +1260,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+        } else if expected_schema == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
         } else if expected_schema == EMBODIED_POSITION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == EMBODIED_POSITION_EVENT_SCHEMA_VERSION
@@ -1214,6 +1364,10 @@ pub enum EngineError {
     UnknownParent(EntityId),
     #[error("organism {0} is already dead")]
     OrganismAlreadyDead(EntityId),
+    #[error("organism {0} has an invalid age transition")]
+    InvalidAgeTransition(EntityId),
+    #[error("organism {0} age tick overflowed")]
+    AgeOverflow(EntityId),
     #[error("embodied event is invalid: {0}")]
     InvalidEmbodiedEvent(String),
     #[error("parent identities must be strictly sorted and unique")]
@@ -1624,10 +1778,21 @@ mod tests {
             Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
                 .expect("partitioned snapshot")
                 .snapshot_schema_version,
-            PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+            SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
         );
 
         let tick_events = running.plan_next_tick().expect("partitioned tick plan");
+        assert!(matches!(
+            tick_events.as_slice(),
+            [
+                DomainEvent::TickAdvanced { .. },
+                DomainEvent::OrganismAgeAdvanced {
+                    from_age_ticks: 0,
+                    to_age_ticks: 1,
+                    ..
+                }
+            ]
+        ));
         let (after_tick, tick) = running
             .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
             .expect("partitioned tick commit");
@@ -1635,6 +1800,43 @@ mod tests {
         assert_eq!(after_tick.scheduled_work_count(), 1);
         let replayed = replay(manifest, &[genesis, tick]).expect("partitioned replay");
         assert_eq!(replayed.state, after_tick);
+    }
+
+    #[test]
+    fn ruleset_one_full_earth_history_keeps_its_empty_schedule_and_schema() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = LEGACY_RULESET_VERSION;
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                full_earth_configuration(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("legacy full-Earth genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("legacy full-Earth genesis commit");
+        assert_eq!(
+            genesis.event_schema_version,
+            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(running.scheduled_work_count(), 0);
+
+        let tick_events = running.plan_next_tick().expect("legacy tick plan");
+        assert!(matches!(
+            tick_events.as_slice(),
+            [DomainEvent::TickAdvanced { .. }]
+        ));
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("legacy tick commit");
+        assert_eq!(after_tick.scheduled_work_count(), 0);
+        assert_eq!(
+            replay(manifest, &[genesis, tick])
+                .expect("legacy replay")
+                .state,
+            after_tick
+        );
     }
 
     #[test]
@@ -1654,18 +1856,18 @@ mod tests {
 
         assert_eq!(
             genesis.event_schema_version,
-            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+            SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
         );
         assert_eq!(running.configuration(), Some(&configuration));
         assert_eq!(
             running.state_hash_schema_version(),
-            PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION
+            SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION
         );
         let snapshot = Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
             .expect("provisional snapshot");
         assert_eq!(
             snapshot.snapshot_schema_version,
-            PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+            SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
         );
 
         let tick_events = running.plan_next_tick().expect("provisional tick plan");
@@ -1674,7 +1876,7 @@ mod tests {
             .expect("provisional tick commit");
         assert_eq!(
             tick.event_schema_version,
-            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+            SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
         );
         let replayed = replay(manifest, &[genesis, tick]).expect("provisional replay");
         assert_eq!(replayed.state, after_tick);

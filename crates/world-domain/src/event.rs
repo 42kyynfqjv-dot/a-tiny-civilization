@@ -13,6 +13,9 @@ pub const EVENT_SCHEMA_VERSION: u16 = 3;
 pub const EMBODIED_POSITION_EVENT_SCHEMA_VERSION: u16 = 4;
 /// Adds an explicitly non-admitted provisional full-Earth configuration input.
 pub const PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION: u16 = 5;
+/// Adds internal, deterministic organism body-clock transitions for ruleset-two
+/// worlds. These facts remain observer-neutral and expose no sensitive mechanism.
+pub const SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION: u16 = 6;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -119,6 +122,13 @@ pub enum DomainEvent {
         organism_id: EntityId,
         from_patch: S2CellId,
         to_patch: S2CellId,
+    },
+    /// One resolved body-clock increment. The event is internal causal state, not
+    /// a public claim about an organism's life or capabilities.
+    OrganismAgeAdvanced {
+        organism_id: EntityId,
+        from_age_ticks: u64,
+        to_age_ticks: u64,
     },
     WorldExtinct,
     WorldArchived,
@@ -259,6 +269,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | EVENT_SCHEMA_VERSION
             | EMBODIED_POSITION_EVENT_SCHEMA_VERSION
             | PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+            | SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -304,6 +315,11 @@ fn validate_event_for_schema(
             DomainEvent::WorldConfigured { configuration }
                 if configuration.is_provisional_execution()
         )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::OrganismAgeAdvanced { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
