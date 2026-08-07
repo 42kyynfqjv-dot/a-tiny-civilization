@@ -9,7 +9,10 @@ mod spatial;
 
 use std::collections::BTreeMap;
 
-use partition::{PartitionSchedule, SchedulerError};
+use partition::{
+    PartitionOutput, PartitionSchedule, ScheduledWork, SchedulerError, SubjectKey, WorkKey,
+    WorkOutput,
+};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
@@ -28,6 +31,11 @@ pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
 pub const PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION: u16 = 4;
 pub const PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION: u16 = 5;
+/// The first deterministic execution phase: every living embodied organism receives
+/// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
+/// physical state changes through this fixed barrier without changing its ordering.
+const ORGANISM_BODY_PHASE_CODE: u16 = 1;
+const ORGANISM_BODY_PROCESS_CODE: u16 = 1;
 const LEGACY_STATE_HASH_SCHEMA_VERSION: u16 = 1;
 const STATE_HASH_SCHEMA_VERSION: u16 = 2;
 const EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION: u16 = 3;
@@ -393,15 +401,70 @@ impl EngineState {
                 "partition schedule level differs from world configuration".to_owned(),
             ));
         }
-        if !schedule.entries().is_empty() {
+        let expected = self.expected_partition_schedule(partition_level)?;
+        if schedule != &expected {
             return Err(EngineError::PartitionScheduleState(
-                "ruleset 1 has no admitted scheduled causal process".to_owned(),
+                "partition schedule does not exactly cover every living embodied organism"
+                    .to_owned(),
             ));
         }
-        let resolved = schedule
-            .plan_next_tick(self.tick)?
-            .complete::<DomainEvent>(Vec::new(), maximum_events)?;
+        let plan = schedule.plan_next_tick(self.tick)?;
+        let outputs = plan
+            .partitions()
+            .iter()
+            .map(|partition| {
+                PartitionOutput::new(
+                    partition.partition(),
+                    partition
+                        .work()
+                        .iter()
+                        .map(|work| WorkOutput::new(work.key(), Vec::new(), Vec::new()))
+                        .collect(),
+                )
+            })
+            .collect();
+        // The ruleset has not yet admitted scientific body/ecology effects. The
+        // barrier is nevertheless fully executed: every scheduled organism is
+        // accounted for, output sets are complete, and budgets are enforced. A
+        // future process may add emissions without weakening these invariants.
+        let resolved = plan.complete::<DomainEvent>(outputs, maximum_events)?;
         Ok(Some(resolved.next_schedule().clone()))
+    }
+
+    fn expected_partition_schedule(
+        &self,
+        partition_level: u8,
+    ) -> Result<PartitionSchedule, EngineError> {
+        let due_tick = self.tick.checked_next()?;
+        let entries = self
+            .organisms
+            .values()
+            .filter(|organism| organism.is_alive())
+            .map(|organism| {
+                let patch = organism.embodied_patch.ok_or_else(|| {
+                    EngineError::PartitionScheduleState(
+                        "a living full-Earth organism lacks an embodied patch".to_owned(),
+                    )
+                })?;
+                let key = WorkKey::new(
+                    ORGANISM_BODY_PHASE_CODE,
+                    SubjectKey::from_entity(organism.organism_id),
+                    ORGANISM_BODY_PROCESS_CODE,
+                    0,
+                )?;
+                ScheduledWork::routed(due_tick, patch, partition_level, key)
+                    .map_err(EngineError::from)
+            })
+            .collect::<Result<Vec<_>, EngineError>>()?;
+        Ok(PartitionSchedule::new(partition_level, entries)?)
+    }
+
+    fn refresh_partition_schedule(&mut self) -> Result<(), EngineError> {
+        let Some((partition_level, _)) = self.partition_profile() else {
+            return Ok(());
+        };
+        self.partition_schedule = Some(self.expected_partition_schedule(partition_level)?);
+        Ok(())
     }
 
     fn validate_event_budget(
@@ -578,6 +641,7 @@ impl EngineState {
                     embodied_patch: *embodied_patch,
                     death: None,
                 })?;
+                self.refresh_partition_schedule()?;
             }
             DomainEvent::TickAdvanced { from, to } => {
                 self.require_status(WorldStatus::Running)?;
@@ -589,10 +653,9 @@ impl EngineState {
                         to: *to,
                     });
                 }
-                if let Some(schedule) = self.resolve_partition_tick()? {
-                    self.partition_schedule = Some(schedule);
-                }
+                let _ = self.resolve_partition_tick()?;
                 self.tick = *to;
+                self.refresh_partition_schedule()?;
             }
             DomainEvent::OrganismBorn {
                 organism_id,
@@ -628,6 +691,7 @@ impl EngineState {
                     embodied_patch: *embodied_patch,
                     death: None,
                 })?;
+                self.refresh_partition_schedule()?;
             }
             DomainEvent::OrganismDied { organism_id, cause } => {
                 self.require_status(WorldStatus::Running)?;
@@ -642,6 +706,7 @@ impl EngineState {
                     tick: self.tick,
                     cause: cause.clone(),
                 });
+                self.refresh_partition_schedule()?;
             }
             DomainEvent::OrganismPerceived {
                 organism_id,
@@ -676,6 +741,7 @@ impl EngineState {
                     return Err(EngineError::UnexpectedEmbodiedPatch(*organism_id));
                 }
                 organism.embodied_patch = Some(*to_patch);
+                self.refresh_partition_schedule()?;
             }
             DomainEvent::WorldExtinct => {
                 self.require_status(WorldStatus::Running)?;
@@ -808,10 +874,11 @@ impl EngineState {
                 ));
             }
             (Some((partition_level, _)), Some(actual)) => {
-                let expected = PartitionSchedule::new(partition_level, Vec::new())?;
+                let expected = self.expected_partition_schedule(partition_level)?;
                 if actual != &expected {
                     return Err(EngineError::PartitionScheduleState(
-                        "ruleset 1 has no admitted scheduled causal process".to_owned(),
+                        "partition schedule does not exactly cover every living embodied organism"
+                            .to_owned(),
                     ));
                 }
             }
@@ -1552,7 +1619,7 @@ mod tests {
         let (running, genesis) = initial
             .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
             .expect("full-Earth genesis commit");
-        assert_eq!(running.scheduled_work_count(), 0);
+        assert_eq!(running.scheduled_work_count(), 1);
         assert_eq!(
             Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
                 .expect("partitioned snapshot")
@@ -1565,7 +1632,7 @@ mod tests {
             .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
             .expect("partitioned tick commit");
         assert_eq!(after_tick.tick(), SimTick::new(1));
-        assert_eq!(after_tick.scheduled_work_count(), 0);
+        assert_eq!(after_tick.scheduled_work_count(), 1);
         let replayed = replay(manifest, &[genesis, tick]).expect("partitioned replay");
         assert_eq!(replayed.state, after_tick);
     }
@@ -1612,7 +1679,7 @@ mod tests {
         let replayed = replay(manifest, &[genesis, tick]).expect("provisional replay");
         assert_eq!(replayed.state, after_tick);
         assert_eq!(replayed.state.tick(), SimTick::new(1));
-        assert_eq!(replayed.state.scheduled_work_count(), 0);
+        assert_eq!(replayed.state.scheduled_work_count(), 1);
     }
 
     #[test]

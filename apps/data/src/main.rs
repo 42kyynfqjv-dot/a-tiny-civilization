@@ -1,5 +1,5 @@
 use std::{
-    collections::{BTreeMap, HashMap, HashSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet, VecDeque},
     ffi::OsStr,
     fs::{self, File, OpenOptions},
     io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write},
@@ -101,6 +101,18 @@ enum SourceCommand {
 
 #[derive(Debug, Subcommand)]
 enum InspectCommand {
+    /// Compare retained fauna-source names against the frozen accepted GBIF catalog.
+    /// This only reports exact-name matches; it never guesses synonym mappings.
+    FaunaTraitTaxa {
+        #[arg(long)]
+        catalog: PathBuf,
+        #[arg(long)]
+        animaltraits: PathBuf,
+        #[arg(long)]
+        elton_birds: PathBuf,
+        #[arg(long)]
+        elton_mammals: PathBuf,
+    },
     /// Parse the pinned Natural Earth polygon stream into an auditable summary.
     NaturalEarthLand {
         #[arg(long)]
@@ -769,6 +781,12 @@ async fn main() -> Result<()> {
             ),
             InspectCommand::GbifBackbone { archive } => inspect_gbif_backbone(&archive),
             InspectCommand::GbifAnimaliaCatalog { input } => inspect_gbif_animalia_catalog(&input),
+            InspectCommand::FaunaTraitTaxa {
+                catalog,
+                animaltraits,
+                elton_birds,
+                elton_mammals,
+            } => inspect_fauna_trait_taxa(&catalog, &animaltraits, &elton_birds, &elton_mammals),
             InspectCommand::JrcSurfaceWaterOccurrence { input_directory } => {
                 inspect_jrc_surface_water_occurrence(&input_directory)
             }
@@ -1392,6 +1410,247 @@ fn read_length_prefixed_utf8(reader: &mut impl Read) -> Result<String> {
     let mut bytes = vec![0_u8; length];
     reader.read_exact(&mut bytes)?;
     String::from_utf8(bytes).context("GBIF catalog string is not UTF-8")
+}
+
+#[derive(Debug, Serialize)]
+struct FaunaTraitTaxaInspection {
+    inspection_schema_version: u16,
+    catalog: FaunaTaxonomyCatalogInspection,
+    sources: Vec<FaunaTraitSourceTaxaInspection>,
+    policy: &'static str,
+}
+
+#[derive(Debug, Serialize)]
+struct FaunaTaxonomyCatalogInspection {
+    input_path: String,
+    input_hash: Digest,
+    input_byte_length: u64,
+    accepted_species: u64,
+}
+
+#[derive(Debug, Serialize)]
+struct FaunaTraitSourceTaxaInspection {
+    source_id: &'static str,
+    input_path: String,
+    input_hash: Digest,
+    input_byte_length: u64,
+    source_records: u64,
+    distinct_scientific_names: usize,
+    exact_accepted_matches: usize,
+    ambiguous_accepted_matches: usize,
+    unmatched_names: usize,
+    unmatched_name_examples: Vec<String>,
+}
+
+fn inspect_fauna_trait_taxa(
+    catalog_path: &Path,
+    animaltraits_path: &Path,
+    elton_birds_path: &Path,
+    elton_mammals_path: &Path,
+) -> Result<()> {
+    let (catalog_byte_length, catalog_hash) = digest_file(catalog_path)?;
+    let (accepted_species, catalog_names) = load_gbif_accepted_species_names(catalog_path)?;
+    let sources = [
+        (
+            "animal-traits-1.0.7",
+            animaltraits_path,
+            b',' as char,
+            "species",
+        ),
+        (
+            "elton-traits-1.0-birds",
+            elton_birds_path,
+            b'\t' as char,
+            "Scientific",
+        ),
+        (
+            "elton-traits-1.0-mammals",
+            elton_mammals_path,
+            b'\t' as char,
+            "Scientific",
+        ),
+    ];
+    let mut inspections = Vec::with_capacity(sources.len());
+    for (source_id, path, delimiter, scientific_column) in sources {
+        let (byte_length, hash) = digest_file(path)?;
+        let (source_records, names) =
+            read_source_scientific_names(path, delimiter, scientific_column)?;
+        let mut exact_accepted_matches = 0_usize;
+        let mut ambiguous_accepted_matches = 0_usize;
+        let mut unmatched = Vec::new();
+        for name in &names {
+            match catalog_names.get(name.as_str()).map(Vec::len) {
+                Some(1) => exact_accepted_matches += 1,
+                Some(_) => ambiguous_accepted_matches += 1,
+                None => unmatched.push(name.clone()),
+            }
+        }
+        inspections.push(FaunaTraitSourceTaxaInspection {
+            source_id,
+            input_path: path.display().to_string(),
+            input_hash: hash,
+            input_byte_length: byte_length,
+            source_records,
+            distinct_scientific_names: names.len(),
+            exact_accepted_matches,
+            ambiguous_accepted_matches,
+            unmatched_names: unmatched.len(),
+            unmatched_name_examples: unmatched.into_iter().take(25).collect(),
+        });
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&FaunaTraitTaxaInspection {
+            inspection_schema_version: 1,
+            catalog: FaunaTaxonomyCatalogInspection {
+                input_path: catalog_path.display().to_string(),
+                input_hash: catalog_hash,
+                input_byte_length: catalog_byte_length,
+                accepted_species,
+            },
+            sources: inspections,
+            policy: "scientific names are matched byte-for-byte after removing only leading and trailing ASCII whitespace; zero or multiple accepted GBIF records remain unresolved and no synonym, fuzzy, genus-only, or taxonomic-rank inference is performed",
+        })?
+    );
+    Ok(())
+}
+
+fn load_gbif_accepted_species_names(path: &Path) -> Result<(u64, BTreeMap<String, Vec<u64>>)> {
+    let mut reader = BufReader::new(
+        File::open(path)
+            .with_context(|| format!("open GBIF Animalia catalog {}", path.display()))?,
+    );
+    let mut magic = [0_u8; 8];
+    reader.read_exact(&mut magic)?;
+    if &magic != GBIF_ANIMALIA_CATALOG_MAGIC {
+        bail!("GBIF Animalia catalog magic is invalid");
+    }
+    let mut schema_bytes = [0_u8; 2];
+    reader.read_exact(&mut schema_bytes)?;
+    if u16::from_le_bytes(schema_bytes) != GBIF_ANIMALIA_CATALOG_SCHEMA_VERSION {
+        bail!("GBIF Animalia catalog schema is unsupported");
+    }
+    let mut source_hash = [0_u8; 32];
+    reader.read_exact(&mut source_hash)?;
+    let mut count_bytes = [0_u8; 8];
+    reader.read_exact(&mut count_bytes)?;
+    let record_count = u64::from_le_bytes(count_bytes);
+    if record_count == 0 {
+        bail!("GBIF Animalia catalog has no species");
+    }
+    let mut names = BTreeMap::<String, Vec<u64>>::new();
+    for index in 0..record_count {
+        let mut key_bytes = [0_u8; 8];
+        reader
+            .read_exact(&mut key_bytes)
+            .with_context(|| format!("read GBIF catalog species {index} key"))?;
+        let taxon_key = u64::from_le_bytes(key_bytes);
+        if taxon_key == 0 {
+            bail!("GBIF Animalia catalog has zero taxon key");
+        }
+        let scientific_name = read_length_prefixed_utf8(&mut reader)?;
+        for _ in 0..6 {
+            let _ = read_length_prefixed_utf8(&mut reader)?;
+        }
+        if scientific_name.is_empty() {
+            bail!("GBIF Animalia catalog has an empty scientific name");
+        }
+        names.entry(scientific_name).or_default().push(taxon_key);
+    }
+    let mut trailing = [0_u8; 1];
+    if reader.read(&mut trailing)? != 0 {
+        bail!("GBIF Animalia catalog contains trailing bytes");
+    }
+    Ok((record_count, names))
+}
+
+fn read_source_scientific_names(
+    path: &Path,
+    delimiter: char,
+    scientific_column: &str,
+) -> Result<(u64, BTreeSet<String>)> {
+    let input = fs::read_to_string(path)
+        .with_context(|| format!("read retained fauna source {}", path.display()))?;
+    let mut lines = input.lines();
+    let header = lines
+        .next()
+        .context("retained fauna source has no header row")?;
+    let columns = parse_delimited_row(header, delimiter)?;
+    let scientific_index = columns
+        .iter()
+        .position(|column| column == scientific_column)
+        .with_context(|| {
+            format!("retained fauna source is missing {scientific_column:?} column")
+        })?;
+    let mut records = 0_u64;
+    let mut names = BTreeSet::new();
+    for (line_index, line) in lines.enumerate() {
+        if line.is_empty() {
+            continue;
+        }
+        let fields = parse_delimited_row(line, delimiter)
+            .with_context(|| format!("parse fauna source record {}", line_index + 2))?;
+        if fields.len() != columns.len() {
+            bail!(
+                "fauna source record {} has {} fields, expected {}",
+                line_index + 2,
+                fields.len(),
+                columns.len()
+            );
+        }
+        records = records
+            .checked_add(1)
+            .context("fauna source record count overflow")?;
+        let name = fields[scientific_index]
+            .trim_matches(|character: char| character.is_ascii_whitespace());
+        if name.is_empty() {
+            bail!(
+                "fauna source record {} has no scientific name",
+                line_index + 2
+            );
+        }
+        names.insert(name.to_owned());
+    }
+    if records == 0 || names.is_empty() {
+        bail!("retained fauna source has no data records");
+    }
+    Ok((records, names))
+}
+
+fn parse_delimited_row(line: &str, delimiter: char) -> Result<Vec<String>> {
+    let mut fields = Vec::new();
+    let mut field = String::new();
+    let mut quoted = false;
+    let mut at_field_start = true;
+    let mut characters = line.chars().peekable();
+    while let Some(character) = characters.next() {
+        if quoted {
+            if character == '"' {
+                if characters.peek().copied() == Some('"') {
+                    field.push('"');
+                    let _ = characters.next();
+                } else {
+                    quoted = false;
+                }
+            } else {
+                field.push(character);
+            }
+        } else if character == delimiter {
+            fields.push(std::mem::take(&mut field));
+            at_field_start = true;
+        } else if character == '"' && at_field_start {
+            quoted = true;
+            at_field_start = false;
+        } else {
+            field.push(character);
+            at_field_start = false;
+        }
+    }
+    if quoted {
+        bail!("unterminated quoted field");
+    }
+    fields.push(field);
+    Ok(fields)
 }
 
 const JRC_OCCURRENCE_LONGITUDES: std::ops::Range<i32> = -18..18;
