@@ -21,8 +21,8 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, FaunaRangeCandidateSet, FaunaSeededSelection,
-    LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaRangeCandidateSet,
+    FaunaSeededSelection, LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
     PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
     PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
     PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
@@ -127,6 +127,17 @@ enum InspectCommand {
         input: PathBuf,
         #[arg(long)]
         land_reference_root_index: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+    },
+    /// Read the pinned observed land cover and annual temperature evidence at a
+    /// seed-derived provisional origin. This reports source evidence only; it
+    /// never chooses a habitat, taxon, or population.
+    ProvisionalOriginEnvironment {
+        #[arg(long)]
+        origin_selection: PathBuf,
+        #[arg(long)]
+        composition: PathBuf,
         #[arg(long)]
         artifact_root: PathBuf,
     },
@@ -697,6 +708,15 @@ async fn main() -> Result<()> {
             } => inspect_provisional_land_origin_selection(
                 &input,
                 &land_reference_root_index,
+                &artifact_root,
+            ),
+            InspectCommand::ProvisionalOriginEnvironment {
+                origin_selection,
+                composition,
+                artifact_root,
+            } => inspect_provisional_origin_environment(
+                &origin_selection,
+                &composition,
                 &artifact_root,
             ),
             InspectCommand::FaunaTerrestrialEvidence {
@@ -1797,6 +1817,213 @@ fn inspect_provisional_land_origin_selection(
         }))?
     );
     Ok(())
+}
+
+#[derive(Serialize)]
+struct ProvisionalOriginEnvironmentInspection {
+    inspection_schema_version: u16,
+    status: &'static str,
+    origin_selection_digest: Digest,
+    composition_digest: Digest,
+    selected_l10_patch: S2CellId,
+    selected_embodied_patch: S2CellId,
+    observed_land_cover_root_digest: Digest,
+    observed_land_cover_tile_digest: Digest,
+    observed_land_cover: LandCoverEvidenceCell,
+    air_temperature_normal_root_digest: Digest,
+    air_temperature_normal_tile_digest: Digest,
+    air_temperature_normal_unit: String,
+    air_temperature_normal_decimal_places: u8,
+    air_temperature_normal: SeasonalScalarFieldCell,
+}
+
+/// Join just two already-pinned full-Earth layers at the selected L10 origin.
+///
+/// This intentionally stops at evidence. In particular, a surface class and a
+/// temperature normal are not a habitat model, and a habitat model is not an
+/// abundance or species-occurrence model.
+fn inspect_provisional_origin_environment(
+    origin_selection_path: &Path,
+    composition_path: &Path,
+    artifact_root: &Path,
+) -> Result<()> {
+    let origin_bytes = fs::read(origin_selection_path).with_context(|| {
+        format!(
+            "read provisional origin selection {}",
+            origin_selection_path.display()
+        )
+    })?;
+    let origin = ProvisionalLandOriginSelection::from_canonical_slice(&origin_bytes)
+        .context("decode provisional origin selection")?;
+    let composition_bytes = fs::read(composition_path).with_context(|| {
+        format!(
+            "read provisional composition {}",
+            composition_path.display()
+        )
+    })?;
+    let composition = load_provisional_world_composition(composition_path)
+        .context("decode provisional composition")?;
+    let coastline = composition
+        .earth_layers
+        .iter()
+        .find(|layer| layer.kind == DataLayerKind::Coastline)
+        .context("provisional composition has no coastline layer")?;
+    if coastline.release.content_hash != origin.land_reference_root_digest {
+        bail!("provisional origin selection does not match composition coastline root");
+    }
+    let habitat = composition
+        .earth_layers
+        .iter()
+        .find(|layer| layer.kind == DataLayerKind::Habitat)
+        .context("provisional composition has no habitat layer")?;
+    let climate = composition
+        .earth_layers
+        .iter()
+        .find(|layer| layer.kind == DataLayerKind::Climate)
+        .context("provisional composition has no climate layer")?;
+
+    let habitat_root = read_pinned_provisional_root(artifact_root, &habitat.release)?;
+    let habitat_tile_root = provisional_tile_tree_parent(artifact_root, &habitat.release)?;
+    let habitat_entry = find_tile_entry_for_target(
+        &habitat_tile_root,
+        &habitat_root,
+        "observed-land-cover",
+        origin.selected_patch,
+    )?;
+    let habitat_bytes = read_tile_tree_artifact(&habitat_tile_root, &habitat_entry)?;
+    let habitat_tile = PackedLandCoverEvidenceTile::from_canonical_slice(&habitat_bytes)
+        .context("decode observed-land-cover tile")?;
+    if habitat_tile.layer_id != "observed-land-cover" || habitat_tile.target_s2_level != 10 {
+        bail!("observed-land-cover tile has an unexpected layer or target level");
+    }
+    let observed_land_cover = habitat_tile
+        .cells
+        .into_iter()
+        .find(|cell| cell.s2_cell_id == origin.selected_patch)
+        .context("observed-land-cover tile does not contain selected origin")?;
+
+    let climate_root = read_pinned_provisional_root(artifact_root, &climate.release)?;
+    let climate_tile_root = provisional_tile_tree_parent(artifact_root, &climate.release)?;
+    let climate_entry = find_tile_entry_for_target(
+        &climate_tile_root,
+        &climate_root,
+        "near-surface-air-temperature-normal",
+        origin.selected_patch,
+    )?;
+    let climate_bytes = read_tile_tree_artifact(&climate_tile_root, &climate_entry)?;
+    let climate_tile = PackedSeasonalScalarFieldTile::from_canonical_slice(&climate_bytes)
+        .context("decode near-surface-air-temperature-normal tile")?;
+    if climate_tile.layer_id != "near-surface-air-temperature-normal"
+        || climate_tile.target_s2_level != 10
+    {
+        bail!("temperature tile has an unexpected layer or target level");
+    }
+    let air_temperature_normal = climate_tile
+        .cells
+        .into_iter()
+        .find(|cell| cell.s2_cell_id == origin.selected_patch)
+        .context("temperature tile does not contain selected origin")?;
+
+    println!(
+        "{}",
+        serde_json::to_string(&ProvisionalOriginEnvironmentInspection {
+            inspection_schema_version: 1,
+            status: "evidence-only-not-habitat-suitability-or-population",
+            origin_selection_digest: Digest::sha256(&origin_bytes),
+            composition_digest: Digest::sha256(&composition_bytes),
+            selected_l10_patch: origin.selected_patch,
+            selected_embodied_patch: origin.selected_embodied_patch,
+            observed_land_cover_root_digest: habitat.release.content_hash,
+            observed_land_cover_tile_digest: Digest::sha256(&habitat_bytes),
+            observed_land_cover,
+            air_temperature_normal_root_digest: climate.release.content_hash,
+            air_temperature_normal_tile_digest: Digest::sha256(&climate_bytes),
+            air_temperature_normal_unit: climate_tile.unit,
+            air_temperature_normal_decimal_places: climate_tile.decimal_places,
+            air_temperature_normal,
+        })?
+    );
+    Ok(())
+}
+
+fn read_pinned_provisional_root(
+    artifact_root: &Path,
+    release: &world_data::ProvisionalArtifactReference,
+) -> Result<TileTreeIndex> {
+    let bytes = read_release_file(artifact_root, &release.artifact_path)?;
+    if u64::try_from(bytes.len())? != release.byte_length
+        || Digest::sha256(&bytes) != release.content_hash
+    {
+        bail!("provisional layer root differs from its composition reference");
+    }
+    TileTreeIndex::from_canonical_slice(&bytes).context("decode canonical provisional layer root")
+}
+
+fn provisional_tile_tree_parent(
+    artifact_root: &Path,
+    release: &world_data::ProvisionalArtifactReference,
+) -> Result<PathBuf> {
+    let canonical_root = artifact_root
+        .canonicalize()
+        .with_context(|| format!("resolve artifact root {}", artifact_root.display()))?;
+    let index_path = canonical_root.join(&release.artifact_path);
+    let metadata = fs::symlink_metadata(&index_path)
+        .with_context(|| format!("inspect provisional layer root {}", index_path.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        bail!("provisional layer root must be a regular file");
+    }
+    let resolved = index_path
+        .canonicalize()
+        .with_context(|| format!("resolve provisional layer root {}", index_path.display()))?;
+    if !resolved.starts_with(&canonical_root) {
+        bail!("provisional layer root escapes the artifact root");
+    }
+    // A full-Earth layer root is stored at `layers/<layer-id>/root.index`, while
+    // index entries are relative to the release directory (`layers/...`).
+    resolved
+        .parent()
+        .and_then(Path::parent)
+        .and_then(Path::parent)
+        .map(Path::to_path_buf)
+        .context("provisional layer root is not beneath layers/<layer-id>/root.index")
+}
+
+fn find_tile_entry_for_target(
+    artifact_root: &Path,
+    root: &TileTreeIndex,
+    expected_layer_id: &str,
+    target: S2CellId,
+) -> Result<TileTreeEntry> {
+    let canonical_root = artifact_root
+        .canonicalize()
+        .with_context(|| format!("resolve artifact root {}", artifact_root.display()))?;
+    let mut index = root.clone();
+    loop {
+        if index.layer_id != expected_layer_id {
+            bail!("tile-tree index has unexpected layer id");
+        }
+        let matches = index
+            .entries
+            .iter()
+            .filter(|entry| {
+                entry
+                    .s2_cell_id
+                    .parse::<S2CellId>()
+                    .is_ok_and(|container| container.contains(target))
+            })
+            .collect::<Vec<_>>();
+        let [entry] = matches.as_slice() else {
+            bail!("tile tree does not have exactly one container for selected origin");
+        };
+        match entry.kind {
+            TileTreeEntryKind::Tile => return Ok((*entry).clone()),
+            TileTreeEntryKind::Index => {
+                let bytes = read_tile_tree_artifact(&canonical_root, entry)?;
+                index = TileTreeIndex::from_canonical_slice(&bytes)
+                    .context("decode canonical child tile-tree index")?;
+            }
+        }
+    }
 }
 
 fn eligible_land_reference_patches(
