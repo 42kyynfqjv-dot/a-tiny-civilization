@@ -149,6 +149,7 @@ impl ObserverFindingStore for PostgresStore {
                     .await?
                 }
                 DomainEvent::WorldConfigured { .. }
+                | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }

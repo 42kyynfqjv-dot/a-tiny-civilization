@@ -2,7 +2,7 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    CanonicalHashError, CelestialState, Digest, EntityId, EventId, EventSequence,
+    CanonicalHashError, CelestialState, Digest, EntityId, EventId, EventSequence, MaterialIdentity,
     MetabolicRateCommitment, PrimitiveAction, S2CellId, SimTick, SituatedPerception,
     SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
@@ -24,6 +24,8 @@ pub const CELESTIAL_STATE_EVENT_SCHEMA_VERSION: u16 = 7;
 /// Adds source-pinned organism body provenance. This is an evidentiary commitment,
 /// not a claim that metabolism or ecology is scientifically complete.
 pub const BODY_PROVENANCE_EVENT_SCHEMA_VERSION: u16 = 8;
+/// Adds cited real-world material instances at durable full-Earth patches.
+pub const MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION: u16 = 9;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -98,6 +100,13 @@ pub enum DomainEvent {
         embodied_patch: Option<S2CellId>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         metabolic_rate: Option<MetabolicRateCommitment>,
+    },
+    /// A physical material instance. Its identity is citable, but its affordances
+    /// and effects are intentionally not inferred by this event.
+    MaterialInstanceInitialized {
+        object_id: EntityId,
+        material: MaterialIdentity,
+        embodied_patch: S2CellId,
     },
     TickAdvanced {
         from: SimTick,
@@ -289,6 +298,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
             | CELESTIAL_STATE_EVENT_SCHEMA_VERSION
             | BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+            | MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -361,6 +371,11 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::MaterialInstanceInitialized { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized { metabolic_rate, .. }
         | DomainEvent::OrganismBorn { metabolic_rate, .. } => {
@@ -374,6 +389,9 @@ fn validate_event_for_schema(
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
         DomainEvent::OrganismActed { action, .. } => action
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::MaterialInstanceInitialized { material, .. } => material
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
         _ => {}

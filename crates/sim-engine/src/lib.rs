@@ -20,11 +20,11 @@ use world_domain::{
     CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, DeathCause, Digest,
     DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
     EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
-    LEGACY_EVENT_SCHEMA_VERSION, MetabolicRateCommitment, OrganismRole,
-    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
-    PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
-    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity,
+    MetabolicRateCommitment, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
+    PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading, S2CellId,
+    S2CellIdError, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick,
+    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
@@ -59,6 +59,7 @@ pub const SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION: u16 = 6;
 pub const CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION: u16 = 7;
 pub const BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 8;
 pub const PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION: u16 = 9;
+pub const MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 10;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -73,6 +74,7 @@ const SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION: u16 = 6;
 const CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION: u16 = 7;
 const BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION: u16 = 8;
 const PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION: u16 = 9;
+const MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION: u16 = 10;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -154,6 +156,31 @@ struct PerceptionMemoryEntry {
     observed_at: SimTick,
 }
 
+/// A canonical physical instance with a citable real-world material identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MaterialInstanceState {
+    object_id: EntityId,
+    material: MaterialIdentity,
+    embodied_patch: S2CellId,
+}
+
+impl MaterialInstanceState {
+    #[must_use]
+    pub const fn object_id(&self) -> EntityId {
+        self.object_id
+    }
+
+    #[must_use]
+    pub const fn embodied_patch(&self) -> S2CellId {
+        self.embodied_patch
+    }
+
+    #[must_use]
+    pub const fn material(&self) -> &MaterialIdentity {
+        &self.material
+    }
+}
+
 impl OrganismState {
     #[must_use]
     pub const fn organism_id(&self) -> EntityId {
@@ -225,6 +252,8 @@ pub struct EngineState {
     status: WorldStatus,
     tick: SimTick,
     organisms: BTreeMap<EntityId, OrganismState>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    material_instances: BTreeMap<EntityId, MaterialInstanceState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<PartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -242,6 +271,7 @@ impl EngineState {
             status: WorldStatus::Initializing,
             tick: SimTick::ZERO,
             organisms: BTreeMap::new(),
+            material_instances: BTreeMap::new(),
             partition_schedule: None,
             celestial_state: None,
             celestial_tick: None,
@@ -281,6 +311,11 @@ impl EngineState {
     #[must_use]
     pub fn organisms(&self) -> impl ExactSizeIterator<Item = &OrganismState> {
         self.organisms.values()
+    }
+
+    #[must_use]
+    pub fn material_instances(&self) -> impl ExactSizeIterator<Item = &MaterialInstanceState> {
+        self.material_instances.values()
     }
 
     #[must_use]
@@ -522,6 +557,7 @@ impl EngineState {
             status: self.status,
             tick: self.tick,
             organisms: self.organisms.values().collect(),
+            material_instances: self.material_instances.values().collect(),
             partition_schedule: self.partition_schedule.as_ref(),
             celestial_state: self.celestial_state,
             celestial_tick: self.celestial_tick,
@@ -879,6 +915,9 @@ impl EngineState {
         let patch = match event {
             DomainEvent::OrganismInitialized { embodied_patch, .. }
             | DomainEvent::OrganismBorn { embodied_patch, .. } => *embodied_patch,
+            DomainEvent::MaterialInstanceInitialized { embodied_patch, .. } => {
+                Some(*embodied_patch)
+            }
             DomainEvent::OrganismMoved { to_patch, .. } => Some(*to_patch),
             DomainEvent::OrganismDied { organism_id, .. }
             | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
@@ -908,7 +947,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.has_metabolic_rate_commitments() {
+        if !self.material_instances.is_empty() {
+            MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
+        } else if self.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_EVENT_SCHEMA_VERSION
         } else if self.uses_celestial_driver() {
             CELESTIAL_STATE_EVENT_SCHEMA_VERSION
@@ -953,7 +994,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.has_perception_memory() {
+        if !self.material_instances.is_empty() {
+            MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION
+        } else if self.has_perception_memory() {
             PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION
         } else if self.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION
@@ -990,7 +1033,10 @@ impl EngineState {
                 if manifest != &self.manifest {
                     return Err(EngineError::ManifestMismatch);
                 }
-                if self.tick != SimTick::ZERO || !self.organisms.is_empty() {
+                if self.tick != SimTick::ZERO
+                    || !self.organisms.is_empty()
+                    || !self.material_instances.is_empty()
+                {
                     return Err(EngineError::InvalidGenesisState);
                 }
                 self.status = WorldStatus::Running;
@@ -1000,7 +1046,10 @@ impl EngineState {
                 if self.configuration.is_some() {
                     return Err(EngineError::WorldAlreadyConfigured);
                 }
-                if self.tick != SimTick::ZERO || !self.organisms.is_empty() {
+                if self.tick != SimTick::ZERO
+                    || !self.organisms.is_empty()
+                    || !self.material_instances.is_empty()
+                {
                     return Err(EngineError::ConfigurationAfterOrganisms);
                 }
                 configuration.validate()?;
@@ -1054,6 +1103,31 @@ impl EngineState {
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
+            }
+            DomainEvent::MaterialInstanceInitialized {
+                object_id,
+                material,
+                embodied_patch,
+            } => {
+                self.require_status(WorldStatus::Running)?;
+                material
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                self.validate_embodied_patch(*embodied_patch)?;
+                if self
+                    .material_instances
+                    .insert(
+                        *object_id,
+                        MaterialInstanceState {
+                            object_id: *object_id,
+                            material: material.clone(),
+                            embodied_patch: *embodied_patch,
+                        },
+                    )
+                    .is_some()
+                {
+                    return Err(EngineError::DuplicateMaterialInstance(*object_id));
+                }
             }
             DomainEvent::TickAdvanced { from, to } => {
                 self.require_status(WorldStatus::Running)?;
@@ -1342,7 +1416,9 @@ impl EngineState {
             configuration.validate()?;
         }
         if self.status == WorldStatus::Initializing
-            && (self.tick != SimTick::ZERO || !self.organisms.is_empty())
+            && (self.tick != SimTick::ZERO
+                || !self.organisms.is_empty()
+                || !self.material_instances.is_empty())
         {
             return Err(EngineError::InvalidGenesisState);
         }
@@ -1379,6 +1455,16 @@ impl EngineState {
                 return Err(EngineError::NonCanonicalParentOrder);
             }
         }
+        for (id, instance) in &self.material_instances {
+            if id != &instance.object_id {
+                return Err(EngineError::MaterialInstanceKeyMismatch(*id));
+            }
+            instance
+                .material
+                .validate()
+                .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+            self.validate_embodied_patch(instance.embodied_patch)?;
+        }
         match (self.partition_profile(), &self.partition_schedule) {
             (None, None) => {}
             (None, Some(_)) => {
@@ -1414,6 +1500,8 @@ struct StateHashMaterial<'a> {
     status: WorldStatus,
     tick: SimTick,
     organisms: Vec<&'a OrganismState>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    material_instances: Vec<&'a MaterialInstanceState>,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<&'a PartitionSchedule>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1440,7 +1528,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.has_perception_memory() {
+        let snapshot_schema_version = if !state.material_instances.is_empty() {
+            MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
+        } else if state.has_perception_memory() {
             PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
         } else if state.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
@@ -1490,12 +1580,15 @@ impl Snapshot {
                 | CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
                 | BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
                 | PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
+                | MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.has_perception_memory() {
+        let expected_schema_version = if !self.state.material_instances.is_empty() {
+            MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.has_perception_memory() {
             PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
@@ -1649,41 +1742,51 @@ fn replay_from_cursor(
                 }
             )
         });
-        let expected_schema =
-            if state.has_metabolic_rate_commitments() || batch_has_metabolic_rate_commitment {
-                BODY_PROVENANCE_EVENT_SCHEMA_VERSION
-            } else if state.uses_celestial_driver() {
-                CELESTIAL_STATE_EVENT_SCHEMA_VERSION
-            } else if state.uses_organism_execution_kernel()
-                && (state
-                    .configuration
-                    .as_ref()
-                    .and_then(WorldConfiguration::embodied_patch_s2_level)
-                    .is_some()
-                    || configures_embodied_world)
-            {
-                SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
-            } else if state
-                .configuration
-                .as_ref()
-                .is_some_and(WorldConfiguration::is_provisional_execution)
-                || configures_provisional_world
-            {
-                PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
-            } else if state
+        let batch_has_material_instance = batch.events.iter().any(|record| {
+            matches!(
+                &record.event,
+                DomainEvent::MaterialInstanceInitialized { .. }
+            )
+        });
+        let expected_schema = if !state.material_instances.is_empty() || batch_has_material_instance
+        {
+            MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
+        } else if state.has_metabolic_rate_commitments() || batch_has_metabolic_rate_commitment {
+            BODY_PROVENANCE_EVENT_SCHEMA_VERSION
+        } else if state.uses_celestial_driver() {
+            CELESTIAL_STATE_EVENT_SCHEMA_VERSION
+        } else if state.uses_organism_execution_kernel()
+            && (state
                 .configuration
                 .as_ref()
                 .and_then(WorldConfiguration::embodied_patch_s2_level)
                 .is_some()
-                || configures_embodied_world
-            {
-                EMBODIED_POSITION_EVENT_SCHEMA_VERSION
-            } else if is_configured {
-                EVENT_SCHEMA_VERSION
-            } else {
-                LEGACY_EVENT_SCHEMA_VERSION
-            };
-        let valid_schema = if expected_schema == BODY_PROVENANCE_EVENT_SCHEMA_VERSION {
+                || configures_embodied_world)
+        {
+            SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
+        } else if state
+            .configuration
+            .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+            || configures_provisional_world
+        {
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        } else if state
+            .configuration
+            .as_ref()
+            .and_then(WorldConfiguration::embodied_patch_s2_level)
+            .is_some()
+            || configures_embodied_world
+        {
+            EMBODIED_POSITION_EVENT_SCHEMA_VERSION
+        } else if is_configured {
+            EVENT_SCHEMA_VERSION
+        } else {
+            LEGACY_EVENT_SCHEMA_VERSION
+        };
+        let valid_schema = if expected_schema == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
+        } else if expected_schema == BODY_PROVENANCE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == BODY_PROVENANCE_EVENT_SCHEMA_VERSION
         } else if expected_schema == CELESTIAL_STATE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == CELESTIAL_STATE_EVENT_SCHEMA_VERSION
@@ -1783,8 +1886,12 @@ pub enum EngineError {
     UnexpectedEmbodiedPatch(EntityId),
     #[error("organism {0} already exists")]
     DuplicateOrganism(EntityId),
+    #[error("material instance {0} already exists")]
+    DuplicateMaterialInstance(EntityId),
     #[error("organism map key {0} does not match its value")]
     OrganismKeyMismatch(EntityId),
+    #[error("material instance map key {0} does not match its value")]
+    MaterialInstanceKeyMismatch(EntityId),
     #[error("organism {0} does not exist")]
     UnknownOrganism(EntityId),
     #[error("parent organism {0} does not exist")]
@@ -2370,6 +2477,58 @@ mod tests {
                 actual: LEGACY_EVENT_SCHEMA_VERSION,
             })
         ));
+    }
+
+    #[test]
+    fn cited_material_instance_is_replayed_at_its_full_earth_patch() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let patch: S2CellId = "0000000000004000".parse().expect("L23 patch");
+        let object_id = EntityId::deterministic(manifest.world_id, b"water-instance");
+        let events = vec![
+            DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            },
+            DomainEvent::WorldConfigured {
+                configuration: full_earth_configuration(),
+            },
+            DomainEvent::MaterialInstanceInitialized {
+                object_id,
+                material: MaterialIdentity::new(
+                    "pubchem",
+                    "962",
+                    "water",
+                    "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+                )
+                .expect("citable material"),
+                embodied_patch: patch,
+            },
+        ];
+        let (running, batch) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, events)
+            .expect("material genesis commit");
+        assert_eq!(
+            batch.event_schema_version,
+            MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(running.material_instances().len(), 1);
+        assert_eq!(
+            running
+                .material_instances()
+                .next()
+                .expect("instance")
+                .embodied_patch(),
+            patch
+        );
+        let snapshot = Snapshot::new(running.clone(), batch.sequence, batch.batch_hash)
+            .expect("material snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot.verify_integrity().expect("snapshot verifies");
+        let replayed = replay(manifest, &[batch]).expect("replay material event");
+        assert_eq!(replayed.state, running);
     }
 
     #[test]

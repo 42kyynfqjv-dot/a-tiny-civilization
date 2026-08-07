@@ -119,6 +119,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                     "Its committed history remains available for observation.",
                 ),
                 DomainEvent::WorldConfigured { .. }
+                | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }
@@ -308,6 +309,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             }),
             DomainEvent::WorldStarted { .. }
             | DomainEvent::WorldConfigured { .. }
+            | DomainEvent::MaterialInstanceInitialized { .. }
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::OrganismPerceived { .. }
             | DomainEvent::OrganismActed { .. }
