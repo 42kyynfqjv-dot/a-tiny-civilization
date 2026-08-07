@@ -119,7 +119,7 @@ def contains(polygons: list[list[list[tuple[float, float]]]], longitude: float, 
     return False
 
 
-def candidates_in_package(path: Path, longitude: float, latitude: float, wanted_taxa: set[int]) -> list[tuple[int, int, bytes]]:
+def candidates_in_package(path: Path, longitude: float, latitude: float, wanted_taxa: set[int] | None) -> list[tuple[int, int, bytes]]:
     connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
     try:
         table_rows = connection.execute("SELECT table_name FROM gpkg_contents WHERE data_type = 'features'").fetchall()
@@ -129,12 +129,25 @@ def candidates_in_package(path: Path, longitude: float, latitude: float, wanted_
         rtree = f"rtree_{table}_geom"
         quoted_table = '"' + table.replace('"', '""') + '"'
         quoted_rtree = '"' + rtree.replace('"', '""') + '"'
+        query = (
+            f"SELECT features.fid, features.taxon_id, features.geom "
+            f"FROM {quoted_table} AS features JOIN {quoted_rtree} AS bounds ON bounds.id = features.fid "
+        )
+        if wanted_taxa is None:
+            # In full-point mode, querying the spatial index first is much cheaper
+            # than constructing a 47k-row temporary table in every GeoPackage. The
+            # exact crosswalk filter remains below when records are matched.
+            return connection.execute(
+                query
+                + "WHERE bounds.minx <= ? AND bounds.maxx >= ? AND bounds.miny <= ? AND bounds.maxy >= ? "
+                "ORDER BY features.taxon_id",
+                (longitude, longitude, latitude, latitude),
+            ).fetchall()
         connection.execute("CREATE TEMP TABLE wanted_taxa (taxon_id INTEGER PRIMARY KEY)")
         connection.executemany("INSERT INTO wanted_taxa(taxon_id) VALUES (?)", ((taxon,) for taxon in sorted(wanted_taxa)))
         return connection.execute(
-            f"SELECT features.fid, features.taxon_id, features.geom "
-            f"FROM {quoted_table} AS features JOIN {quoted_rtree} AS bounds ON bounds.id = features.fid "
-            "JOIN wanted_taxa ON wanted_taxa.taxon_id = features.taxon_id "
+            query
+            + "JOIN wanted_taxa ON wanted_taxa.taxon_id = features.taxon_id "
             "WHERE bounds.minx <= ? AND bounds.maxx >= ? AND bounds.miny <= ? AND bounds.maxy >= ? "
             "ORDER BY features.taxon_id",
             (longitude, longitude, latitude, latitude),
@@ -204,7 +217,8 @@ def main() -> int:
     matches = []
     for package, taxa in sorted(by_package.items()):
         path = source / f"inaturalist_geomodel_{package}.gpkg"
-        for fid, taxon_id, geometry in candidates_in_package(path, longitude, latitude, set(taxa)):
+        wanted_taxa = set(taxa) if requested_keys is not None else None
+        for fid, taxon_id, geometry in candidates_in_package(path, longitude, latitude, wanted_taxa):
             record = taxa.get(taxon_id)
             if record is not None and int(record["range_feature_fid"]) == fid and contains(geopackage_multipolygon(geometry), longitude, latitude):
                 matches.append(record)

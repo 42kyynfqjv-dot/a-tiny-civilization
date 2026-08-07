@@ -103,6 +103,11 @@ enum SourceCommand {
 
 #[derive(Debug, Subcommand)]
 enum InspectCommand {
+    /// Resolve one exact S2 cell centre to its WGS84 E7 geographic coordinate.
+    S2Geographic {
+        #[arg(long)]
+        s2_cell_id: S2CellId,
+    },
     /// Validate an exact point-scoped iNaturalist modeled-range candidate set.
     FaunaRangeCandidateSet {
         #[arg(long)]
@@ -670,6 +675,7 @@ async fn main() -> Result<()> {
             } => fetch_source(&manifest, &artifact_root).await,
         },
         Command::Inspect { command } => match command {
+            InspectCommand::S2Geographic { s2_cell_id } => inspect_s2_geographic(s2_cell_id),
             InspectCommand::FaunaRangeCandidateSet { input } => {
                 inspect_fauna_range_candidate_set(&input)
             }
@@ -1531,6 +1537,21 @@ fn inspect_fauna_range_candidate_set(input: &Path) -> Result<()> {
             "latitude_e7": candidates.query_point.latitude_e7,
             "longitude_e7": candidates.query_point.longitude_e7,
             "status": "modeled-range-candidates-not-population-or-abundance",
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_s2_geographic(s2_cell_id: S2CellId) -> Result<()> {
+    let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(s2_face_ij_center_uv(
+        decode_s2_face_ij(s2_cell_id),
+    )?)?)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "latitude_e7": coordinate.latitude_e7(),
+            "longitude_e7": coordinate.longitude_e7(),
+            "s2_cell_id": s2_cell_id,
         }))?
     );
     Ok(())
