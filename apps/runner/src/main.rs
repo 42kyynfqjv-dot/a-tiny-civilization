@@ -103,6 +103,12 @@ enum Command {
         #[arg(long)]
         provisional_land_origin_selection: Option<PathBuf>,
 
+        /// Canonical source evidence at the selected origin. This is optional for
+        /// legacy integration worlds, but a provided file is verified against the
+        /// composition and seed-derived origin before its digest is pinned.
+        #[arg(long)]
+        provisional_origin_environment: Option<PathBuf>,
+
         /// Canonical point-scoped modeled-range candidates. Must be supplied with
         /// the seeded selection, origin environment, and population plan inputs.
         #[arg(long)]
@@ -191,6 +197,7 @@ async fn main() -> Result<()> {
             artifact_root,
             initial_patch,
             provisional_land_origin_selection,
+            provisional_origin_environment,
             fauna_range_candidates,
             fauna_seeded_selection,
             fauna_origin_environment,
@@ -208,6 +215,7 @@ async fn main() -> Result<()> {
                 &artifact_root,
                 initial_patch,
                 provisional_land_origin_selection.as_deref(),
+                provisional_origin_environment.as_deref(),
                 fauna_range_candidates.as_deref(),
                 fauna_seeded_selection.as_deref(),
                 fauna_origin_environment.as_deref(),
@@ -490,6 +498,7 @@ async fn init_provisional_full_earth_world(
     artifact_root: &std::path::Path,
     initial_patch: Option<S2CellId>,
     provisional_land_origin_selection_path: Option<&std::path::Path>,
+    provisional_origin_environment_path: Option<&std::path::Path>,
     fauna_range_candidates_path: Option<&std::path::Path>,
     fauna_seeded_selection_path: Option<&std::path::Path>,
     fauna_origin_environment_path: Option<&std::path::Path>,
@@ -512,6 +521,11 @@ async fn init_provisional_full_earth_world(
         provisional_land_origin_selection_path,
     )?;
     let initial_patch = initial_origin.patch;
+    let origin_environment = load_provisional_origin_environment(
+        provisional_origin_environment_path,
+        &composition,
+        &initial_origin,
+    )?;
     let partition_level = composition.full_earth_grid.levels.planetary_aggregate;
     let composition_reference = composition
         .execution_reference()
@@ -536,6 +550,12 @@ async fn init_provisional_full_earth_world(
         manifest.scientific_datasets.insert(
             "provisional_land_origin_selection".to_owned(),
             selection_digest.to_string(),
+        );
+    }
+    if let Some(origin_environment) = origin_environment {
+        manifest.scientific_datasets.insert(
+            "provisional_origin_environment".to_owned(),
+            origin_environment.digest.to_string(),
         );
     }
     let species = SpeciesIdentity::new(
@@ -619,6 +639,40 @@ async fn init_provisional_full_earth_world(
 struct ResolvedInitialOrigin {
     patch: S2CellId,
     selection_digest: Option<world_domain::Digest>,
+}
+
+struct VerifiedProvisionalOriginEnvironment {
+    digest: world_domain::Digest,
+}
+
+fn load_provisional_origin_environment(
+    path: Option<&std::path::Path>,
+    composition: &world_data::ProvisionalWorldComposition,
+    origin: &ResolvedInitialOrigin,
+) -> Result<Option<VerifiedProvisionalOriginEnvironment>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let selection_digest = origin.selection_digest.context(
+        "--provisional-origin-environment requires --provisional-land-origin-selection rather than an explicit patch",
+    )?;
+    let bytes = std::fs::read(path).context("read provisional origin environment")?;
+    let environment = ProvisionalOriginEnvironment::from_canonical_slice(&bytes)
+        .context("validate provisional origin environment")?;
+    if environment.selected_embodied_patch != origin.patch
+        || environment.origin_selection_digest != selection_digest
+        || environment.composition_digest
+            != composition
+                .content_digest()
+                .context("hash provisional composition for origin environment")?
+    {
+        anyhow::bail!(
+            "provisional origin environment does not match the selected origin and composition"
+        );
+    }
+    Ok(Some(VerifiedProvisionalOriginEnvironment {
+        digest: world_domain::Digest::sha256(&bytes),
+    }))
 }
 
 fn resolve_provisional_initial_origin(
@@ -889,7 +943,8 @@ mod tests {
         FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
         FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeQueryPoint,
         LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
-        PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION, SeasonalScalarFieldCell,
+        PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION, ProvisionalWorldComposition,
+        SeasonalScalarFieldCell,
     };
 
     fn candidate_set() -> FaunaRangeCandidateSet {
@@ -1117,5 +1172,48 @@ mod tests {
             panic!("expected provisional initialization command");
         };
         assert_eq!(ruleset_version, EMBODIED_ACTIVITY_RULESET_VERSION);
+    }
+
+    #[test]
+    fn provisional_origin_environment_must_bind_to_the_selected_origin_and_composition() {
+        let composition = ProvisionalWorldComposition::from_canonical_slice(include_bytes!(
+            "../../../data/provisional/full-earth-breadth-first-0.1.0.json"
+        ))
+        .expect("checked-in provisional composition");
+        let selected_l10_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
+        let initial_patch = selected_l10_patch.descendants_at(11).expect("L11 patches")[0];
+        let selection_digest = world_domain::Digest::sha256(b"origin");
+        let origin = ResolvedInitialOrigin {
+            patch: initial_patch,
+            selection_digest: Some(selection_digest),
+        };
+        let mut environment = origin_environment(selected_l10_patch, initial_patch);
+        environment.origin_selection_digest = selection_digest;
+        environment.composition_digest = composition.content_digest().expect("composition hash");
+        let directory =
+            std::env::temp_dir().join(format!("atc-origin-environment-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).expect("test directory");
+        let path = directory.join("origin-environment.json");
+        let bytes = environment
+            .canonical_bytes()
+            .expect("canonical environment");
+        std::fs::write(&path, &bytes).expect("write origin environment");
+
+        let verified = load_provisional_origin_environment(Some(&path), &composition, &origin)
+            .expect("matching environment")
+            .expect("provided environment");
+        assert_eq!(verified.digest, world_domain::Digest::sha256(&bytes));
+
+        environment.selected_embodied_patch =
+            selected_l10_patch.descendants_at(11).expect("L11 patches")[1];
+        std::fs::write(
+            &path,
+            environment
+                .canonical_bytes()
+                .expect("canonical changed environment"),
+        )
+        .expect("write changed environment");
+        assert!(load_provisional_origin_environment(Some(&path), &composition, &origin).is_err());
+        std::fs::remove_dir_all(directory).expect("remove test directory");
     }
 }
