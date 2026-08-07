@@ -79,6 +79,19 @@ docker compose -f compose.yaml -f compose.backup.yaml -f compose.tunnel.yaml up 
 make smoke
 ```
 
+For a provisional full-Earth integration world, stage a service-readable copy of
+exactly its pinned inputs before starting the runner. The original retained `data/`
+tree stays private; the staging tool verifies every source file's length and SHA-256,
+never replaces a staging directory, and produces files readable only by root and the
+runner service group.
+
+```bash
+sudo ./scripts/stage-provisional-runner-artifacts.sh ./runtime-artifacts
+```
+
+The runner mounts that directory read-only at `/runtime`. The command is deliberately
+for the provisional integration path only; it does not authorize canonical genesis.
+
 The static preflight rejects missing settings, the documented development password, a
 non-production environment, mutable `cloudflared` image references, and invalid Compose
 interpolation. It does not print secrets. The default tunnel image is pinned to the

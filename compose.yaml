@@ -87,6 +87,11 @@ services:
     depends_on:
       migrate:
         condition: service_healthy
+    volumes:
+      # The runner may read the content-addressed world inputs to initialize or
+      # verify a provisional world, but a simulation process must never mutate
+      # its retained scientific artifacts.
+      - ./runtime-artifacts:/runtime:ro
     restart: unless-stopped
 
   projector:
