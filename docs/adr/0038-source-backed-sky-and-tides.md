@@ -40,7 +40,11 @@ phase cycle would contradict the real-world and unscripted-history contract.
 ## Consequences
 
 `scripts/acquire-jpl-de441.py --download` can retain the two long-range SPK parts,
-technical notes, checksum evidence, and planetary constants without an account. The
+technical notes, checksum evidence, planetary constants, and the official NAIF rules
+without an account. `--inventory-output` publishes one deterministic, no-replacement
+aggregate manifest so the multi-file source can enter a provisional-world composition.
+NAIF permits redistribution of unmodified kernels and commercial SPICE use under those
+retained rules. The
 simulation can eventually show the same sky to every observer while organisms discover
 only its physical regularities. Scientific validation will compare selected epochs and
 locations against an independent JPL/NAIF implementation before canonical admission.

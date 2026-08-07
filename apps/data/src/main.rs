@@ -27,11 +27,11 @@ use world_data::{
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
     PackedScalarFieldTile, PackedScalarTerrainTile, PackedSeasonalScalarFieldTile,
-    PackedSoilGridsTopsoilTile, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
-    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
-    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
-    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
-    WorldDataBundle, soilgrids_source_set_digest,
+    PackedSoilGridsTopsoilTile, ProvisionalWorldComposition, SOILGRIDS_NO_DATA_VALUE,
+    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
+    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
+    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
+    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
@@ -58,6 +58,12 @@ enum Command {
         bundle: PathBuf,
         #[arg(long)]
         configuration: Option<PathBuf>,
+    },
+    /// Validate a provisional full-world composition and every referenced local artifact.
+    ValidateProvisional {
+        composition: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
     },
     /// Acquire or verify exact pre-normalization scientific source bytes.
     Source {
@@ -579,6 +585,10 @@ async fn main() -> Result<()> {
             bundle,
             configuration,
         } => validate(bundle, configuration.as_ref()),
+        Command::ValidateProvisional {
+            composition,
+            artifact_root,
+        } => validate_provisional_world(&composition, &artifact_root),
         Command::Source { command } => match command {
             SourceCommand::Validate {
                 manifest,
@@ -9997,6 +10007,82 @@ fn validate(bundle_path: PathBuf, configuration_path: Option<&PathBuf>) -> Resul
         "artifacts: {} ({} bytes verified)",
         stats.artifacts, stats.bytes
     );
+    Ok(())
+}
+
+fn validate_provisional_world(composition_path: &Path, artifact_root: &Path) -> Result<()> {
+    let bytes = fs::read(composition_path).with_context(|| {
+        format!(
+            "failed to read provisional composition {}",
+            composition_path.display()
+        )
+    })?;
+    let composition =
+        ProvisionalWorldComposition::from_canonical_slice(&bytes).with_context(|| {
+            format!(
+                "provisional composition {} is invalid",
+                composition_path.display()
+            )
+        })?;
+    let canonical_root = artifact_root.canonicalize().with_context(|| {
+        format!(
+            "failed to resolve provisional artifact root {}",
+            artifact_root.display()
+        )
+    })?;
+
+    let releases = composition
+        .earth_layers
+        .iter()
+        .map(|layer| &layer.release)
+        .chain(
+            composition
+                .world_components
+                .iter()
+                .map(|component| &component.release),
+        );
+    let mut artifacts = 0_u64;
+    let mut verified_bytes = 0_u64;
+    for release in releases {
+        let path = canonical_root.join(&release.artifact_path);
+        let resolved = path
+            .canonicalize()
+            .with_context(|| format!("resolve provisional artifact {}", path.display()))?;
+        if !resolved.starts_with(&canonical_root) {
+            bail!(
+                "provisional artifact escaped its declared root: {}",
+                path.display()
+            );
+        }
+        let (actual_length, actual_hash) = digest_file(&resolved)
+            .with_context(|| format!("verify provisional artifact {}", resolved.display()))?;
+        if actual_length != release.byte_length || actual_hash != release.content_hash {
+            bail!(
+                "provisional artifact differs from its composition reference: {}",
+                resolved.display()
+            );
+        }
+        artifacts = artifacts
+            .checked_add(1)
+            .context("provisional artifact count overflow")?;
+        verified_bytes = verified_bytes
+            .checked_add(actual_length)
+            .context("provisional artifact byte total overflow")?;
+    }
+
+    println!(
+        "composition: {}@{}",
+        composition.composition_id, composition.composition_version
+    );
+    println!("status: provisional-not-scientifically-admitted");
+    println!("sha256: {}", composition.content_digest()?);
+    println!("earth layers: {}", composition.earth_layers.len());
+    println!("world components: {}", composition.world_components.len());
+    println!(
+        "validation gaps: {}",
+        composition.coupled_validation_gaps.len()
+    );
+    println!("artifacts: {artifacts} ({verified_bytes} bytes verified)");
     Ok(())
 }
 

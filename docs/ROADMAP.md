@@ -149,6 +149,13 @@ validation gaps, and its bytes cannot decode as a genesis-eligible world-data bu
 This is the structural boundary that permits breadth-first integration before the
 final scientific admission pass.
 
+The first actual composition is now committed as
+`data/provisional/full-earth-breadth-first-0.1.0.json`. Its ten ordered references
+verify against local bytes and commit under SHA-256
+`4187ceb79a1e19e9479a61a97a454399446c0808300d23c168f84bed5feea6b4`.
+The manifest openly carries six coupled-validation gaps; completing this manifest does
+not clear any of them.
+
 Six upstream snapshots are now committed independently of any world bundle. They pin
 Natural Earth v5.1.2 generalized land polygons, NOAA ETOPO 2022 v1 bedrock relief, two
 CHELSA-BIOCLIM+ temperature products, the complete 1981–2010 ERA5 monthly normal-period
@@ -243,8 +250,12 @@ wire status cannot claim scientific admission. Taxonomic crosswalk and parameter
 admission are still pending.
 
 The heavens now have an account-free long-range source path, retained bytes, and a
-causal contract. Both JPL DE441 ephemeris halves and their technical/orientation
-evidence are locally retained and content-hashed (3,308,141,318 bytes total). DE441
+causal contract. Both JPL DE441 ephemeris halves, their technical/orientation evidence,
+checksum evidence, and the official NAIF usage rules are locally retained and
+content-hashed (3,308,164,805 bytes total). A deterministic six-artifact inventory is
+committed under SHA-256
+`a253715e23e547d07f2e7be066a3fa437974b54f1c8a78f876f144ff8be22742`.
+DE441
 supplies actual Sun/Earth/Moon and planetary positions across roughly 30,000 years;
 genesis pins the epoch, deterministic interpolation drives light and seasons, and
 Sun/Moon equilibrium potential drives the first tide model. ADR 0038 forbids a

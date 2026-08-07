@@ -24,24 +24,37 @@ ARTIFACTS = (
     {
         "artifact_path": "jpl-de441/de441_part-1.bsp",
         "download_url": f"{PLANET_BASE}/de441_part-1.bsp",
+        "role": "data",
     },
     {
         "artifact_path": "jpl-de441/de441_part-2.bsp",
         "download_url": f"{PLANET_BASE}/de441_part-2.bsp",
+        "role": "data",
     },
     {
         "artifact_path": "jpl-de441/provenance/de441_tech-comments.txt",
         "download_url": f"{PLANET_BASE}/de441_tech-comments.txt",
+        "role": "documentation",
     },
     {
         "artifact_path": "jpl-de441/provenance/planetary-checksums.txt",
         "download_url": f"{PLANET_BASE}/aa_checksums.txt",
+        "role": "checksum_evidence",
     },
     {
         "artifact_path": "jpl-de441/provenance/pck00011.tpc",
         "download_url": f"{PCK_BASE}/pck00011.tpc",
+        "role": "orientation_evidence",
+    },
+    {
+        "artifact_path": "jpl-de441/provenance/naif-spice-rules.html",
+        "download_url": "https://naif.jpl.nasa.gov/naif/rules.html",
+        "role": "license_evidence",
     },
 )
+
+LICENSE_EXPRESSION = "LicenseRef-NAIF-SPICE-Rules"
+LICENSE_URL = "https://naif.jpl.nasa.gov/naif/rules.html"
 
 
 def sha256(path: Path) -> str:
@@ -107,9 +120,16 @@ def main() -> int:
     parser.add_argument("--output-directory", type=Path, default=Path("data/source-cache"))
     parser.add_argument("--workers", type=int, default=2)
     parser.add_argument("--download", action="store_true")
+    parser.add_argument(
+        "--inventory-output",
+        type=Path,
+        help="Publish a deterministic no-replacement inventory after verifying every artifact",
+    )
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 4:
         parser.error("--workers must be between 1 and 4")
+    if args.inventory_output is not None and not args.download:
+        parser.error("--inventory-output requires --download")
 
     if not args.download:
         print(json.dumps({"release": RELEASE, "artifacts": ARTIFACTS}))
@@ -118,16 +138,41 @@ def main() -> int:
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.workers) as executor:
         results = list(executor.map(lambda item: download_one(args.output_directory, item), ARTIFACTS))
     results.sort(key=lambda item: str(item["artifact_path"]))
-    print(
-        json.dumps(
-            {
-                "release": RELEASE,
-                "artifact_count": len(results),
-                "byte_length": sum(int(item["byte_length"]) for item in results),
-                "artifacts": results,
-            }
-        )
-    )
+    inventory = {
+        "inventory_schema_version": 1,
+        "release": RELEASE,
+        "license_expression": LICENSE_EXPRESSION,
+        "license_url": LICENSE_URL,
+        "artifact_count": len(results),
+        "byte_length": sum(int(item["byte_length"]) for item in results),
+        "artifacts": [
+            {key: value for key, value in item.items() if key != "status"}
+            for item in results
+        ],
+    }
+    encoded = (json.dumps(inventory, separators=(",", ":"), sort_keys=True) + "\n").encode()
+    if args.inventory_output is not None:
+        args.inventory_output.parent.mkdir(parents=True, exist_ok=True)
+        if args.inventory_output.exists():
+            if args.inventory_output.read_bytes() != encoded:
+                raise RuntimeError(
+                    f"refusing to replace differing inventory: {args.inventory_output}"
+                )
+        else:
+            descriptor, partial_name = tempfile.mkstemp(
+                prefix=f".{args.inventory_output.name}.",
+                suffix=".partial",
+                dir=args.inventory_output.parent,
+            )
+            try:
+                with os.fdopen(descriptor, "wb") as stream:
+                    stream.write(encoded)
+                    stream.flush()
+                    os.fsync(stream.fileno())
+                os.link(partial_name, args.inventory_output)
+            finally:
+                Path(partial_name).unlink(missing_ok=True)
+    print(encoded.decode().rstrip("\n"))
     return 0
 
 

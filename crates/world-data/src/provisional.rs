@@ -170,8 +170,10 @@ impl ProvisionalWorldComposition {
 
     pub fn canonical_bytes(&self) -> Result<Vec<u8>, ProvisionalWorldCompositionError> {
         self.validate()?;
-        serde_json::to_vec(self)
-            .map_err(|error| ProvisionalWorldCompositionError::Encoding(error.to_string()))
+        let mut bytes = serde_json::to_vec(self)
+            .map_err(|error| ProvisionalWorldCompositionError::Encoding(error.to_string()))?;
+        bytes.push(b'\n');
+        Ok(bytes)
     }
 
     pub fn content_digest(&self) -> Result<Digest, ProvisionalWorldCompositionError> {
