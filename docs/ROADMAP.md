@@ -268,7 +268,10 @@ already resolves actual barycentric Earth plus geocentric Sun and Moon vectors a
 exact integral TDB second. Fixed-scale tick conversion, exact millimetre vectors,
 replay-safe Sun/Moon tide geometry, local radial-horizon illumination, and a reduced
 inverse-square solar-distance forcing ratio are now implemented with checked integer
-arithmetic. Earth-orientation transforms and the coupled ocean response remain pending.
+arithmetic. Ruleset three now executes the pinned DE441 evaluator at each simulation
+tick, records its fixed-scale Sun/Moon state in the hash chain, and replays without
+opening source files. It remains opt-in until its downstream physical effects are
+implemented. Earth-orientation transforms and the coupled ocean response remain pending.
 
 ### 3. Situated memory and bounded cognition
 
