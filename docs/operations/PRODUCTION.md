@@ -69,6 +69,26 @@ documents remotely managed Docker tunnels and token rotation in its
 
 ## Preflight and deployment
 
+### Current host-managed tunnel deployment
+
+This production host runs its Cloudflare Tunnel as a separately managed systemd
+service, rather than as the optional Docker tunnel profile. Deploy the application
+containers with the checked-in helper; it loads the root-protected application
+environment itself and never removes unrelated containers such as Hindsight.
+
+```bash
+sudo ./scripts/deploy-production-app.sh \
+  --env-file /etc/a-tiny-civilization-production.env
+```
+
+The helper builds the application and web images, starts the database, migrations,
+API, projector, and runner with `APP_ENV=production`, then updates the web container
+without allowing Compose defaults to recreate its API dependency. It waits for the
+observer API readiness check. It deliberately does **not** configure a tunnel or
+off-site backups; those remain separate operational changes.
+
+### Docker tunnel and backup profile
+
 From the repository checkout, load the protected environment file into the current
 shell without echoing it, then run:
 
