@@ -1479,6 +1479,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "model-adapter"
+version = "0.1.0"
+dependencies = [
+ "application",
+ "async-trait",
+ "axum",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "tokio",
+ "url",
+ "uuid",
+ "world-domain",
+]
+
+[[package]]
 name = "ndarray"
 version = "0.17.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"

@@ -7,6 +7,7 @@ members = [
     "apps/runner",
     "crates/application",
     "crates/hindsight-adapter",
+    "crates/model-adapter",
     "crates/observer-api",
     "crates/observer-projection",
     "crates/postgres-store",

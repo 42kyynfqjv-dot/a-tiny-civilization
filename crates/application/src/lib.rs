@@ -1,7 +1,9 @@
 //! Application use cases and infrastructure ports.
 
+mod cognition;
 mod memory;
 
+pub use cognition::*;
 pub use memory::*;
 
 use async_trait::async_trait;

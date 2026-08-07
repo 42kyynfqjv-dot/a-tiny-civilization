@@ -114,6 +114,14 @@ accepted only by a deterministic deadline tick. Their exact result, validation s
 or absence is recorded as an input event. Replay never invokes a remote model or
 memory service.
 
+External cognition routes follow ADR 0051's versioned free-first registry. The
+registry can contain at most 256 exact provider/model routes, while one job can make
+at most sixteen network attempts. Trial and development-only endpoints fail production
+validation. The sole paid route is last and requires a durable per-job budget
+authorization; adapters cannot authorize spending. Route skips, normalized failures,
+the resolved model, token use, and any rounded-up micro-dollar cost are part of the
+recorded external-input result.
+
 Wall-clock throughput changes how quickly observers receive ticks, not which state
 transitions occur. The primary cognition allocation is denominated in simulated time;
 a separate hard currency circuit breaker can force a recorded unavailable result.

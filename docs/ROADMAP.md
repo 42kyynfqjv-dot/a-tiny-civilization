@@ -356,13 +356,23 @@ remain pending.
 - one bank per life, durable retain outbox, recorded recall inputs, deadlines, and
   replay that never contacts Hindsight;
 - simulated-time cognition allocation and recorded wall-cost circuit breaker;
-- request an LLM key only for the first explicit model-backed integration test.
+- keep every provider credential deployment-only and perform a real call only after
+  the durable request/receipt/deadline boundary is ready.
 
 The project-owned retain/recall contracts, deterministic per-life bank and request
 identities, atomic PostgreSQL delivery outbox, lease/retry worker, keyless Hindsight
 HTTP adapter, no-op fallback, and recorded-replay adapter are implemented. Actual
 perception memories and canonical recall-result events begin with embodied cognition;
 the foundation does not invent placeholder experiences.
+
+The strict bounded-cognition contract, OpenAI-compatible adapter, and free-first route
+ladder are now implemented under ADR 0051. The versioned registry has 256 route slots,
+separates production allocations from trial/development endpoints, caps one job at
+sixteen network attempts, records normalized attempt outcomes, and leaves the sole
+approved paid DeepSeek V4 Flash route unreachable without per-job authorization.
+PostgreSQL request selection, cost reservation, worker leases, deterministic deadline
+latching, canonical input events, and replay integration remain the active checkpoint;
+no current runner path invokes a model.
 
 ### 4. Evidence observatory
 
