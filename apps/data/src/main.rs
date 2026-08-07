@@ -21,9 +21,9 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaPopulationPlan,
-    FaunaRangeCandidateSet, FaunaSeededSelection, LandCoverClassCount, LandCoverEvidenceCell,
-    LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaPhysiologyProfileSet,
+    FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection, LandCoverClassCount,
+    LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
@@ -120,6 +120,11 @@ enum InspectCommand {
         input: PathBuf,
         #[arg(long)]
         candidates: PathBuf,
+    },
+    /// Validate a canonical source-pinned fauna physiology profile set.
+    FaunaPhysiologyProfileSet {
+        #[arg(long)]
+        input: PathBuf,
     },
     /// Validate one explicit provisional fauna population plan against its source
     /// candidate pool and seed-derived selection.
@@ -725,6 +730,9 @@ async fn main() -> Result<()> {
             }
             InspectCommand::FaunaSeededSelection { input, candidates } => {
                 inspect_fauna_seeded_selection(&input, &candidates)
+            }
+            InspectCommand::FaunaPhysiologyProfileSet { input } => {
+                inspect_fauna_physiology_profile_set(&input)
             }
             InspectCommand::FaunaPopulationPlan {
                 input,
@@ -1613,6 +1621,22 @@ fn inspect_fauna_range_candidate_set(input: &Path) -> Result<()> {
             "latitude_e7": candidates.query_point.latitude_e7,
             "longitude_e7": candidates.query_point.longitude_e7,
             "status": "modeled-range-candidates-not-population-or-abundance",
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_fauna_physiology_profile_set(input: &Path) -> Result<()> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("read fauna physiology profile set {}", input.display()))?;
+    let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&bytes)
+        .context("validate fauna physiology profile set")?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "profile_count": profiles.profiles.len(),
+            "source_artifact_digest": profiles.source_artifact_digest,
         }))?
     );
     Ok(())

@@ -60,10 +60,10 @@ def main():
             key, scientific = candidates[0]
             record = {"line": line_number, "species": name, "body mass": value, "body mass - units": unit}
             profiles.append({"species": {"catalog":"gbif","identifier":str(key),"scientific_name":scientific,"source_url":f"https://www.gbif.org/species/{key}"}, "trait_id":"adult-body-mass", "value":{"value":scaled,"decimal_places":0,"unit":"g"}, "source":"animal-traits-1.0.7", "source_field":"body_mass", "source_record_id":f"animaltraits-observations-line-{line_number}", "source_record_digest":digest(json.dumps(record, sort_keys=True, separators=(",", ":")).encode()), "evidence_basis":"empirical_observation"})
-    profiles.sort(key=lambda value: (value["species"]["catalog"], int(value["species"]["identifier"]), value["trait_id"], value["source_record_id"]))
+    profiles.sort(key=lambda value: (value["species"]["catalog"], value["species"]["identifier"], value["trait_id"], value["source_record_id"]))
     if not profiles: raise RuntimeError("no exact, positive AnimalTraits body-mass observations")
     payload = {"profile_set_schema_version":1, "source_artifact_digest":digest(source), "profiles":profiles}
-    data = json.dumps(payload, separators=(",", ":")).encode()
+    data = json.dumps(payload, separators=(",", ":"), ensure_ascii=False).encode()
     if args.output.exists(): raise RuntimeError(f"refusing to replace {args.output}")
     args.output.parent.mkdir(parents=True, exist_ok=True)
     fd, temporary = tempfile.mkstemp(dir=args.output.parent, prefix=".body-mass-")
