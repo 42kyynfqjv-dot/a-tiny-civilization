@@ -14,8 +14,8 @@ use sim_engine::{
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    Digest, EventBatch, EventSequence, SimTick, WorldConfiguration, WorldId, WorldManifest,
-    WorldStatus,
+    CelestialState, Digest, EventBatch, EventSequence, SimTick, WorldConfiguration, WorldId,
+    WorldManifest, WorldStatus,
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -305,13 +305,43 @@ pub async fn advance_world<S: WorldStore + ?Sized>(
         )));
     }
 
+    let events = current.state.plan_next_tick()?;
+    advance_world_events(store, current, events).await
+}
+
+/// Advance one ruleset-three world using one already-evaluated, source-backed
+/// celestial state. The source adapter lives outside this crate; replay uses only
+/// the committed event and therefore never invokes it.
+pub async fn advance_world_with_celestial<S: WorldStore + ?Sized>(
+    store: &S,
+    current: &WorldSession,
+    celestial_state: CelestialState,
+) -> Result<WorldSession, WorldRuntimeError> {
+    if current.world.status != WorldStatus::Running
+        || current.state.status() != WorldStatus::Running
+    {
+        return Err(WorldRuntimeError::Integrity(format!(
+            "world {} is not runnable",
+            current.world.manifest.world_id
+        )));
+    }
+    let events = current
+        .state
+        .plan_next_tick_with_celestial(celestial_state)?;
+    advance_world_events(store, current, events).await
+}
+
+async fn advance_world_events<S: WorldStore + ?Sized>(
+    store: &S,
+    current: &WorldSession,
+    events: Vec<world_domain::DomainEvent>,
+) -> Result<WorldSession, WorldRuntimeError> {
     let sequence = current
         .world
         .cursor
         .sequence
         .checked_next()
         .map_err(EngineError::from)?;
-    let events = current.state.plan_next_tick()?;
     let (next_state, batch) =
         current
             .state

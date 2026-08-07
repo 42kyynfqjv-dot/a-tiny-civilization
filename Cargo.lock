@@ -378,6 +378,7 @@ dependencies = [
  "dotenvy",
  "hindsight-adapter",
  "postgres-store",
+ "serde",
  "serde_json",
  "sim-engine",
  "tokio",

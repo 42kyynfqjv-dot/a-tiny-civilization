@@ -13,6 +13,7 @@ clap.workspace = true
 dotenvy.workspace = true
 hindsight-adapter = { path = "../../crates/hindsight-adapter" }
 postgres-store = { path = "../../crates/postgres-store" }
+serde.workspace = true
 serde_json.workspace = true
 sim-engine = { path = "../../crates/sim-engine" }
 tokio.workspace = true

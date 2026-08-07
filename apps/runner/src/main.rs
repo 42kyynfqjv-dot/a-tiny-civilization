@@ -1,29 +1,31 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
     path::PathBuf,
+    process::Command as ProcessCommand,
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use application::{
     AgentMemory, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
-    WorldSession, WorldStore, advance_world, initialize_or_resume_configured_world,
-    initialize_or_resume_world, resume_world,
+    WorldSession, WorldStore, advance_world, advance_world_with_celestial,
+    initialize_or_resume_configured_world, initialize_or_resume_world, resume_world,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
 use postgres_store::PostgresStore;
+use serde::Deserialize;
 use serde_json::json;
-use sim_engine::{InitialOrganism, RULESET_VERSION};
+use sim_engine::{CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, RULESET_VERSION};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
 use world_domain::{
-    BirthCategory, CapacityExhaustionPolicy, EntityId, OrganismRole, PartitionedExecution,
-    PersonRepresentation, S2CellId, SchedulerKind, SpeciesIdentity, WorldConfiguration, WorldId,
-    WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, CapacityExhaustionPolicy, CelestialState, EntityId, OrganismRole,
+    PartitionedExecution, PersonRepresentation, S2CellId, SchedulerKind, SpeciesIdentity,
+    WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -286,7 +288,13 @@ async fn advance_running_worlds(
                 session
             }
         };
-        let next = advance_world(store, &current).await?;
+        let next = if current.state.ruleset_version() >= CELESTIAL_DRIVER_RULESET_VERSION {
+            let celestial = evaluate_pinned_de441(&current)
+                .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+            advance_world_with_celestial(store, &current, celestial).await?
+        } else {
+            advance_world(store, &current).await?
+        };
         tracing::info!(
             %world_id,
             sequence = %next.world.cursor.sequence,
@@ -300,6 +308,51 @@ async fn advance_running_worlds(
         }
     }
     Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct JplEpochInspection {
+    fixed_scale_boundary: CelestialState,
+}
+
+/// Invoke the project-owned, source-verified DE441 evaluator. Its JSON result is
+/// immediately committed by the caller, so replay never starts this process.
+fn evaluate_pinned_de441(session: &WorldSession) -> Result<CelestialState> {
+    let configuration = session
+        .state
+        .configuration()
+        .context("celestial ruleset requires a tick-zero world configuration")?;
+    let next_tick = session
+        .state
+        .tick()
+        .checked_next()
+        .context("celestial tick overflow")?;
+    let tdb_seconds = i128::from(next_tick.get())
+        .checked_mul(i128::from(configuration.tick_duration_seconds))
+        .context("celestial epoch overflow")?;
+    let tdb_seconds =
+        i64::try_from(tdb_seconds).context("celestial epoch exceeds DE441 CLI range")?;
+    let tdb_seconds = tdb_seconds.to_string();
+    let output = ProcessCommand::new("/app/civilization-data")
+        .args([
+            "inspect",
+            "jpl-de441-epoch",
+            "--input-directory",
+            "/runtime/data/source-cache/jpl-de441",
+            "--tdb-seconds-from-j2000",
+            &tdb_seconds,
+        ])
+        .output()
+        .context("evaluate pinned DE441 source")?;
+    if !output.status.success() {
+        anyhow::bail!(
+            "pinned DE441 evaluator failed: {}",
+            String::from_utf8_lossy(&output.stderr).trim()
+        );
+    }
+    let inspection: JplEpochInspection =
+        serde_json::from_slice(&output.stdout).context("decode pinned DE441 evaluator output")?;
+    Ok(inspection.fixed_scale_boundary)
 }
 
 async fn init_proof_world(
