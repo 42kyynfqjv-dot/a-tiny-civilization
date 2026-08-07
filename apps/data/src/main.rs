@@ -130,6 +130,14 @@ enum InspectCommand {
         #[arg(long)]
         artifact_root: PathBuf,
     },
+    /// Report exact EltonTraits terrestrial-foraging coverage for one local
+    /// modeled-range candidate set. This reports evidence; it does not populate.
+    FaunaTerrestrialEvidence {
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        elton_birds: PathBuf,
+    },
     /// Compare retained fauna-source names against the frozen accepted GBIF catalog.
     /// This only reports exact-name matches; it never guesses synonym mappings.
     FaunaTraitTaxa {
@@ -691,6 +699,10 @@ async fn main() -> Result<()> {
                 &land_reference_root_index,
                 &artifact_root,
             ),
+            InspectCommand::FaunaTerrestrialEvidence {
+                candidates,
+                elton_birds,
+            } => inspect_fauna_terrestrial_evidence(&candidates, &elton_birds),
             InspectCommand::NaturalEarthLand {
                 source_snapshot,
                 artifact_root,
@@ -1555,6 +1567,95 @@ fn inspect_s2_geographic(s2_cell_id: S2CellId) -> Result<()> {
         }))?
     );
     Ok(())
+}
+
+fn inspect_fauna_terrestrial_evidence(
+    candidates_path: &Path,
+    elton_birds_path: &Path,
+) -> Result<()> {
+    let candidate_bytes = fs::read(candidates_path)
+        .with_context(|| format!("read fauna candidates {}", candidates_path.display()))?;
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes)
+        .context("validate fauna candidates")?;
+    let raw = fs::read(elton_birds_path)
+        .with_context(|| format!("read Elton bird traits {}", elton_birds_path.display()))?;
+    let rows = parse_delimited_records(&decode_windows_1252(&raw), '\t')?;
+    let header = rows
+        .first()
+        .cloned()
+        .context("Elton bird traits has no header")?;
+    let column = |name: &str| {
+        header
+            .iter()
+            .position(|field| field == name)
+            .with_context(|| format!("Elton bird traits is missing {name}"))
+    };
+    let scientific = column("Scientific")?;
+    let pelagic = column("PelagicSpecialist")?;
+    let water_below = column("ForStrat-watbelowsurf")?;
+    let water_around = column("ForStrat-wataroundsurf")?;
+    let mut records = BTreeMap::<String, Vec<(u16, u16, u16)>>::new();
+    for (row_number, row) in rows.into_iter().enumerate().skip(1) {
+        if row.iter().all(String::is_empty) {
+            continue;
+        }
+        if row.len() != header.len() {
+            bail!("Elton bird row {} has a wrong column count", row_number + 1);
+        }
+        let name = row[scientific].trim();
+        if name.is_empty() {
+            continue;
+        }
+        let numeric = |index: usize, field: &str| -> Result<u16> {
+            row[index]
+                .trim()
+                .parse()
+                .with_context(|| format!("Elton bird row {} has invalid {field}", row_number + 1))
+        };
+        records.entry(name.to_owned()).or_default().push((
+            numeric(pelagic, "PelagicSpecialist")?,
+            numeric(water_below, "ForStrat-watbelowsurf")?,
+            numeric(water_around, "ForStrat-wataroundsurf")?,
+        ));
+    }
+    let mut exact_single_record_birds = 0_u64;
+    let mut terrestrial_foraging_birds = 0_u64;
+    let mut ambiguous_bird_records = 0_u64;
+    for candidate in &candidates.candidates {
+        match records
+            .get(&candidate.species.scientific_name)
+            .map(Vec::as_slice)
+        {
+            Some([record]) => {
+                exact_single_record_birds += 1;
+                if is_elton_terrestrial_foraging(*record) {
+                    terrestrial_foraging_birds += 1;
+                }
+            }
+            Some(_) => ambiguous_bird_records += 1,
+            None => {}
+        }
+    }
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "candidate_set_digest": Digest::sha256(&candidate_bytes),
+            "candidate_count": candidates.candidates.len(),
+            "elton_bird_source_digest": Digest::sha256(&raw),
+            "exact_single_record_birds": exact_single_record_birds,
+            "terrestrial_foraging_birds": terrestrial_foraging_birds,
+            "ambiguous_bird_records": ambiguous_bird_records,
+            "status": "coverage-only-not-habitat-suitability-or-population",
+            "terrestrial_foraging_rule": "PelagicSpecialist=0 AND ForStrat-watbelowsurf=0 AND ForStrat-wataroundsurf=0",
+        }))?
+    );
+    Ok(())
+}
+
+/// A deliberately narrow trait-only condition. This is not a habitat model.
+fn is_elton_terrestrial_foraging(record: (u16, u16, u16)) -> bool {
+    let (pelagic_specialist, water_below_surface, water_around_surface) = record;
+    pelagic_specialist == 0 && water_below_surface == 0 && water_around_surface == 0
 }
 
 fn derive_fauna_seeded_selection(
@@ -11039,6 +11140,14 @@ mod tests {
         assert_eq!(accumulated.get("tp"), Some(&vec![12, 721, 1_440]));
         assert!(!accumulated.contains_key("t2m"));
         assert!(expected_era5_member_variables("unexpected.nc").is_err());
+    }
+
+    #[test]
+    fn terrestrial_foraging_condition_excludes_pelagic_and_water_foraging_birds() {
+        assert!(is_elton_terrestrial_foraging((0, 0, 0)));
+        assert!(!is_elton_terrestrial_foraging((1, 0, 0)));
+        assert!(!is_elton_terrestrial_foraging((0, 1, 0)));
+        assert!(!is_elton_terrestrial_foraging((0, 0, 1)));
     }
 
     #[test]

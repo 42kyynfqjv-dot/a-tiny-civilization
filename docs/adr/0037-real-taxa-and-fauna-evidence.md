@@ -149,6 +149,14 @@ Elton mammal records (5,063 exact matches). Completely blank trailing fixed-widt
 rows are excluded as non-records. Those counts are evidence
 coverage, not a claim that the unmatched taxa are absent from Earth.
 
+`civilization-data inspect fauna-terrestrial-evidence` is an even narrower
+coverage-only report for one modeled-range candidate set. It permits an exact single
+Elton bird record to meet a terrestrial-foraging condition only when
+`PelagicSpecialist=0`, `ForStrat-watbelowsurf=0`, and
+`ForStrat-wataroundsurf=0`. Its output explicitly does **not** claim habitat
+suitability, occupancy, abundance, or a population plan. It is a transparent input
+check for a later ecological normalizer, not a hidden fauna selector.
+
 References: [GBIF Backbone Taxonomy](https://www.gbif.org/dataset/d7dddbf4-2cf0-4f39-9b2a-bb099caae36c),
 [GBIF taxonomy interpretation](https://techdocs.gbif.org/en/data-processing/taxonomy-interpretation),
 [GBIF citation guidance](https://www.gbif.org/citation-guidelines),
