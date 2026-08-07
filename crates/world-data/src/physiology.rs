@@ -182,6 +182,7 @@ impl FaunaMetabolicRateSelection {
         let profile = self.resolve(profiles)?;
         Ok(MetabolicRateCommitment {
             commitment_schema_version: METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::SourceMeasurement,
             profile_set_digest: self.profile_set_digest,
             observed_species: profile.species.clone(),
             source_record_id: profile.source_record_id.clone(),

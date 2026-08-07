@@ -132,15 +132,22 @@ separate ecological population plan must supply those inputs before any fauna ex
 For integration worlds only, `civilization-runner init-provisional-full-earth` can
 consume the candidate set and seeded selection only with canonical
 `--fauna-origin-environment` and `--fauna-population-plan` artifacts. The plan carries
-explicit counts, but must bind them to the world seed, exact canonical origin-environment
-bytes and embodied patch, candidate-set digest,
+explicit counts and, in schema two, a strictly ordered allocation of those founders to
+explicit birth categories. Category counts must be positive and sum exactly to the
+species count; they are immutable input rather than a runner-chosen demographic
+shortcut. Schema-one plans remain byte-replayable and retain their historical
+`unspecified` founder category. Every plan must bind to the world seed, exact canonical
+origin-environment bytes and embodied patch, candidate-set digest,
 and seeded-selection digest. Every planned species must be an exactly selected real
 GBIF species; partial inputs, changed provenance, unordered species, zero counts, or
 an origin mismatch fail closed. The runner commits all four artifact digests to the
 immutable world manifest. This removes the former species-times-arbitrary-count
 shortcut: a modeled range cannot directly create organisms. The only representable
 plan status is **provisional not scientifically admitted**, so it cannot be relabeled
-as a measured population. A later ecological normalizer must produce the plan.
+as a measured population. A later ecological normalizer must produce the plan. The
+provisional derivation uses one female and one male only as a plainly marked engineering
+assumption for species with retained metabolic evidence; it is not a claim about wild
+abundance or sex ratio.
 
 `civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
 bridge. It preserves the original artifact hash while decoding EltonTraits' published

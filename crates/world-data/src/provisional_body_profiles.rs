@@ -262,6 +262,7 @@ mod tests {
             initial_age_ticks: 20,
             metabolic_rate: MetabolicRateCommitment {
                 commitment_schema_version: METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+                evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
                 profile_set_digest: Digest::sha256(b"metabolic profile set"),
                 observed_species: species.clone(),
                 source_record_id: "test-metabolic-row".to_owned(),

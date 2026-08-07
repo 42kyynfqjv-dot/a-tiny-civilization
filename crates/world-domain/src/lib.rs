@@ -42,7 +42,8 @@ pub use configuration::{
 pub use embodiment::{
     ACTION_VALUE_MAX, ACTION_VALUE_MIN, ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState,
     BodilyNeedState, BodilyRegulationState, EmbodimentError,
-    METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, MetabolicRateCommitment, NeedKind, NeedSignal,
+    LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+    MetabolicRateCommitment, NeedKind, NeedSignal,
     PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PerceptionChannel,
     PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment, PrimitiveAction,
     PrimitiveActionKind, PropertyReading, SituatedPerception,

@@ -5935,6 +5935,7 @@ mod tests {
         person.organism_id = EntityId::from_uuid(Uuid::from_u128(organism_id));
         person.metabolic_rate = Some(MetabolicRateCommitment {
             commitment_schema_version: world_domain::METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
             profile_set_digest: Digest::sha256(b"regulated fixture metabolic profiles"),
             observed_species: person.species.clone(),
             source_record_id: "fixture-rate".to_owned(),
@@ -6149,6 +6150,7 @@ mod tests {
         let mut person = initial_person(manifest.world_id);
         person.metabolic_rate = Some(MetabolicRateCommitment {
             commitment_schema_version: 1,
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::SourceMeasurement,
             profile_set_digest: Digest::sha256(b"retained metabolic profile set"),
             observed_species: person.species.clone(),
             source_record_id: "retained-row-1".to_owned(),

@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import os
 from pathlib import Path
 import sqlite3
 import struct
@@ -198,6 +199,10 @@ def main() -> int:
     parser.add_argument("--latitude-e7", type=int, required=True)
     parser.add_argument("--longitude-e7", type=int, required=True)
     parser.add_argument(
+        "--output", type=Path,
+        help="write canonical JSON to a new file instead of stdout; existing files are refused",
+    )
+    parser.add_argument(
         "--range-package", action="append",
         help="limit work to one named range package; repeat for a deterministic subset",
     )
@@ -255,7 +260,7 @@ def main() -> int:
         if existing is None or source_order(record) < source_order(existing):
             deduplicated[key] = record
     matches = sorted(deduplicated.values(), key=lambda record: int(record["gbif_taxon_key"]))
-    sys.stdout.write(json.dumps({
+    payload = json.dumps({
         "candidate_set_schema_version": 1,
         "candidate_set_id": point_identifier(args.latitude_e7, args.longitude_e7),
         "inaturalist_release": VERSION,
@@ -267,7 +272,20 @@ def main() -> int:
         "source_gbif_catalog_digest": crosswalk["gbif_catalog_sha256"],
         "source_inaturalist_taxonomy_digest": crosswalk["inaturalist_taxonomy_sha256"],
         "candidates": [candidate_record(record) for record in matches],
-    }, separators=(",", ":"), ensure_ascii=False))
+    }, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+    if args.output is None:
+        sys.stdout.buffer.write(payload)
+    else:
+        args.output.parent.mkdir(parents=True, exist_ok=True)
+        with args.output.open("xb") as stream:
+            stream.write(payload)
+            stream.flush()
+            os.fsync(stream.fileno())
+        print(json.dumps({
+            "candidate_count": len(matches),
+            "content_hash": hashlib.sha256(payload).hexdigest(),
+            "output_path": str(args.output),
+        }, separators=(",", ":")))
     return 0
 
 

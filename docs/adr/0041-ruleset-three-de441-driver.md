@@ -5,7 +5,12 @@ Accepted on 2026-08-07.
 Ruleset three records one fixed-scale `CelestialState` after every tick advances.
 The runner evaluates the project-owned `civilization-data inspect jpl-de441-epoch`
 command against the read-only, content-addressed DE441 files staged at
-`/runtime/data/source-cache/jpl-de441`. The epoch is the next simulation tick
+`/runtime/data/source-cache/jpl-de441`. Those are the production defaults. Isolated
+verification can set `ATINY_CIVILIZATION_DATA_EXECUTABLE` and
+`ATINY_JPL_DE441_INPUT_DIRECTORY` to the same checked binary and retained bytes without
+copying multi-gigabyte artifacts. The returned epoch and state are validated
+identically and committed, so filesystem location is infrastructure rather than a
+world input. The epoch is the next simulation tick
 multiplied by the immutable `tick_duration_seconds` committed at genesis.
 
 The returned state is committed in the canonical event batch. Replayers use that

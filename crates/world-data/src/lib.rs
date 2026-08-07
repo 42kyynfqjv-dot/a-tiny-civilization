@@ -36,9 +36,10 @@ pub use fauna_evidence::{
 pub use fauna_ranges::{
     FAUNA_POPULATION_PLAN_MEDIA_TYPE, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
     FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
-    FAUNA_SEEDED_SELECTION_MEDIA_TYPE, FAUNA_SEEDED_SELECTION_SCHEMA_VERSION, FaunaPopulationPlan,
-    FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeCandidateSet,
-    FaunaRangeCandidateSetError, FaunaRangeQueryPoint, FaunaSeededSelection,
+    FAUNA_SEEDED_SELECTION_MEDIA_TYPE, FAUNA_SEEDED_SELECTION_SCHEMA_VERSION,
+    FaunaBirthCategoryCount, FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate,
+    FaunaRangeCandidateSet, FaunaRangeCandidateSetError, FaunaRangeQueryPoint,
+    FaunaSeededSelection, LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
 };
 
 pub use gbif_catalog::{

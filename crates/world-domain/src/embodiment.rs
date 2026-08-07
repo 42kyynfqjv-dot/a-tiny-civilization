@@ -8,16 +8,22 @@ use thiserror::Error;
 
 use crate::{Digest, EntityId, SpeciesIdentity};
 
-/// A source-pinned measured power carried by a particular organism.
+/// A source-pinned power value carried by a particular organism.
 ///
-/// This preserves exactly one retained observation without making an unsupported
-/// claim that it is a basal rate, daily requirement, or environmental response.
+/// This preserves either one retained observation or one explicitly classified
+/// provisional assumption without making an unsupported claim that it is a basal
+/// rate, daily requirement, or environmental response.
 /// A later ruleset may use it only alongside an explicit conversion and exposure
 /// model. Keeping the commitment in canonical body state prevents a runner or
 /// projection from silently changing the evidence that shaped a living world.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MetabolicRateCommitment {
     pub commitment_schema_version: u16,
+    #[serde(
+        default,
+        skip_serializing_if = "PhysiologicalEvidenceBasis::is_source_measurement"
+    )]
+    pub evidence_basis: PhysiologicalEvidenceBasis,
     pub profile_set_digest: Digest,
     pub observed_species: SpeciesIdentity,
     pub source_record_id: String,
@@ -26,13 +32,20 @@ pub struct MetabolicRateCommitment {
     pub measured_power_decimal_places: u8,
 }
 
-pub const METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 2;
 pub const PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION: u16 = 1;
 
 impl MetabolicRateCommitment {
     pub fn validate(&self) -> Result<(), EmbodimentError> {
-        if self.commitment_schema_version != METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION {
-            return Err(EmbodimentError::UnsupportedMetabolicCommitmentSchema);
+        match self.commitment_schema_version {
+            LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION => {
+                if self.evidence_basis != PhysiologicalEvidenceBasis::SourceMeasurement {
+                    return Err(EmbodimentError::InvalidMetabolicCommitment);
+                }
+            }
+            METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION => {}
+            _ => return Err(EmbodimentError::UnsupportedMetabolicCommitmentSchema),
         }
         if self.profile_set_digest == Digest::ZERO
             || self.source_record_digest == Digest::ZERO
@@ -52,12 +65,20 @@ impl MetabolicRateCommitment {
 /// The weakest evidence class used by any parameter in a committed regulation
 /// profile. This makes an engineering placeholder impossible to present as a sourced
 /// measurement merely because the same profile also contains measured values.
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PhysiologicalEvidenceBasis {
+    #[default]
     SourceMeasurement,
     LiteratureApproximation,
     EngineeringAssumption,
+}
+
+impl PhysiologicalEvidenceBasis {
+    #[must_use]
+    pub const fn is_source_measurement(&self) -> bool {
+        matches!(self, Self::SourceMeasurement)
+    }
 }
 
 /// Immutable species-specific parameters for the first canonical bodily regulator.
@@ -518,5 +539,55 @@ mod tests {
             })
         );
         assert_eq!(needs.signal(NeedKind::Pain), None);
+    }
+
+    #[test]
+    fn metabolic_commitments_preserve_legacy_bytes_and_label_assumptions() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("real taxon");
+        let mut commitment = MetabolicRateCommitment {
+            commitment_schema_version: LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+            evidence_basis: PhysiologicalEvidenceBasis::SourceMeasurement,
+            profile_set_digest: Digest::sha256(b"retained profiles"),
+            observed_species: species,
+            source_record_id: "retained-row-1".to_owned(),
+            source_record_digest: Digest::sha256(b"retained row"),
+            measured_power_value: 125,
+            measured_power_decimal_places: 3,
+        };
+        commitment.validate().expect("legacy source commitment");
+        let legacy_bytes = serde_json::to_vec(&commitment).expect("legacy JSON");
+        assert!(
+            !String::from_utf8(legacy_bytes.clone())
+                .expect("UTF-8 JSON")
+                .contains("evidence_basis")
+        );
+        assert_eq!(
+            serde_json::from_slice::<MetabolicRateCommitment>(&legacy_bytes)
+                .expect("decode legacy commitment"),
+            commitment
+        );
+
+        commitment.commitment_schema_version = METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION;
+        commitment.evidence_basis = PhysiologicalEvidenceBasis::EngineeringAssumption;
+        commitment
+            .validate()
+            .expect("explicit provisional assumption");
+        assert!(
+            String::from_utf8(serde_json::to_vec(&commitment).expect("assumption JSON"))
+                .expect("UTF-8 JSON")
+                .contains("engineering_assumption")
+        );
+
+        commitment.commitment_schema_version = LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION;
+        assert_eq!(
+            commitment.validate(),
+            Err(EmbodimentError::InvalidMetabolicCommitment)
+        );
     }
 }

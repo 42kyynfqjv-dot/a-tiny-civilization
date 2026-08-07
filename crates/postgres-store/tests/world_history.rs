@@ -157,6 +157,7 @@ fn cognition_initial_person(world_id: WorldId) -> InitialOrganism {
     person.initial_age_ticks = 20;
     person.metabolic_rate = Some(MetabolicRateCommitment {
         commitment_schema_version: world_domain::METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+        evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
         profile_set_digest: Digest::sha256(b"cognition PostgreSQL metabolic profiles"),
         observed_species: person.species.clone(),
         source_record_id: "cognition-postgres-rate".to_owned(),

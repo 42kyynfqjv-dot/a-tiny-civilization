@@ -6,7 +6,9 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use world_domain::{Digest, GeographicCoordinateE7, S2CellId, SpeciesIdentity, WorldSeed};
+use world_domain::{
+    BirthCategory, Digest, GeographicCoordinateE7, S2CellId, SpeciesIdentity, WorldSeed,
+};
 
 use crate::ProvisionalOriginEnvironment;
 
@@ -17,7 +19,8 @@ const INATURALIST_RANGE_RELEASE: &str = "2.20";
 pub const FAUNA_SEEDED_SELECTION_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_SEEDED_SELECTION_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-seeded-selection+json";
-pub const FAUNA_POPULATION_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_POPULATION_PLAN_SCHEMA_VERSION: u16 = 2;
 pub const FAUNA_POPULATION_PLAN_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.provisional-fauna-population-plan+json";
 
@@ -73,9 +76,22 @@ pub struct FaunaSeededSelection {
 ///
 /// A count is an engine input, never a claim that a range source measured abundance.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaBirthCategoryCount {
+    pub category: BirthCategory,
+    pub count: u32,
+}
+
+/// An explicitly planned initial count for a real selected species.
+///
+/// Schema two makes the founder categories part of the immutable input rather than
+/// letting the runner invent them. Schema-one artifacts omit the category counts
+/// and retain their legacy `unspecified` founder behavior.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaPopulationPlanEntry {
     pub species: SpeciesIdentity,
     pub initial_individual_count: u32,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub birth_category_counts: Vec<FaunaBirthCategoryCount>,
 }
 
 /// A non-admitted hand-off from an ecological planner to genesis.
@@ -238,7 +254,10 @@ impl FaunaPopulationPlan {
         candidates: &FaunaRangeCandidateSet,
         selection: &FaunaSeededSelection,
     ) -> Result<(), FaunaRangeCandidateSetError> {
-        if self.population_plan_schema_version != FAUNA_POPULATION_PLAN_SCHEMA_VERSION {
+        if !matches!(
+            self.population_plan_schema_version,
+            LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION | FAUNA_POPULATION_PLAN_SCHEMA_VERSION
+        ) {
             return Err(
                 FaunaRangeCandidateSetError::UnsupportedPopulationPlanSchema(
                     self.population_plan_schema_version,
@@ -282,6 +301,37 @@ impl FaunaPopulationPlan {
                 || previous_key.is_some_and(|previous| previous >= key)
             {
                 return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+            }
+            match self.population_plan_schema_version {
+                LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION => {
+                    if !entry.birth_category_counts.is_empty() {
+                        return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+                    }
+                }
+                FAUNA_POPULATION_PLAN_SCHEMA_VERSION => {
+                    if entry.birth_category_counts.is_empty() {
+                        return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+                    }
+                    let mut total = 0_u32;
+                    let mut previous_category = None;
+                    for category_count in &entry.birth_category_counts {
+                        if category_count.count == 0
+                            || previous_category
+                                .as_ref()
+                                .is_some_and(|previous| previous >= &category_count.category)
+                        {
+                            return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+                        }
+                        total = total
+                            .checked_add(category_count.count)
+                            .ok_or(FaunaRangeCandidateSetError::InvalidPopulationPlan)?;
+                        previous_category = Some(category_count.category.clone());
+                    }
+                    if total != entry.initial_individual_count {
+                        return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+                    }
+                }
+                _ => unreachable!("population-plan schema checked above"),
             }
             previous_key = Some(key);
         }
@@ -566,6 +616,16 @@ mod tests {
             entries: vec![FaunaPopulationPlanEntry {
                 species: selection.selected_candidates[0].species.clone(),
                 initial_individual_count: 2,
+                birth_category_counts: vec![
+                    FaunaBirthCategoryCount {
+                        category: BirthCategory::new("female").expect("category"),
+                        count: 1,
+                    },
+                    FaunaBirthCategoryCount {
+                        category: BirthCategory::new("male").expect("category"),
+                        count: 1,
+                    },
+                ],
             }],
         };
         let bytes = plan
@@ -580,6 +640,93 @@ mod tests {
         assert_eq!(
             invalid.validate_against(&candidates, &selection),
             Err(FaunaRangeCandidateSetError::InvalidPopulationPlan)
+        );
+    }
+
+    #[test]
+    fn population_plan_requires_exact_canonical_founder_category_counts() {
+        let candidates = set();
+        let selection = candidates
+            .select_seeded_candidates(WorldSeed::new(42), 1)
+            .expect("selection");
+        let mut plan = FaunaPopulationPlan {
+            population_plan_schema_version: FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
+            status: "provisional-not-scientifically-admitted".to_owned(),
+            world_seed: WorldSeed::new(42),
+            origin_environment_digest: Digest::sha256(b"environment"),
+            embodied_patch: "1000000000000001".parse().expect("valid L30 patch"),
+            candidate_set_digest: selection.candidate_set_digest,
+            seeded_selection_digest: Digest::sha256(
+                &selection
+                    .canonical_bytes_against(&candidates)
+                    .expect("selection bytes"),
+            ),
+            entries: vec![FaunaPopulationPlanEntry {
+                species: selection.selected_candidates[0].species.clone(),
+                initial_individual_count: 2,
+                birth_category_counts: vec![
+                    FaunaBirthCategoryCount {
+                        category: BirthCategory::new("female").expect("category"),
+                        count: 1,
+                    },
+                    FaunaBirthCategoryCount {
+                        category: BirthCategory::new("male").expect("category"),
+                        count: 1,
+                    },
+                ],
+            }],
+        };
+        plan.validate_against(&candidates, &selection)
+            .expect("valid category allocation");
+
+        plan.entries[0].birth_category_counts[1].count = 2;
+        assert_eq!(
+            plan.validate_against(&candidates, &selection),
+            Err(FaunaRangeCandidateSetError::InvalidPopulationPlan)
+        );
+        plan.entries[0].birth_category_counts[1].count = 1;
+        plan.entries[0].birth_category_counts.swap(0, 1);
+        assert_eq!(
+            plan.validate_against(&candidates, &selection),
+            Err(FaunaRangeCandidateSetError::InvalidPopulationPlan)
+        );
+    }
+
+    #[test]
+    fn legacy_population_plan_keeps_omitted_category_wire_shape() {
+        let candidates = set();
+        let selection = candidates
+            .select_seeded_candidates(WorldSeed::new(42), 1)
+            .expect("selection");
+        let plan = FaunaPopulationPlan {
+            population_plan_schema_version: LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
+            status: "provisional-not-scientifically-admitted".to_owned(),
+            world_seed: WorldSeed::new(42),
+            origin_environment_digest: Digest::sha256(b"environment"),
+            embodied_patch: "1000000000000001".parse().expect("valid L30 patch"),
+            candidate_set_digest: selection.candidate_set_digest,
+            seeded_selection_digest: Digest::sha256(
+                &selection
+                    .canonical_bytes_against(&candidates)
+                    .expect("selection bytes"),
+            ),
+            entries: vec![FaunaPopulationPlanEntry {
+                species: selection.selected_candidates[0].species.clone(),
+                initial_individual_count: 2,
+                birth_category_counts: Vec::new(),
+            }],
+        };
+        let bytes = plan
+            .canonical_bytes_against(&candidates, &selection)
+            .expect("legacy canonical bytes");
+        assert!(
+            !String::from_utf8(bytes.clone())
+                .expect("JSON")
+                .contains("birth_category_counts")
+        );
+        assert_eq!(
+            FaunaPopulationPlan::from_canonical_slice_against(&bytes, &candidates, &selection),
+            Ok(plan)
         );
     }
 }

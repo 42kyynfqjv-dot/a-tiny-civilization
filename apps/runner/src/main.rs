@@ -537,15 +537,14 @@ fn evaluate_pinned_de441(session: &WorldSession) -> Result<CelestialState> {
     let tdb_seconds =
         i64::try_from(tdb_seconds).context("celestial epoch exceeds DE441 CLI range")?;
     let tdb_seconds_text = tdb_seconds.to_string();
-    let output = ProcessCommand::new("/app/civilization-data")
-        .args([
-            "inspect",
-            "jpl-de441-epoch",
-            "--input-directory",
-            "/runtime/data/source-cache/jpl-de441",
-            "--tdb-seconds-from-j2000",
-            &tdb_seconds_text,
-        ])
+    let data_executable = std::env::var_os("ATINY_CIVILIZATION_DATA_EXECUTABLE")
+        .unwrap_or_else(|| "/app/civilization-data".into());
+    let input_directory = std::env::var_os("ATINY_JPL_DE441_INPUT_DIRECTORY")
+        .unwrap_or_else(|| "/runtime/data/source-cache/jpl-de441".into());
+    let output = ProcessCommand::new(data_executable)
+        .args(["inspect", "jpl-de441-epoch", "--input-directory"])
+        .arg(input_directory)
+        .args(["--tdb-seconds-from-j2000", &tdb_seconds_text])
         .output()
         .context("evaluate pinned DE441 source")?;
     if !output.status.success() {
@@ -1105,23 +1104,40 @@ fn load_provisional_fauna_initial_organisms(
                 .resolve_commitment(profiles)
                 .expect("previously verified metabolic selection remains valid")
         });
-        for ordinal in 0..entry.initial_individual_count {
-            let identity = format!("provisional-fauna:{}:{}", entry.species.identifier, ordinal);
-            initial_organisms.push(InitialOrganism {
-                organism_id: EntityId::deterministic(world_id, identity.as_bytes()),
-                species: entry.species.clone(),
-                role: OrganismRole::Fauna,
-                // This engine-only category intentionally avoids an unsupported
-                // demographic assertion or explicit observer presentation.
-                birth_category: BirthCategory::new("unspecified")?,
-                initial_age_ticks: 0,
-                location_id: None,
-                embodied_patch: Some(initial_patch),
-                metabolic_rate: metabolic_rate.clone(),
-                physiological_regulation: None,
-                reproductive_physiology: None,
-                heritable_disposition_profile: None,
-            });
+        let category_counts = if entry.birth_category_counts.is_empty() {
+            vec![(
+                BirthCategory::new("unspecified")?,
+                entry.initial_individual_count,
+            )]
+        } else {
+            entry
+                .birth_category_counts
+                .iter()
+                .map(|category_count| (category_count.category.clone(), category_count.count))
+                .collect()
+        };
+        let mut ordinal = 0_u32;
+        for (birth_category, count) in category_counts {
+            for _ in 0..count {
+                let identity =
+                    format!("provisional-fauna:{}:{}", entry.species.identifier, ordinal);
+                initial_organisms.push(InitialOrganism {
+                    organism_id: EntityId::deterministic(world_id, identity.as_bytes()),
+                    species: entry.species.clone(),
+                    role: OrganismRole::Fauna,
+                    birth_category: birth_category.clone(),
+                    initial_age_ticks: 0,
+                    location_id: None,
+                    embodied_patch: Some(initial_patch),
+                    metabolic_rate: metabolic_rate.clone(),
+                    physiological_regulation: None,
+                    reproductive_physiology: None,
+                    heritable_disposition_profile: None,
+                });
+                ordinal = ordinal
+                    .checked_add(1)
+                    .context("provisional fauna founder ordinal overflow")?;
+            }
         }
     }
     Ok(Some(ProvisionalFaunaGenesis {
@@ -1454,7 +1470,7 @@ mod tests {
     use super::*;
     use world_data::{
         FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
-        FaunaEvidenceBasis, FaunaEvidenceSource, FaunaMetabolicRatePlan,
+        FaunaBirthCategoryCount, FaunaEvidenceBasis, FaunaEvidenceSource, FaunaMetabolicRatePlan,
         FaunaMetabolicRateSelection, FaunaPhysiologyProfile, FaunaPhysiologyProfileSet,
         FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeQueryPoint,
         LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
@@ -1513,6 +1529,7 @@ mod tests {
             initial_age_ticks: 20,
             metabolic_rate: world_domain::MetabolicRateCommitment {
                 commitment_schema_version: world_domain::METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+                evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
                 profile_set_digest: Digest::sha256(b"runner body-profile test set"),
                 observed_species: species.clone(),
                 source_record_id: "runner-body-profile-test-rate".to_owned(),
@@ -1771,6 +1788,16 @@ mod tests {
                     .map(|candidate| FaunaPopulationPlanEntry {
                         species: candidate.species.clone(),
                         initial_individual_count: 2,
+                        birth_category_counts: vec![
+                            FaunaBirthCategoryCount {
+                                category: BirthCategory::new("female").expect("category"),
+                                count: 1,
+                            },
+                            FaunaBirthCategoryCount {
+                                category: BirthCategory::new("male").expect("category"),
+                                count: 1,
+                            },
+                        ],
                     })
                     .collect::<Vec<_>>();
                 entries.sort_by_key(|entry| {
@@ -1867,6 +1894,15 @@ mod tests {
                 .iter()
                 .all(|organism| organism.metabolic_rate.is_some())
         );
+        for species in plan.entries.iter().map(|entry| &entry.species) {
+            let categories = genesis
+                .initial_organisms
+                .iter()
+                .filter(|organism| organism.species == *species)
+                .map(|organism| organism.birth_category.as_str())
+                .collect::<Vec<_>>();
+            assert_eq!(categories, ["female", "male"]);
+        }
         assert_ne!(
             genesis.metabolic_rate_plan_digest,
             Some(world_domain::Digest::ZERO)

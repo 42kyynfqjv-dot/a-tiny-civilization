@@ -21,30 +21,40 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaPhysiologyProfileCatalog,
-    FaunaPhysiologyProfileSet, FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection,
-    LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
-    PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
-    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
-    PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
-    ProvisionalLandOriginSelection, ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE,
-    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
-    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
-    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
-    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
+    FaunaBirthCategoryCount, FaunaMetabolicRatePlan, FaunaMetabolicRateSelection,
+    FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
+    FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection, LandCoverClassCount,
+    LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
+    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, PackedBooleanFieldTile,
+    PackedLandCoverEvidenceTile, PackedScalarFieldTile, PackedScalarTerrainTile,
+    PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection,
+    ProvisionalOrganismBodyProfileEntry, ProvisionalOrganismBodyProfilePlan,
+    ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
+    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
+    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
+    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
+    WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
-    CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
-    GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId, S2FaceUv, TdbSecondsSinceJ2000,
-    WorldConfiguration, WorldSeed, decode_s2_face_ij, route_geographic_to_s2,
-    route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray,
-    s2_ray_to_geographic_e7,
+    BirthCategory, CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
+    GeographicCoordinateHalfArcsecond, HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+    HeritableDispositionProfile, MAX_S2_LEVEL, METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+    MetabolicRateCommitment, OffspringCategoryWeight,
+    PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis,
+    PhysiologicalRegulationCommitment, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+    REPRODUCTIVE_PROBABILITY_SCALE, ReproductiveCategoryPair, ReproductivePhysiologyCommitment,
+    S2CellId, S2FaceUv, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldSeed,
+    decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2, s2_face_ij_center_uv,
+    s2_face_ij_vertex_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -482,6 +492,61 @@ enum DeriveCommand {
         world_seed: u64,
         #[arg(long, default_value_t = 23)]
         embodied_patch_level: u8,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Produce a bounded provisional founder plan from a seed-selected local range
+    /// pool. Every selected real taxon receives one female and one male founder;
+    /// this is an explicit engineering population assumption, not an abundance claim.
+    ProvisionalFaunaPopulationPlan {
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Pin the first canonical valid exact metabolic observation for each planned
+    /// fauna species. This never averages, estimates, or selects by presentation order.
+    FaunaMetabolicRatePlan {
+        #[arg(long)]
+        population_plan: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
+        #[arg(long)]
+        metabolic_profiles: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Construct explicit provisional body profiles for Homo sapiens and every
+    /// planned fauna species. Optional metabolic inputs provide exact retained fauna
+    /// observations; otherwise metabolism, regulation, reproduction, and heredity
+    /// remain explicit engineering assumptions.
+    ProvisionalOrganismBodyProfilePlan {
+        #[arg(long)]
+        population_plan: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
+        /// Optional only as a pair with `--metabolic-rate-plan`. When omitted,
+        /// metabolic commitments are explicitly engineering assumptions.
+        #[arg(long, requires = "metabolic_rate_plan")]
+        metabolic_profiles: Option<PathBuf>,
+        /// Optional only as a pair with `--metabolic-profiles`. When omitted,
+        /// metabolic commitments are explicitly engineering assumptions.
+        #[arg(long, requires = "metabolic_profiles")]
+        metabolic_rate_plan: Option<PathBuf>,
+        #[arg(long, default_value_t = 300)]
+        tick_duration_seconds: u32,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1019,6 +1084,53 @@ async fn main() -> Result<()> {
                 &candidates,
                 WorldSeed::new(world_seed),
                 species_limit,
+                &output,
+            ),
+            DeriveCommand::ProvisionalFaunaPopulationPlan {
+                candidates,
+                selection,
+                origin_environment,
+                output,
+            } => derive_provisional_fauna_population_plan(
+                &candidates,
+                &selection,
+                &origin_environment,
+                &output,
+            ),
+            DeriveCommand::FaunaMetabolicRatePlan {
+                population_plan,
+                candidates,
+                selection,
+                origin_environment,
+                metabolic_profiles,
+                output,
+            } => derive_fauna_metabolic_rate_plan(
+                &population_plan,
+                &candidates,
+                &selection,
+                &origin_environment,
+                &metabolic_profiles,
+                &output,
+            ),
+            DeriveCommand::ProvisionalOrganismBodyProfilePlan {
+                population_plan,
+                candidates,
+                selection,
+                origin_environment,
+                metabolic_profiles,
+                metabolic_rate_plan,
+                tick_duration_seconds,
+                output,
+            } => derive_provisional_organism_body_profile_plan(
+                PopulationPlanInputPaths {
+                    population_plan: &population_plan,
+                    candidates: &candidates,
+                    selection: &selection,
+                    origin_environment: &origin_environment,
+                },
+                metabolic_profiles.as_deref(),
+                metabolic_rate_plan.as_deref(),
+                tick_duration_seconds,
                 &output,
             ),
             DeriveCommand::EtopoGrid {
@@ -1833,6 +1945,420 @@ fn derive_fauna_seeded_selection(
             "species_limit": selection.species_limit,
             "status": "seeded-range-selection-not-population-or-organism-creation",
             "world_seed": selection.world_seed,
+        }))?
+    );
+    Ok(())
+}
+
+fn load_population_plan_inputs(
+    candidates_path: &Path,
+    selection_path: &Path,
+    origin_environment_path: &Path,
+    population_plan_path: &Path,
+) -> Result<(
+    FaunaRangeCandidateSet,
+    FaunaSeededSelection,
+    ProvisionalOriginEnvironment,
+    FaunaPopulationPlan,
+)> {
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(
+        &fs::read(candidates_path)
+            .with_context(|| format!("read fauna candidates {}", candidates_path.display()))?,
+    )
+    .context("validate fauna candidates")?;
+    let selection = FaunaSeededSelection::from_canonical_slice_against(
+        &fs::read(selection_path)
+            .with_context(|| format!("read fauna seeded selection {}", selection_path.display()))?,
+        &candidates,
+    )
+    .context("validate fauna seeded selection")?;
+    let environment = ProvisionalOriginEnvironment::from_canonical_slice(
+        &fs::read(origin_environment_path).with_context(|| {
+            format!(
+                "read origin environment {}",
+                origin_environment_path.display()
+            )
+        })?,
+    )
+    .context("validate provisional origin environment")?;
+    let plan = FaunaPopulationPlan::from_canonical_slice_against_environment(
+        &fs::read(population_plan_path).with_context(|| {
+            format!(
+                "read fauna population plan {}",
+                population_plan_path.display()
+            )
+        })?,
+        &candidates,
+        &selection,
+        &environment,
+    )
+    .context("validate fauna population plan")?;
+    Ok((candidates, selection, environment, plan))
+}
+
+fn load_metabolic_profiles(path: &Path) -> Result<(FaunaPhysiologyProfileSet, Digest)> {
+    let bytes = fs::read(path)
+        .with_context(|| format!("read fauna metabolic profile set {}", path.display()))?;
+    let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&bytes)
+        .context("validate fauna metabolic profile set")?;
+    Ok((profiles, Digest::sha256(&bytes)))
+}
+
+fn canonical_metabolic_profile<'a>(
+    profiles: &'a FaunaPhysiologyProfileSet,
+    species: &SpeciesIdentity,
+) -> Option<&'a world_data::FaunaPhysiologyProfile> {
+    // The set validator fixes `(species, trait_id, source_record_id)` order. The first
+    // matching positive watt observation is therefore a stable, source-addressable rule.
+    profiles.profiles.iter().find(|profile| {
+        profile.species == *species
+            && profile.trait_id == "standardized-metabolic-rate"
+            && profile.value.unit == "W"
+            && profile.value.value > 0
+    })
+}
+
+fn provisional_founder_entries(selection: &FaunaSeededSelection) -> Vec<FaunaPopulationPlanEntry> {
+    let female = BirthCategory::new("female").expect("static valid birth category");
+    let male = BirthCategory::new("male").expect("static valid birth category");
+    let mut entries = selection
+        .selected_candidates
+        .iter()
+        .map(|candidate| FaunaPopulationPlanEntry {
+            species: candidate.species.clone(),
+            initial_individual_count: 2,
+            birth_category_counts: vec![
+                FaunaBirthCategoryCount {
+                    category: female.clone(),
+                    count: 1,
+                },
+                FaunaBirthCategoryCount {
+                    category: male.clone(),
+                    count: 1,
+                },
+            ],
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|entry| {
+        entry
+            .species
+            .identifier
+            .parse::<u64>()
+            .expect("selected GBIF candidate identifier validated as a positive integer")
+    });
+    entries
+}
+
+fn derive_provisional_fauna_population_plan(
+    candidates_path: &Path,
+    selection_path: &Path,
+    origin_environment_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let candidate_bytes = fs::read(candidates_path)
+        .with_context(|| format!("read fauna candidates {}", candidates_path.display()))?;
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes)
+        .context("validate fauna candidates")?;
+    let selection_bytes = fs::read(selection_path)
+        .with_context(|| format!("read fauna seeded selection {}", selection_path.display()))?;
+    let selection =
+        FaunaSeededSelection::from_canonical_slice_against(&selection_bytes, &candidates)
+            .context("validate fauna seeded selection")?;
+    let environment_bytes = fs::read(origin_environment_path).with_context(|| {
+        format!(
+            "read origin environment {}",
+            origin_environment_path.display()
+        )
+    })?;
+    let environment = ProvisionalOriginEnvironment::from_canonical_slice(&environment_bytes)
+        .context("validate provisional origin environment")?;
+    let entries = provisional_founder_entries(&selection);
+    let plan = FaunaPopulationPlan {
+        population_plan_schema_version: FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
+        status: "provisional-not-scientifically-admitted".to_owned(),
+        world_seed: selection.world_seed,
+        origin_environment_digest: Digest::sha256(&environment_bytes),
+        embodied_patch: environment.selected_embodied_patch,
+        candidate_set_digest: Digest::sha256(&candidate_bytes),
+        seeded_selection_digest: Digest::sha256(&selection_bytes),
+        entries,
+    };
+    let bytes = plan
+        .canonical_bytes_against(&candidates, &selection)
+        .context("encode provisional fauna population plan")?;
+    plan.validate_against_environment(&candidates, &selection, &environment)
+        .context("validate provisional fauna population plan against origin")?;
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "species_count": plan.entries.len(),
+            "initial_individual_count": plan.entries.len() * 2,
+            "status": plan.status,
+            "policy": "every species in the bounded seed-derived selection receives one female and one male provisional founder; range candidates are not abundance measurements",
+        }))?
+    );
+    Ok(())
+}
+
+fn derive_fauna_metabolic_rate_plan(
+    population_plan_path: &Path,
+    candidates_path: &Path,
+    selection_path: &Path,
+    origin_environment_path: &Path,
+    metabolic_profiles_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let (_, _, _, population) = load_population_plan_inputs(
+        candidates_path,
+        selection_path,
+        origin_environment_path,
+        population_plan_path,
+    )?;
+    let (profiles, profile_set_digest) = load_metabolic_profiles(metabolic_profiles_path)?;
+    let selections = population
+        .entries
+        .iter()
+        .map(|entry| {
+            let profile =
+                canonical_metabolic_profile(&profiles, &entry.species).with_context(|| {
+                    format!(
+                        "planned species {} lacks positive exact metabolic observation",
+                        entry.species.scientific_name
+                    )
+                })?;
+            Ok(FaunaMetabolicRateSelection {
+                selection_schema_version: 1,
+                profile_set_digest,
+                species: entry.species.clone(),
+                source_record_id: profile.source_record_id.clone(),
+            })
+        })
+        .collect::<Result<Vec<_>>>()?;
+    let plan = FaunaMetabolicRatePlan {
+        plan_schema_version: 1,
+        selections,
+    };
+    let bytes = plan
+        .canonical_bytes()
+        .context("encode fauna metabolic-rate plan")?;
+    for selection in &plan.selections {
+        selection
+            .resolve(&profiles)
+            .context("resolve selected metabolic observation")?;
+    }
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "species_count": plan.selections.len(),
+            "policy": "first canonical exact positive standardized-metabolic-rate observation per planned species",
+        }))?
+    );
+    Ok(())
+}
+
+fn engineering_body_profile_entry(
+    species: SpeciesIdentity,
+    metabolic_rate: MetabolicRateCommitment,
+    tick_duration_seconds: u32,
+) -> ProvisionalOrganismBodyProfileEntry {
+    let profile_digest = Digest::sha256(
+        format!(
+            "a-tiny-civilization/provisional-body-assumptions/v1/{}/{}",
+            species.catalog, species.identifier
+        )
+        .as_bytes(),
+    );
+    let female = BirthCategory::new("female").expect("static valid birth category");
+    let male = BirthCategory::new("male").expect("static valid birth category");
+    ProvisionalOrganismBodyProfileEntry {
+        species: species.clone(),
+        initial_age_ticks: 1,
+        metabolic_rate,
+        physiological_regulation: PhysiologicalRegulationCommitment {
+            commitment_schema_version: PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "provisional-engineering-regulation-v1".to_owned(),
+            profile_digest,
+            species: species.clone(),
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            usable_energy_reserve_joules: 10_000_000,
+            hydration_failure_seconds: 604_800,
+            fatigue_failure_seconds: 57_600,
+            fatigue_recovery_seconds: 28_800,
+            thermoneutral_min_millicelsius: 0,
+            thermoneutral_max_millicelsius: 40_000,
+            thermal_failure_millicelsius_seconds: 86_400_000,
+            thermal_recovery_seconds: 28_800,
+        },
+        reproductive_physiology: ReproductivePhysiologyCommitment {
+            commitment_schema_version: REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "provisional-engineering-reproduction-v1".to_owned(),
+            profile_digest,
+            species: species.clone(),
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            tick_duration_seconds,
+            maturity_age_ticks: 1,
+            development_ticks: 12,
+            recovery_ticks: 120,
+            opportunity_interval_ticks: 60,
+            initiation_probability_millionths: REPRODUCTIVE_PROBABILITY_SCALE,
+            compatible_pairs: vec![ReproductiveCategoryPair {
+                first: female.clone(),
+                second: male.clone(),
+                developing_parent: female.clone(),
+            }],
+            offspring_categories: vec![
+                OffspringCategoryWeight {
+                    category: female,
+                    weight: 1,
+                },
+                OffspringCategoryWeight {
+                    category: male,
+                    weight: 1,
+                },
+            ],
+        },
+        heritable_disposition_profile: Some(HeritableDispositionProfile {
+            profile_schema_version: HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+            profile_id: "provisional-engineering-heredity-v1".to_owned(),
+            profile_digest,
+            species,
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            minimum_action_weight: 4,
+            neutral_action_weight: 16,
+            maximum_action_weight: 28,
+            founder_variation_steps: 3,
+            mutation_probability_millionths: 100_000,
+            mutation_max_step: 2,
+        }),
+    }
+}
+
+fn engineering_metabolic_commitment(species: SpeciesIdentity) -> MetabolicRateCommitment {
+    let assumption_digest = Digest::sha256(
+        format!(
+            "a-tiny-civilization/provisional-metabolic-assumption/v1/{}/{}",
+            species.catalog, species.identifier
+        )
+        .as_bytes(),
+    );
+    MetabolicRateCommitment {
+        commitment_schema_version: METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+        evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+        profile_set_digest: assumption_digest,
+        observed_species: species,
+        source_record_id: "engineering-assumption-metabolic-v1".to_owned(),
+        source_record_digest: assumption_digest,
+        measured_power_value: 100,
+        measured_power_decimal_places: 0,
+    }
+}
+
+struct PopulationPlanInputPaths<'a> {
+    population_plan: &'a Path,
+    candidates: &'a Path,
+    selection: &'a Path,
+    origin_environment: &'a Path,
+}
+
+fn derive_provisional_organism_body_profile_plan(
+    inputs: PopulationPlanInputPaths<'_>,
+    metabolic_profiles_path: Option<&Path>,
+    metabolic_rate_plan_path: Option<&Path>,
+    tick_duration_seconds: u32,
+    output_path: &Path,
+) -> Result<()> {
+    let (_, _, _, population) = load_population_plan_inputs(
+        inputs.candidates,
+        inputs.selection,
+        inputs.origin_environment,
+        inputs.population_plan,
+    )?;
+    let sourced_metabolic = match (metabolic_profiles_path, metabolic_rate_plan_path) {
+        (None, None) => None,
+        (Some(profiles_path), Some(plan_path)) => {
+            let (profiles, _) = load_metabolic_profiles(profiles_path)?;
+            let metabolic_plan =
+                FaunaMetabolicRatePlan::from_canonical_slice(&fs::read(plan_path).with_context(
+                    || format!("read fauna metabolic-rate plan {}", plan_path.display()),
+                )?)
+                .context("validate fauna metabolic-rate plan")?;
+            if metabolic_plan.selections.len() != population.entries.len() {
+                bail!("fauna metabolic-rate plan does not cover exactly the planned fauna species");
+            }
+            Some((profiles, metabolic_plan))
+        }
+        _ => bail!(
+            "metabolic profiles and metabolic-rate plan must be supplied together or both omitted"
+        ),
+    };
+    let mut entries = Vec::with_capacity(population.entries.len() + 1);
+    let human = SpeciesIdentity::new(
+        "gbif",
+        "2436436",
+        "Homo sapiens",
+        "https://www.gbif.org/species/2436436",
+    )
+    .expect("static valid Homo sapiens identity");
+    entries.push(engineering_body_profile_entry(
+        human.clone(),
+        engineering_metabolic_commitment(human),
+        tick_duration_seconds,
+    ));
+    for fauna in &population.entries {
+        let metabolic_rate = if let Some((profiles, metabolic_plan)) = &sourced_metabolic {
+            let selection = metabolic_plan
+                .selection_for(&fauna.species)
+                .with_context(|| {
+                    format!(
+                        "fauna metabolic-rate plan lacks {}",
+                        fauna.species.scientific_name
+                    )
+                })?;
+            selection
+                .resolve_commitment(profiles)
+                .context("resolve exact fauna metabolic commitment")?
+        } else {
+            engineering_metabolic_commitment(fauna.species.clone())
+        };
+        entries.push(engineering_body_profile_entry(
+            fauna.species.clone(),
+            metabolic_rate,
+            tick_duration_seconds,
+        ));
+    }
+    entries.sort_by(|left, right| {
+        (&left.species.catalog, &left.species.identifier)
+            .cmp(&(&right.species.catalog, &right.species.identifier))
+    });
+    let plan = ProvisionalOrganismBodyProfilePlan {
+        plan_schema_version: PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+        status: PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS.to_owned(),
+        tick_duration_seconds,
+        entries,
+    };
+    let bytes = plan
+        .canonical_bytes()
+        .context("encode provisional organism body-profile plan")?;
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "species_count": plan.entries.len(),
+            "status": plan.status,
+            "source_measured_fauna_metabolic_count": if sourced_metabolic.is_some() { population.entries.len() } else { 0 },
+            "engineering_assumption_fauna_metabolic_count": if sourced_metabolic.is_some() { 0 } else { population.entries.len() },
+            "provisional_reproduction_pacing": {
+                "development_ticks": 12,
+                "recovery_ticks": 120,
+                "opportunity_interval_ticks": 60,
+                "initiation_probability_millionths": REPRODUCTIVE_PROBABILITY_SCALE,
+            },
+            "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna metabolic rates are exact observations only when both optional metabolic artifacts are supplied, otherwise explicit engineering assumptions",
         }))?
     );
     Ok(())
@@ -12690,5 +13216,71 @@ mod tests {
         assert!(output.join("complete").is_file());
         assert!(prepare_terrain_layer_staging_directory(&output).is_err());
         fs::remove_dir_all(root).expect("remove terrain staging root");
+    }
+
+    #[test]
+    fn provisional_founders_keep_every_seeded_taxon_without_metabolic_coverage() {
+        let species = |identifier: &str, name: &str| {
+            SpeciesIdentity::new(
+                "gbif",
+                identifier,
+                name,
+                format!("https://www.gbif.org/species/{identifier}"),
+            )
+            .expect("test species")
+        };
+        let selection = FaunaSeededSelection {
+            selection_schema_version: 1,
+            candidate_set_digest: Digest::sha256(b"test candidates"),
+            world_seed: WorldSeed::new(42),
+            species_limit: 2,
+            selected_candidates: vec![
+                world_data::FaunaRangeCandidate {
+                    species: species("10", "Ten testii"),
+                    inaturalist_taxon_id: 10,
+                    range_package: "test-range".to_owned(),
+                    range_feature_fid: 10,
+                },
+                world_data::FaunaRangeCandidate {
+                    species: species("2", "Two testii"),
+                    inaturalist_taxon_id: 2,
+                    range_package: "test-range".to_owned(),
+                    range_feature_fid: 2,
+                },
+            ],
+        };
+        let entries = provisional_founder_entries(&selection);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].species.identifier, "2");
+        assert_eq!(entries[1].species.identifier, "10");
+        for entry in entries {
+            assert_eq!(entry.initial_individual_count, 2);
+            assert_eq!(
+                entry
+                    .birth_category_counts
+                    .iter()
+                    .map(|count| (count.category.as_str(), count.count))
+                    .collect::<Vec<_>>(),
+                vec![("female", 1), ("male", 1)]
+            );
+        }
+    }
+
+    #[test]
+    fn unsourced_body_metabolism_is_structurally_an_engineering_assumption() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("test species");
+        let commitment = engineering_metabolic_commitment(species.clone());
+        assert_eq!(
+            commitment.evidence_basis,
+            PhysiologicalEvidenceBasis::EngineeringAssumption
+        );
+        assert_eq!(commitment.observed_species, species);
+        commitment.validate().expect("valid explicit assumption");
     }
 }
