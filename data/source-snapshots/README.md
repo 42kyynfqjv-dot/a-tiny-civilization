@@ -17,8 +17,9 @@ After acquisition, the same complete set can be checked without network access b
 replacing `fetch` with `validate`. Fetch never replaces an existing file: matching
 bytes are reused, while any mismatch stops with an error.
 
-The first three manifests cover Natural Earth generalized global land polygons, NOAA
-ETOPO 2022 global 60 arc-second bedrock relief, and one CC0 CHELSA-BIOCLIM+ v2.1 global
-January temperature normal. Their own limitations are part of the canonical manifests;
-they are evidence and acquisition proofs, not simulation-ready world bundles. See
-[ADR 0015](../../docs/adr/0015-exact-upstream-source-snapshots.md).
+The committed manifests currently cover Natural Earth generalized land polygons, NOAA
+ETOPO 2022 global bedrock relief, two CC0 CHELSA-BIOCLIM+ temperature products, the
+complete 1981–2010 ERA5 normal-period request, and the Copernicus C3S 2022 global
+land-cover response. Their limitations and licence evidence are part of the canonical
+manifests; they remain acquisition evidence rather than simulation-ready world bundles.
+See [ADR 0015](../../docs/adr/0015-exact-upstream-source-snapshots.md).

@@ -115,20 +115,27 @@ measurement-oriented global source snapshots and normalized L10 roots, a coupled
 ecological quantity policy with retained refinement state and deltas, and durable
 embodied position/movement integration.
 
-Two upstream snapshots are now committed independently of any world bundle. Natural
-Earth v5.1.2 pins generalized global land polygons at an immutable revision; NOAA
-ETOPO 2022 v1 pins a global 60 arc-second bedrock NetCDF release through an explicit
-versioned-release locator. Both retain artifact URLs, exact lengths/hashes, version and
-license evidence, and material limitations. The source CLI performs HTTPS-only
-streaming acquisition with no replacement and complete offline verification. This
-proves the acquisition chain but does not create a canonical coastline, relief layer,
-or full-Earth root.
+Six upstream snapshots are now committed independently of any world bundle. They pin
+Natural Earth v5.1.2 generalized land polygons, NOAA ETOPO 2022 v1 bedrock relief, two
+CHELSA-BIOCLIM+ temperature products, the complete 1981–2010 ERA5 monthly normal-period
+request, and the Copernicus C3S 2022 v2.1.1 global land-cover response. Each snapshot
+retains exact artifact lengths/hashes, version and licence evidence, and material
+limitations. Acquisition refuses replacement and complete offline validation streams
+every retained byte. A source snapshot still cannot authorize genesis by itself.
 
 The Natural Earth path has now generated and independently inspected its full global
 L6→L10 Boolean `land-reference` release: 24,576 tiles, 6,291,456 target cells, and
 root-index SHA-256 `d8ac669b89f2903987766a2f55763b415bd7234097307ff63fcb7771099580ac`.
 It is a generalized land cross-check only; it does not make a canonical coastline,
 scientific bundle, or startable full-Earth world.
+
+The ETOPO path has independently generated its global L6→L10 four-point-quadrature
+terrain release over the same 6,291,456 target cells, with root-index SHA-256
+`0794832d533a81e0889779a78aa39d730a3b09a98edff37b57ef76f394504876`.
+The acquired Copernicus land-cover artifact contains one verified 2,351,763,989-byte
+NetCDF member on its documented 64,800 × 129,600 grid, with LCCS class and all four
+quality fields. Deterministic L10 aggregation, independent class-count inspection, and
+the habitat/coastline evidence roots remain pending.
 
 ### 3. Situated memory and bounded cognition
 

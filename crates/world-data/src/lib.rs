@@ -1825,6 +1825,9 @@ mod tests {
     const CHELSA_BIOCLIM_PLUS_V2_1_TAS_JANUARY_SNAPSHOT: &[u8] = include_bytes!(
         "../../../data/source-snapshots/chelsa-bioclim-plus-v2.1-tas-january-1981-2010.json"
     );
+    const COPERNICUS_SATELLITE_LAND_COVER_V2_1_1_2022_SNAPSHOT: &[u8] = include_bytes!(
+        "../../../data/source-snapshots/copernicus-satellite-land-cover-v2-1-1-2022.json"
+    );
 
     fn source_snapshot() -> SourceSnapshotManifest {
         let artifact = |role, path: &str, bytes: &[u8]| SourceSnapshotArtifact {
@@ -2150,6 +2153,49 @@ mod tests {
                 .expect("valid snapshot content digest")
                 .to_string(),
             "339fc85f4c2be97aacaa182b6f1cee6abd036ce8f7381d29be5f9f0a9694828b"
+        );
+    }
+
+    #[test]
+    fn committed_copernicus_land_cover_snapshot_is_canonical_and_fingerprinted() {
+        let snapshot = SourceSnapshotManifest::from_canonical_slice(
+            COPERNICUS_SATELLITE_LAND_COVER_V2_1_1_2022_SNAPSHOT,
+        )
+        .expect("committed Copernicus land-cover snapshot is canonical");
+        assert_eq!(snapshot.upstream_release, "satellite-land-cover");
+        assert_eq!(snapshot.upstream_revision, "10.24381/cds.006f2c9a");
+        assert_eq!(
+            snapshot.artifact_locator_policy,
+            SourceSnapshotLocatorPolicy::EvidenceBoundRelease
+        );
+        assert_eq!(
+            snapshot.dataset_version,
+            "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1"
+        );
+        assert_eq!(snapshot.artifacts.len(), 8);
+        assert_eq!(
+            snapshot
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.byte_length)
+                .sum::<u64>(),
+            2_353_063_507
+        );
+        let data = snapshot
+            .artifacts
+            .iter()
+            .find(|artifact| artifact.role == SourceSnapshotArtifactRole::Data)
+            .expect("snapshot has one data response");
+        assert_eq!(
+            data.content_hash.to_string(),
+            "993500e18307b5ea0811394355199937b8305081d08b6a7f6909d73a3eadbac7"
+        );
+        assert_eq!(
+            snapshot
+                .content_digest()
+                .expect("valid snapshot content digest")
+                .to_string(),
+            "6b2acf6608c382c9321de4f69268c6e5caa2e564820094b41be844643bc27894"
         );
     }
 
