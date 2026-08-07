@@ -6,12 +6,15 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use world_domain::{Digest, GeographicCoordinateE7, SpeciesIdentity};
+use world_domain::{Digest, GeographicCoordinateE7, SpeciesIdentity, WorldSeed};
 
 pub const FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-range-candidate-set+json";
 const INATURALIST_RANGE_RELEASE: &str = "2.20";
+pub const FAUNA_SEEDED_SELECTION_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_SEEDED_SELECTION_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.fauna-seeded-selection+json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaRangeCandidate {
@@ -47,6 +50,18 @@ pub struct FaunaRangeCandidateSet {
     pub source_gbif_catalog_digest: Digest,
     pub source_inaturalist_taxonomy_digest: Digest,
     pub candidates: Vec<FaunaRangeCandidate>,
+}
+
+/// A replay-stable subset of a local candidate pool. This still means only
+/// "eligible for a later ecological decision"; it is not a population plan.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaSeededSelection {
+    pub selection_schema_version: u16,
+    pub candidate_set_digest: Digest,
+    pub world_seed: WorldSeed,
+    pub species_limit: u32,
+    /// Ordered by the derived seed priority, never by an authored species list.
+    pub selected_candidates: Vec<FaunaRangeCandidate>,
 }
 
 impl FaunaRangeCandidateSet {
@@ -92,6 +107,96 @@ impl FaunaRangeCandidateSet {
             return Err(FaunaRangeCandidateSetError::NonCanonicalEncoding);
         }
         Ok(set)
+    }
+
+    /// Select a bounded taxon pool by a domain-separated digest of the committed
+    /// world seed and each source-backed candidate. This is deterministic across
+    /// hosts and independent of candidate input ordering after validation.
+    pub fn select_seeded_candidates(
+        &self,
+        world_seed: WorldSeed,
+        species_limit: u32,
+    ) -> Result<FaunaSeededSelection, FaunaRangeCandidateSetError> {
+        if species_limit == 0 {
+            return Err(FaunaRangeCandidateSetError::ZeroSpeciesLimit);
+        }
+        let candidate_set_digest = Digest::sha256(&self.canonical_bytes()?);
+        let mut ranked = self
+            .candidates
+            .iter()
+            .cloned()
+            .map(|candidate| {
+                let mut bytes = Vec::with_capacity(128);
+                bytes.extend_from_slice(b"a-tiny-civilization/fauna-seed-selection/v1");
+                bytes.extend_from_slice(&world_seed.get().to_le_bytes());
+                bytes.extend_from_slice(candidate_set_digest.as_bytes());
+                bytes.extend_from_slice(&candidate.order_key()?.to_le_bytes());
+                bytes.extend_from_slice(&candidate.inaturalist_taxon_id.to_le_bytes());
+                bytes.extend_from_slice(&candidate.range_feature_fid.to_le_bytes());
+                Ok::<_, FaunaRangeCandidateSetError>((
+                    Digest::sha256(&bytes),
+                    candidate.order_key()?,
+                    candidate,
+                ))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        ranked.sort_unstable_by(|left, right| left.0.cmp(&right.0).then(left.1.cmp(&right.1)));
+        let limit = usize::try_from(species_limit)
+            .map_err(|_| FaunaRangeCandidateSetError::InvalidSeededSelection)?;
+        let selected_candidates = ranked
+            .into_iter()
+            .take(limit)
+            .map(|(_, _, candidate)| candidate)
+            .collect();
+        Ok(FaunaSeededSelection {
+            selection_schema_version: FAUNA_SEEDED_SELECTION_SCHEMA_VERSION,
+            candidate_set_digest,
+            world_seed,
+            species_limit,
+            selected_candidates,
+        })
+    }
+}
+
+impl FaunaSeededSelection {
+    pub fn validate_against(
+        &self,
+        candidates: &FaunaRangeCandidateSet,
+    ) -> Result<(), FaunaRangeCandidateSetError> {
+        if self.selection_schema_version != FAUNA_SEEDED_SELECTION_SCHEMA_VERSION {
+            return Err(FaunaRangeCandidateSetError::UnsupportedSelectionSchema(
+                self.selection_schema_version,
+            ));
+        }
+        if self.species_limit == 0 || self.candidate_set_digest == Digest::ZERO {
+            return Err(FaunaRangeCandidateSetError::InvalidSeededSelection);
+        }
+        let expected = candidates.select_seeded_candidates(self.world_seed, self.species_limit)?;
+        if self != &expected {
+            return Err(FaunaRangeCandidateSetError::InvalidSeededSelection);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes_against(
+        &self,
+        candidates: &FaunaRangeCandidateSet,
+    ) -> Result<Vec<u8>, FaunaRangeCandidateSetError> {
+        self.validate_against(candidates)?;
+        serde_json::to_vec(self)
+            .map_err(|error| FaunaRangeCandidateSetError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice_against(
+        bytes: &[u8],
+        candidates: &FaunaRangeCandidateSet,
+    ) -> Result<Self, FaunaRangeCandidateSetError> {
+        let selection: Self = serde_json::from_slice(bytes)
+            .map_err(|error| FaunaRangeCandidateSetError::Decode(error.to_string()))?;
+        if selection.canonical_bytes_against(candidates)? != bytes {
+            return Err(FaunaRangeCandidateSetError::NonCanonicalEncoding);
+        }
+        Ok(selection)
     }
 }
 
@@ -155,6 +260,14 @@ pub enum FaunaRangeCandidateSetError {
     InvalidQueryPoint,
     #[error("fauna range candidates must be strictly ordered by numeric GBIF taxon key")]
     NonCanonicalCandidateOrder,
+    #[error("fauna seeded selection has an unsupported schema {0}")]
+    UnsupportedSelectionSchema(u16),
+    #[error("fauna seeded selection needs a nonzero species limit")]
+    ZeroSpeciesLimit,
+    #[error(
+        "fauna seeded selection does not exactly follow its source candidate set and world seed"
+    )]
+    InvalidSeededSelection,
     #[error("decode error: {0}")]
     Decode(String),
     #[error("encoding error: {0}")]
@@ -242,5 +355,48 @@ mod tests {
         let decoded: FaunaRangeCandidateSet =
             serde_json::from_slice(bytes).expect("decode wire shape");
         assert_eq!(decoded.canonical_bytes().expect("canonical bytes"), bytes);
+    }
+
+    #[test]
+    fn seeded_selection_is_replay_stable_and_canonical() {
+        let candidate_set = set();
+        let world_seed = WorldSeed::new(42);
+        let selection = candidate_set
+            .select_seeded_candidates(world_seed, 1)
+            .expect("seeded selection");
+        assert_eq!(
+            candidate_set.select_seeded_candidates(world_seed, 1),
+            Ok(selection.clone())
+        );
+        assert_eq!(selection.selected_candidates.len(), 1);
+        assert!(
+            candidate_set
+                .candidates
+                .contains(&selection.selected_candidates[0])
+        );
+        let bytes = selection
+            .canonical_bytes_against(&candidate_set)
+            .expect("canonical selection");
+        assert_eq!(
+            FaunaSeededSelection::from_canonical_slice_against(&bytes, &candidate_set),
+            Ok(selection)
+        );
+    }
+
+    #[test]
+    fn seeded_selection_rejects_zero_limit_and_tampering() {
+        let candidate_set = set();
+        assert_eq!(
+            candidate_set.select_seeded_candidates(WorldSeed::new(42), 0),
+            Err(FaunaRangeCandidateSetError::ZeroSpeciesLimit)
+        );
+        let mut selection = candidate_set
+            .select_seeded_candidates(WorldSeed::new(42), 1)
+            .expect("seeded selection");
+        selection.selected_candidates = candidate_set.candidates.clone();
+        assert_eq!(
+            selection.validate_against(&candidate_set),
+            Err(FaunaRangeCandidateSetError::InvalidSeededSelection)
+        );
     }
 }

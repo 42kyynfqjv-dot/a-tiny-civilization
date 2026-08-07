@@ -113,6 +113,13 @@ The validator rejects a changed release, malformed point, unordered taxon keys, 
 noncanonical bytes. It intentionally has no population count, sex assignment, life
 stage, trait claim, or organism-creation instruction.
 
+`FaunaSeededSelection` is the next, still non-biological step: a domain-separated
+digest ranks that exact candidate pool using the committed world seed and selects a
+bounded subset without an authored species list. Its canonical artifact repeats the
+candidate-set digest and seed, and validation recomputes the exact ordered subset.
+It likewise carries no abundance, demographic, trait, or organism-creation claim; a
+separate ecological population plan must supply those inputs before any fauna exists.
+
 `civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
 bridge. It preserves the original artifact hash while decoding EltonTraits' published
 Windows-1252 files and their quoted multiline reference cells, then compares only

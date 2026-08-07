@@ -31,7 +31,9 @@ pub use fauna_evidence::{
 
 pub use fauna_ranges::{
     FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
-    FaunaRangeCandidate, FaunaRangeCandidateSet, FaunaRangeCandidateSetError, FaunaRangeQueryPoint,
+    FAUNA_SEEDED_SELECTION_MEDIA_TYPE, FAUNA_SEEDED_SELECTION_SCHEMA_VERSION, FaunaRangeCandidate,
+    FaunaRangeCandidateSet, FaunaRangeCandidateSetError, FaunaRangeQueryPoint,
+    FaunaSeededSelection,
 };
 
 pub use gbif_catalog::{
