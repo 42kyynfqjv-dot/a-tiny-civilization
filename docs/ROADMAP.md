@@ -149,10 +149,13 @@ The inferred habitat/coastline evidence roots remain pending.
 
 The public JRC Global Surface Water v1.5 10-degree release now has a deterministic,
 network-free 1,512-artifact inventory and a bounded-parallel, no-replacement acquisition
-path for global occurrence, 2024 seasonality, and transitions. This is breadth-first
-source plumbing, not a pinned snapshot or admitted hydrography layer; exact acquired
-hashes, terrain routing, reconstruction policy, and integrated scientific validation
-remain pending.
+path for global occurrence, 2024 seasonality, and transitions. All 504 occurrence tiles
+are retained (18,639,906,940 bytes) and pass a complete structural GeoTIFF inventory:
+40,000 × 40,000 cells per tile, 0.00025-degree pixels, LZW row strips, and horizontal
+differencing. The portable reader decodes bounded source rows without depending on a
+system GIS installation. This is breadth-first source plumbing, not an admitted
+hydrography layer; exact snapshot publication, terrain routing, palette-code semantics,
+reconstruction policy, and integrated scientific validation remain pending.
 
 The breadth-first soil path now enumerates 27 official SoilGrids global overview
 artifacts: nine physical/chemical properties for 0–5 cm topsoil at the 5th, 50th, and

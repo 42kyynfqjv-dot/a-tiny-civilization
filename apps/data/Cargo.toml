@@ -17,6 +17,7 @@ serde_json.workspace = true
 sha2.workspace = true
 tiff.workspace = true
 tokio.workspace = true
+weezl.workspace = true
 zip = { version = "2.4.2", default-features = false, features = ["deflate"] }
 world-data = { path = "../../crates/world-data" }
 world-data-filesystem = { path = "../../crates/world-data-filesystem" }

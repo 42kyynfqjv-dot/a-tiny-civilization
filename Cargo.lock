@@ -345,6 +345,7 @@ dependencies = [
  "sha2",
  "tiff",
  "tokio",
+ "weezl",
  "world-data",
  "world-data-filesystem",
  "world-domain",

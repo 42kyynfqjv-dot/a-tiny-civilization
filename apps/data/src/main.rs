@@ -16,6 +16,8 @@ use sha2::{Digest as _, Sha256};
 use tiff::decoder::{
     ChunkType as TiffChunkType, Decoder as TiffDecoder, DecodingResult as TiffDecodingResult,
 };
+use tiff::tags::Tag as TiffTag;
+use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, LandCoverClassCount, LandCoverEvidenceCell,
     LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
@@ -311,6 +313,11 @@ enum InspectCommand {
     GbifAnimaliaCatalog {
         #[arg(long)]
         input: PathBuf,
+    },
+    /// Inspect every official JRC global surface-water occurrence tile.
+    JrcSurfaceWaterOccurrence {
+        #[arg(long)]
+        input_directory: PathBuf,
     },
 }
 
@@ -631,6 +638,9 @@ async fn main() -> Result<()> {
             }
             InspectCommand::GbifBackbone { archive } => inspect_gbif_backbone(&archive),
             InspectCommand::GbifAnimaliaCatalog { input } => inspect_gbif_animalia_catalog(&input),
+            InspectCommand::JrcSurfaceWaterOccurrence { input_directory } => {
+                inspect_jrc_surface_water_occurrence(&input_directory)
+            }
         },
         Command::Derive { command } => match command {
             DeriveCommand::EtopoGrid {
@@ -1175,6 +1185,264 @@ fn read_length_prefixed_utf8(reader: &mut impl Read) -> Result<String> {
     let mut bytes = vec![0_u8; length];
     reader.read_exact(&mut bytes)?;
     String::from_utf8(bytes).context("GBIF catalog string is not UTF-8")
+}
+
+const JRC_OCCURRENCE_LONGITUDES: std::ops::Range<i32> = -18..18;
+const JRC_OCCURRENCE_LATITUDES: std::ops::RangeInclusive<i32> = -5..=8;
+
+#[derive(Debug, Serialize)]
+struct JrcSurfaceWaterOccurrenceInspection {
+    inspection_schema_version: u16,
+    release: &'static str,
+    evidence_period: &'static str,
+    artifact_count: usize,
+    byte_length: u64,
+    coverage: &'static str,
+    raster_width: u32,
+    raster_height: u32,
+    bits_per_sample: Vec<u16>,
+    photometric_interpretation_code: u16,
+    compression_code: u16,
+    predictor_code: u16,
+    chunk_type: String,
+    chunk_width: u32,
+    chunk_height: u32,
+    chunks_per_artifact: u32,
+    longitude_pixel_scale_ieee754_bits_hex: String,
+    latitude_pixel_scale_ieee754_bits_hex: String,
+    gdal_nodata: Option<String>,
+    sampled_value_counts: BTreeMap<u8, u64>,
+}
+
+#[derive(Debug, Eq, PartialEq)]
+struct JrcOccurrenceTiffProfile {
+    width: u32,
+    height: u32,
+    bits_per_sample: Vec<u16>,
+    photometric_interpretation_code: u16,
+    compression_code: u16,
+    predictor_code: u16,
+    chunk_type: String,
+    chunk_width: u32,
+    chunk_height: u32,
+    chunk_count: u32,
+    longitude_scale_bits: u64,
+    latitude_scale_bits: u64,
+    gdal_nodata: Option<String>,
+}
+
+fn inspect_jrc_surface_water_occurrence(input_directory: &Path) -> Result<()> {
+    let mut artifact_count = 0_usize;
+    let mut byte_length = 0_u64;
+    let mut common_profile: Option<JrcOccurrenceTiffProfile> = None;
+    let mut sampled_value_counts = BTreeMap::new();
+
+    for latitude_band in JRC_OCCURRENCE_LATITUDES.rev() {
+        let latitude = latitude_band * 10;
+        for longitude_band in JRC_OCCURRENCE_LONGITUDES {
+            let longitude = longitude_band * 10;
+            let longitude_code = jrc_coordinate_code(longitude, 'W', 'E');
+            let latitude_code = jrc_coordinate_code(latitude, 'S', 'N');
+            let filename = format!("occurrence_{longitude_code}_{latitude_code}_v1_5_2024.tif");
+            let path = input_directory.join(&filename);
+            let metadata = fs::metadata(&path)
+                .with_context(|| format!("inspect JRC occurrence tile {}", path.display()))?;
+            if !metadata.is_file() || metadata.len() == 0 {
+                bail!(
+                    "JRC occurrence tile is not a nonempty regular file: {}",
+                    path.display()
+                );
+            }
+            artifact_count += 1;
+            byte_length = byte_length
+                .checked_add(metadata.len())
+                .context("JRC occurrence retained byte length overflow")?;
+            let mut decoder = TiffDecoder::new(
+                File::open(&path)
+                    .with_context(|| format!("open JRC occurrence tile {}", path.display()))?,
+            )
+            .with_context(|| format!("parse JRC occurrence TIFF {}", path.display()))?;
+            let (width, height) = decoder.dimensions()?;
+            let bits_per_sample = decoder.get_tag_u16_vec(TiffTag::BitsPerSample)?;
+            let photometric_interpretation_code =
+                decoder.get_tag_unsigned::<u16>(TiffTag::PhotometricInterpretation)?;
+            let compression_code = decoder.get_tag_unsigned::<u16>(TiffTag::Compression)?;
+            let predictor_code = decoder
+                .get_tag_unsigned::<u16>(TiffTag::Predictor)
+                .unwrap_or(1);
+            let chunk_kind = decoder.get_chunk_type();
+            let chunk_type = match chunk_kind {
+                TiffChunkType::Strip => "strip",
+                TiffChunkType::Tile => "tile",
+            }
+            .to_owned();
+            let chunk_count = match chunk_kind {
+                TiffChunkType::Strip => decoder.strip_count(),
+                TiffChunkType::Tile => decoder.tile_count(),
+            }?;
+            if chunk_count == 0 {
+                bail!("JRC occurrence tile has no chunks: {}", path.display());
+            }
+            let (chunk_width, chunk_height) = decoder.chunk_dimensions();
+            let pixel_scale = decoder
+                .get_tag_f64_vec(TiffTag::ModelPixelScaleTag)
+                .with_context(|| format!("read JRC pixel scale in {}", path.display()))?;
+            let tiepoint = decoder
+                .get_tag_f64_vec(TiffTag::ModelTiepointTag)
+                .with_context(|| format!("read JRC tiepoint in {}", path.display()))?;
+            if pixel_scale.len() < 2 || tiepoint.len() < 6 {
+                bail!(
+                    "JRC GeoTIFF geometry tags are incomplete: {}",
+                    path.display()
+                );
+            }
+            let west = tiepoint[3] - tiepoint[0] * pixel_scale[0];
+            let north = tiepoint[4] + tiepoint[1] * pixel_scale[1];
+            let east = west + f64::from(width) * pixel_scale[0];
+            let south = north - f64::from(height) * pixel_scale[1];
+            for (actual, expected, boundary) in [
+                (west, f64::from(longitude), "west"),
+                (east, f64::from(longitude + 10), "east"),
+                (north, f64::from(latitude), "north"),
+                (south, f64::from(latitude - 10), "south"),
+            ] {
+                if !actual.is_finite() || (actual - expected).abs() > 1e-9 {
+                    bail!(
+                        "JRC tile {} {boundary} boundary is {actual}, expected {expected}",
+                        path.display()
+                    );
+                }
+            }
+            let gdal_nodata = decoder
+                .get_tag_ascii_string(TiffTag::GdalNodata)
+                .ok()
+                .map(|value| value.trim_matches(['\0', ' ', '\r', '\n']).to_owned());
+            let strip_offsets = decoder.get_tag_u64_vec(TiffTag::StripOffsets)?;
+            let strip_byte_counts = decoder.get_tag_u64_vec(TiffTag::StripByteCounts)?;
+            if strip_offsets.len() != usize::try_from(chunk_count)?
+                || strip_byte_counts.len() != strip_offsets.len()
+            {
+                bail!("JRC strip tables are incomplete: {}", path.display());
+            }
+            let profile = JrcOccurrenceTiffProfile {
+                width,
+                height,
+                bits_per_sample,
+                photometric_interpretation_code,
+                compression_code,
+                predictor_code,
+                chunk_type,
+                chunk_width,
+                chunk_height,
+                chunk_count,
+                longitude_scale_bits: pixel_scale[0].to_bits(),
+                latitude_scale_bits: pixel_scale[1].to_bits(),
+                gdal_nodata,
+            };
+            if let Some(expected) = &common_profile {
+                if &profile != expected {
+                    bail!("JRC occurrence TIFF profile differs: {}", path.display());
+                }
+            } else {
+                common_profile = Some(profile);
+            }
+
+            if decoder.more_images() {
+                bail!(
+                    "JRC occurrence tile has unexpected extra images: {}",
+                    path.display()
+                );
+            }
+            drop(decoder);
+
+            let mut raster_file = File::open(&path)?;
+            for strip_index in [0, chunk_count / 2, chunk_count - 1] {
+                let index = usize::try_from(strip_index)?;
+                let offset = strip_offsets[index];
+                let compressed_length = strip_byte_counts[index];
+                if offset
+                    .checked_add(compressed_length)
+                    .is_none_or(|end| end > metadata.len())
+                {
+                    bail!("JRC strip lies outside its TIFF: {}", path.display());
+                }
+                raster_file.seek(SeekFrom::Start(offset))?;
+                let mut compressed = vec![0_u8; usize::try_from(compressed_length)?];
+                raster_file.read_exact(&mut compressed)?;
+                let mut values = LzwDecoder::with_tiff_size_switch(LzwBitOrder::Msb, 8)
+                    .decode(&compressed)
+                    .with_context(|| {
+                        format!("decode JRC LZW strip {strip_index} in {}", path.display())
+                    })?;
+                if values.len() != usize::try_from(width)? {
+                    bail!(
+                        "JRC strip {} decoded to {} samples, expected {width}",
+                        path.display(),
+                        values.len()
+                    );
+                }
+                match predictor_code {
+                    1 => {}
+                    2 => undo_horizontal_u8_predictor(&mut values),
+                    other => bail!("JRC TIFF uses unsupported predictor {other}"),
+                }
+                for value in values {
+                    *sampled_value_counts.entry(value).or_default() += 1;
+                }
+            }
+        }
+    }
+
+    let profile = common_profile.context("no JRC occurrence tiles were inspected")?;
+    println!(
+        "{}",
+        serde_json::to_string(&JrcSurfaceWaterOccurrenceInspection {
+            inspection_schema_version: 1,
+            release: "JRC Global Surface Water v1.5 (2024 release)",
+            evidence_period: "1984-2024 occurrence",
+            artifact_count,
+            byte_length,
+            coverage: "longitude [-180, 180), latitude [-60, 80] in 10-degree source tiles",
+            raster_width: profile.width,
+            raster_height: profile.height,
+            bits_per_sample: profile.bits_per_sample,
+            photometric_interpretation_code: profile.photometric_interpretation_code,
+            compression_code: profile.compression_code,
+            predictor_code: profile.predictor_code,
+            chunk_type: profile.chunk_type,
+            chunk_width: profile.chunk_width,
+            chunk_height: profile.chunk_height,
+            chunks_per_artifact: profile.chunk_count,
+            longitude_pixel_scale_ieee754_bits_hex: format!(
+                "{:016x}",
+                profile.longitude_scale_bits
+            ),
+            latitude_pixel_scale_ieee754_bits_hex: format!("{:016x}", profile.latitude_scale_bits),
+            gdal_nodata: profile.gdal_nodata,
+            sampled_value_counts,
+        })?
+    );
+    Ok(())
+}
+
+fn jrc_coordinate_code(value: i32, negative_suffix: char, positive_suffix: char) -> String {
+    format!(
+        "{}{}",
+        value.unsigned_abs(),
+        if value < 0 {
+            negative_suffix
+        } else {
+            positive_suffix
+        }
+    )
+}
+
+fn undo_horizontal_u8_predictor(values: &mut [u8]) {
+    let mut previous = 0_u8;
+    for value in values {
+        *value = value.wrapping_add(previous);
+        previous = *value;
+    }
 }
 
 const SOILGRIDS_TOPSOIL_PROPERTIES: [&str; 9] = [
@@ -7609,6 +7877,15 @@ mod tests {
             "Loxodonta africana\t🐘"
         );
         assert!(input.is_empty());
+    }
+
+    #[test]
+    fn jrc_horizontal_predictor_and_coordinate_names_are_exact() {
+        let mut differences = [10_u8, 2, 254, 5];
+        undo_horizontal_u8_predictor(&mut differences);
+        assert_eq!(differences, [10, 12, 10, 15]);
+        assert_eq!(jrc_coordinate_code(-180, 'W', 'E'), "180W");
+        assert_eq!(jrc_coordinate_code(0, 'S', 'N'), "0N");
     }
 
     #[test]
