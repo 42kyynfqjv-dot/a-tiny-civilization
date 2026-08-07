@@ -1095,11 +1095,23 @@ impl EngineState {
                 if parent_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
                     return Err(EngineError::NonCanonicalParentOrder);
                 }
+                if parent_ids.is_empty() {
+                    return Err(EngineError::ParentlessBirth);
+                }
                 if let Some(missing) = parent_ids
                     .iter()
                     .find(|parent_id| !self.organisms.contains_key(parent_id))
                 {
                     return Err(EngineError::UnknownParent(*missing));
+                }
+                if parent_ids.iter().any(|parent_id| {
+                    let parent = self
+                        .organisms
+                        .get(parent_id)
+                        .expect("parent presence checked above");
+                    parent.species != *species || parent.role != *role
+                }) {
+                    return Err(EngineError::IncompatibleBirthLineage);
                 }
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
@@ -1801,6 +1813,10 @@ pub enum EngineError {
     InvalidEmbodiedEvent(String),
     #[error("parent identities must be strictly sorted and unique")]
     NonCanonicalParentOrder,
+    #[error("a canonical birth must identify at least one known parent")]
+    ParentlessBirth,
+    #[error("birth species and participation tier must match every parent")]
+    IncompatibleBirthLineage,
     #[error("cannot mark the world extinct while viable people remain")]
     LivingPeopleRemain,
     #[error("invalid tick transition at {current}: event says {from} -> {to}")]
@@ -2275,6 +2291,42 @@ mod tests {
                 .state,
             after_replacement
         );
+    }
+
+    #[test]
+    fn birth_lineage_cannot_cross_species_or_participation_tiers() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let parent = initial_person(manifest.world_id);
+        let parent_id = parent.organism_id;
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial.plan_genesis(vec![parent]).expect("genesis plan"),
+            )
+            .expect("genesis");
+        let other_species = SpeciesIdentity::new(
+            "gbif",
+            "5219173",
+            "Canis lupus",
+            "https://www.gbif.org/species/5219173",
+        )
+        .expect("species");
+        let birth = DomainEvent::OrganismBorn {
+            organism_id: EntityId::deterministic(manifest.world_id, b"invalid-cross-species-birth"),
+            species: other_species,
+            role: OrganismRole::Fauna,
+            birth_category: BirthCategory::new("unspecified").expect("category"),
+            parent_ids: vec![parent_id],
+            location_id: None,
+            embodied_patch: None,
+            metabolic_rate: None,
+        };
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, vec![birth]),
+            Err(EngineError::IncompatibleBirthLineage)
+        ));
     }
 
     #[test]
