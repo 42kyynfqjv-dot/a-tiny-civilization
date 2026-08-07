@@ -222,9 +222,25 @@ async fn main() -> Result<()> {
 }
 
 async fn verify_world(store: &PostgresStore, world_id: WorldId) -> Result<()> {
-    let session = resume_world(store, world_id)
-        .await
-        .context("replay and verify stored world")?;
+    // The verifier reads a consistent event history only when no writer commits
+    // between its independently retrieved snapshot and tail. Retrying a short,
+    // bounded number of times makes the operator command usable against a live
+    // runner without weakening its final integrity check.
+    for attempt in 1..=3 {
+        match resume_world(store, world_id).await {
+            Ok(session) => return print_verified_world(world_id, session),
+            Err(error) => {
+                if attempt == 3 {
+                    return Err(error).context("replay and verify stored world after 3 attempts");
+                }
+                tokio::time::sleep(Duration::from_millis(250)).await;
+            }
+        }
+    }
+    unreachable!("bounded verification loop returns on success or final error")
+}
+
+fn print_verified_world(world_id: WorldId, session: WorldSession) -> Result<()> {
     println!(
         "verified world {} through sequence {} at tick {}: {:?}",
         world_id, session.world.cursor.sequence, session.world.cursor.tick, session.world.status
