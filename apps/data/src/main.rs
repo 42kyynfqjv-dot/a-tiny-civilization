@@ -28,11 +28,12 @@ use world_data::{
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
     PackedScalarFieldTile, PackedScalarTerrainTile, PackedSeasonalScalarFieldTile,
-    PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection, SOILGRIDS_NO_DATA_VALUE,
-    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
-    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
-    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
-    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
+    PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection, ProvisionalOriginEnvironment,
+    SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell,
+    SeasonalSourceArtifact, SoilDepth, SoilGridsProperty, SoilGridsPropertySource,
+    SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact, SourceSnapshotManifest,
+    TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
+    soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -129,6 +130,8 @@ enum InspectCommand {
         candidates: PathBuf,
         #[arg(long)]
         selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
     },
     /// Recompute a seed-derived provisional land origin against its exact Natural
     /// Earth land-reference tile tree.
@@ -467,6 +470,18 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Join the pinned land-cover and climate cells at a seed-derived origin into
+    /// one canonical evidence artifact. This is not a habitat or population plan.
+    ProvisionalOriginEnvironment {
+        #[arg(long)]
+        origin_selection: PathBuf,
+        #[arg(long)]
+        composition: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Select a bounded, seed-derived subset of one exact local modeled-range pool.
     ///
     /// This creates no organisms and makes no abundance claim. It only makes the
@@ -715,7 +730,10 @@ async fn main() -> Result<()> {
                 input,
                 candidates,
                 selection,
-            } => inspect_fauna_population_plan(&input, &candidates, &selection),
+                origin_environment,
+            } => {
+                inspect_fauna_population_plan(&input, &candidates, &selection, &origin_environment)
+            }
             InspectCommand::ProvisionalLandOriginSelection {
                 input,
                 land_reference_root_index,
@@ -955,6 +973,17 @@ async fn main() -> Result<()> {
                 &artifact_root,
                 WorldSeed::new(world_seed),
                 embodied_patch_level,
+                &output,
+            ),
+            DeriveCommand::ProvisionalOriginEnvironment {
+                origin_selection,
+                composition,
+                artifact_root,
+                output,
+            } => derive_and_write_provisional_origin_environment(
+                &origin_selection,
+                &composition,
+                &artifact_root,
                 &output,
             ),
             DeriveCommand::FaunaSeededSelection {
@@ -1838,6 +1867,7 @@ fn inspect_fauna_population_plan(
     input: &Path,
     candidates_path: &Path,
     selection_path: &Path,
+    origin_environment_path: &Path,
 ) -> Result<()> {
     let candidate_bytes = fs::read(candidates_path)
         .with_context(|| format!("read fauna candidates {}", candidates_path.display()))?;
@@ -1848,10 +1878,23 @@ fn inspect_fauna_population_plan(
     let selection =
         FaunaSeededSelection::from_canonical_slice_against(&selection_bytes, &candidates)
             .context("validate fauna seeded selection")?;
+    let environment_bytes = fs::read(origin_environment_path).with_context(|| {
+        format!(
+            "read provisional origin environment {}",
+            origin_environment_path.display()
+        )
+    })?;
+    let environment = ProvisionalOriginEnvironment::from_canonical_slice(&environment_bytes)
+        .context("validate provisional origin environment")?;
     let bytes = fs::read(input)
         .with_context(|| format!("read fauna population plan {}", input.display()))?;
-    let plan = FaunaPopulationPlan::from_canonical_slice_against(&bytes, &candidates, &selection)
-        .context("validate fauna population plan")?;
+    let plan = FaunaPopulationPlan::from_canonical_slice_against_environment(
+        &bytes,
+        &candidates,
+        &selection,
+        &environment,
+    )
+    .context("validate fauna population plan")?;
     let initial_individual_count = plan.entries.iter().try_fold(0_u64, |total, entry| {
         total
             .checked_add(u64::from(entry.initial_individual_count))
@@ -1871,24 +1914,6 @@ fn inspect_fauna_population_plan(
     Ok(())
 }
 
-#[derive(Serialize)]
-struct ProvisionalOriginEnvironmentInspection {
-    inspection_schema_version: u16,
-    status: &'static str,
-    origin_selection_digest: Digest,
-    composition_digest: Digest,
-    selected_l10_patch: S2CellId,
-    selected_embodied_patch: S2CellId,
-    observed_land_cover_root_digest: Digest,
-    observed_land_cover_tile_digest: Digest,
-    observed_land_cover: LandCoverEvidenceCell,
-    air_temperature_normal_root_digest: Digest,
-    air_temperature_normal_tile_digest: Digest,
-    air_temperature_normal_unit: String,
-    air_temperature_normal_decimal_places: u8,
-    air_temperature_normal: SeasonalScalarFieldCell,
-}
-
 /// Join just two already-pinned full-Earth layers at the selected L10 origin.
 ///
 /// This intentionally stops at evidence. In particular, a surface class and a
@@ -1899,6 +1924,20 @@ fn inspect_provisional_origin_environment(
     composition_path: &Path,
     artifact_root: &Path,
 ) -> Result<()> {
+    let environment = derive_provisional_origin_environment(
+        origin_selection_path,
+        composition_path,
+        artifact_root,
+    )?;
+    println!("{}", serde_json::to_string(&environment)?);
+    Ok(())
+}
+
+fn derive_provisional_origin_environment(
+    origin_selection_path: &Path,
+    composition_path: &Path,
+    artifact_root: &Path,
+) -> Result<ProvisionalOriginEnvironment> {
     let origin_bytes = fs::read(origin_selection_path).with_context(|| {
         format!(
             "read provisional origin selection {}",
@@ -1976,24 +2015,52 @@ fn inspect_provisional_origin_environment(
         .find(|cell| cell.s2_cell_id == origin.selected_patch)
         .context("temperature tile does not contain selected origin")?;
 
+    let environment = ProvisionalOriginEnvironment {
+        environment_schema_version: 1,
+        status: "evidence-only-not-habitat-suitability-or-population".to_owned(),
+        origin_selection_digest: Digest::sha256(&origin_bytes),
+        composition_digest: Digest::sha256(&composition_bytes),
+        selected_l10_patch: origin.selected_patch,
+        selected_embodied_patch: origin.selected_embodied_patch,
+        observed_land_cover_root_digest: habitat.release.content_hash,
+        observed_land_cover_tile_digest: Digest::sha256(&habitat_bytes),
+        observed_land_cover,
+        air_temperature_normal_root_digest: climate.release.content_hash,
+        air_temperature_normal_tile_digest: Digest::sha256(&climate_bytes),
+        air_temperature_normal_unit: climate_tile.unit,
+        air_temperature_normal_decimal_places: climate_tile.decimal_places,
+        air_temperature_normal,
+    };
+    environment
+        .validate()
+        .context("validate origin environment")?;
+    Ok(environment)
+}
+
+fn derive_and_write_provisional_origin_environment(
+    origin_selection_path: &Path,
+    composition_path: &Path,
+    artifact_root: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let environment = derive_provisional_origin_environment(
+        origin_selection_path,
+        composition_path,
+        artifact_root,
+    )?;
+    let bytes = environment
+        .canonical_bytes()
+        .context("encode canonical provisional origin environment")?;
+    write_new_artifact(output_path, &bytes)?;
     println!(
         "{}",
-        serde_json::to_string(&ProvisionalOriginEnvironmentInspection {
-            inspection_schema_version: 1,
-            status: "evidence-only-not-habitat-suitability-or-population",
-            origin_selection_digest: Digest::sha256(&origin_bytes),
-            composition_digest: Digest::sha256(&composition_bytes),
-            selected_l10_patch: origin.selected_patch,
-            selected_embodied_patch: origin.selected_embodied_patch,
-            observed_land_cover_root_digest: habitat.release.content_hash,
-            observed_land_cover_tile_digest: Digest::sha256(&habitat_bytes),
-            observed_land_cover,
-            air_temperature_normal_root_digest: climate.release.content_hash,
-            air_temperature_normal_tile_digest: Digest::sha256(&climate_bytes),
-            air_temperature_normal_unit: climate_tile.unit,
-            air_temperature_normal_decimal_places: climate_tile.decimal_places,
-            air_temperature_normal,
-        })?
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "output_path": output_path,
+            "selected_l10_patch": environment.selected_l10_patch,
+            "selected_embodied_patch": environment.selected_embodied_patch,
+            "status": environment.status,
+        }))?
     );
     Ok(())
 }

@@ -21,7 +21,7 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use uuid::Uuid;
 use world_data::{
     DataLayerKind, FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection,
-    ProvisionalLandOriginSelection,
+    ProvisionalLandOriginSelection, ProvisionalOriginEnvironment,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -97,13 +97,17 @@ enum Command {
         provisional_land_origin_selection: Option<PathBuf>,
 
         /// Canonical point-scoped modeled-range candidates. Must be supplied with
-        /// `--fauna-seeded-selection` and `--fauna-population-plan`.
+        /// the seeded selection, origin environment, and population plan inputs.
         #[arg(long)]
         fauna_range_candidates: Option<PathBuf>,
 
         /// Canonical seed-derived subset of `--fauna-range-candidates`.
         #[arg(long)]
         fauna_seeded_selection: Option<PathBuf>,
+
+        /// Canonical evidence-only origin environment matched by the population plan.
+        #[arg(long)]
+        fauna_origin_environment: Option<PathBuf>,
 
         /// Canonical non-admitted ecological-population hand-off. It binds explicit
         /// counts to the seed-derived origin and selected source candidates.
@@ -182,6 +186,7 @@ async fn main() -> Result<()> {
             provisional_land_origin_selection,
             fauna_range_candidates,
             fauna_seeded_selection,
+            fauna_origin_environment,
             fauna_population_plan,
             predecessor_world_id,
             tick_duration_seconds,
@@ -198,6 +203,7 @@ async fn main() -> Result<()> {
                 provisional_land_origin_selection.as_deref(),
                 fauna_range_candidates.as_deref(),
                 fauna_seeded_selection.as_deref(),
+                fauna_origin_environment.as_deref(),
                 fauna_population_plan.as_deref(),
                 predecessor_world_id,
                 tick_duration_seconds,
@@ -477,6 +483,7 @@ async fn init_provisional_full_earth_world(
     provisional_land_origin_selection_path: Option<&std::path::Path>,
     fauna_range_candidates_path: Option<&std::path::Path>,
     fauna_seeded_selection_path: Option<&std::path::Path>,
+    fauna_origin_environment_path: Option<&std::path::Path>,
     fauna_population_plan_path: Option<&std::path::Path>,
     predecessor_world_id: Option<WorldId>,
     tick_duration_seconds: u32,
@@ -551,6 +558,7 @@ async fn init_provisional_full_earth_world(
         initial_patch,
         fauna_range_candidates_path,
         fauna_seeded_selection_path,
+        fauna_origin_environment_path,
         fauna_population_plan_path,
     )?;
     if let Some(fauna) = fauna {
@@ -561,6 +569,10 @@ async fn init_provisional_full_earth_world(
         manifest.scientific_datasets.insert(
             "provisional_fauna_seeded_selection".to_owned(),
             fauna.selection_digest.to_string(),
+        );
+        manifest.scientific_datasets.insert(
+            "provisional_origin_environment".to_owned(),
+            fauna.origin_environment_digest.to_string(),
         );
         manifest.scientific_datasets.insert(
             "provisional_fauna_population_plan".to_owned(),
@@ -664,6 +676,7 @@ fn resolve_provisional_initial_origin(
 struct ProvisionalFaunaGenesis {
     candidate_set_digest: world_domain::Digest,
     selection_digest: world_domain::Digest,
+    origin_environment_digest: world_domain::Digest,
     population_plan_digest: world_domain::Digest,
     initial_organisms: Vec<InitialOrganism>,
 }
@@ -674,11 +687,13 @@ fn load_provisional_fauna_initial_organisms(
     initial_patch: S2CellId,
     candidates_path: Option<&std::path::Path>,
     selection_path: Option<&std::path::Path>,
+    origin_environment_path: Option<&std::path::Path>,
     population_plan_path: Option<&std::path::Path>,
 ) -> Result<Option<ProvisionalFaunaGenesis>> {
     let provided = [
         candidates_path.is_some(),
         selection_path.is_some(),
+        origin_environment_path.is_some(),
         population_plan_path.is_some(),
     ];
     if provided.iter().all(|provided| !provided) {
@@ -686,7 +701,7 @@ fn load_provisional_fauna_initial_organisms(
     }
     if !provided.iter().all(|provided| *provided) {
         anyhow::bail!(
-            "provisional fauna genesis requires --fauna-range-candidates, --fauna-seeded-selection, and --fauna-population-plan together"
+            "provisional fauna genesis requires --fauna-range-candidates, --fauna-seeded-selection, --fauna-origin-environment, and --fauna-population-plan together"
         );
     }
     let candidate_bytes = std::fs::read(candidates_path.expect("checked candidate path"))
@@ -704,12 +719,18 @@ fn load_provisional_fauna_initial_organisms(
     if selection.selected_candidates.is_empty() {
         anyhow::bail!("provisional fauna selection must retain at least one candidate");
     }
+    let environment_bytes =
+        std::fs::read(origin_environment_path.expect("checked origin-environment path"))
+            .context("read provisional fauna origin environment")?;
+    let environment = ProvisionalOriginEnvironment::from_canonical_slice(&environment_bytes)
+        .context("validate provisional fauna origin environment")?;
     let population_plan_bytes = std::fs::read(population_plan_path.expect("checked plan path"))
         .context("read provisional fauna population plan")?;
-    let population_plan = FaunaPopulationPlan::from_canonical_slice_against(
+    let population_plan = FaunaPopulationPlan::from_canonical_slice_against_environment(
         &population_plan_bytes,
         &candidates,
         &selection,
+        &environment,
     )
     .context("validate provisional fauna population plan")?;
     if population_plan.world_seed != world_seed {
@@ -720,6 +741,7 @@ fn load_provisional_fauna_initial_organisms(
     }
     let candidate_set_digest = world_domain::Digest::sha256(&candidate_bytes);
     let selection_digest = world_domain::Digest::sha256(&selection_bytes);
+    let origin_environment_digest = world_domain::Digest::sha256(&environment_bytes);
     let population_plan_digest = world_domain::Digest::sha256(&population_plan_bytes);
     let capacity = population_plan
         .entries
@@ -749,6 +771,7 @@ fn load_provisional_fauna_initial_organisms(
     Ok(Some(ProvisionalFaunaGenesis {
         candidate_set_digest,
         selection_digest,
+        origin_environment_digest,
         population_plan_digest,
         initial_organisms,
     }))
@@ -856,6 +879,8 @@ mod tests {
     use world_data::{
         FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
         FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeQueryPoint,
+        LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
+        PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION, SeasonalScalarFieldCell,
     };
 
     fn candidate_set() -> FaunaRangeCandidateSet {
@@ -899,6 +924,55 @@ mod tests {
         }
     }
 
+    fn origin_environment(
+        selected_l10_patch: S2CellId,
+        selected_embodied_patch: S2CellId,
+    ) -> ProvisionalOriginEnvironment {
+        ProvisionalOriginEnvironment {
+            environment_schema_version: PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
+            status: "evidence-only-not-habitat-suitability-or-population".to_owned(),
+            origin_selection_digest: world_domain::Digest::sha256(b"origin"),
+            composition_digest: world_domain::Digest::sha256(b"composition"),
+            selected_l10_patch,
+            selected_embodied_patch,
+            observed_land_cover_root_digest: world_domain::Digest::sha256(b"land root"),
+            observed_land_cover_tile_digest: world_domain::Digest::sha256(b"land tile"),
+            observed_land_cover: LandCoverEvidenceCell {
+                s2_cell_id: selected_l10_patch,
+                support_samples: 1,
+                class_counts: vec![LandCoverClassCount {
+                    class_value: 130,
+                    samples: 1,
+                }],
+                processed_flag_counts: vec![LandCoverSignedValueCount {
+                    value: 1,
+                    samples: 1,
+                }],
+                current_pixel_state_counts: vec![LandCoverSignedValueCount {
+                    value: 1,
+                    samples: 1,
+                }],
+                observation_count_minimum: 1,
+                observation_count_sum: 1,
+                observation_count_maximum: 1,
+                change_count_minimum: 0,
+                change_count_sum: 0,
+                change_count_maximum: 0,
+            },
+            air_temperature_normal_root_digest: world_domain::Digest::sha256(b"climate root"),
+            air_temperature_normal_tile_digest: world_domain::Digest::sha256(b"climate tile"),
+            air_temperature_normal_unit: "degC".to_owned(),
+            air_temperature_normal_decimal_places: 1,
+            air_temperature_normal: SeasonalScalarFieldCell {
+                s2_cell_id: selected_l10_patch,
+                support_samples_per_phase: 1,
+                minimum_values: vec![1; 12],
+                mean_values: vec![2; 12],
+                maximum_values: vec![3; 12],
+            },
+        }
+    }
+
     #[test]
     fn provisional_fauna_genesis_requires_and_pins_seeded_source_inputs() {
         let candidates = candidate_set();
@@ -910,6 +984,7 @@ mod tests {
         std::fs::create_dir(&directory).expect("test directory");
         let candidates_path = directory.join("candidates.json");
         let selection_path = directory.join("selection.json");
+        let origin_environment_path = directory.join("origin-environment.json");
         let population_plan_path = directory.join("population-plan.json");
         std::fs::write(
             &candidates_path,
@@ -924,12 +999,19 @@ mod tests {
         )
         .expect("write selection");
         let world_id = WorldId::from_uuid(Uuid::new_v4());
-        let initial_patch = S2CellId::new(1_u64 << 60).expect("S2 cell");
+        let selected_l10_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
+        let initial_patch = selected_l10_patch.descendants_at(11).expect("L11 patch")[0];
+        let environment = origin_environment(selected_l10_patch, initial_patch);
+        let environment_bytes = environment
+            .canonical_bytes()
+            .expect("canonical environment");
+        std::fs::write(&origin_environment_path, &environment_bytes)
+            .expect("write origin environment");
         let plan = FaunaPopulationPlan {
             population_plan_schema_version: FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
             status: "provisional-not-scientifically-admitted".to_owned(),
             world_seed: seed,
-            origin_environment_digest: world_domain::Digest::sha256(b"environment"),
+            origin_environment_digest: world_domain::Digest::sha256(&environment_bytes),
             embodied_patch: initial_patch,
             candidate_set_digest: selection.candidate_set_digest,
             seeded_selection_digest: world_domain::Digest::sha256(
@@ -968,6 +1050,7 @@ mod tests {
             initial_patch,
             Some(&candidates_path),
             Some(&selection_path),
+            Some(&origin_environment_path),
             Some(&population_plan_path),
         )
         .expect("fauna genesis")
@@ -981,6 +1064,10 @@ mod tests {
         );
         assert_ne!(genesis.candidate_set_digest, world_domain::Digest::ZERO);
         assert_ne!(genesis.selection_digest, world_domain::Digest::ZERO);
+        assert_ne!(
+            genesis.origin_environment_digest,
+            world_domain::Digest::ZERO
+        );
         assert_ne!(genesis.population_plan_digest, world_domain::Digest::ZERO);
         assert!(
             load_provisional_fauna_initial_organisms(
@@ -989,6 +1076,7 @@ mod tests {
                 initial_patch,
                 Some(&candidates_path),
                 Some(&selection_path),
+                Some(&origin_environment_path),
                 Some(&population_plan_path),
             )
             .is_err()

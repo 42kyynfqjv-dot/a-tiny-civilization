@@ -8,6 +8,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{Digest, GeographicCoordinateE7, S2CellId, SpeciesIdentity, WorldSeed};
 
+use crate::ProvisionalOriginEnvironment;
+
 pub const FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-range-candidate-set+json";
@@ -306,6 +308,35 @@ impl FaunaPopulationPlan {
         if plan.canonical_bytes_against(candidates, selection)? != bytes {
             return Err(FaunaRangeCandidateSetError::NonCanonicalEncoding);
         }
+        Ok(plan)
+    }
+
+    pub fn validate_against_environment(
+        &self,
+        candidates: &FaunaRangeCandidateSet,
+        selection: &FaunaSeededSelection,
+        environment: &ProvisionalOriginEnvironment,
+    ) -> Result<(), FaunaRangeCandidateSetError> {
+        self.validate_against(candidates, selection)?;
+        let environment_bytes = environment
+            .canonical_bytes()
+            .map_err(|_| FaunaRangeCandidateSetError::InvalidPopulationPlan)?;
+        if self.origin_environment_digest != Digest::sha256(&environment_bytes)
+            || self.embodied_patch != environment.selected_embodied_patch
+        {
+            return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+        }
+        Ok(())
+    }
+
+    pub fn from_canonical_slice_against_environment(
+        bytes: &[u8],
+        candidates: &FaunaRangeCandidateSet,
+        selection: &FaunaSeededSelection,
+        environment: &ProvisionalOriginEnvironment,
+    ) -> Result<Self, FaunaRangeCandidateSetError> {
+        let plan = Self::from_canonical_slice_against(bytes, candidates, selection)?;
+        plan.validate_against_environment(candidates, selection, environment)?;
         Ok(plan)
     }
 }

@@ -130,12 +130,13 @@ It likewise carries no abundance, demographic, trait, or organism-creation claim
 separate ecological population plan must supply those inputs before any fauna exists.
 
 For integration worlds only, `civilization-runner init-provisional-full-earth` can
-consume the candidate set and seeded selection only with a canonical
-`--fauna-population-plan`. The plan carries explicit counts, but must bind them to the
-world seed, exact origin-environment digest and embodied patch, candidate-set digest,
+consume the candidate set and seeded selection only with canonical
+`--fauna-origin-environment` and `--fauna-population-plan` artifacts. The plan carries
+explicit counts, but must bind them to the world seed, exact canonical origin-environment
+bytes and embodied patch, candidate-set digest,
 and seeded-selection digest. Every planned species must be an exactly selected real
 GBIF species; partial inputs, changed provenance, unordered species, zero counts, or
-an origin mismatch fail closed. The runner commits all three artifact digests to the
+an origin mismatch fail closed. The runner commits all four artifact digests to the
 immutable world manifest. This removes the former species-times-arbitrary-count
 shortcut: a modeled range cannot directly create organisms. The only representable
 plan status is **provisional not scientifically admitted**, so it cannot be relabeled

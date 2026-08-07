@@ -7,6 +7,7 @@ mod fauna_ranges;
 mod gbif_catalog;
 mod land_cover;
 mod origin;
+mod origin_environment;
 mod provisional;
 mod scalar_field;
 mod seasonal_field;
@@ -53,6 +54,10 @@ pub use land_cover::{
 pub use origin::{
     PROVISIONAL_LAND_ORIGIN_SELECTION_MEDIA_TYPE, PROVISIONAL_LAND_ORIGIN_SELECTION_SCHEMA_VERSION,
     ProvisionalLandOriginSelection, ProvisionalLandOriginSelectionError,
+};
+pub use origin_environment::{
+    PROVISIONAL_ORIGIN_ENVIRONMENT_MEDIA_TYPE, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
+    ProvisionalOriginEnvironment, ProvisionalOriginEnvironmentError,
 };
 
 pub use provisional::{

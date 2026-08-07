@@ -23,9 +23,11 @@ changed source, candidate set, seed, rank, or descendant.
   claim. Its embodied descendant may need later higher-resolution admission checks.
 - A runner may consume only a canonical selection whose seed and land-reference
   digest match the world’s immutable provisional composition.
-- `civilization-data inspect provisional-origin-environment` joins that exact L10
+- `civilization-data derive provisional-origin-environment` writes a canonical,
+  no-replacement evidence artifact by joining that exact L10
   selection to the composition-pinned Copernicus observed-land-cover and CHELSA
-  twelve-phase temperature tiles. It validates the layer roots and selected tile
-  bytes before emitting the complete retained evidence. The result remains explicitly
+  twelve-phase temperature tiles. `inspect provisional-origin-environment` derives
+  the same view without writing it. Both validate the layer roots and selected tile
+  bytes before emitting the complete retained evidence. The artifact remains explicitly
   **evidence only**: neither a land-cover class nor temperature normal establishes
   habitat suitability, occurrence, abundance, or an initial fauna population.
