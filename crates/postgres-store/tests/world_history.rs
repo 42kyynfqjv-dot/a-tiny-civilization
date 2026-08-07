@@ -1,20 +1,24 @@
 use anyhow::Result;
 use application::{
     MemoryOutboxStore, MemoryRetain, MemoryRetainReceipt, StoreError, TransitionEffects,
-    WorldStore, advance_world, initialize_or_resume_world, resume_world,
+    WorldStore, advance_world, initialize_or_resume_configured_world, initialize_or_resume_world,
+    resume_world,
 };
 use observer_projection::{
     CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
-    ObserverWorldStore, ReservationRequest, ReservationState, ReservationTarget,
-    SupporterReservationStore,
+    ObserverWorldStore, PublicWorldInputStatus, ReservationRequest, ReservationState,
+    ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay};
 use sqlx::PgPool;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, DeathCause, Digest, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
-    SimTick, SpeciesIdentity, WorldId, WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, CapacityExhaustionPolicy, DeathCause, Digest, EarthResolutionLevels, EntityId,
+    EventBatch, EventId, EventSequence, FullEarthGrid, OrganismRole, PartitionedExecution,
+    PersonRepresentation, ProvisionalWorldCompositionReference, S2CellId, S2Projection,
+    SchedulerKind, SimTick, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest, WorldSeed,
+    WorldStatus,
 };
 
 fn manifest(seed: u64) -> WorldManifest {
@@ -41,6 +45,54 @@ fn initial_person(world_id: WorldId) -> InitialOrganism {
         location_id: None,
         embodied_patch: None,
     }
+}
+
+fn provisional_configuration() -> WorldConfiguration {
+    WorldConfiguration::new_provisional_full_earth(
+        300,
+        FullEarthGrid {
+            physics_crs_epsg: 4_978,
+            catalog_crs_epsg: 4_979,
+            vertical_crs_epsg: 3_855,
+            s2_definition_url: "https://s2geometry.io/devguide/s2cell_hierarchy".to_owned(),
+            s2_library_revision: "0123456789abcdef".to_owned(),
+            s2_definition_hash: Digest::sha256(b"PostgreSQL provisional S2 fixture"),
+            s2_projection: S2Projection::Quadratic,
+            levels: EarthResolutionLevels {
+                planetary_aggregate: 10,
+                regional_ecology: 14,
+                active_landscape: 18,
+                embodied_patch: 23,
+            },
+            refinement_policy_version: 1,
+        },
+        ProvisionalWorldCompositionReference::new(
+            1,
+            "full-earth-breadth-first",
+            "0.1.0",
+            Digest::sha256(b"PostgreSQL provisional composition fixture"),
+        )
+        .expect("valid provisional reference"),
+        PartitionedExecution {
+            scheduler_schema_version: 1,
+            scheduler: SchedulerKind::DeterministicEventQueue,
+            partition_s2_level: 10,
+            person_representation: PersonRepresentation::DurableIndividuals,
+            capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+            max_events_per_partition_transition: 10_000,
+        },
+    )
+    .expect("valid provisional configuration")
+}
+
+fn provisional_initial_person(world_id: WorldId) -> InitialOrganism {
+    let mut person = initial_person(world_id);
+    person.embodied_patch = Some(
+        "0000000000004000"
+            .parse::<S2CellId>()
+            .expect("valid L23 cell"),
+    );
+    person
 }
 
 fn genesis(
@@ -185,6 +237,46 @@ async fn runtime_replays_and_resumes_at_the_exact_next_sequence(pool: PgPool) ->
             EventSequence::new(3)
         ]
     );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn provisional_full_earth_resumes_and_projects_exact_input_status(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(152);
+    let configuration = provisional_configuration();
+    let reference = configuration
+        .provisional_world_composition()
+        .expect("provisional reference")
+        .clone();
+    let initialized = initialize_or_resume_configured_world(
+        &store,
+        manifest.clone(),
+        None,
+        configuration,
+        vec![provisional_initial_person(manifest.world_id)],
+    )
+    .await?;
+    let advanced = advance_world(&store, &initialized).await?;
+    let resumed = resume_world(&store, manifest.world_id).await?;
+
+    assert_eq!(resumed, advanced);
+    assert_eq!(resumed.world.status, WorldStatus::Running);
+    assert_eq!(resumed.world.cursor.tick, SimTick::new(1));
+    let worlds = store.list_public_worlds().await?;
+    assert_eq!(worlds.len(), 1);
+    assert_eq!(
+        worlds[0].input_status,
+        Some(PublicWorldInputStatus::ProvisionalNotScientificallyAdmitted)
+    );
+    assert_eq!(
+        worlds[0].composition_id.as_deref(),
+        Some("full-earth-breadth-first")
+    );
+    assert_eq!(worlds[0].composition_version.as_deref(), Some("0.1.0"));
+    assert_eq!(worlds[0].composition_hash, Some(reference.content_hash));
     Ok(())
 }
 

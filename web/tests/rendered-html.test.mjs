@@ -22,6 +22,8 @@ test("server-renders the civilization observatory", async () => {
   assert.match(html, /<title>Live World · A Tiny Civilization<\/title>/i);
   assert.match(html, /History, before anyone knows it is history\./);
   assert.match(html, /Earth coverage · seed not yet committed/);
+  assert.match(html, /Provisional — not scientifically admitted/);
+  assert.match(html, /not yet eligible for canonical genesis/);
   assert.doesNotMatch(html, /River basin · seed awaiting launch/);
   assert.match(html, /Observer wiki/);
   assert.match(html, /Name the next naturally born life\./);

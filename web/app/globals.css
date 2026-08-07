@@ -360,6 +360,71 @@ input {
   max-width: 1420px;
 }
 
+.provisional-input-banner {
+  align-items: center;
+  background: #ffd2c7;
+  border: 1px solid rgba(154, 53, 35, 0.32);
+  border-radius: 12px;
+  display: flex;
+  gap: 18px;
+  justify-content: space-between;
+  margin: 0 auto 18px;
+  max-width: 1420px;
+  padding: 13px 16px;
+}
+
+.provisional-input-banner strong {
+  flex: 0 0 auto;
+  font-size: 12px;
+  letter-spacing: -0.01em;
+}
+
+.provisional-input-banner span {
+  color: #633a31;
+  font-size: 11px;
+  line-height: 1.45;
+  text-align: right;
+}
+
+.provisional-world-status {
+  align-items: flex-start;
+  background: #ffd2c7;
+  border: 1px solid rgba(154, 53, 35, 0.3);
+  border-radius: 8px;
+  color: #612f25;
+  display: inline-flex;
+  flex-direction: column;
+  gap: 3px;
+  margin-top: 9px;
+  padding: 7px 9px;
+}
+
+.provisional-world-status strong {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.provisional-world-status small {
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 8px;
+  opacity: 0.76;
+}
+
+.world-status-stack {
+  align-items: flex-end;
+  display: flex;
+  flex-direction: column;
+}
+
+.world-lifecycle-status {
+  color: var(--moss-light);
+  font-family: var(--font-geist-mono), monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+
 .eyebrow { color: #646b64; }
 .eyebrow.accent { color: #2e694f; }
 
@@ -567,7 +632,7 @@ input {
 .live-record-heading { align-items: end; display: flex; gap: 24px; justify-content: space-between; }
 .live-record-heading h2 { font-size: 22px; letter-spacing: -0.045em; margin: 7px 0 0; }
 .live-record-heading > p { color: #657067; font-family: var(--font-geist-mono), monospace; font-size: 10px; margin: 0; }
-.audit-hashes { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; gap: 0; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 22px 0; }
+.audit-hashes { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; gap: 0; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); margin: 22px 0; }
 .audit-hashes > div { min-width: 0; padding: 11px 12px; }
 .audit-hashes > div + div { border-left: 1px solid var(--line); }
 .audit-hashes dt { color: #657067; font-size: 9px; letter-spacing: .1em; text-transform: uppercase; }
@@ -616,7 +681,6 @@ input {
 .wiki-index-status { border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 14px; line-height: 1.6; padding: 28px 24px; }
 .wiki-live-heading { align-items: end; display: flex; gap: 24px; justify-content: space-between; }
 .wiki-live-heading h2 { font-size: 24px; letter-spacing: -.045em; margin: 7px 0 0; }
-.wiki-live-heading > span { color: var(--moss-light); font-family: var(--font-geist-mono), monospace; font-size: 10px; text-transform: uppercase; }
 .wiki-live-grid { display: grid; gap: 44px; grid-template-columns: 1fr 1fr; margin-top: 25px; }
 .wiki-live-grid article { border-top: 1px solid var(--line); padding-top: 14px; }
 .wiki-live-grid h3 { font-size: 12px; margin: 0 0 12px; }
@@ -631,6 +695,8 @@ input {
 .wiki-future h2 { font-size: clamp(25px, 3vw, 42px); letter-spacing: -.055em; line-height: 1.02; margin: 13px 0; max-width: 850px; }
 
 @media (max-width: 720px) {
+  .provisional-input-banner { align-items: flex-start; flex-direction: column; }
+  .provisional-input-banner span { text-align: left; }
   .live-record-heading, .live-record-grid { display: grid; grid-template-columns: 1fr; }
   .audit-hashes { grid-template-columns: 1fr; }
   .audit-hashes > div + div { border-left: 0; border-top: 1px solid var(--line); }

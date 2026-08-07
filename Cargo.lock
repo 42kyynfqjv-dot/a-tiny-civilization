@@ -384,6 +384,8 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+ "world-data",
+ "world-data-filesystem",
  "world-domain",
 ]
 

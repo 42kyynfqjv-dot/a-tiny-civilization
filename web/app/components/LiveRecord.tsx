@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
 
-type World = {
+type World = WorldInputMetadata & {
   world_id: string;
   status: "initializing" | "running" | "extinct" | "archived";
   through_sequence: string | number;
@@ -84,6 +85,7 @@ export function LiveRecord() {
         <div>
           <p className="eyebrow">Committed observer record</p>
           <h2 id="live-record-title">World {world.world_id.slice(0, 8)} · {world.status}</h2>
+          <WorldInputStatus world={world} />
         </div>
         <p>Through event {world.through_sequence} · tick {world.tick}</p>
       </div>
@@ -91,6 +93,7 @@ export function LiveRecord() {
         <div><dt>Manifest</dt><dd title={world.manifest_hash}>{shortHash(world.manifest_hash)}</dd></div>
         <div><dt>Event head</dt><dd title={world.event_hash}>{shortHash(world.event_hash)}</dd></div>
         <div><dt>State</dt><dd title={world.state_hash}>{shortHash(world.state_hash)}</dd></div>
+        {world.composition_hash && <div><dt>Input composition</dt><dd title={world.composition_hash}>{shortHash(world.composition_hash)}</dd></div>}
       </dl>
       <div className="live-record-grid">
         <article>

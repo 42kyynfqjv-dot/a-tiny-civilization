@@ -1,5 +1,7 @@
 use async_trait::async_trait;
-use observer_projection::{ObserverProjectionStoreError, ObserverWorldStore, PublicWorld};
+use observer_projection::{
+    ObserverProjectionStoreError, ObserverWorldStore, PublicWorld, PublicWorldInputStatus,
+};
 use sqlx::FromRow;
 use world_domain::{Digest, EventSequence, SimTick, WorldId, WorldStatus};
 
@@ -15,6 +17,9 @@ struct PublicWorldRow {
     last_event_checksum: Vec<u8>,
     current_state_checksum: Vec<u8>,
     predecessor_world_id: Option<uuid::Uuid>,
+    composition_id: Option<String>,
+    composition_version: Option<String>,
+    composition_hash: Option<String>,
 }
 
 #[async_trait]
@@ -22,10 +27,25 @@ impl ObserverWorldStore for PostgresStore {
     async fn list_public_worlds(&self) -> Result<Vec<PublicWorld>, ObserverProjectionStoreError> {
         let rows = sqlx::query_as::<_, PublicWorldRow>(
             r#"
-            SELECT id, status, current_sequence, current_tick, manifest_checksum,
-                   last_event_checksum, current_state_checksum, predecessor_world_id
+            SELECT worlds.id, worlds.status, worlds.current_sequence, worlds.current_tick,
+                   worlds.manifest_checksum, worlds.last_event_checksum,
+                   worlds.current_state_checksum, worlds.predecessor_world_id,
+                   provisional.composition ->> 'composition_id' AS composition_id,
+                   provisional.composition ->> 'composition_version' AS composition_version,
+                   provisional.composition ->> 'content_hash' AS composition_hash
             FROM worlds
-            ORDER BY current_sequence DESC, id ASC
+            LEFT JOIN event_batches AS genesis
+              ON genesis.world_id = worlds.id AND genesis.sequence = 1
+            LEFT JOIN LATERAL (
+                SELECT record -> 'event' -> 'data' -> 'configuration'
+                              -> 'provisional_world_composition' AS composition
+                FROM jsonb_array_elements(genesis.payload -> 'events') AS record
+                WHERE record #>> '{event,type}' = 'world_configured'
+                  AND record -> 'event' -> 'data' -> 'configuration'
+                             ? 'provisional_world_composition'
+                LIMIT 1
+            ) AS provisional ON TRUE
+            ORDER BY worlds.current_sequence DESC, worlds.id ASC
             "#,
         )
         .fetch_all(self.pool())
@@ -45,6 +65,23 @@ fn parse_row(row: PublicWorldRow) -> Result<PublicWorld, ObserverProjectionStore
     };
     let sequence = u64::try_from(row.current_sequence).map_err(|_| corrupt("world sequence"))?;
     let tick = u64::try_from(row.current_tick).map_err(|_| corrupt("world tick"))?;
+    let (input_status, composition_id, composition_version, composition_hash) = match (
+        row.composition_id,
+        row.composition_version,
+        row.composition_hash,
+    ) {
+        (None, None, None) => (None, None, None, None),
+        (Some(id), Some(version), Some(hash)) => (
+            Some(PublicWorldInputStatus::ProvisionalNotScientificallyAdmitted),
+            Some(id),
+            Some(version),
+            Some(
+                hash.parse::<Digest>()
+                    .map_err(|_| corrupt("provisional composition checksum"))?,
+            ),
+        ),
+        _ => return Err(corrupt("provisional composition metadata")),
+    };
     Ok(PublicWorld {
         world_id: WorldId::from_uuid(row.id),
         status,
@@ -54,6 +91,10 @@ fn parse_row(row: PublicWorldRow) -> Result<PublicWorld, ObserverProjectionStore
         event_hash: parse_digest(row.last_event_checksum, "world event checksum")?,
         state_hash: parse_digest(row.current_state_checksum, "world state checksum")?,
         predecessor_world_id: row.predecessor_world_id.map(WorldId::from_uuid),
+        input_status,
+        composition_id,
+        composition_version,
+        composition_hash,
     })
 }
 

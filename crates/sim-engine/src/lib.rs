@@ -16,9 +16,9 @@ use world_domain::{
     BirthCategory, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, DeathCause, Digest,
     DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
     EventBatch, EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION,
-    OrganismRole, PrimitiveAction, S2CellId, S2CellIdError, SequenceOverflow, SimTick,
-    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
+    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PrimitiveAction, S2CellId, S2CellIdError,
+    SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
+    TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
 };
 
 /// Version pinned to each world so old histories are never silently reinterpreted.
@@ -27,10 +27,12 @@ pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
 pub const PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION: u16 = 4;
+pub const PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION: u16 = 5;
 const LEGACY_STATE_HASH_SCHEMA_VERSION: u16 = 1;
 const STATE_HASH_SCHEMA_VERSION: u16 = 2;
 const EMBODIED_POSITION_STATE_HASH_SCHEMA_VERSION: u16 = 3;
 const PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION: u16 = 4;
+const PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION: u16 = 5;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -482,6 +484,12 @@ impl EngineState {
         if self
             .configuration
             .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+        {
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        } else if self
+            .configuration
+            .as_ref()
             .and_then(WorldConfiguration::embodied_patch_s2_level)
             .is_some()
         {
@@ -494,7 +502,13 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.partition_schedule.is_some() {
+        if self
+            .configuration
+            .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+        {
+            PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION
+        } else if self.partition_schedule.is_some() {
             PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION
         } else if self
             .configuration
@@ -837,7 +851,13 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.partition_schedule.is_some() {
+        let snapshot_schema_version = if state
+            .configuration
+            .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+        {
+            PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+        } else if state.partition_schedule.is_some() {
             PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
         } else if state
             .configuration
@@ -868,12 +888,20 @@ impl Snapshot {
                 | SNAPSHOT_SCHEMA_VERSION
                 | EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION
                 | PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
+                | PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.partition_schedule.is_some() {
+        let expected_schema_version = if self
+            .state
+            .configuration
+            .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+        {
+            PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.partition_schedule.is_some() {
             PARTITIONED_EXECUTION_SNAPSHOT_SCHEMA_VERSION
         } else if self
             .state
@@ -984,7 +1012,21 @@ fn replay_from_cursor(
             .iter()
             .any(|record| matches!(&record.event, DomainEvent::WorldConfigured { .. }));
         let is_configured = state.configuration.is_some() || configures_world;
+        let configures_provisional_world = batch.events.iter().any(|record| {
+            matches!(
+                &record.event,
+                DomainEvent::WorldConfigured { configuration }
+                    if configuration.is_provisional_execution()
+            )
+        });
         let expected_schema = if state
+            .configuration
+            .as_ref()
+            .is_some_and(WorldConfiguration::is_provisional_execution)
+            || configures_provisional_world
+        {
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        } else if state
             .configuration
             .as_ref()
             .and_then(WorldConfiguration::embodied_patch_s2_level)
@@ -995,14 +1037,17 @@ fn replay_from_cursor(
                     DomainEvent::WorldConfigured { configuration }
                         if configuration.embodied_patch_s2_level().is_some()
                 )
-            }) {
+            })
+        {
             EMBODIED_POSITION_EVENT_SCHEMA_VERSION
         } else if is_configured {
             EVENT_SCHEMA_VERSION
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == EMBODIED_POSITION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        } else if expected_schema == EMBODIED_POSITION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == EMBODIED_POSITION_EVENT_SCHEMA_VERSION
         } else if expected_schema == EVENT_SCHEMA_VERSION {
             matches!(
@@ -1170,8 +1215,8 @@ mod tests {
     use world_domain::{
         CapacityExhaustionPolicy, EarthResolutionLevels, FullEarthGrid, PartitionedExecution,
         PerceptionChannel, PersonRepresentation, PrimitiveActionKind, PropertyReading,
-        S2Projection, SchedulerKind, SituatedPerception, SpatialGrid, WorldDataBundleReference,
-        WorldSeed, WorldStatus,
+        ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
+        SpatialGrid, WorldDataBundleReference, WorldSeed, WorldStatus,
     };
 
     fn manifest() -> WorldManifest {
@@ -1267,6 +1312,26 @@ mod tests {
             },
         )
         .expect("valid full-Earth configuration")
+    }
+
+    fn provisional_full_earth_configuration() -> WorldConfiguration {
+        let admitted = full_earth_configuration();
+        WorldConfiguration::new_provisional_full_earth(
+            300,
+            admitted.full_earth_grid().expect("full-Earth grid").clone(),
+            ProvisionalWorldCompositionReference::new(
+                1,
+                "full-earth-breadth-first",
+                "0.1.0",
+                Digest::sha256(b"provisional composition"),
+            )
+            .expect("valid provisional composition reference"),
+            admitted
+                .partitioned_execution()
+                .expect("partitioned execution")
+                .clone(),
+        )
+        .expect("valid provisional full-Earth configuration")
     }
 
     fn full_earth_person(world_id: WorldId) -> InitialOrganism {
@@ -1503,6 +1568,51 @@ mod tests {
         assert_eq!(after_tick.scheduled_work_count(), 0);
         let replayed = replay(manifest, &[genesis, tick]).expect("partitioned replay");
         assert_eq!(replayed.state, after_tick);
+    }
+
+    #[test]
+    fn provisional_full_earth_history_has_distinct_event_snapshot_and_hash_schemas() {
+        let manifest = manifest();
+        let initial = EngineState::new(manifest.clone());
+        let configuration = provisional_full_earth_configuration();
+        let genesis_events = initial
+            .plan_configured_genesis(
+                configuration.clone(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("provisional genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("provisional genesis commit");
+
+        assert_eq!(
+            genesis.event_schema_version,
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(running.configuration(), Some(&configuration));
+        assert_eq!(
+            running.state_hash_schema_version(),
+            PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION
+        );
+        let snapshot = Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
+            .expect("provisional snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION
+        );
+
+        let tick_events = running.plan_next_tick().expect("provisional tick plan");
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("provisional tick commit");
+        assert_eq!(
+            tick.event_schema_version,
+            PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
+        );
+        let replayed = replay(manifest, &[genesis, tick]).expect("provisional replay");
+        assert_eq!(replayed.state, after_tick);
+        assert_eq!(replayed.state.tick(), SimTick::new(1));
+        assert_eq!(replayed.state.scheduled_work_count(), 0);
     }
 
     #[test]

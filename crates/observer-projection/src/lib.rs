@@ -173,6 +173,12 @@ pub enum ObserverProjectionStoreError {
 
 /// Public routing metadata for a world. This is a read-only view of the durable
 /// lifecycle cursor, deliberately separate from the simulation write port.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub enum PublicWorldInputStatus {
+    #[serde(rename = "provisional-not-scientifically-admitted")]
+    ProvisionalNotScientificallyAdmitted,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublicWorld {
     pub world_id: WorldId,
@@ -186,6 +192,16 @@ pub struct PublicWorld {
     /// Replayable canonical state hash at the public cursor.
     pub state_hash: Digest,
     pub predecessor_world_id: Option<WorldId>,
+    /// Observer-side scientific admission status for the world's exact input set.
+    /// Absent means the legacy store has not projected composition metadata yet.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub input_status: Option<PublicWorldInputStatus>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_version: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub composition_hash: Option<Digest>,
 }
 
 #[async_trait]
@@ -671,5 +687,58 @@ mod tests {
         for withheld in ["female", "parent", "location", "birth_category"] {
             assert!(!rendered.contains(withheld), "must withhold {withheld}");
         }
+    }
+
+    #[test]
+    fn public_world_serializes_explicit_provisional_input_metadata_compatibly() {
+        let mut world = PublicWorld {
+            world_id: WorldId::from_uuid(Uuid::from_u128(31)),
+            status: WorldStatus::Running,
+            through_sequence: EventSequence::new(8),
+            tick: SimTick::new(7),
+            manifest_hash: Digest::sha256(b"manifest"),
+            event_hash: Digest::sha256(b"events"),
+            state_hash: Digest::sha256(b"state"),
+            predecessor_world_id: None,
+            input_status: Some(PublicWorldInputStatus::ProvisionalNotScientificallyAdmitted),
+            composition_id: Some("full-earth-provisional-v1".to_owned()),
+            composition_version: Some("0.1.0".to_owned()),
+            composition_hash: Some(Digest::sha256(b"composition")),
+        };
+        let value = serde_json::to_value(&world).expect("serialize public world");
+        assert_eq!(
+            value["input_status"],
+            "provisional-not-scientifically-admitted"
+        );
+        assert_eq!(value["composition_id"], "full-earth-provisional-v1");
+        assert_eq!(value["composition_version"], "0.1.0");
+        assert_eq!(
+            value["composition_hash"],
+            Digest::sha256(b"composition").to_string()
+        );
+        assert_eq!(
+            serde_json::from_value::<PublicWorld>(value).expect("deserialize public world"),
+            world
+        );
+
+        world.input_status = None;
+        world.composition_id = None;
+        world.composition_version = None;
+        world.composition_hash = None;
+        let legacy = serde_json::to_value(&world).expect("serialize legacy public world");
+        for field in [
+            "input_status",
+            "composition_id",
+            "composition_version",
+            "composition_hash",
+        ] {
+            assert!(legacy.get(field).is_none(), "must omit absent {field}");
+        }
+        let decoded_legacy =
+            serde_json::from_value::<PublicWorld>(legacy).expect("deserialize legacy public world");
+        assert_eq!(decoded_legacy.input_status, None);
+        assert_eq!(decoded_legacy.composition_id, None);
+        assert_eq!(decoded_legacy.composition_version, None);
+        assert_eq!(decoded_legacy.composition_hash, None);
     }
 }

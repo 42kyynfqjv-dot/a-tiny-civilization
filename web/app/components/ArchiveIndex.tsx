@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
 
-type World = {
+type World = WorldInputMetadata & {
   world_id: string;
   status: "initializing" | "running" | "extinct" | "archived";
   through_sequence: string | number;
@@ -53,6 +54,7 @@ export function ArchiveIndex() {
           <div>
             <p>World {world.world_id.slice(0, 8)}</p>
             <strong>{world.status === "archived" ? "Immutable archive" : "Extinction committed"}</strong>
+            <WorldInputStatus world={world} />
           </div>
           <dl>
             <div><dt>Cursor</dt><dd>Event {world.through_sequence} · tick {world.tick}</dd></div>

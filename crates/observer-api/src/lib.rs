@@ -109,7 +109,7 @@ async fn ready(State(state): State<ApiState>) -> Result<Json<HealthResponse<'sta
 #[derive(Serialize)]
 struct StatusResponse {
     api_version: &'static str,
-    environment: Arc<str>,
+    environment: String,
     database_time: DateTime<Utc>,
     worlds: WorldCounts,
     latest_runner_heartbeat: Option<DateTime<Utc>>,
@@ -130,7 +130,7 @@ async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse>, A
 
     Ok(Json(StatusResponse {
         api_version: "v1",
-        environment: state.environment,
+        environment: state.environment.to_string(),
         database_time: status.database_time,
         worlds: WorldCounts {
             initializing: status.initializing_worlds,
@@ -287,5 +287,44 @@ impl IntoResponse for ApiError {
             Json(serde_json::json!({ "error": { "code": code, "message": message } })),
         )
             .into_response()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use observer_projection::PublicWorldInputStatus;
+    use world_domain::{Digest, EventSequence, SimTick, WorldStatus};
+
+    #[test]
+    fn worlds_response_exposes_provisional_input_identity() {
+        let composition_hash = Digest::sha256(b"composition");
+        let response = WorldsResponse {
+            worlds: vec![PublicWorld {
+                world_id: "00000000-0000-0000-0000-000000000001"
+                    .parse()
+                    .expect("world ID"),
+                status: WorldStatus::Running,
+                through_sequence: EventSequence::new(2),
+                tick: SimTick::new(3),
+                manifest_hash: Digest::sha256(b"manifest"),
+                event_hash: Digest::sha256(b"events"),
+                state_hash: Digest::sha256(b"state"),
+                predecessor_world_id: None,
+                input_status: Some(PublicWorldInputStatus::ProvisionalNotScientificallyAdmitted),
+                composition_id: Some("full-earth-provisional-v1".to_owned()),
+                composition_version: Some("0.1.0".to_owned()),
+                composition_hash: Some(composition_hash),
+            }],
+        };
+        let value = serde_json::to_value(response).expect("serialize worlds response");
+        let world = &value["worlds"][0];
+        assert_eq!(
+            world["input_status"],
+            "provisional-not-scientifically-admitted"
+        );
+        assert_eq!(world["composition_id"], "full-earth-provisional-v1");
+        assert_eq!(world["composition_version"], "0.1.0");
+        assert_eq!(world["composition_hash"], composition_hash.to_string());
     }
 }

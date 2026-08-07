@@ -1,8 +1,9 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
 
-type World = {
+type World = WorldInputMetadata & {
   world_id: string;
   status: "initializing" | "running" | "extinct" | "archived";
 };
@@ -85,7 +86,10 @@ export function WikiIndex() {
           <p className="eyebrow">Committed index</p>
           <h2 id="wiki-live-index-title">World {wiki.world.world_id.slice(0, 8)}</h2>
         </div>
-        <span>{wiki.world.status}</span>
+        <div className="world-status-stack">
+          <span className="world-lifecycle-status">{wiki.world.status}</span>
+          <WorldInputStatus world={wiki.world} />
+        </div>
       </div>
       <div className="wiki-live-grid">
         <article>

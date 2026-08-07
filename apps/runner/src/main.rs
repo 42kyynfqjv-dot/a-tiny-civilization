@@ -1,12 +1,14 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    path::PathBuf,
     time::Duration,
 };
 
 use anyhow::{Context, Result};
 use application::{
     AgentMemory, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
-    WorldSession, WorldStore, advance_world, initialize_or_resume_world, resume_world,
+    WorldSession, WorldStore, advance_world, initialize_or_resume_configured_world,
+    initialize_or_resume_world, resume_world,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -15,9 +17,13 @@ use serde_json::json;
 use sim_engine::{InitialOrganism, RULESET_VERSION};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
+use world_data_filesystem::{
+    load_provisional_world_composition, verify_provisional_world_artifacts,
+};
 use world_domain::{
-    BirthCategory, EntityId, OrganismRole, SpeciesIdentity, WorldId, WorldManifest, WorldSeed,
-    WorldStatus,
+    BirthCategory, CapacityExhaustionPolicy, EntityId, OrganismRole, PartitionedExecution,
+    PersonRepresentation, S2CellId, SchedulerKind, SpeciesIdentity, WorldConfiguration, WorldId,
+    WorldManifest, WorldSeed, WorldStatus,
 };
 
 #[derive(Debug, Parser)]
@@ -53,6 +59,38 @@ enum Command {
 
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
+    },
+    /// Verify all breadth-first inputs, then create or resume a provisional full-Earth world.
+    InitProvisionalFullEarth {
+        #[arg(long)]
+        world_id: WorldId,
+
+        #[arg(long)]
+        seed: u64,
+
+        /// Canonical schema-v1 provisional composition manifest.
+        #[arg(
+            long,
+            default_value = "data/provisional/full-earth-breadth-first-0.1.0.json"
+        )]
+        composition: PathBuf,
+
+        /// Root beneath which every content-addressed composition artifact is stored.
+        #[arg(long, default_value = ".")]
+        artifact_root: PathBuf,
+
+        /// Exact lowercase 16-hex-character S2 cell at the configured embodied-patch level.
+        #[arg(long)]
+        initial_patch: S2CellId,
+
+        #[arg(long)]
+        predecessor_world_id: Option<WorldId>,
+
+        #[arg(long, default_value_t = 300)]
+        tick_duration_seconds: u32,
+
+        #[arg(long, default_value_t = 10_000)]
+        max_events_per_partition_transition: u32,
     },
     /// Replay one stored world from genesis and verify its snapshot, cursor, and hashes.
     VerifyWorld {
@@ -103,6 +141,29 @@ async fn main() -> Result<()> {
             seed,
             predecessor_world_id,
         } => init_proof_world(&store, world_id, seed, predecessor_world_id).await,
+        Command::InitProvisionalFullEarth {
+            world_id,
+            seed,
+            composition,
+            artifact_root,
+            initial_patch,
+            predecessor_world_id,
+            tick_duration_seconds,
+            max_events_per_partition_transition,
+        } => {
+            init_provisional_full_earth_world(
+                &store,
+                world_id,
+                seed,
+                &composition,
+                &artifact_root,
+                initial_patch,
+                predecessor_world_id,
+                tick_duration_seconds,
+                max_events_per_partition_transition,
+            )
+            .await
+        }
         Command::VerifyWorld { world_id } => verify_world(&store, world_id).await,
         Command::MemoryWorker {
             hindsight_base_url,
@@ -284,6 +345,99 @@ async fn init_proof_world(
             .context("initialize non-production proof world")?;
 
     println!("initialized non-production proof world {world_id}");
+    println!(
+        "sequence {}, tick {}, state {}",
+        session.world.cursor.sequence, session.world.cursor.tick, session.world.cursor.state_hash
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn init_provisional_full_earth_world(
+    store: &PostgresStore,
+    world_id: WorldId,
+    seed: u64,
+    composition_path: &std::path::Path,
+    artifact_root: &std::path::Path,
+    initial_patch: S2CellId,
+    predecessor_world_id: Option<WorldId>,
+    tick_duration_seconds: u32,
+    max_events_per_partition_transition: u32,
+) -> Result<()> {
+    let composition = load_provisional_world_composition(composition_path)
+        .context("load canonical provisional full-Earth composition")?;
+    let verified = verify_provisional_world_artifacts(&composition, artifact_root)
+        .context("verify every provisional full-Earth artifact")?;
+    let embodied_level = composition.full_earth_grid.levels.embodied_patch;
+    if initial_patch.level() != embodied_level {
+        anyhow::bail!(
+            "initial patch {initial_patch} is S2 level {}, expected configured level {embodied_level}",
+            initial_patch.level()
+        );
+    }
+    let partition_level = composition.full_earth_grid.levels.planetary_aggregate;
+    let composition_reference = composition
+        .execution_reference()
+        .context("construct provisional execution reference")?;
+    let configuration = WorldConfiguration::new_provisional_full_earth(
+        tick_duration_seconds,
+        composition.full_earth_grid,
+        composition_reference.clone(),
+        PartitionedExecution {
+            scheduler_schema_version: 1,
+            scheduler: SchedulerKind::DeterministicEventQueue,
+            partition_s2_level: partition_level,
+            person_representation: PersonRepresentation::DurableIndividuals,
+            capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+            max_events_per_partition_transition,
+        },
+    )
+    .context("construct provisional full-Earth execution configuration")?;
+
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(seed), RULESET_VERSION);
+    let species = SpeciesIdentity::new(
+        "gbif",
+        "2436436",
+        "Homo sapiens",
+        "https://www.gbif.org/species/2436436",
+    )?;
+    let initial_organisms = [
+        (b"provisional-founder-a".as_slice(), "female"),
+        (b"provisional-founder-b".as_slice(), "male"),
+    ]
+    .into_iter()
+    .map(|(identity, birth_category)| {
+        Ok(InitialOrganism {
+            organism_id: EntityId::deterministic(world_id, identity),
+            species: species.clone(),
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new(birth_category)?,
+            initial_age_ticks: 0,
+            location_id: None,
+            embodied_patch: Some(initial_patch),
+        })
+    })
+    .collect::<Result<Vec<_>>>()?;
+    let session = initialize_or_resume_configured_world(
+        store,
+        manifest,
+        predecessor_world_id,
+        configuration,
+        initial_organisms,
+    )
+    .await
+    .context("initialize provisional full-Earth world")?;
+
+    println!(
+        "verified {} provisional references ({} bytes)",
+        verified.artifacts, verified.bytes
+    );
+    println!(
+        "initialized provisional full-Earth world {world_id} from {}@{}",
+        composition_reference.composition_id, composition_reference.composition_version
+    );
+    println!("status: provisional-not-scientifically-admitted");
+    println!("composition hash: {}", composition_reference.content_hash);
     println!(
         "sequence {}, tick {}, state {}",
         session.world.cursor.sequence, session.world.cursor.tick, session.world.cursor.state_hash

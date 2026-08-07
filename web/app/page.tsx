@@ -111,6 +111,14 @@ export default function Home() {
           </p>
         </section>
 
+        <aside className="provisional-input-banner" aria-label="Scientific admission status">
+          <strong>Provisional — not scientifically admitted</strong>
+          <span>
+            The complete-first Earth input composition is visible for integration and audit. It is
+            not yet eligible for canonical genesis.
+          </span>
+        </aside>
+
         <section className="world-panel" aria-labelledby="world-panel-title">
           <div className="panel-toolbar">
             <div>

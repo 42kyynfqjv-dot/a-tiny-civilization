@@ -14,7 +14,8 @@ use sim_engine::{
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    Digest, EventBatch, EventSequence, SimTick, WorldId, WorldManifest, WorldStatus,
+    Digest, EventBatch, EventSequence, SimTick, WorldConfiguration, WorldId, WorldManifest,
+    WorldStatus,
 };
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
@@ -144,9 +145,52 @@ pub async fn initialize_or_resume_world<S: WorldStore + ?Sized>(
     predecessor_world_id: Option<WorldId>,
     initial_organisms: Vec<InitialOrganism>,
 ) -> Result<WorldSession, WorldRuntimeError> {
+    initialize_or_resume_world_internal(
+        store,
+        manifest,
+        predecessor_world_id,
+        None,
+        initial_organisms,
+    )
+    .await
+}
+
+/// Creates or resumes a world whose immutable causal scale and data provenance are
+/// committed in the genesis batch.
+///
+/// Configuration is an explicit caller-owned input. This boundary neither discovers
+/// datasets nor upgrades their scientific status; it only commits the exact validated
+/// reference supplied by the caller.
+pub async fn initialize_or_resume_configured_world<S: WorldStore + ?Sized>(
+    store: &S,
+    manifest: WorldManifest,
+    predecessor_world_id: Option<WorldId>,
+    configuration: WorldConfiguration,
+    initial_organisms: Vec<InitialOrganism>,
+) -> Result<WorldSession, WorldRuntimeError> {
+    initialize_or_resume_world_internal(
+        store,
+        manifest,
+        predecessor_world_id,
+        Some(configuration),
+        initial_organisms,
+    )
+    .await
+}
+
+async fn initialize_or_resume_world_internal<S: WorldStore + ?Sized>(
+    store: &S,
+    manifest: WorldManifest,
+    predecessor_world_id: Option<WorldId>,
+    configuration: Option<WorldConfiguration>,
+    initial_organisms: Vec<InitialOrganism>,
+) -> Result<WorldSession, WorldRuntimeError> {
     let initial = EngineState::new(manifest.clone());
     let initial_hash = initial.state_hash().map_err(EngineError::from)?;
-    let genesis_events = initial.plan_genesis(initial_organisms)?;
+    let genesis_events = match configuration {
+        Some(configuration) => initial.plan_configured_genesis(configuration, initial_organisms)?,
+        None => initial.plan_genesis(initial_organisms)?,
+    };
     let genesis_sequence = EventSequence::new(1);
     let (running, genesis_batch) =
         initial.commit(genesis_sequence, Digest::ZERO, genesis_events)?;
