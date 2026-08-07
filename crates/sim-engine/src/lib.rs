@@ -47,6 +47,9 @@ pub const EMBODIED_ACTIVITY_RULESET_VERSION: u32 = 4;
 pub const LOCAL_ENVIRONMENT_RULESET_VERSION: u32 = 5;
 /// Ruleset six resolves a closed-grammar move into one adjacent S2 patch.
 pub const RESOLVED_MOVEMENT_RULESET_VERSION: u32 = 6;
+/// Ruleset seven makes bounded direct perceptions durable internal state. It is the
+/// substrate for a later deterministic policy and is not an observer projection.
+pub const PERSISTENT_PERCEPTION_RULESET_VERSION: u32 = 7;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -55,6 +58,7 @@ pub const PROVISIONAL_WORLD_SNAPSHOT_SCHEMA_VERSION: u16 = 5;
 pub const SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION: u16 = 6;
 pub const CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION: u16 = 7;
 pub const BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 8;
+pub const PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION: u16 = 9;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -68,6 +72,8 @@ const PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION: u16 = 5;
 const SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION: u16 = 6;
 const CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION: u16 = 7;
 const BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION: u16 = 8;
+const PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION: u16 = 9;
+const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
 /// driver. It creates no cultural interpretation and does not claim a metabolic or
@@ -130,7 +136,22 @@ pub struct OrganismState {
     embodied_patch: Option<S2CellId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metabolic_rate: Option<MetabolicRateCommitment>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    perception_memory: Vec<PerceptionMemoryEntry>,
     death: Option<DeathRecord>,
+}
+
+/// The latest direct reading at one subject/channel/property address. The vector
+/// is canonically ordered and bounded, avoiding an unbounded event-log duplicate
+/// inside every living organism while retaining the input a later policy needs.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+struct PerceptionMemoryEntry {
+    subject_id: Option<EntityId>,
+    channel: PerceptionChannel,
+    property_code: String,
+    quantized_value: i32,
+    uncertainty: u16,
+    observed_at: SimTick,
 }
 
 impl OrganismState {
@@ -147,6 +168,11 @@ impl OrganismState {
     #[must_use]
     pub const fn is_alive(&self) -> bool {
         self.death.is_none()
+    }
+
+    #[must_use]
+    pub fn perception_memory_len(&self) -> usize {
+        self.perception_memory.len()
     }
 
     #[must_use]
@@ -167,6 +193,12 @@ impl OrganismState {
     fn age_ticks(&self) -> Option<u64> {
         self.age_ticks
     }
+}
+
+fn perception_memory_key(
+    entry: &PerceptionMemoryEntry,
+) -> (Option<EntityId>, PerceptionChannel, &str) {
+    (entry.subject_id, entry.channel, &entry.property_code)
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -777,6 +809,10 @@ impl EngineState {
         self.manifest.ruleset_version >= RESOLVED_MOVEMENT_RULESET_VERSION
     }
 
+    fn uses_persistent_perception_driver(&self) -> bool {
+        self.manifest.ruleset_version >= PERSISTENT_PERCEPTION_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -894,8 +930,16 @@ impl EngineState {
             .any(|organism| organism.metabolic_rate.is_some())
     }
 
+    fn has_perception_memory(&self) -> bool {
+        self.organisms
+            .values()
+            .any(|organism| !organism.perception_memory.is_empty())
+    }
+
     fn state_hash_schema_version(&self) -> u16 {
-        if self.has_metabolic_rate_commitments() {
+        if self.has_perception_memory() {
+            PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION
+        } else if self.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_celestial_driver() {
             CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION
@@ -990,6 +1034,7 @@ impl EngineState {
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
+                    perception_memory: Vec::new(),
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -1053,6 +1098,7 @@ impl EngineState {
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
+                    perception_memory: Vec::new(),
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -1080,6 +1126,36 @@ impl EngineState {
                 perception
                     .validate()
                     .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if self.uses_persistent_perception_driver() {
+                    let organism = self
+                        .organisms
+                        .get_mut(organism_id)
+                        .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                    for reading in &perception.readings {
+                        let entry = PerceptionMemoryEntry {
+                            subject_id: perception.subject_id,
+                            channel: reading.channel,
+                            property_code: reading.property_code.clone(),
+                            quantized_value: reading.quantized_value,
+                            uncertainty: reading.uncertainty,
+                            observed_at: self.tick,
+                        };
+                        match organism.perception_memory.binary_search_by(|existing| {
+                            perception_memory_key(existing).cmp(&perception_memory_key(&entry))
+                        }) {
+                            Ok(index) => organism.perception_memory[index] = entry,
+                            Err(index) => {
+                                if organism.perception_memory.len() >= MAX_PERCEPTION_MEMORY_ENTRIES
+                                {
+                                    return Err(EngineError::PerceptionMemoryCapacity(
+                                        *organism_id,
+                                    ));
+                                }
+                                organism.perception_memory.insert(index, entry);
+                            }
+                        }
+                    }
+                }
             }
             DomainEvent::OrganismActed {
                 organism_id,
@@ -1259,6 +1335,14 @@ impl EngineState {
             }
             organism.species.validate()?;
             self.validate_initial_embodied_patch(organism.embodied_patch)?;
+            if organism.perception_memory.len() > MAX_PERCEPTION_MEMORY_ENTRIES
+                || organism
+                    .perception_memory
+                    .windows(2)
+                    .any(|pair| perception_memory_key(&pair[0]) >= perception_memory_key(&pair[1]))
+            {
+                return Err(EngineError::InvalidPerceptionMemory(organism.organism_id));
+            }
             if organism
                 .parent_ids
                 .windows(2)
@@ -1328,7 +1412,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.has_metabolic_rate_commitments() {
+        let snapshot_schema_version = if state.has_perception_memory() {
+            PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
+        } else if state.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_celestial_driver() {
             CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
@@ -1375,12 +1461,15 @@ impl Snapshot {
                 | SCHEDULED_CAUSAL_SNAPSHOT_SCHEMA_VERSION
                 | CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
                 | BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
+                | PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.has_metabolic_rate_commitments() {
+        let expected_schema_version = if self.state.has_perception_memory() {
+            PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_celestial_driver() {
             CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION
@@ -1678,6 +1767,10 @@ pub enum EngineError {
     InvalidAgeTransition(EntityId),
     #[error("organism {0} age tick overflowed")]
     AgeOverflow(EntityId),
+    #[error("organism {0} perception memory is invalid")]
+    InvalidPerceptionMemory(EntityId),
+    #[error("organism {0} perception memory has reached its fixed capacity")]
+    PerceptionMemoryCapacity(EntityId),
     #[error("ruleset-three ticks require one source-backed celestial state")]
     CelestialStateRequired,
     #[error("this ruleset does not accept source-backed celestial states")]
@@ -2090,6 +2183,81 @@ mod tests {
         assert_eq!(
             replay(manifest, &[genesis, tick]).expect("replay").state,
             after_tick
+        );
+    }
+
+    #[test]
+    fn persistent_perceptions_are_bounded_hash_chained_and_replayable() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = PERSISTENT_PERCEPTION_RULESET_VERSION;
+        let initial = EngineState::new(manifest.clone());
+        let person = initial_person(manifest.world_id);
+        let person_id = person.organism_id;
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial
+                    .plan_configured_genesis(world_configuration(), vec![person])
+                    .expect("genesis plan"),
+            )
+            .expect("genesis");
+        let first_reading = SituatedPerception {
+            subject_id: None,
+            readings: vec![PropertyReading {
+                channel: PerceptionChannel::Touch,
+                property_code: "temperature".to_owned(),
+                quantized_value: 12,
+                uncertainty: 1,
+            }],
+        };
+        let (after_first, first_batch) = running
+            .commit(
+                EventSequence::new(2),
+                genesis.batch_hash,
+                running
+                    .plan_perception(person_id, first_reading)
+                    .expect("first perception"),
+            )
+            .expect("first perception batch");
+        assert_eq!(after_first.organisms[&person_id].perception_memory_len(), 1);
+        let replacement = SituatedPerception {
+            subject_id: None,
+            readings: vec![PropertyReading {
+                channel: PerceptionChannel::Touch,
+                property_code: "temperature".to_owned(),
+                quantized_value: 13,
+                uncertainty: 0,
+            }],
+        };
+        let (after_replacement, replacement_batch) = after_first
+            .commit(
+                EventSequence::new(3),
+                first_batch.batch_hash,
+                after_first
+                    .plan_perception(person_id, replacement)
+                    .expect("replacement perception"),
+            )
+            .expect("replacement perception batch");
+        assert_eq!(
+            after_replacement.organisms[&person_id].perception_memory_len(),
+            1
+        );
+        let snapshot = Snapshot::new(
+            after_replacement.clone(),
+            replacement_batch.sequence,
+            replacement_batch.batch_hash,
+        )
+        .expect("snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, first_batch, replacement_batch])
+                .expect("replay")
+                .state,
+            after_replacement
         );
     }
 
