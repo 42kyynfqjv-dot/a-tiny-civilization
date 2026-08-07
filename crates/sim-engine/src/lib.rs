@@ -1296,6 +1296,15 @@ impl EngineState {
                     tick: self.tick,
                     cause: cause.clone(),
                 });
+                let embodied_patch = organism.embodied_patch;
+                if let Some(embodied_patch) = embodied_patch {
+                    for instance in self.material_instances.values_mut() {
+                        if instance.held_by == Some(*organism_id) {
+                            instance.held_by = None;
+                            instance.embodied_patch = embodied_patch;
+                        }
+                    }
+                }
                 self.refresh_partition_schedule()?;
             }
             DomainEvent::OrganismPerceived {
