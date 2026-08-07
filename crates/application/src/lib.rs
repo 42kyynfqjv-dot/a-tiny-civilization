@@ -9,14 +9,17 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sim_engine::{
-    EngineError, EngineState, InitialOrganism, Snapshot, replay, replay_from_snapshot,
+    EngineError, EngineState, InitialOrganism, PERSISTENT_PERCEPTION_RULESET_VERSION, Snapshot,
+    replay, replay_from_snapshot,
 };
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    CelestialState, Digest, EventBatch, EventSequence, SimTick, WorldConfiguration, WorldId,
-    WorldManifest, WorldStatus,
+    CelestialState, Digest, DomainEvent, EntityId, EventBatch, EventSequence, PerceptionChannel,
+    SimTick, WorldConfiguration, WorldId, WorldManifest, WorldStatus,
 };
+
+use std::collections::{BTreeMap, BTreeSet};
 
 #[derive(Clone, Debug, Deserialize, PartialEq, Serialize)]
 pub struct ServiceHeartbeat {
@@ -347,13 +350,9 @@ async fn advance_world_events<S: WorldStore + ?Sized>(
             .state
             .commit(sequence, current.world.cursor.last_event_hash, events)?;
     let snapshot = Snapshot::new(next_state.clone(), batch.sequence, batch.batch_hash)?;
+    let effects = derive_transition_effects(&current.state, &batch)?;
     let world = store
-        .commit_transition(
-            current.world.cursor,
-            &batch,
-            &snapshot,
-            &TransitionEffects::default(),
-        )
+        .commit_transition(current.world.cursor, &batch, &snapshot, &effects)
         .await?;
 
     if world.cursor.sequence != batch.sequence
@@ -372,4 +371,174 @@ async fn advance_world_events<S: WorldStore + ?Sized>(
         world,
         state: next_state,
     })
+}
+
+#[derive(Serialize)]
+struct RetainedDirectObservation<'a> {
+    subject_id: Option<EntityId>,
+    channel: PerceptionChannel,
+    property_code: &'a str,
+    quantized_value: i32,
+    uncertainty: u16,
+}
+
+/// Select a bounded, deterministic subset of canonical experiences for the
+/// external subjective-memory adapter. This is an application-side projection:
+/// it never affects the batch, state hash, or the next action.
+fn derive_transition_effects(
+    prior_state: &EngineState,
+    batch: &EventBatch,
+) -> Result<TransitionEffects, WorldRuntimeError> {
+    if prior_state.manifest().ruleset_version < PERSISTENT_PERCEPTION_RULESET_VERSION {
+        return Ok(TransitionEffects::default());
+    }
+    let mut effects = TransitionEffects::default();
+    let mut next_ordinal = BTreeMap::<EntityId, u32>::new();
+    let mut selected = BTreeSet::<(EntityId, Option<EntityId>, PerceptionChannel, String)>::new();
+    for record in &batch.events {
+        let DomainEvent::OrganismPerceived {
+            organism_id,
+            perception,
+        } = &record.event
+        else {
+            continue;
+        };
+        let organism = prior_state
+            .organisms()
+            .find(|organism| organism.organism_id() == *organism_id)
+            .ok_or_else(|| {
+                WorldRuntimeError::Integrity(format!(
+                    "perception event references unknown organism {organism_id}"
+                ))
+            })?;
+        for reading in &perception.readings {
+            let key = (
+                *organism_id,
+                perception.subject_id,
+                reading.channel,
+                reading.property_code.clone(),
+            );
+            if organism.has_perception_memory_at(
+                perception.subject_id,
+                reading.channel,
+                &reading.property_code,
+            ) || !selected.insert(key)
+            {
+                continue;
+            }
+            let content = serde_json::to_string(&RetainedDirectObservation {
+                subject_id: perception.subject_id,
+                channel: reading.channel,
+                property_code: &reading.property_code,
+                quantized_value: reading.quantized_value,
+                uncertainty: reading.uncertainty,
+            })
+            .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+            let ordinal = next_ordinal.entry(*organism_id).or_default();
+            effects.memory_retains.push(
+                MemoryRetain::new(
+                    batch.world_id,
+                    *organism_id,
+                    batch.sequence,
+                    batch.tick,
+                    *ordinal,
+                    content,
+                    "canonical-direct-perception-v1",
+                )
+                .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?,
+            );
+            *ordinal = ordinal.checked_add(1).ok_or_else(|| {
+                WorldRuntimeError::Integrity("per-agent memory ordinal overflowed".to_owned())
+            })?;
+        }
+    }
+    Ok(effects)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use sim_engine::{InitialOrganism, PERSISTENT_PERCEPTION_RULESET_VERSION};
+    use uuid::Uuid;
+    use world_domain::{
+        BirthCategory, Digest, OrganismRole, PerceptionChannel, PropertyReading,
+        SituatedPerception, SpeciesIdentity, WorldSeed,
+    };
+
+    fn organism(world_id: WorldId) -> InitialOrganism {
+        InitialOrganism {
+            organism_id: EntityId::deterministic(world_id, b"application-memory-organism"),
+            species: SpeciesIdentity::new(
+                "gbif",
+                "2436436",
+                "Homo sapiens",
+                "https://www.gbif.org/species/2436436",
+            )
+            .expect("species"),
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("unspecified").expect("category"),
+            initial_age_ticks: 0,
+            location_id: None,
+            embodied_patch: None,
+            metabolic_rate: None,
+        }
+    }
+
+    #[test]
+    fn first_direct_perception_is_retained_once_per_memory_address() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xA77));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(17),
+            PERSISTENT_PERCEPTION_RULESET_VERSION,
+        );
+        let initial = EngineState::new(manifest);
+        let organism = organism(world_id);
+        let organism_id = organism.organism_id;
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial.plan_genesis(vec![organism]).expect("genesis plan"),
+            )
+            .expect("genesis");
+        let perception = SituatedPerception {
+            subject_id: None,
+            readings: vec![PropertyReading {
+                channel: PerceptionChannel::Touch,
+                property_code: "temperature".to_owned(),
+                quantized_value: 7,
+                uncertainty: 0,
+            }],
+        };
+        let (after_first, first_batch) = running
+            .commit(
+                EventSequence::new(2),
+                genesis.batch_hash,
+                running
+                    .plan_perception(organism_id, perception.clone())
+                    .expect("perception plan"),
+            )
+            .expect("perception batch");
+        let first_effects =
+            derive_transition_effects(&running, &first_batch).expect("first effects");
+        assert_eq!(first_effects.memory_retains.len(), 1);
+        assert_eq!(first_effects.memory_retains[0].agent_id, organism_id);
+
+        let (_, repeat_batch) = after_first
+            .commit(
+                EventSequence::new(3),
+                first_batch.batch_hash,
+                after_first
+                    .plan_perception(organism_id, perception)
+                    .expect("repeat perception plan"),
+            )
+            .expect("repeat perception batch");
+        assert!(
+            derive_transition_effects(&after_first, &repeat_batch)
+                .expect("repeat effects")
+                .memory_retains
+                .is_empty()
+        );
+    }
 }

@@ -175,6 +175,22 @@ impl OrganismState {
         self.perception_memory.len()
     }
 
+    /// Whether this exact direct-reading address already has durable internal
+    /// memory. The value itself remains private to the engine.
+    #[must_use]
+    pub fn has_perception_memory_at(
+        &self,
+        subject_id: Option<EntityId>,
+        channel: PerceptionChannel,
+        property_code: &str,
+    ) -> bool {
+        self.perception_memory
+            .binary_search_by(|entry| {
+                perception_memory_key(entry).cmp(&(subject_id, channel, property_code))
+            })
+            .is_ok()
+    }
+
     #[must_use]
     pub const fn death(&self) -> Option<&DeathRecord> {
         self.death.as_ref()
