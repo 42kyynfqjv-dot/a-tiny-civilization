@@ -21,18 +21,18 @@ use tiff::decoder::{
 use tiff::tags::Tag as TiffTag;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaRangeCandidateSet,
-    FaunaSeededSelection, LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
-    PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
-    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
-    PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
-    ProvisionalLandOriginSelection, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
-    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
-    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
-    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
-    WorldDataBundle, soilgrids_source_set_digest,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FaunaPopulationPlan,
+    FaunaRangeCandidateSet, FaunaSeededSelection, LandCoverClassCount, LandCoverEvidenceCell,
+    LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedLandCoverEvidenceTile,
+    PackedScalarFieldTile, PackedScalarTerrainTile, PackedSeasonalScalarFieldTile,
+    PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection, SOILGRIDS_NO_DATA_VALUE,
+    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
+    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
+    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
+    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -119,6 +119,16 @@ enum InspectCommand {
         input: PathBuf,
         #[arg(long)]
         candidates: PathBuf,
+    },
+    /// Validate one explicit provisional fauna population plan against its source
+    /// candidate pool and seed-derived selection.
+    FaunaPopulationPlan {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
     },
     /// Recompute a seed-derived provisional land origin against its exact Natural
     /// Earth land-reference tile tree.
@@ -701,6 +711,11 @@ async fn main() -> Result<()> {
             InspectCommand::FaunaSeededSelection { input, candidates } => {
                 inspect_fauna_seeded_selection(&input, &candidates)
             }
+            InspectCommand::FaunaPopulationPlan {
+                input,
+                candidates,
+                selection,
+            } => inspect_fauna_population_plan(&input, &candidates, &selection),
             InspectCommand::ProvisionalLandOriginSelection {
                 input,
                 land_reference_root_index,
@@ -1814,6 +1829,43 @@ fn inspect_provisional_land_origin_selection(
             "selected_embodied_patch": selection.selected_embodied_patch,
             "status": "verified-seed-derived-land-origin-not-habitat-or-population",
             "world_seed": selection.world_seed,
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_fauna_population_plan(
+    input: &Path,
+    candidates_path: &Path,
+    selection_path: &Path,
+) -> Result<()> {
+    let candidate_bytes = fs::read(candidates_path)
+        .with_context(|| format!("read fauna candidates {}", candidates_path.display()))?;
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes)
+        .context("validate fauna candidates")?;
+    let selection_bytes = fs::read(selection_path)
+        .with_context(|| format!("read fauna seeded selection {}", selection_path.display()))?;
+    let selection =
+        FaunaSeededSelection::from_canonical_slice_against(&selection_bytes, &candidates)
+            .context("validate fauna seeded selection")?;
+    let bytes = fs::read(input)
+        .with_context(|| format!("read fauna population plan {}", input.display()))?;
+    let plan = FaunaPopulationPlan::from_canonical_slice_against(&bytes, &candidates, &selection)
+        .context("validate fauna population plan")?;
+    let initial_individual_count = plan.entries.iter().try_fold(0_u64, |total, entry| {
+        total
+            .checked_add(u64::from(entry.initial_individual_count))
+            .context("fauna population count overflow")
+    })?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "origin_environment_digest": plan.origin_environment_digest,
+            "embodied_patch": plan.embodied_patch,
+            "species_count": plan.entries.len(),
+            "initial_individual_count": initial_individual_count,
+            "status": plan.status,
         }))?
     );
     Ok(())

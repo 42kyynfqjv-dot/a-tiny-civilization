@@ -6,7 +6,7 @@
 
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
-use world_domain::{Digest, GeographicCoordinateE7, SpeciesIdentity, WorldSeed};
+use world_domain::{Digest, GeographicCoordinateE7, S2CellId, SpeciesIdentity, WorldSeed};
 
 pub const FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE: &str =
@@ -15,6 +15,9 @@ const INATURALIST_RANGE_RELEASE: &str = "2.20";
 pub const FAUNA_SEEDED_SELECTION_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_SEEDED_SELECTION_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-seeded-selection+json";
+pub const FAUNA_POPULATION_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_POPULATION_PLAN_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.provisional-fauna-population-plan+json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaRangeCandidate {
@@ -62,6 +65,33 @@ pub struct FaunaSeededSelection {
     pub species_limit: u32,
     /// Ordered by the derived seed priority, never by an authored species list.
     pub selected_candidates: Vec<FaunaRangeCandidate>,
+}
+
+/// An explicitly planned initial count for a real selected species.
+///
+/// A count is an engine input, never a claim that a range source measured abundance.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaPopulationPlanEntry {
+    pub species: SpeciesIdentity,
+    pub initial_individual_count: u32,
+}
+
+/// A non-admitted hand-off from an ecological planner to genesis.
+///
+/// It binds the later planner's decision to an exact local origin, candidate pool,
+/// and seeded subset. It has no admitted state that could relabel a provisional
+/// count as a measured population.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaPopulationPlan {
+    pub population_plan_schema_version: u16,
+    pub status: String,
+    pub world_seed: WorldSeed,
+    pub origin_environment_digest: Digest,
+    pub embodied_patch: S2CellId,
+    pub candidate_set_digest: Digest,
+    pub seeded_selection_digest: Digest,
+    /// Strictly ordered by numeric GBIF species key.
+    pub entries: Vec<FaunaPopulationPlanEntry>,
 }
 
 impl FaunaRangeCandidateSet {
@@ -200,6 +230,86 @@ impl FaunaSeededSelection {
     }
 }
 
+impl FaunaPopulationPlan {
+    pub fn validate_against(
+        &self,
+        candidates: &FaunaRangeCandidateSet,
+        selection: &FaunaSeededSelection,
+    ) -> Result<(), FaunaRangeCandidateSetError> {
+        if self.population_plan_schema_version != FAUNA_POPULATION_PLAN_SCHEMA_VERSION {
+            return Err(
+                FaunaRangeCandidateSetError::UnsupportedPopulationPlanSchema(
+                    self.population_plan_schema_version,
+                ),
+            );
+        }
+        if self.status != "provisional-not-scientifically-admitted"
+            || self.origin_environment_digest == Digest::ZERO
+            || self.candidate_set_digest == Digest::ZERO
+            || self.seeded_selection_digest == Digest::ZERO
+            || self.entries.is_empty()
+        {
+            return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+        }
+        selection.validate_against(candidates)?;
+        if self.world_seed != selection.world_seed
+            || self.candidate_set_digest != selection.candidate_set_digest
+            || self.seeded_selection_digest
+                != Digest::sha256(&selection.canonical_bytes_against(candidates)?)
+        {
+            return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+        }
+        let mut previous_key = None;
+        for entry in &self.entries {
+            entry
+                .species
+                .validate()
+                .map_err(|error| FaunaRangeCandidateSetError::InvalidSpecies(error.to_string()))?;
+            let key = entry
+                .species
+                .identifier
+                .parse::<u64>()
+                .map_err(|_| FaunaRangeCandidateSetError::InvalidPopulationPlan)?;
+            if entry.species.catalog != "gbif"
+                || key == 0
+                || entry.initial_individual_count == 0
+                || !selection
+                    .selected_candidates
+                    .iter()
+                    .any(|candidate| candidate.species == entry.species)
+                || previous_key.is_some_and(|previous| previous >= key)
+            {
+                return Err(FaunaRangeCandidateSetError::InvalidPopulationPlan);
+            }
+            previous_key = Some(key);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes_against(
+        &self,
+        candidates: &FaunaRangeCandidateSet,
+        selection: &FaunaSeededSelection,
+    ) -> Result<Vec<u8>, FaunaRangeCandidateSetError> {
+        self.validate_against(candidates, selection)?;
+        serde_json::to_vec(self)
+            .map_err(|error| FaunaRangeCandidateSetError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice_against(
+        bytes: &[u8],
+        candidates: &FaunaRangeCandidateSet,
+        selection: &FaunaSeededSelection,
+    ) -> Result<Self, FaunaRangeCandidateSetError> {
+        let plan: Self = serde_json::from_slice(bytes)
+            .map_err(|error| FaunaRangeCandidateSetError::Decode(error.to_string()))?;
+        if plan.canonical_bytes_against(candidates, selection)? != bytes {
+            return Err(FaunaRangeCandidateSetError::NonCanonicalEncoding);
+        }
+        Ok(plan)
+    }
+}
+
 impl FaunaRangeCandidate {
     fn validate(&self) -> Result<(), FaunaRangeCandidateSetError> {
         self.species
@@ -268,6 +378,10 @@ pub enum FaunaRangeCandidateSetError {
         "fauna seeded selection does not exactly follow its source candidate set and world seed"
     )]
     InvalidSeededSelection,
+    #[error("fauna population plan has an unsupported schema {0}")]
+    UnsupportedPopulationPlanSchema(u16),
+    #[error("fauna population plan is not a canonical, source-bound provisional plan")]
+    InvalidPopulationPlan,
     #[error("decode error: {0}")]
     Decode(String),
     #[error("encoding error: {0}")]
@@ -397,6 +511,44 @@ mod tests {
         assert_eq!(
             selection.validate_against(&candidate_set),
             Err(FaunaRangeCandidateSetError::InvalidSeededSelection)
+        );
+    }
+
+    #[test]
+    fn population_plan_binds_counts_to_selected_species_and_origin_evidence() {
+        let candidates = set();
+        let selection = candidates
+            .select_seeded_candidates(WorldSeed::new(42), 1)
+            .expect("selection");
+        let plan = FaunaPopulationPlan {
+            population_plan_schema_version: FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
+            status: "provisional-not-scientifically-admitted".to_owned(),
+            world_seed: WorldSeed::new(42),
+            origin_environment_digest: Digest::sha256(b"environment"),
+            embodied_patch: "1000000000000001".parse().expect("valid L30 patch"),
+            candidate_set_digest: selection.candidate_set_digest,
+            seeded_selection_digest: Digest::sha256(
+                &selection
+                    .canonical_bytes_against(&candidates)
+                    .expect("selection bytes"),
+            ),
+            entries: vec![FaunaPopulationPlanEntry {
+                species: selection.selected_candidates[0].species.clone(),
+                initial_individual_count: 2,
+            }],
+        };
+        let bytes = plan
+            .canonical_bytes_against(&candidates, &selection)
+            .expect("canonical plan");
+        assert_eq!(
+            FaunaPopulationPlan::from_canonical_slice_against(&bytes, &candidates, &selection),
+            Ok(plan.clone())
+        );
+        let mut invalid = plan;
+        invalid.entries[0].species = candidate(999, "Other species").species;
+        assert_eq!(
+            invalid.validate_against(&candidates, &selection),
+            Err(FaunaRangeCandidateSetError::InvalidPopulationPlan)
         );
     }
 }

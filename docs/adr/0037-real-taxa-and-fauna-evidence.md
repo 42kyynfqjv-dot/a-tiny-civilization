@@ -130,13 +130,16 @@ It likewise carries no abundance, demographic, trait, or organism-creation claim
 separate ecological population plan must supply those inputs before any fauna exists.
 
 For integration worlds only, `civilization-runner init-provisional-full-earth` can
-consume both canonical artifacts and one explicit, nonzero
-`--fauna-individuals-per-selected-species` value. It rejects partial inputs,
-noncanonical or seed-mismatched selection bytes, and an empty selected set; it commits
-the candidate-set and selection digests to the immutable world manifest. That count is
-called **provisional** throughout the runner: it is a testable execution input, never
-an estimate derived from a modeled range. Scientifically admitted fauna population
-plans remain a later requirement.
+consume the candidate set and seeded selection only with a canonical
+`--fauna-population-plan`. The plan carries explicit counts, but must bind them to the
+world seed, exact origin-environment digest and embodied patch, candidate-set digest,
+and seeded-selection digest. Every planned species must be an exactly selected real
+GBIF species; partial inputs, changed provenance, unordered species, zero counts, or
+an origin mismatch fail closed. The runner commits all three artifact digests to the
+immutable world manifest. This removes the former species-times-arbitrary-count
+shortcut: a modeled range cannot directly create organisms. The only representable
+plan status is **provisional not scientifically admitted**, so it cannot be relabeled
+as a measured population. A later ecological normalizer must produce the plan.
 
 `civilization-data inspect fauna-trait-taxa` is the corresponding conservative trait
 bridge. It preserves the original artifact hash while decoding EltonTraits' published
