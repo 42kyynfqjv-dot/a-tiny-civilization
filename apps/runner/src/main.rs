@@ -16,7 +16,10 @@ use hindsight_adapter::HindsightMemory;
 use postgres_store::PostgresStore;
 use serde::Deserialize;
 use serde_json::json;
-use sim_engine::{CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, RULESET_VERSION};
+use sim_engine::{
+    CELESTIAL_DRIVER_RULESET_VERSION, EMBODIED_ACTIVITY_RULESET_VERSION, InitialOrganism,
+    RULESET_VERSION,
+};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 use world_data::{
@@ -32,10 +35,9 @@ use world_domain::{
     TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
-/// New full-Earth worlds start with the source-backed sky driver. Older worlds retain
-/// the ruleset committed at genesis, and non-production proof worlds keep the engine
-/// baseline ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = CELESTIAL_DRIVER_RULESET_VERSION;
+/// New full-Earth worlds start with the source-backed sky and embodied-activity
+/// integration driver. Older worlds retain the ruleset committed at genesis.
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = EMBODIED_ACTIVITY_RULESET_VERSION;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization simulation runner")]
@@ -129,7 +131,7 @@ enum Command {
         max_events_per_partition_transition: u32,
 
         /// Immutable causal ruleset for this new or resumed provisional world.
-        /// Ruleset three requires the pinned DE441 source driver at every tick.
+        /// Ruleset three and later require the pinned DE441 source driver at every tick.
         #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
         ruleset_version: u32,
     },
@@ -1092,7 +1094,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_source_backed_sky_ruleset() {
+    fn provisional_full_earth_defaults_to_the_source_backed_activity_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -1114,6 +1116,6 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, CELESTIAL_DRIVER_RULESET_VERSION);
+        assert_eq!(ruleset_version, EMBODIED_ACTIVITY_RULESET_VERSION);
     }
 }

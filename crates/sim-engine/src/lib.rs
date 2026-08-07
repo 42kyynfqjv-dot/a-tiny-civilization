@@ -20,7 +20,8 @@ use world_domain::{
     CanonicalHashError, CelestialState, DeathCause, Digest, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
     EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
-    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PrimitiveAction, S2CellId, S2CellIdError,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
+    PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
     SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
@@ -31,12 +32,15 @@ pub const LEGACY_RULESET_VERSION: u32 = 1;
 /// Ruleset two adds the executable per-organism barrier while preserving
 /// ruleset-one replay byte-for-byte.
 pub const ORGANISM_EXECUTION_RULESET_VERSION: u32 = 2;
-/// Current executable ruleset. Existing provisional worlds continue to use the
-/// verified body-clock kernel; the runner selects its own default for newly
-/// initialized full-Earth worlds.
+/// Baseline executable ruleset used by the non-production proof fixture. Newly
+/// initialized provisional full-Earth worlds select their own latest driver.
 pub const RULESET_VERSION: u32 = ORGANISM_EXECUTION_RULESET_VERSION;
 /// Ruleset three requires one source-backed celestial input per tick.
 pub const CELESTIAL_DRIVER_RULESET_VERSION: u32 = 3;
+/// Ruleset four makes the existing body-owned perception and primitive-action
+/// contracts execute at the deterministic partition barrier. It is deliberately an
+/// integration slice, not a claim that a scientifically admitted ecology exists.
+pub const EMBODIED_ACTIVITY_RULESET_VERSION: u32 = 4;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -56,6 +60,26 @@ const PARTITIONED_EXECUTION_STATE_HASH_SCHEMA_VERSION: u16 = 4;
 const PROVISIONAL_WORLD_STATE_HASH_SCHEMA_VERSION: u16 = 5;
 const SCHEDULED_CAUSAL_STATE_HASH_SCHEMA_VERSION: u16 = 6;
 const CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION: u16 = 7;
+
+/// A tiny deterministic motor cadence used only by the ruleset-four integration
+/// driver. It creates no cultural interpretation and does not claim a metabolic or
+/// ecological model; the persistent body/effect rules will replace it by species.
+fn motor_phase(organism_id: EntityId, age_ticks: u64) -> u16 {
+    ((organism_id
+        .as_uuid()
+        .as_u128()
+        .wrapping_add(u128::from(age_ticks)))
+        % 4) as u16
+}
+
+fn motor_action_for_phase(phase: u16) -> PrimitiveActionKind {
+    match phase {
+        0 => PrimitiveActionKind::Rest,
+        1 => PrimitiveActionKind::Orient,
+        2 => PrimitiveActionKind::Reach,
+        _ => PrimitiveActionKind::EmitSignal,
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct InitialOrganism {
@@ -497,20 +521,50 @@ impl EngineState {
                         let to_age_ticks = from_age_ticks
                             .checked_add(1)
                             .ok_or(EngineError::AgeOverflow(organism.organism_id))?;
-                        Ok(WorkOutput::new(
+                        let mut events = vec![Emission::new(
+                            partition.partition(),
                             work.key(),
-                            vec![Emission::new(
+                            0,
+                            DomainEvent::OrganismAgeAdvanced {
+                                organism_id: organism.organism_id,
+                                from_age_ticks,
+                                to_age_ticks,
+                            },
+                        )];
+                        if self.uses_embodied_activity_driver() {
+                            let phase = motor_phase(organism.organism_id, to_age_ticks);
+                            events.push(Emission::new(
                                 partition.partition(),
                                 work.key(),
-                                0,
-                                DomainEvent::OrganismAgeAdvanced {
+                                1,
+                                DomainEvent::OrganismPerceived {
                                     organism_id: organism.organism_id,
-                                    from_age_ticks,
-                                    to_age_ticks,
+                                    perception: SituatedPerception {
+                                        subject_id: None,
+                                        readings: vec![PropertyReading {
+                                            channel: PerceptionChannel::Interoception,
+                                            property_code: "body_clock_phase".to_owned(),
+                                            quantized_value: i32::from(phase),
+                                            uncertainty: 0,
+                                        }],
+                                    },
                                 },
-                            )],
-                            Vec::new(),
-                        ))
+                            ));
+                            events.push(Emission::new(
+                                partition.partition(),
+                                work.key(),
+                                2,
+                                DomainEvent::OrganismActed {
+                                    organism_id: organism.organism_id,
+                                    action: PrimitiveAction {
+                                        kind: motor_action_for_phase(phase),
+                                        target_id: None,
+                                        intensity: 1,
+                                    },
+                                },
+                            ));
+                        }
+                        Ok(WorkOutput::new(work.key(), events, Vec::new()))
                     })
                     .collect::<Result<Vec<_>, EngineError>>()?;
                 Ok(PartitionOutput::new(partition.partition(), work_outputs))
@@ -613,6 +667,10 @@ impl EngineState {
 
     fn uses_celestial_driver(&self) -> bool {
         self.manifest.ruleset_version >= CELESTIAL_DRIVER_RULESET_VERSION
+    }
+
+    fn uses_embodied_activity_driver(&self) -> bool {
+        self.manifest.ruleset_version >= EMBODIED_ACTIVITY_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -1953,6 +2011,53 @@ mod tests {
         assert_eq!(
             replay(manifest, &[genesis, tick])
                 .expect("celestial replay")
+                .state,
+            after_tick
+        );
+    }
+
+    #[test]
+    fn embodied_activity_ruleset_emits_ordered_perception_and_action_at_each_barrier() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = EMBODIED_ACTIVITY_RULESET_VERSION;
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                full_earth_configuration(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("activity full-Earth genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("activity full-Earth genesis commit");
+        let celestial = CelestialState::new(
+            TdbSecondsSinceJ2000::new(123),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        );
+        let events = running
+            .plan_next_tick_with_celestial(celestial)
+            .expect("activity tick plan");
+        assert!(matches!(
+            events.as_slice(),
+            [
+                DomainEvent::TickAdvanced { .. },
+                DomainEvent::OrganismAgeAdvanced { .. },
+                DomainEvent::OrganismPerceived { perception, .. },
+                DomainEvent::OrganismActed { action, .. },
+                DomainEvent::CelestialStateRecorded { state },
+            ] if perception.readings[0].property_code == "body_clock_phase"
+                && action.target_id.is_none()
+                && action.intensity == 1
+                && *state == celestial
+        ));
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, events)
+            .expect("activity full-Earth tick commit");
+        assert_eq!(after_tick.scheduled_work_count(), 1);
+        assert_eq!(
+            replay(manifest, &[genesis, tick])
+                .expect("activity replay")
                 .state,
             after_tick
         );

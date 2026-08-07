@@ -138,9 +138,11 @@ L10-to-L14 reference now enumerates all 256 children, allocates generic sourced
 extensive totals with exact order-independent integer arithmetic, and reaggregates them
 without loss. It explicitly proves why a synthesis generation must be retained rather
 than recalculated. Durable embodied patches, conditional movement, and a ruleset-two
-body-clock schedule are now integrated. The next engine checkpoints are a coupled
-ecological quantity policy with retained refinement state and deltas, physical
-movement resolution, and source-backed causal effects.
+body-clock schedule are now integrated. Ruleset four additionally executes a narrow,
+deterministic body-to-perception-to-action path for newly initialized provisional
+worlds; it is an integration checkpoint, not a scientific behavioural claim. The next
+engine checkpoints are a coupled ecological quantity policy with retained refinement
+state and deltas, physical movement resolution, and source-backed causal effects.
 
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one
