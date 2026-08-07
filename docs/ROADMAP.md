@@ -136,8 +136,10 @@ The acquired Copernicus land-cover artifact contains one verified 2,351,763,989-
 NetCDF member on its documented 64,800 × 129,600 grid, with LCCS class and all four
 quality fields. Its portable inspector independently verifies the complete snapshot,
 archive/member digests, ZIP CRC, exact axes, variable types, and pinned product
-metadata. Deterministic L10 aggregation, independent class-count inspection, and the
-habitat/coastline evidence roots remain pending.
+metadata. The exhaustive class/quality census covers all 8,398,080,000 cells across
+all 2,048 native chunks and is retained under `data/source-inspections/` with a pinned
+byte fingerprint. Deterministic L10 aggregation and the habitat/coastline evidence
+roots remain pending.
 
 ### 3. Situated memory and bounded cognition
 

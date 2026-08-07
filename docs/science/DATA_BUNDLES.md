@@ -198,6 +198,20 @@ cargo run --release --locked -p civilization-data -- inspect copernicus-land-cov
   --artifact-root data/source-cache
 ```
 
+The exhaustive companion census reads every native chunk of `lccs_class` and all four
+quality fields, rejects values outside their pinned domains, and requires each count
+set to total the complete 8,398,080,000-cell raster. A committed, fingerprinted result
+lives in `data/source-inspections/`; it remains measurement evidence rather than an
+L10 normalization or ecological interpretation.
+
+```bash
+cargo run --release --locked -p civilization-data -- \
+  inspect copernicus-land-cover-census \
+  --source-snapshot data/source-snapshots/copernicus-satellite-land-cover-v2-1-1-2022.json \
+  --artifact-root data/source-cache \
+  --output /tmp/copernicus-land-cover-census.json
+```
+
 One raw grid cell can be examined without a GIS dependency. The zero-based row and
 column refer only to the retained source-axis order; the result emits raw coordinate
 and `Band1` IEEE-754 bits, not a converted temperature or an S2 assignment. See

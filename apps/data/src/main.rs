@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
-use netcdf_reader::{NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
+use netcdf_reader::{NcAttrValue, NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{
@@ -171,6 +171,16 @@ enum InspectCommand {
         source_snapshot: PathBuf,
         #[arg(long)]
         artifact_root: PathBuf,
+    },
+    /// Census every Copernicus land-cover class and quality value globally.
+    CopernicusLandCoverCensus {
+        #[arg(long)]
+        source_snapshot: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        /// Optionally publish deterministic pretty JSON to a new path.
+        #[arg(long)]
+        output: Option<PathBuf>,
     },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
@@ -445,6 +455,15 @@ async fn main() -> Result<()> {
                 source_snapshot,
                 artifact_root,
             } => inspect_copernicus_land_cover(&source_snapshot, &artifact_root),
+            InspectCommand::CopernicusLandCoverCensus {
+                source_snapshot,
+                artifact_root,
+                output,
+            } => inspect_copernicus_land_cover_census(
+                &source_snapshot,
+                &artifact_root,
+                output.as_deref(),
+            ),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -2878,10 +2897,51 @@ const COPERNICUS_LAND_COVER_MEMBER_HASH: &str =
     "38149d655e27c0d353dac61eb8e5997cf951566cb52071a3fc4a63b260063e42";
 const COPERNICUS_LAND_COVER_LATITUDE_CELLS: u64 = 64_800;
 const COPERNICUS_LAND_COVER_LONGITUDE_CELLS: u64 = 129_600;
+const COPERNICUS_LAND_COVER_CHUNK_CELLS: u64 = 2_025;
 const COPERNICUS_LAND_COVER_LATITUDE_ENDPOINT_BITS: [u64; 2] =
     [0x4056_7fe9_3e93_e940, 0xc056_7fe9_3e93_e93f];
 const COPERNICUS_LAND_COVER_LONGITUDE_ENDPOINT_BITS: [u64; 2] =
     [0xc066_7ff4_9f49_f49f, 0x4066_7ff4_9f49_f4a0];
+const COPERNICUS_LCCS_CLASSES: &[(u8, &str)] = &[
+    (0, "no_data"),
+    (10, "cropland_rainfed"),
+    (11, "cropland_rainfed_herbaceous_cover"),
+    (12, "cropland_rainfed_tree_or_shrub_cover"),
+    (20, "cropland_irrigated"),
+    (30, "mosaic_cropland"),
+    (40, "mosaic_natural_vegetation"),
+    (50, "tree_broadleaved_evergreen_closed_to_open"),
+    (60, "tree_broadleaved_deciduous_closed_to_open"),
+    (61, "tree_broadleaved_deciduous_closed"),
+    (62, "tree_broadleaved_deciduous_open"),
+    (70, "tree_needleleaved_evergreen_closed_to_open"),
+    (71, "tree_needleleaved_evergreen_closed"),
+    (72, "tree_needleleaved_evergreen_open"),
+    (80, "tree_needleleaved_deciduous_closed_to_open"),
+    (81, "tree_needleleaved_deciduous_closed"),
+    (82, "tree_needleleaved_deciduous_open"),
+    (90, "tree_mixed"),
+    (100, "mosaic_tree_and_shrub"),
+    (110, "mosaic_herbaceous"),
+    (120, "shrubland"),
+    (121, "shrubland_evergreen"),
+    (122, "shrubland_deciduous"),
+    (130, "grassland"),
+    (140, "lichens_and_mosses"),
+    (150, "sparse_vegetation"),
+    (151, "sparse_tree"),
+    (152, "sparse_shrub"),
+    (153, "sparse_herbaceous"),
+    (160, "tree_cover_flooded_fresh_or_brakish_water"),
+    (170, "tree_cover_flooded_saline_water"),
+    (180, "shrub_or_herbaceous_cover_flooded"),
+    (190, "urban"),
+    (200, "bare_areas"),
+    (201, "bare_areas_consolidated"),
+    (202, "bare_areas_unconsolidated"),
+    (210, "water"),
+    (220, "snow_and_ice"),
+];
 
 #[derive(Serialize)]
 struct CopernicusLandCoverInspection {
@@ -2906,6 +2966,52 @@ struct LandCoverVariableInspection {
     name: String,
     data_type: String,
     shape: Vec<u64>,
+}
+
+struct VerifiedCopernicusLandCover {
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    artifact_path: String,
+    artifact_hash: Digest,
+    artifact_byte_length: u64,
+    archive_member_crc32: u32,
+    archive_member_hash: Digest,
+    latitude_endpoint_bits: [u64; 2],
+    longitude_endpoint_bits: [u64; 2],
+    global_attributes: BTreeMap<String, String>,
+    file: NcFile,
+    _extracted: PartialDownload,
+}
+
+#[derive(Serialize)]
+struct CopernicusLandCoverCensus {
+    census_schema_version: u16,
+    source_snapshot_id: String,
+    source_snapshot_digest: Digest,
+    archive_member_hash: Digest,
+    latitude_cells: u64,
+    longitude_cells: u64,
+    raster_cells: u64,
+    source_chunk_shape: [u64; 2],
+    chunks_scanned: u64,
+    lccs_classes: Vec<LccsClassCensus>,
+    processed_flag_counts: Vec<RasterValueCount>,
+    current_pixel_state_counts: Vec<RasterValueCount>,
+    observation_count_counts: Vec<RasterValueCount>,
+    change_count_counts: Vec<RasterValueCount>,
+}
+
+#[derive(Serialize)]
+struct LccsClassCensus {
+    value: u8,
+    meaning: &'static str,
+    cells: u64,
+}
+
+#[derive(Serialize)]
+struct RasterValueCount {
+    value: i64,
+    cells: u64,
 }
 
 fn expected_copernicus_land_cover_variables() -> BTreeMap<&'static str, (NcType, Vec<u64>)> {
@@ -2959,6 +3065,90 @@ fn expected_copernicus_land_cover_global_attributes() -> BTreeMap<&'static str, 
         ("time_coverage_start", "20220101"),
         ("tracking_id", "cbc0983e-a0fd-4277-9023-2e618c0c2067"),
     ])
+}
+
+fn required_variable_attribute<'a>(
+    file: &'a NcFile,
+    variable_name: &str,
+    attribute_name: &str,
+) -> Result<&'a NcAttrValue> {
+    file.variable(variable_name)
+        .with_context(|| format!("find Copernicus land-cover variable {variable_name}"))?
+        .attribute(attribute_name)
+        .with_context(|| {
+            format!(
+                "Copernicus land-cover variable {variable_name} is missing attribute {attribute_name}"
+            )
+        })
+        .map(|attribute| &attribute.value)
+}
+
+fn validate_copernicus_land_cover_value_semantics(file: &NcFile) -> Result<()> {
+    let expected_class_values = COPERNICUS_LCCS_CLASSES
+        .iter()
+        .map(|(value, _)| *value)
+        .collect::<Vec<_>>();
+    let expected_class_meanings = COPERNICUS_LCCS_CLASSES
+        .iter()
+        .map(|(_, meaning)| *meaning)
+        .collect::<Vec<_>>()
+        .join(" ");
+    let expectations = [
+        (
+            "lccs_class",
+            "flag_values",
+            NcAttrValue::UBytes(expected_class_values),
+        ),
+        (
+            "lccs_class",
+            "flag_meanings",
+            NcAttrValue::Strings(vec![expected_class_meanings]),
+        ),
+        (
+            "lccs_class",
+            "ancillary_variables",
+            NcAttrValue::Strings(vec![
+                "processed_flag current_pixel_state observation_count change_count".to_owned(),
+            ]),
+        ),
+        (
+            "processed_flag",
+            "flag_values",
+            NcAttrValue::Bytes(vec![0, 1]),
+        ),
+        (
+            "processed_flag",
+            "flag_meanings",
+            NcAttrValue::Strings(vec!["not_processed processed".to_owned()]),
+        ),
+        ("processed_flag", "_FillValue", NcAttrValue::Bytes(vec![-1])),
+        (
+            "current_pixel_state",
+            "flag_values",
+            NcAttrValue::Bytes(vec![0, 1, 2, 3, 4, 5]),
+        ),
+        (
+            "current_pixel_state",
+            "flag_meanings",
+            NcAttrValue::Strings(vec![
+                "invalid clear_land clear_water clear_snow_ice cloud cloud_shadow".to_owned(),
+            ]),
+        ),
+        (
+            "current_pixel_state",
+            "_FillValue",
+            NcAttrValue::Bytes(vec![-1]),
+        ),
+    ];
+    for (variable_name, attribute_name, expected) in expectations {
+        let observed = required_variable_attribute(file, variable_name, attribute_name)?;
+        if observed != &expected {
+            bail!(
+                "Copernicus land-cover {variable_name}:{attribute_name} changed: expected {expected:?}, observed {observed:?}"
+            );
+        }
+    }
+    Ok(())
 }
 
 fn validate_copernicus_land_cover_schema(file: &NcFile) -> Result<()> {
@@ -3034,7 +3224,10 @@ fn inspect_land_cover_axis_endpoints(
     Ok([first.to_bits(), last.to_bits()])
 }
 
-fn inspect_copernicus_land_cover(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+fn open_verified_copernicus_land_cover(
+    manifest_path: &Path,
+    artifact_root: &Path,
+) -> Result<VerifiedCopernicusLandCover> {
     let snapshot = load_source_manifest(manifest_path)?;
     verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
     if snapshot.snapshot_id != COPERNICUS_LAND_COVER_SNAPSHOT_ID {
@@ -3131,6 +3324,7 @@ fn inspect_copernicus_land_cover(manifest_path: &Path, artifact_root: &Path) -> 
     let file = NcFile::open(&extracted.path)
         .context("parse Copernicus land-cover NetCDF through the pure-Rust reader")?;
     validate_copernicus_land_cover_schema(&file)?;
+    validate_copernicus_land_cover_value_semantics(&file)?;
     let latitude_endpoint_bits =
         inspect_land_cover_axis_endpoints(&file, "lat", COPERNICUS_LAND_COVER_LATITUDE_CELLS)?;
     if latitude_endpoint_bits != COPERNICUS_LAND_COVER_LATITUDE_ENDPOINT_BITS {
@@ -3155,7 +3349,26 @@ fn inspect_copernicus_land_cover(manifest_path: &Path, artifact_root: &Path) -> 
             "Copernicus land-cover global attributes changed: expected {expected_global_attributes:?}, observed {observed_global_attributes:?}"
         );
     }
-    let mut variables = file
+    Ok(VerifiedCopernicusLandCover {
+        source_snapshot_id: snapshot.snapshot_id,
+        source_snapshot_digest,
+        artifact_path: artifact.artifact_path.clone(),
+        artifact_hash: artifact.content_hash,
+        artifact_byte_length: artifact.byte_length,
+        archive_member_crc32,
+        archive_member_hash,
+        latitude_endpoint_bits,
+        longitude_endpoint_bits,
+        global_attributes,
+        file,
+        _extracted: extracted,
+    })
+}
+
+fn inspect_copernicus_land_cover(manifest_path: &Path, artifact_root: &Path) -> Result<()> {
+    let source = open_verified_copernicus_land_cover(manifest_path, artifact_root)?;
+    let mut variables = source
+        .file
         .variables()
         .context("enumerate Copernicus land-cover variables")?
         .iter()
@@ -3172,23 +3385,287 @@ fn inspect_copernicus_land_cover(manifest_path: &Path, artifact_root: &Path) -> 
         "{}",
         serde_json::to_string(&CopernicusLandCoverInspection {
             inspection_schema_version: 1,
-            source_snapshot_id: snapshot.snapshot_id,
-            source_snapshot_digest,
-            artifact_path: artifact.artifact_path.clone(),
-            artifact_hash: artifact.content_hash,
-            artifact_byte_length: artifact.byte_length,
+            source_snapshot_id: source.source_snapshot_id.clone(),
+            source_snapshot_digest: source.source_snapshot_digest,
+            artifact_path: source.artifact_path.clone(),
+            artifact_hash: source.artifact_hash,
+            artifact_byte_length: source.artifact_byte_length,
             archive_member: COPERNICUS_LAND_COVER_MEMBER.to_owned(),
-            archive_member_byte_length: member_bytes,
-            archive_member_crc32,
-            archive_member_hash,
-            latitude_endpoint_ieee754_bits_hex: latitude_endpoint_bits
+            archive_member_byte_length: COPERNICUS_LAND_COVER_MEMBER_BYTES,
+            archive_member_crc32: source.archive_member_crc32,
+            archive_member_hash: source.archive_member_hash,
+            latitude_endpoint_ieee754_bits_hex: source
+                .latitude_endpoint_bits
                 .map(|value| format!("{value:016x}")),
-            longitude_endpoint_ieee754_bits_hex: longitude_endpoint_bits
+            longitude_endpoint_ieee754_bits_hex: source
+                .longitude_endpoint_bits
                 .map(|value| format!("{value:016x}")),
-            global_attributes,
+            global_attributes: source.global_attributes.clone(),
             variables,
         })?
     );
+    Ok(())
+}
+
+fn copernicus_land_cover_chunk_selection(chunk_row: u64, chunk_column: u64) -> NcSliceInfo {
+    let latitude_start = chunk_row * COPERNICUS_LAND_COVER_CHUNK_CELLS;
+    let longitude_start = chunk_column * COPERNICUS_LAND_COVER_CHUNK_CELLS;
+    NcSliceInfo {
+        selections: vec![
+            NcSliceInfoElem::Index(0),
+            NcSliceInfoElem::Slice {
+                start: latitude_start,
+                end: latitude_start + COPERNICUS_LAND_COVER_CHUNK_CELLS,
+                step: 1,
+            },
+            NcSliceInfoElem::Slice {
+                start: longitude_start,
+                end: longitude_start + COPERNICUS_LAND_COVER_CHUNK_CELLS,
+                step: 1,
+            },
+        ],
+    }
+}
+
+fn accumulate_u8_counts(values: &[u8], counts: &mut [u64; 256]) {
+    for value in values {
+        counts[usize::from(*value)] += 1;
+    }
+}
+
+fn accumulate_i8_counts(values: &[i8], counts: &mut [u64; 256]) {
+    for value in values {
+        let index = usize::try_from(i16::from(*value) + 128).expect("i8 offset fits usize");
+        counts[index] += 1;
+    }
+}
+
+fn accumulate_u16_counts(values: &[u16], counts: &mut [u64]) {
+    debug_assert_eq!(counts.len(), usize::from(u16::MAX) + 1);
+    for value in values {
+        counts[usize::from(*value)] += 1;
+    }
+}
+
+fn raster_value_counts_u8(counts: &[u64; 256]) -> Vec<RasterValueCount> {
+    counts
+        .iter()
+        .enumerate()
+        .filter(|(_, cells)| **cells != 0)
+        .map(|(value, cells)| RasterValueCount {
+            value: i64::try_from(value).expect("u8 index fits i64"),
+            cells: *cells,
+        })
+        .collect()
+}
+
+fn raster_value_counts_i8(counts: &[u64; 256]) -> Vec<RasterValueCount> {
+    counts
+        .iter()
+        .enumerate()
+        .filter(|(_, cells)| **cells != 0)
+        .map(|(index, cells)| RasterValueCount {
+            value: i64::try_from(index).expect("i8 count index fits i64") - 128,
+            cells: *cells,
+        })
+        .collect()
+}
+
+fn raster_value_counts_u16(counts: &[u64]) -> Vec<RasterValueCount> {
+    counts
+        .iter()
+        .enumerate()
+        .filter(|(_, cells)| **cells != 0)
+        .map(|(value, cells)| RasterValueCount {
+            value: i64::try_from(value).expect("u16 index fits i64"),
+            cells: *cells,
+        })
+        .collect()
+}
+
+fn require_census_total(label: &str, counts: &[u64], expected: u64) -> Result<()> {
+    let observed = counts.iter().try_fold(0_u64, |total, count| {
+        total.checked_add(*count).context("census total overflow")
+    })?;
+    if observed != expected {
+        bail!("{label} census covered {observed} cells instead of {expected}");
+    }
+    Ok(())
+}
+
+fn inspect_copernicus_land_cover_census(
+    manifest_path: &Path,
+    artifact_root: &Path,
+    output_path: Option<&Path>,
+) -> Result<()> {
+    if !COPERNICUS_LAND_COVER_LATITUDE_CELLS.is_multiple_of(COPERNICUS_LAND_COVER_CHUNK_CELLS)
+        || !COPERNICUS_LAND_COVER_LONGITUDE_CELLS.is_multiple_of(COPERNICUS_LAND_COVER_CHUNK_CELLS)
+    {
+        bail!("pinned Copernicus land-cover grid is not divisible by its source chunk shape");
+    }
+    let source = open_verified_copernicus_land_cover(manifest_path, artifact_root)?;
+    let raster_cells = COPERNICUS_LAND_COVER_LATITUDE_CELLS
+        .checked_mul(COPERNICUS_LAND_COVER_LONGITUDE_CELLS)
+        .context("Copernicus land-cover raster cell count overflow")?;
+    let chunk_rows = COPERNICUS_LAND_COVER_LATITUDE_CELLS / COPERNICUS_LAND_COVER_CHUNK_CELLS;
+    let chunk_columns = COPERNICUS_LAND_COVER_LONGITUDE_CELLS / COPERNICUS_LAND_COVER_CHUNK_CELLS;
+    let chunks_scanned = chunk_rows
+        .checked_mul(chunk_columns)
+        .context("Copernicus land-cover chunk count overflow")?;
+    let expected_chunk_cells =
+        usize::try_from(COPERNICUS_LAND_COVER_CHUNK_CELLS * COPERNICUS_LAND_COVER_CHUNK_CELLS)?;
+    let mut lccs_counts = [0_u64; 256];
+    let mut processed_counts = [0_u64; 256];
+    let mut state_counts = [0_u64; 256];
+    let mut observation_counts = vec![0_u64; usize::from(u16::MAX) + 1];
+    let mut change_counts = [0_u64; 256];
+
+    for chunk_row in 0..chunk_rows {
+        for chunk_column in 0..chunk_columns {
+            let selection = copernicus_land_cover_chunk_selection(chunk_row, chunk_column);
+            let classes = source
+                .file
+                .read_variable_slice::<u8>("lccs_class", &selection)
+                .context("read Copernicus lccs_class source chunk")?;
+            let processed = source
+                .file
+                .read_variable_slice::<i8>("processed_flag", &selection)
+                .context("read Copernicus processed_flag source chunk")?;
+            let states = source
+                .file
+                .read_variable_slice::<i8>("current_pixel_state", &selection)
+                .context("read Copernicus current_pixel_state source chunk")?;
+            let observations = source
+                .file
+                .read_variable_slice::<u16>("observation_count", &selection)
+                .context("read Copernicus observation_count source chunk")?;
+            let changes = source
+                .file
+                .read_variable_slice::<u8>("change_count", &selection)
+                .context("read Copernicus change_count source chunk")?;
+            let classes = classes
+                .as_slice()
+                .context("Copernicus lccs_class chunk is not contiguous")?;
+            let processed = processed
+                .as_slice()
+                .context("Copernicus processed_flag chunk is not contiguous")?;
+            let states = states
+                .as_slice()
+                .context("Copernicus current_pixel_state chunk is not contiguous")?;
+            let observations = observations
+                .as_slice()
+                .context("Copernicus observation_count chunk is not contiguous")?;
+            let changes = changes
+                .as_slice()
+                .context("Copernicus change_count chunk is not contiguous")?;
+            for (name, length) in [
+                ("lccs_class", classes.len()),
+                ("processed_flag", processed.len()),
+                ("current_pixel_state", states.len()),
+                ("observation_count", observations.len()),
+                ("change_count", changes.len()),
+            ] {
+                if length != expected_chunk_cells {
+                    bail!(
+                        "Copernicus {name} chunk yielded {length} cells instead of {expected_chunk_cells}"
+                    );
+                }
+            }
+            accumulate_u8_counts(classes, &mut lccs_counts);
+            accumulate_i8_counts(processed, &mut processed_counts);
+            accumulate_i8_counts(states, &mut state_counts);
+            accumulate_u16_counts(observations, &mut observation_counts);
+            accumulate_u8_counts(changes, &mut change_counts);
+        }
+        eprintln!(
+            "censused Copernicus land-cover source chunk row {}/{}",
+            chunk_row + 1,
+            chunk_rows
+        );
+    }
+
+    require_census_total("lccs_class", &lccs_counts, raster_cells)?;
+    require_census_total("processed_flag", &processed_counts, raster_cells)?;
+    require_census_total("current_pixel_state", &state_counts, raster_cells)?;
+    require_census_total("observation_count", &observation_counts, raster_cells)?;
+    require_census_total("change_count", &change_counts, raster_cells)?;
+    let allowed_classes = COPERNICUS_LCCS_CLASSES
+        .iter()
+        .map(|(value, _)| *value)
+        .collect::<std::collections::BTreeSet<_>>();
+    for (value, cells) in lccs_counts.iter().enumerate() {
+        if *cells != 0 && !allowed_classes.contains(&u8::try_from(value)?) {
+            bail!("Copernicus lccs_class contains unsupported value {value}");
+        }
+    }
+    for value in -128_i16..=127_i16 {
+        let cells = processed_counts[usize::try_from(value + 128)?];
+        if cells != 0 && ![-1_i16, 0, 1].contains(&value) {
+            bail!("Copernicus processed_flag contains unsupported value {value}");
+        }
+        let cells = state_counts[usize::try_from(value + 128)?];
+        if cells != 0 && ![-1_i16, 0, 1, 2, 3, 4, 5].contains(&value) {
+            bail!("Copernicus current_pixel_state contains unsupported value {value}");
+        }
+    }
+    if let Some((value, _)) = observation_counts
+        .iter()
+        .enumerate()
+        .find(|(value, cells)| **cells != 0 && *value > 32_767)
+    {
+        bail!("Copernicus observation_count contains unsupported value {value}");
+    }
+    if let Some((value, _)) = change_counts
+        .iter()
+        .enumerate()
+        .find(|(value, cells)| **cells != 0 && *value > 100)
+    {
+        bail!("Copernicus change_count contains unsupported value {value}");
+    }
+
+    let census = CopernicusLandCoverCensus {
+        census_schema_version: 1,
+        source_snapshot_id: source.source_snapshot_id.clone(),
+        source_snapshot_digest: source.source_snapshot_digest,
+        archive_member_hash: source.archive_member_hash,
+        latitude_cells: COPERNICUS_LAND_COVER_LATITUDE_CELLS,
+        longitude_cells: COPERNICUS_LAND_COVER_LONGITUDE_CELLS,
+        raster_cells,
+        source_chunk_shape: [
+            COPERNICUS_LAND_COVER_CHUNK_CELLS,
+            COPERNICUS_LAND_COVER_CHUNK_CELLS,
+        ],
+        chunks_scanned,
+        lccs_classes: COPERNICUS_LCCS_CLASSES
+            .iter()
+            .map(|(value, meaning)| LccsClassCensus {
+                value: *value,
+                meaning,
+                cells: lccs_counts[usize::from(*value)],
+            })
+            .collect(),
+        processed_flag_counts: raster_value_counts_i8(&processed_counts),
+        current_pixel_state_counts: raster_value_counts_i8(&state_counts),
+        observation_count_counts: raster_value_counts_u16(&observation_counts),
+        change_count_counts: raster_value_counts_u8(&change_counts),
+    };
+    if let Some(output_path) = output_path {
+        let mut pretty = serde_json::to_vec_pretty(&census)?;
+        pretty.push(b'\n');
+        write_new_artifact(output_path, &pretty)?;
+        println!(
+            "{}",
+            serde_json::to_string(&serde_json::json!({
+                "census_schema_version": 1,
+                "output_path": output_path,
+                "output_hash": Digest::sha256(&pretty),
+                "raster_cells": raster_cells,
+                "chunks_scanned": chunks_scanned,
+            }))?
+        );
+    } else {
+        println!("{}", serde_json::to_string(&census)?);
+    }
     Ok(())
 }
 
@@ -4538,6 +5015,73 @@ mod tests {
                 ("time_coverage_start", "20220101"),
                 ("tracking_id", "cbc0983e-a0fd-4277-9023-2e618c0c2067"),
             ])
+        );
+        assert_eq!(COPERNICUS_LCCS_CLASSES.len(), 38);
+        assert_eq!(
+            COPERNICUS_LAND_COVER_LATITUDE_CELLS / COPERNICUS_LAND_COVER_CHUNK_CELLS,
+            32
+        );
+        assert_eq!(
+            COPERNICUS_LAND_COVER_LONGITUDE_CELLS / COPERNICUS_LAND_COVER_CHUNK_CELLS,
+            64
+        );
+    }
+
+    #[test]
+    fn committed_copernicus_census_fingerprints_complete_global_counts() {
+        const CENSUS: &[u8] = include_bytes!(
+            "../../../data/source-inspections/copernicus-satellite-land-cover-v2-1-1-2022-census.json"
+        );
+        assert_eq!(
+            Digest::sha256(CENSUS).to_string(),
+            "118fa2b71c9acdc785c131c0c9e8e19e00c1bad1b96805f4d286c48a8b35efee"
+        );
+        let census: serde_json::Value =
+            serde_json::from_slice(CENSUS).expect("committed Copernicus census is JSON");
+        let expected_cells = 8_398_080_000_u64;
+        assert_eq!(
+            census["source_snapshot_digest"].as_str(),
+            Some("6b2acf6608c382c9321de4f69268c6e5caa2e564820094b41be844643bc27894")
+        );
+        assert_eq!(census["raster_cells"].as_u64(), Some(expected_cells));
+        assert_eq!(census["chunks_scanned"].as_u64(), Some(2_048));
+        assert_eq!(
+            census["lccs_classes"]
+                .as_array()
+                .expect("LCCS class counts")
+                .len(),
+            38
+        );
+        for field in [
+            "lccs_classes",
+            "processed_flag_counts",
+            "current_pixel_state_counts",
+            "observation_count_counts",
+            "change_count_counts",
+        ] {
+            let total = census[field]
+                .as_array()
+                .expect("census count array")
+                .iter()
+                .map(|entry| entry["cells"].as_u64().expect("integer cell count"))
+                .sum::<u64>();
+            assert_eq!(total, expected_cells, "incomplete {field} census");
+        }
+        let water = census["lccs_classes"]
+            .as_array()
+            .expect("LCCS class counts")
+            .iter()
+            .find(|entry| entry["value"].as_u64() == Some(210))
+            .expect("water class");
+        assert_eq!(water["cells"].as_u64(), Some(5_675_161_787));
+        assert_eq!(
+            census["observation_count_counts"]
+                .as_array()
+                .expect("observation counts")
+                .last()
+                .expect("maximum observed count")["value"]
+                .as_u64(),
+            Some(994)
         );
     }
 
