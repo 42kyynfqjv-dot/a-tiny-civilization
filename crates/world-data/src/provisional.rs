@@ -24,10 +24,11 @@ const REQUIRED_EARTH_LAYERS: [DataLayerKind; 7] = [
     DataLayerKind::Soil,
 ];
 
-const REQUIRED_WORLD_COMPONENTS: [ProvisionalWorldComponentKind; 3] = [
+const REQUIRED_WORLD_COMPONENTS: [ProvisionalWorldComponentKind; 4] = [
     ProvisionalWorldComponentKind::CelestialEphemeris,
     ProvisionalWorldComponentKind::FaunaCatalog,
     ProvisionalWorldComponentKind::FaunaTraitEvidence,
+    ProvisionalWorldComponentKind::FaunaPhysiologyEvidence,
 ];
 
 /// The only state representable by this schema.
@@ -43,6 +44,7 @@ pub enum ProvisionalWorldComponentKind {
     CelestialEphemeris,
     FaunaCatalog,
     FaunaTraitEvidence,
+    FaunaPhysiologyEvidence,
 }
 
 /// One exact local release artifact and its honest current scope.
@@ -412,6 +414,20 @@ mod tests {
             Ok(composition)
         );
         assert!(crate::WorldDataBundle::from_canonical_slice(&bytes).is_err());
+    }
+
+    #[test]
+    fn committed_full_earth_composition_includes_normalized_fauna_evidence() {
+        let bytes = include_bytes!("../../../data/provisional/full-earth-breadth-first-0.1.0.json");
+        let composition = ProvisionalWorldComposition::from_canonical_slice(bytes)
+            .expect("committed provisional composition stays canonical");
+        assert_eq!(
+            composition
+                .world_components
+                .last()
+                .map(|component| component.kind),
+            Some(ProvisionalWorldComponentKind::FaunaPhysiologyEvidence)
+        );
     }
 
     #[test]

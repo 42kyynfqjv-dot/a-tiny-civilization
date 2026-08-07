@@ -632,6 +632,7 @@ mod tests {
             ProvisionalWorldComponentKind::CelestialEphemeris,
             ProvisionalWorldComponentKind::FaunaCatalog,
             ProvisionalWorldComponentKind::FaunaTraitEvidence,
+            ProvisionalWorldComponentKind::FaunaPhysiologyEvidence,
         ]
         .into_iter()
         .enumerate()
@@ -827,7 +828,7 @@ mod tests {
         assert_eq!(loaded, composition);
         let stats = verify_provisional_world_artifacts(&loaded, &root)
             .expect("verify provisional artifacts");
-        assert_eq!(stats.artifacts, 10);
+        assert_eq!(stats.artifacts, 11);
         assert_eq!(
             stats.bytes,
             loaded
