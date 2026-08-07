@@ -113,6 +113,15 @@ The validator rejects a changed release, malformed point, unordered taxon keys, 
 noncanonical bytes. It intentionally has no population count, sex assignment, life
 stage, trait claim, or organism-creation instruction.
 
+The iNaturalist release can contain more than one package-scoped feature for one GBIF
+species. Each matching feature independently supplies modeled-range evidence, while
+the canonical candidate schema admits one identity per numeric GBIF key. The query and
+package-fragment merger therefore retain the lexicographically first exact
+`(range_package, inaturalist_taxon_id, range_feature_fid)` tuple. This is a disclosed
+wire-format tie-break only; it neither ranks species nor changes the underlying source
+evidence. Package fragments can be queried in parallel and merged only when their
+point and provenance headers match exactly.
+
 `FaunaSeededSelection` is the next, still non-biological step: a domain-separated
 digest ranks that exact candidate pool using the committed world seed and selects a
 bounded subset without an authored species list. Its canonical artifact repeats the

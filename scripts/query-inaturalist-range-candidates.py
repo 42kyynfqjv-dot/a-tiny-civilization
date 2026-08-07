@@ -177,12 +177,30 @@ def candidate_record(record: dict[str, str]) -> dict[str, object]:
     }
 
 
+def source_order(record: dict[str, str]) -> tuple[str, int, int]:
+    """Stable tie-break for one GBIF species with multiple source polygons.
+
+    Every retained record already independently proves modeled presence at the point.
+    The candidate-set schema admits one identity per GBIF taxon, so preserve the
+    lexicographically first pinned source feature instead of emitting duplicates.
+    """
+    return (
+        record["range_package"],
+        int(record["inaturalist_taxon_id"]),
+        int(record["range_feature_fid"]),
+    )
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--artifact-root", type=Path, required=True)
     parser.add_argument("--crosswalk", type=Path, required=True)
     parser.add_argument("--latitude-e7", type=int, required=True)
     parser.add_argument("--longitude-e7", type=int, required=True)
+    parser.add_argument(
+        "--range-package", action="append",
+        help="limit work to one named range package; repeat for a deterministic subset",
+    )
     selection = parser.add_mutually_exclusive_group(required=True)
     selection.add_argument(
         "--gbif-taxon-key", action="append",
@@ -211,6 +229,14 @@ def main() -> int:
     for record in crosswalk["records"]:
         if requested_keys is None or record["gbif_taxon_key"] in requested_keys:
             by_package.setdefault(record["range_package"], {})[int(record["inaturalist_taxon_id"])] = record
+    if args.range_package is not None:
+        requested_packages = set(args.range_package)
+        unknown_packages = requested_packages.difference(by_package)
+        if unknown_packages:
+            parser.error(f"--range-package is not present in the selected crosswalk: {sorted(unknown_packages)}")
+        by_package = {
+            package: taxa for package, taxa in by_package.items() if package in requested_packages
+        }
     source = args.artifact_root.resolve(strict=True) / PREFIX
     longitude = args.longitude_e7 / 10_000_000
     latitude = args.latitude_e7 / 10_000_000
@@ -222,7 +248,13 @@ def main() -> int:
             record = taxa.get(taxon_id)
             if record is not None and int(record["range_feature_fid"]) == fid and contains(geopackage_multipolygon(geometry), longitude, latitude):
                 matches.append(record)
-    matches.sort(key=lambda record: int(record["gbif_taxon_key"]))
+    deduplicated = {}
+    for record in matches:
+        key = record["gbif_taxon_key"]
+        existing = deduplicated.get(key)
+        if existing is None or source_order(record) < source_order(existing):
+            deduplicated[key] = record
+    matches = sorted(deduplicated.values(), key=lambda record: int(record["gbif_taxon_key"]))
     sys.stdout.write(json.dumps({
         "candidate_set_schema_version": 1,
         "candidate_set_id": point_identifier(args.latitude_e7, args.longitude_e7),
