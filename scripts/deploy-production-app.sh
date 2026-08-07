@@ -3,8 +3,8 @@ set -euo pipefail
 
 # Deploy the application containers on the single production host. This deliberately
 # excludes the optional Docker tunnel and backup profiles: this host currently runs
-# its Cloudflare tunnel as a separate system service, and off-site backup setup is an
-# independent owner-controlled operation.
+# its Cloudflare tunnel as a separate system service. Hindsight and both asynchronous
+# workers are part of the application deployment because cognition is a genesis gate.
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
@@ -46,21 +46,46 @@ if grep -qx 'POSTGRES_PASSWORD=local-development-only' "$environment_file"; then
   echo "production database password uses the documented development value" >&2
   exit 2
 fi
+if ! grep -qE '^(CLOUDFLARE_WORKERS_AI_API_KEY|GROQ_API_KEY|CEREBRAS_API_KEY|OPENROUTER_API_KEY)=.+$' "$environment_file"; then
+  echo "production environment requires at least one cognition provider key" >&2
+  exit 2
+fi
+if grep -qx 'COGNITION_PAID_ENABLED=true' "$environment_file" \
+   && ! grep -qE '^OPENROUTER_API_KEY=.+$' "$environment_file"; then
+  echo "paid cognition requires OPENROUTER_API_KEY" >&2
+  exit 2
+fi
+if grep -qE '^CLOUDFLARE_WORKERS_AI_API_KEY=.+$' "$environment_file" \
+   && ! grep -qE '^CLOUDFLARE_WORKERS_AI_BASE_URL=.+$' "$environment_file"; then
+  echo "Cloudflare Workers AI requires its account-scoped base URL" >&2
+  exit 2
+fi
+if grep -qE '^CLOUDFLARE_WORKERS_AI_BASE_URL=.+$' "$environment_file" \
+   && ! grep -qE '^CLOUDFLARE_WORKERS_AI_API_KEY=.+$' "$environment_file"; then
+  echo "Cloudflare Workers AI requires its API key" >&2
+  exit 2
+fi
+if grep -qE '^COGNITION_PAID_ENABLED=' "$environment_file" \
+   && ! grep -qEx 'COGNITION_PAID_ENABLED=(true|false)' "$environment_file"; then
+  echo "COGNITION_PAID_ENABLED must be true or false" >&2
+  exit 2
+fi
 
 compose_command=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then
   compose_command=(docker-compose)
 fi
 
-compose_args=(--env-file "$environment_file" -f compose.yaml)
+compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
 "${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web
-"${compose_command[@]}" "${compose_args[@]}" up -d db migrate api projector runner
+"${compose_command[@]}" "${compose_args[@]}" up -d \
+  db migrate hindsight api projector runner memory-worker cognition-worker
 # Avoid recreating API dependencies with accidental Compose defaults while updating the
-# public web container. Never use --remove-orphans: Hindsight is intentionally managed
-# outside this base application profile.
+# public web container. Never use --remove-orphans: the application and any separately
+# managed tunnel may span more than one Compose profile.
 "${compose_command[@]}" "${compose_args[@]}" up --no-deps -d web
 
 for _ in {1..30}; do

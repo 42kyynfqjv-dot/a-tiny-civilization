@@ -1,9 +1,9 @@
 # Production runbook
 
-This is a one-server deployment runbook for a small population. It is intentionally
-not a launch authorization: although the engine library can replay a configured
-full-Earth foundation, the runner exposes no canonical initializer until the scientific
-bundle and first real scheduled causal process are admitted.
+This is a one-server deployment runbook for the first bounded population. It is
+intentionally not a launch authorization: the runner can initialize the provisional
+full-Earth path, but genesis remains closed until its complete seed-specific artifact
+set and accelerated integration gates pass.
 
 ## Network boundary
 
@@ -50,14 +50,21 @@ requires a screen share or a credential in this repository.
 Required runtime values are:
 
 - `POSTGRES_DB`, `POSTGRES_USER`, and a unique `POSTGRES_PASSWORD`;
-- `CLOUDFLARE_TUNNEL_TOKEN` for a dedicated remotely managed production tunnel;
-- `R2_ACCOUNT_ID`, `R2_BACKUP_BUCKET`, and a bucket-scoped R2 access-key pair;
-- a persistent 32-byte `WALG_LIBSODIUM_KEY` encoded as hexadecimal;
+- at least one cognition-provider key: Cloudflare Workers AI, Groq, Cerebras, or
+  OpenRouter. Free routes are attempted first and paid cognition is disabled unless
+  `COGNITION_PAID_ENABLED=true` is explicitly set;
 - `APP_ENV=production`.
 
-Optional later integrations remain blank until their features are enabled: Stripe,
-Google OAuth, Apple Sign in, Hindsight, and an LLM provider. No current simulation
-path needs an LLM key.
+The local Hindsight service is keyless inside its private Docker network. Stripe,
+Google OAuth, and Apple Sign in remain blank until those observer products are
+enabled. This host currently runs Cloudflare Tunnel as a separate system service, so
+the application environment does not need `CLOUDFLARE_TUNNEL_TOKEN`. A Compose-managed
+tunnel requires it and sets `ATINY_REQUIRE_COMPOSE_TUNNEL=1` during preflight.
+
+Encrypted WAL-G/R2 settings are supported but explicitly deferred for the first
+genesis by owner decision. Supplying any backup value requires the complete set;
+backup and restore commands additionally set `ATINY_REQUIRE_OFFSITE_BACKUP=1` and fail
+closed when it is absent.
 
 Create a separate staging tunnel and production tunnel. In Cloudflare's dashboard,
 create the production tunnel and public hostname, then set its service to
@@ -112,8 +119,9 @@ sudo ./scripts/stage-provisional-runner-artifacts.sh ./runtime-artifacts
 The runner mounts that directory read-only at `/runtime`. The command is deliberately
 for the provisional integration path only; it does not authorize canonical genesis.
 
-The static preflight rejects missing settings, the documented development password, a
-non-production environment, mutable `cloudflared` image references, and invalid Compose
+The static preflight rejects missing core settings, an absent cognition provider, the
+documented development password, a non-production environment, partial paid, backup,
+or tunnel configuration, mutable `cloudflared` image references, and invalid Compose
 interpolation. It does not print secrets. The default tunnel image is pinned to the
 multi-architecture digest for Cloudflare's 2026.7.2 release; upgrades are deliberate
 deployment checkpoints.
@@ -122,7 +130,7 @@ Verify locally that `http://127.0.0.1:3000/` and `http://127.0.0.1:8080/health/r
 work, then verify only the intended hostname through Cloudflare. Confirm that direct
 public connections to PostgreSQL and the observer API fail.
 
-## Scheduled backup checks
+## Deferred offsite backup checks
 
 After the first successful encrypted base backup, install the checked-in systemd units
 on the host. They assume the repository is deployed at `/opt/a-tiny-civilization` and
@@ -145,13 +153,18 @@ checked hourly. A failed unit is intentionally visible in `systemctl` and the jo
 rather than being silently retried as if the backup were current. Configure host-level
 alerting to notify an operator for either failed service.
 
-## Required gates before public canonical-world launch
+## Required gates before public genesis
 
-- a verified canonical full-Earth scientific bundle and unpreviewed seed procedure;
-- replay, restart, partition-equivalence, and multi-year disposable-world evidence;
-- a restore drill recorded under [Backup and restore](BACKUP_RESTORE.md);
+- a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
+  seed procedure, with assumptions disclosed for later scientific review;
+- accelerated replay, restart, cognition-deadline, provider-failure,
+  partition-equivalence, reproduction, and load evidence;
+- local PostgreSQL durability and restart/replay evidence. The offsite restore drill is
+  deferred for this genesis by explicit owner decision;
 - public privacy, moderation, supporter refund/transfer, and presentation policies;
-- production credentials created in their respective owner accounts, with least
-  privilege and rotation procedures.
+- Hindsight plus at least one configured free-first cognition provider, with paid
+  fallback disabled unless deliberately enabled;
+- production credentials for features actually enabled at launch, with least privilege
+  and rotation procedures.
 
 Until those gates pass, this runbook can operate only an internal or proof observatory.

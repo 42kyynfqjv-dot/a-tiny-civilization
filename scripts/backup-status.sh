@@ -10,13 +10,13 @@ if [[ ! "${max_age_seconds}" =~ ^[1-9][0-9]*$ ]]; then
   exit 2
 fi
 
-./scripts/production-preflight.sh
+ATINY_REQUIRE_OFFSITE_BACKUP=1 ./scripts/production-preflight.sh
 
 compose_command=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then
   compose_command=(docker-compose)
 fi
-compose_files=(-f compose.yaml -f compose.backup.yaml -f compose.tunnel.yaml)
+compose_files=(-f compose.yaml -f compose.backup.yaml)
 
 archiver="$("${compose_command[@]}" "${compose_files[@]}" exec -T db \
   psql --no-psqlrc --tuples-only --no-align \

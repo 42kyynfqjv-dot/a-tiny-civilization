@@ -12,7 +12,7 @@ if [[ ! "${RESTORE_DRILL_ID}" =~ ^[a-z0-9][a-z0-9-]{0,30}$ ]]; then
   exit 2
 fi
 
-./scripts/production-preflight.sh
+ATINY_REQUIRE_OFFSITE_BACKUP=1 ./scripts/production-preflight.sh
 
 compose_command=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then

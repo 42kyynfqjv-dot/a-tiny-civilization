@@ -428,7 +428,10 @@ fresh isolated restore project; the restore verifier replays a selected world fr
 genesis, checks snapshot-plus-tail equivalence, and compares event/state hashes to the
 committed cursor. The complete local encrypted base-backup/WAL-recovery probe passed.
 R2 bucket/token creation, persistent encryption-key escrow, the first real offsite
-backup, and a recorded production restore drill remain owner-account handoffs.
+backup, and a recorded production restore drill are implemented handoffs but are
+explicitly deferred by the owner for the first genesis. Static production preflight
+accepts that deferred state; backup and restore commands still fail closed unless the
+complete encrypted offsite configuration is present.
 
 ## Vertical-slice proof
 

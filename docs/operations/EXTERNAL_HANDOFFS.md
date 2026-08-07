@@ -61,9 +61,39 @@ then observe the actual response media type and byte length before publishing an
 immutable source artifact; it will not assume that the response container matches the
 dataset's internal NetCDF format.
 
-## Required before a public deployment
+## Required before public genesis
 
-### Server and backups
+### Cognition provider
+
+Install at least one supported provider key directly in
+`/etc/a-tiny-civilization-production.env`. The production ladder is free-first across
+configured Cloudflare Workers AI, Groq, Cerebras, and OpenRouter routes. Keep
+`COGNITION_PAID_ENABLED=false` for a free-only launch; enabling it requires OpenRouter
+and is bounded by the canonical three-dollar monthly hard stop. Hindsight itself runs
+keylessly on the private application network.
+
+Report only which provider is configured. The application preflight checks presence
+and pairing without printing the value.
+
+### Cloudflare DNS and tunnel
+
+The current host-managed Cloudflare Tunnel satisfies the network handoff when it maps
+only the intended public hostname to the loopback web origin. A Docker-managed tunnel
+instead requires `CLOUDFLARE_TUNNEL_TOKEN` and
+`ATINY_REQUIRE_COMPOSE_TUNNEL=1`. In either form, do not route PostgreSQL, the runner,
+migrations, Hindsight, cognition workers, or the observer API publicly.
+
+Keep DNS and the site owner-only until the genesis gates in
+[Production](PRODUCTION.md) pass. Add Cloudflare Access before exposing any future
+administration route.
+
+Cloudflare documents the remotely managed tunnel setup and token lifecycle in its
+[Tunnel documentation](https://developers.cloudflare.com/tunnel/setup/) and
+[token guidance](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/).
+
+## Explicitly deferred for the first genesis
+
+### Server and offsite backups
 
 The implementation choice is now fixed: WAL-G 3.0.8 sends client-side-encrypted WAL and
 base backups to Cloudflare R2. In the Cloudflare account:
@@ -75,28 +105,13 @@ base backups to Cloudflare R2. In the Cloudflare account:
    `openssl rand -hex 32`; escrow it outside both this host and the Cloudflare account.
 4. Set the `R2_*` and `WALG_LIBSODIUM_KEY` variables named in
    [Backup and restore](BACKUP_RESTORE.md), then run production preflight.
-5. Take the first base backup and record an isolated restore drill before launch.
+5. Take the first base backup and record an isolated restore drill when this deferred
+   resilience phase is enabled.
 
 Bucket creation, billing, retention duration, credential lifecycle, and encryption-key
 escrow remain owner decisions. The application never creates or prints those secrets.
-
-### Cloudflare DNS and tunnel
-
-1. Create a **separate remotely managed production tunnel** in the Cloudflare account
-   that owns `atinycivilization.com`; keep staging separate.
-2. Add only the intended public hostname and map it to `http://web:3000` inside the
-   Docker network. Do not publish or route PostgreSQL, the runner, migrations, or the
-   observer API.
-3. Put the tunnel token directly in the host's protected environment file as
-   `CLOUDFLARE_TUNNEL_TOKEN`, then run the production preflight. Rotate the token if it
-   is ever exposed.
-4. Keep DNS and the site owner-only until the canonical-world launch gates in
-   [Production](PRODUCTION.md) are met. Add Cloudflare Access before exposing any
-   future administration route.
-
-Cloudflare documents the remotely managed tunnel setup and token lifecycle in its
-[Tunnel documentation](https://developers.cloudflare.com/tunnel/setup/) and
-[token guidance](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/).
+Production preflight accepts no backup settings, but any backup or restore command sets
+a strict requirement and refuses to run without the complete configuration.
 
 ## Do later, when the corresponding feature is implemented
 

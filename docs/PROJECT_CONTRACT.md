@@ -104,8 +104,8 @@ Paid cognition is allocated in versioned units per simulated time, independent o
 population and wall-clock execution speed. A separate wall-clock cost circuit breaker
 protects the operator:
 
-- target operating spend: USD 7.50 per calendar month;
-- hard stop: USD 9.50 per calendar month;
+- target operating spend: USD 2.50 per calendar month;
+- hard stop: USD 3.00 per calendar month;
 - deterministic scheduling and reserve policy expressed per simulated year;
 - a circuit-breaker trip is recorded as an unavailable external input and invokes the
   deterministic fallback.
