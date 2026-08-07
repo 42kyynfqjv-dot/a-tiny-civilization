@@ -24,9 +24,10 @@ def main() -> int:
     assert len(packages) == 17
     paths = [item["artifact_path"] for item in packages]
     assert paths == sorted(paths)
-    assert any(path.endswith("Mammalia.gpkg") for path in paths)
-    assert any(path.endswith("Aves_2.gpkg") for path in paths)
-    assert len(contract["metadata_artifacts"]) == 2
+    assert any(path.endswith("mammalia.gpkg") for path in paths)
+    assert any(path.endswith("aves_2.gpkg") for path in paths)
+    assert len(contract["metadata_artifacts"]) == 3
+    assert any(item["artifact_path"].endswith("license-cc-by-4.0.html") for item in contract["metadata_artifacts"])
     return 0
 
 

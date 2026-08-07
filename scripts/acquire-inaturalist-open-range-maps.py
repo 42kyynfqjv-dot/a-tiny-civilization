@@ -44,11 +44,18 @@ METADATA = (
     ("metadata.json", "application/json"),
     ("taxonomy.csv", "text/csv"),
 )
+LICENSE_EVIDENCE = {
+    "artifact_path": f"inaturalist-open-range-maps-{VERSION}/provenance/license-cc-by-4.0.html",
+    "download_url": "https://spdx.org/licenses/CC-BY-4.0.html",
+    "media_type": "text/html",
+}
 
 
 def artifact(path: str, media_type: str) -> dict[str, str]:
     return {
-        "artifact_path": f"inaturalist-open-range-maps-{VERSION}/{path}",
+        # Canonical artifact paths are portable lowercase names; the URL preserves
+        # iNaturalist's published mixed-case object name exactly.
+        "artifact_path": f"inaturalist-open-range-maps-{VERSION}/{path.lower()}",
         "download_url": f"{PREFIX}/{path}",
         "media_type": media_type,
     }
@@ -110,7 +117,7 @@ def main() -> int:
     args = parser.parse_args()
     if args.workers < 1 or args.workers > 8:
         raise ValueError("--workers must be between 1 and 8")
-    metadata = [artifact(path, media_type) for path, media_type in METADATA]
+    metadata = [artifact(path, media_type) for path, media_type in METADATA] + [LICENSE_EVIDENCE]
     packages = [artifact(f"iNaturalist_geomodel_{name}.gpkg", "application/geopackage+sqlite3") for name in ANIMAL_PACKAGES]
     if not args.download_metadata and not args.download_packages:
         print(json.dumps({

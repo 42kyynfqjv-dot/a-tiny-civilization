@@ -1875,6 +1875,9 @@ mod tests {
     const COPERNICUS_SATELLITE_LAND_COVER_V2_1_1_2022_SNAPSHOT: &[u8] = include_bytes!(
         "../../../data/source-snapshots/copernicus-satellite-land-cover-v2-1-1-2022.json"
     );
+    const INATURALIST_OPEN_RANGE_MAPS_V2_20_ANIMALIA_SNAPSHOT: &[u8] = include_bytes!(
+        "../../../data/source-snapshots/inaturalist-open-range-maps-v2-20-animalia.json"
+    );
 
     fn source_snapshot() -> SourceSnapshotManifest {
         let artifact = |role, path: &str, bytes: &[u8]| SourceSnapshotArtifact {
@@ -2243,6 +2246,48 @@ mod tests {
                 .expect("valid snapshot content digest")
                 .to_string(),
             "6b2acf6608c382c9321de4f69268c6e5caa2e564820094b41be844643bc27894"
+        );
+    }
+
+    #[test]
+    fn committed_inaturalist_animalia_ranges_are_canonical_and_commercially_usable() {
+        let snapshot = SourceSnapshotManifest::from_canonical_slice(
+            INATURALIST_OPEN_RANGE_MAPS_V2_20_ANIMALIA_SNAPSHOT,
+        )
+        .expect("committed iNaturalist snapshot is canonical");
+        assert_eq!(snapshot.upstream_release, "2.20");
+        assert_eq!(snapshot.license_expression, "CC-BY-4.0");
+        assert_eq!(
+            snapshot.artifact_locator_policy,
+            SourceSnapshotLocatorPolicy::EvidenceBoundRelease
+        );
+        assert_eq!(snapshot.artifacts.len(), 20);
+        assert_eq!(
+            snapshot
+                .artifacts
+                .iter()
+                .filter(|artifact| artifact.role == SourceSnapshotArtifactRole::Data)
+                .count(),
+            17
+        );
+        assert!(snapshot.artifacts.iter().all(|artifact| {
+            artifact.role != SourceSnapshotArtifactRole::Data
+                || artifact.download_url.contains(&snapshot.upstream_release)
+        }));
+        assert_eq!(
+            snapshot
+                .artifacts
+                .iter()
+                .map(|artifact| artifact.byte_length)
+                .sum::<u64>(),
+            2_123_865_119
+        );
+        assert_eq!(
+            snapshot
+                .content_digest()
+                .expect("valid snapshot content digest")
+                .to_string(),
+            "e4b3f9beb2f755996c283b63ff31701ee95e3685dc6579e173a8ab41de7fe702"
         );
     }
 
