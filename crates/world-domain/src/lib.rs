@@ -11,6 +11,7 @@ mod identity;
 mod illumination;
 mod manifest;
 mod material;
+mod reproduction;
 mod solar;
 mod spatial;
 mod tide;
@@ -48,7 +49,8 @@ pub use event::{
     EventBatch, EventBatchError, EventRecord, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
+    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
@@ -66,6 +68,11 @@ pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
 pub use material::{
     MaterialIdentity, MaterialIdentityError, ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
     OralTransferCommitment, OralTransferCommitmentError, OralTransferEvidenceBasis,
+};
+pub use reproduction::{
+    OffspringCategoryWeight, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+    REPRODUCTIVE_PROBABILITY_SCALE, ReproductionError, ReproductiveCategoryPair,
+    ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment,
 };
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,

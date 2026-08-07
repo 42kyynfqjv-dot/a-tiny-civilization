@@ -41,5 +41,6 @@ an unmeasured infinite object, or make replay recalculate scientific inputs.
 An organism can now accidentally obtain relief from a real material without receiving
 the conclusion that it is edible, potable, safe, or desirable. Repeated experience and
 learned action values remain a later checkpoint. Engineering-assumption fixtures prove
-the mechanism but are ineligible for public genesis until their material/species
-profiles pass the integrated scientific admission process.
+the mechanism. ADR 0049 permits them in an explicitly labelled experimental genesis
+with public disclosure; scientific admission or replacement applies only to a
+successor world.

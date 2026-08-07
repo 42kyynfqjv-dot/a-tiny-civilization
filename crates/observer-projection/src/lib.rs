@@ -130,6 +130,8 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
+                | DomainEvent::ReproductiveDevelopmentStarted { .. }
+                | DomainEvent::ReproductiveDevelopmentEnded { .. }
                 | DomainEvent::CelestialStateRecorded { .. } => {
                     return None;
                 }
@@ -325,6 +327,8 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismAgeAdvanced { .. }
             | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::OrganismActionValueChanged { .. }
+            | DomainEvent::ReproductiveDevelopmentStarted { .. }
+            | DomainEvent::ReproductiveDevelopmentEnded { .. }
             | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
@@ -555,7 +559,8 @@ mod tests {
         ACTION_LEARNING_EVENT_SCHEMA_VERSION, ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState,
         BODILY_REGULATION_EVENT_SCHEMA_VERSION, BodilyNeedState, BodilyRegulationState, Digest,
         EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, PrimitiveActionKind,
-        WorldManifest, WorldSeed,
+        REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, ReproductiveDevelopmentEnd, WorldManifest,
+        WorldSeed,
     };
 
     fn species() -> SpeciesIdentity {
@@ -631,6 +636,7 @@ mod tests {
             DomainEvent::WorldStarted { manifest },
             DomainEvent::OrganismBorn {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
+                development_id: None,
                 species: species(),
                 role: OrganismRole::Person,
                 birth_category: BirthCategory::new("female").expect("valid category"),
@@ -639,6 +645,7 @@ mod tests {
                 embodied_patch: None,
                 metabolic_rate: None,
                 physiological_regulation: None,
+                reproductive_physiology: None,
             },
             DomainEvent::OrganismDied {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(12)),
@@ -692,6 +699,7 @@ mod tests {
             Digest::ZERO,
             vec![DomainEvent::OrganismBorn {
                 organism_id: EntityId::from_uuid(Uuid::from_u128(22)),
+                development_id: None,
                 species: species(),
                 role: OrganismRole::Person,
                 birth_category: BirthCategory::new("female").expect("valid category"),
@@ -700,6 +708,7 @@ mod tests {
                 embodied_patch: None,
                 metabolic_rate: None,
                 physiological_regulation: None,
+                reproductive_physiology: None,
             }],
             Digest::sha256(b"organism projection state"),
         )
@@ -791,6 +800,45 @@ mod tests {
             Digest::sha256(b"private learned action value"),
         )
         .expect("valid internal learning event");
+        assert!(project_public_timeline(&batch).is_empty());
+        assert!(project_public_organisms(&batch).is_empty());
+    }
+
+    #[test]
+    fn reproductive_development_is_private_and_non_explicit() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(38));
+        let development_id = EntityId::from_uuid(Uuid::from_u128(39));
+        let developing_parent_id = EntityId::from_uuid(Uuid::from_u128(40));
+        let other_parent_id = EntityId::from_uuid(Uuid::from_u128(41));
+        let batch = EventBatch::new(
+            REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(7),
+            SimTick::new(5),
+            14,
+            Digest::ZERO,
+            vec![
+                DomainEvent::ReproductiveDevelopmentStarted {
+                    development_id,
+                    offspring_id: EntityId::from_uuid(Uuid::from_u128(42)),
+                    species: species(),
+                    role: OrganismRole::Person,
+                    birth_category: BirthCategory::new("female").expect("category"),
+                    parent_ids: vec![developing_parent_id, other_parent_id],
+                    developing_parent_id,
+                    profile_digest: Digest::sha256(b"private reproductive profile"),
+                    due_tick: SimTick::new(6),
+                    parents_available_at: SimTick::new(7),
+                },
+                DomainEvent::ReproductiveDevelopmentEnded {
+                    development_id,
+                    developing_parent_id,
+                    reason: ReproductiveDevelopmentEnd::DevelopingParentUnavailable,
+                },
+            ],
+            Digest::sha256(b"private reproductive state"),
+        )
+        .expect("valid internal reproductive events");
         assert!(project_public_timeline(&batch).is_empty());
         assert!(project_public_organisms(&batch).is_empty());
     }

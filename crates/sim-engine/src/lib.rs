@@ -7,7 +7,7 @@ mod refinement;
 #[allow(dead_code)]
 mod spatial;
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use partition::{
     Emission, PartitionOutput, PartitionSchedule, ScheduledWork, SchedulerError, SubjectKey,
@@ -27,7 +27,9 @@ use world_domain::{
     MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION,
     MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
     PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
-    PrimitiveAction, PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
+    PrimitiveAction, PrimitiveActionKind, PropertyReading,
+    REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
+    ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
     TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
@@ -74,6 +76,9 @@ pub const MATERIAL_INGESTION_RULESET_VERSION: u32 = 12;
 /// the organism's own total bodily-pressure change, then feeds only that association
 /// back into future action weights.
 pub const ACTION_LEARNING_RULESET_VERSION: u32 = 13;
+/// Ruleset fourteen adds deterministic species-bound reproductive physiology and
+/// private development whose only safe public outcome is an ordinary birth.
+pub const REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION: u32 = 14;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -90,6 +95,7 @@ pub const BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION: u16 = 13;
 pub const DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION: u16 = 14;
 pub const MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION: u16 = 15;
 pub const ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 16;
+pub const REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION: u16 = 17;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -111,6 +117,7 @@ const BODILY_REGULATION_STATE_HASH_SCHEMA_VERSION: u16 = 13;
 const DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION: u16 = 14;
 const MATERIAL_INGESTION_STATE_HASH_SCHEMA_VERSION: u16 = 15;
 const ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 16;
+const REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION: u16 = 17;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -234,6 +241,15 @@ struct PolicyActionDraw<'a> {
     candidates: &'a [PolicyCandidate],
 }
 
+#[derive(Serialize)]
+struct ReproductiveDraw<'a> {
+    driver_version: u16,
+    stream: &'static str,
+    world_seed: u64,
+    tick: SimTick,
+    parent_ids: &'a [EntityId],
+}
+
 fn first_digest_u64(digest: Digest) -> u64 {
     let bytes: [u8; 8] = digest.as_bytes()[..8]
         .try_into()
@@ -317,6 +333,8 @@ pub struct InitialOrganism {
     pub metabolic_rate: Option<MetabolicRateCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physiological_regulation: Option<PhysiologicalRegulationCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -344,6 +362,10 @@ pub struct OrganismState {
     metabolic_rate: Option<MetabolicRateCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     physiological_regulation: Option<PhysiologicalRegulationCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reproductive_available_at: Option<SimTick>,
     #[serde(default, skip_serializing_if = "BodilyRegulationState::is_clear")]
     bodily_regulation: BodilyRegulationState,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -382,6 +404,22 @@ pub struct MaterialInstanceState {
     remaining_mass_milligrams: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     oral_transfer_profiles: Vec<OralTransferCommitment>,
+}
+
+/// Private canonical state for one development that may later resolve as a birth.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PendingReproductiveDevelopment {
+    development_id: EntityId,
+    offspring_id: EntityId,
+    species: SpeciesIdentity,
+    role: OrganismRole,
+    birth_category: BirthCategory,
+    parent_ids: Vec<EntityId>,
+    developing_parent_id: EntityId,
+    profile_digest: Digest,
+    started_at: SimTick,
+    due_tick: SimTick,
+    parents_available_at: SimTick,
 }
 
 impl MaterialInstanceState {
@@ -514,6 +552,8 @@ pub struct EngineState {
     organisms: BTreeMap<EntityId, OrganismState>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     material_instances: BTreeMap<EntityId, MaterialInstanceState>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pending_reproductive_developments: BTreeMap<EntityId, PendingReproductiveDevelopment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<PartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -532,6 +572,7 @@ impl EngineState {
             tick: SimTick::ZERO,
             organisms: BTreeMap::new(),
             material_instances: BTreeMap::new(),
+            pending_reproductive_developments: BTreeMap::new(),
             partition_schedule: None,
             celestial_state: None,
             celestial_tick: None,
@@ -632,6 +673,13 @@ impl EngineState {
         {
             return Err(EngineError::DuplicateInitialOrganism);
         }
+        if self.uses_reproductive_physiology_driver()
+            && !initial_organisms
+                .iter()
+                .any(|organism| organism.role == OrganismRole::Person)
+        {
+            return Err(EngineError::MissingInitialPeople);
+        }
 
         let mut events = Vec::with_capacity(
             initial_organisms
@@ -652,8 +700,10 @@ impl EngineState {
         events.push(DomainEvent::WorldStarted {
             manifest: self.manifest.clone(),
         });
-        if let Some(configuration) = configuration {
-            events.push(DomainEvent::WorldConfigured { configuration });
+        if let Some(configuration) = &configuration {
+            events.push(DomainEvent::WorldConfigured {
+                configuration: configuration.clone(),
+            });
         }
         for organism in initial_organisms {
             if let Some(metabolic_rate) = &organism.metabolic_rate {
@@ -677,6 +727,21 @@ impl EngineState {
                     ));
                 }
             }
+            if let Some(reproduction) = &organism.reproductive_physiology {
+                reproduction
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if reproduction.species != organism.species
+                    || !reproduction.supports_category(&organism.birth_category)
+                    || configuration.as_ref().is_none_or(|world| {
+                        world.tick_duration_seconds != reproduction.tick_duration_seconds
+                    })
+                {
+                    return Err(EngineError::InvalidReproductiveCommitment(
+                        organism.organism_id,
+                    ));
+                }
+            }
             if self.uses_bodily_regulation_driver()
                 && (organism.metabolic_rate.is_none()
                     || organism.physiological_regulation.is_none())
@@ -689,6 +754,18 @@ impl EngineState {
             {
                 return Err(EngineError::PhysiologicalCommitmentUnsupported);
             }
+            if self.uses_reproductive_physiology_driver()
+                && organism.reproductive_physiology.is_none()
+            {
+                return Err(EngineError::MissingReproductiveCommitment(
+                    organism.organism_id,
+                ));
+            }
+            if !self.uses_reproductive_physiology_driver()
+                && organism.reproductive_physiology.is_some()
+            {
+                return Err(EngineError::ReproductivePhysiologyUnsupported);
+            }
             events.push(DomainEvent::OrganismInitialized {
                 organism_id: organism.organism_id,
                 species: organism.species,
@@ -699,6 +776,7 @@ impl EngineState {
                 embodied_patch: organism.embodied_patch,
                 metabolic_rate: organism.metabolic_rate,
                 physiological_regulation: organism.physiological_regulation,
+                reproductive_physiology: organism.reproductive_physiology,
             });
         }
         Ok(events)
@@ -742,6 +820,11 @@ impl EngineState {
         }
         let mut preview = self.clone();
         preview.apply_events(&events)?;
+        if preview.uses_reproductive_physiology_driver() {
+            let reproductive_events = preview.plan_reproductive_events()?;
+            preview.apply_events(&reproductive_events)?;
+            events.extend(reproductive_events);
+        }
         if preview.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
@@ -766,6 +849,11 @@ impl EngineState {
         let mut events = vec![DomainEvent::OrganismDied { organism_id, cause }];
         let mut preview = self.clone();
         preview.apply_events(&events)?;
+        if preview.uses_reproductive_physiology_driver() {
+            let endings = preview.unavailable_reproductive_endings();
+            preview.apply_events(&endings)?;
+            events.extend(endings);
+        }
         if preview.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
@@ -1126,6 +1214,346 @@ impl EngineState {
         Ok((prior, next))
     }
 
+    fn reproductive_pair(
+        &self,
+        left: &OrganismState,
+        right: &OrganismState,
+    ) -> Option<(ReproductivePhysiologyCommitment, EntityId)> {
+        if left.organism_id == right.organism_id
+            || left.species != right.species
+            || left.role != right.role
+            || left.embodied_patch.is_none()
+            || left.embodied_patch != right.embodied_patch
+            || left.reproductive_physiology != right.reproductive_physiology
+        {
+            return None;
+        }
+        let profile = left.reproductive_physiology.as_ref()?;
+        let developing_parent_id = Self::reproductive_category_developer(profile, left, right)?;
+        Some((profile.clone(), developing_parent_id))
+    }
+
+    fn reproductive_category_developer(
+        profile: &ReproductivePhysiologyCommitment,
+        left: &OrganismState,
+        right: &OrganismState,
+    ) -> Option<EntityId> {
+        let (first, second) = if (&left.birth_category, left.organism_id)
+            <= (&right.birth_category, right.organism_id)
+        {
+            (left, right)
+        } else {
+            (right, left)
+        };
+        let pairing = profile.compatible_pairs.iter().find(|pair| {
+            pair.first == first.birth_category && pair.second == second.birth_category
+        })?;
+        let developing_parent_id = if pairing.first == pairing.second
+            || pairing.developing_parent == first.birth_category
+        {
+            first.organism_id
+        } else {
+            second.organism_id
+        };
+        Some(developing_parent_id)
+    }
+
+    fn reproductively_ready(
+        &self,
+        organism: &OrganismState,
+        profile: &ReproductivePhysiologyCommitment,
+    ) -> bool {
+        organism.is_alive()
+            && organism
+                .age_ticks
+                .is_some_and(|age| age >= profile.maturity_age_ticks)
+            && organism
+                .reproductive_available_at
+                .is_none_or(|available_at| available_at <= self.tick)
+    }
+
+    fn reproductive_draw(
+        &self,
+        stream: &'static str,
+        tick: SimTick,
+        parent_ids: &[EntityId],
+    ) -> Result<Digest, EngineError> {
+        Digest::canonical(&ReproductiveDraw {
+            driver_version: 1,
+            stream,
+            world_seed: self.manifest.seed.get(),
+            tick,
+            parent_ids,
+        })
+        .map_err(EngineError::from)
+    }
+
+    fn reproductive_opportunity_succeeds_at(
+        &self,
+        profile: &ReproductivePhysiologyCommitment,
+        parent_ids: &[EntityId],
+        tick: SimTick,
+    ) -> Result<bool, EngineError> {
+        let phase = first_digest_u64(self.reproductive_draw(
+            "opportunity-phase",
+            SimTick::ZERO,
+            parent_ids,
+        )?) % profile.opportunity_interval_ticks;
+        if tick.get() % profile.opportunity_interval_ticks != phase {
+            return Ok(false);
+        }
+        let draw =
+            first_digest_u64(self.reproductive_draw("opportunity-success", tick, parent_ids)?)
+                % u64::from(REPRODUCTIVE_PROBABILITY_SCALE);
+        Ok(draw < u64::from(profile.initiation_probability_millionths))
+    }
+
+    fn offspring_category_at(
+        &self,
+        profile: &ReproductivePhysiologyCommitment,
+        parent_ids: &[EntityId],
+        tick: SimTick,
+    ) -> Result<BirthCategory, EngineError> {
+        let total = profile
+            .offspring_categories
+            .iter()
+            .try_fold(0_u64, |total, category| {
+                total
+                    .checked_add(u64::from(category.weight))
+                    .ok_or(EngineError::ReproductiveArithmetic)
+            })?;
+        let mut draw =
+            first_digest_u64(self.reproductive_draw("offspring-category", tick, parent_ids)?)
+                % total;
+        for category in &profile.offspring_categories {
+            let weight = u64::from(category.weight);
+            if draw < weight {
+                return Ok(category.category.clone());
+            }
+            draw -= weight;
+        }
+        unreachable!("validated positive category weights cover the draw")
+    }
+
+    fn plan_reproductive_start(
+        &self,
+        left: &OrganismState,
+        right: &OrganismState,
+        profile: &ReproductivePhysiologyCommitment,
+        developing_parent_id: EntityId,
+    ) -> Result<Option<DomainEvent>, EngineError> {
+        if !self.reproductively_ready(left, profile) || !self.reproductively_ready(right, profile) {
+            return Ok(None);
+        }
+        let mut parent_ids = vec![left.organism_id, right.organism_id];
+        parent_ids.sort_unstable();
+        if !self.reproductive_opportunity_succeeds_at(profile, &parent_ids, self.tick)? {
+            return Ok(None);
+        }
+        let birth_category = self.offspring_category_at(profile, &parent_ids, self.tick)?;
+        let development_digest =
+            self.reproductive_draw("development-identity", self.tick, &parent_ids)?;
+        let offspring_digest =
+            self.reproductive_draw("offspring-identity", self.tick, &parent_ids)?;
+        let development_id =
+            EntityId::deterministic(self.world_id(), development_digest.as_bytes());
+        let offspring_id = EntityId::deterministic(self.world_id(), offspring_digest.as_bytes());
+        if self
+            .pending_reproductive_developments
+            .contains_key(&development_id)
+            || self.organisms.contains_key(&offspring_id)
+        {
+            return Err(EngineError::ReproductiveIdentityCollision);
+        }
+        let due = self
+            .tick
+            .get()
+            .checked_add(profile.development_ticks)
+            .ok_or(EngineError::ReproductiveArithmetic)?;
+        let available = due
+            .checked_add(profile.recovery_ticks)
+            .ok_or(EngineError::ReproductiveArithmetic)?;
+        Ok(Some(DomainEvent::ReproductiveDevelopmentStarted {
+            development_id,
+            offspring_id,
+            species: profile.species.clone(),
+            role: left.role,
+            birth_category,
+            parent_ids,
+            developing_parent_id,
+            profile_digest: profile.profile_digest,
+            due_tick: SimTick::new(due),
+            parents_available_at: SimTick::new(available),
+        }))
+    }
+
+    fn unavailable_reproductive_endings(&self) -> Vec<DomainEvent> {
+        self.pending_reproductive_developments
+            .values()
+            .filter(|pending| {
+                self.organisms
+                    .get(&pending.developing_parent_id)
+                    .is_none_or(|parent| !parent.is_alive())
+            })
+            .map(|pending| DomainEvent::ReproductiveDevelopmentEnded {
+                development_id: pending.development_id,
+                developing_parent_id: pending.developing_parent_id,
+                reason: ReproductiveDevelopmentEnd::DevelopingParentUnavailable,
+            })
+            .collect()
+    }
+
+    fn plan_reproductive_events(&self) -> Result<Vec<DomainEvent>, EngineError> {
+        if !self.uses_reproductive_physiology_driver() {
+            return Ok(Vec::new());
+        }
+        let mut events = self.unavailable_reproductive_endings();
+        for pending in self.pending_reproductive_developments.values() {
+            let developing_parent = self.organisms.get(&pending.developing_parent_id);
+            if developing_parent.is_none_or(|parent| !parent.is_alive()) {
+                continue;
+            }
+            if pending.due_tick < self.tick {
+                return Err(EngineError::OverdueReproductiveDevelopment(
+                    pending.development_id,
+                ));
+            }
+            if pending.due_tick == self.tick {
+                let parent = developing_parent.expect("living developing parent checked");
+                events.push(DomainEvent::OrganismBorn {
+                    organism_id: pending.offspring_id,
+                    development_id: Some(pending.development_id),
+                    species: pending.species.clone(),
+                    role: pending.role,
+                    birth_category: pending.birth_category.clone(),
+                    parent_ids: pending.parent_ids.clone(),
+                    location_id: parent.location_id,
+                    embodied_patch: parent.embodied_patch,
+                    metabolic_rate: parent.metabolic_rate.clone(),
+                    physiological_regulation: parent.physiological_regulation.clone(),
+                    reproductive_physiology: parent.reproductive_physiology.clone(),
+                });
+            }
+        }
+
+        let mut groups = BTreeMap::<(S2CellId, &str, &str, u8, Digest), Vec<&OrganismState>>::new();
+        for organism in self
+            .organisms
+            .values()
+            .filter(|organism| organism.is_alive())
+        {
+            let Some(patch) = organism.embodied_patch else {
+                continue;
+            };
+            let Some(profile) = organism.reproductive_physiology.as_ref() else {
+                continue;
+            };
+            let role = match organism.role {
+                OrganismRole::Person => 0,
+                OrganismRole::Fauna => 1,
+            };
+            let profile_fingerprint = Digest::canonical(profile)?;
+            groups
+                .entry((
+                    patch,
+                    organism.species.catalog.as_str(),
+                    organism.species.identifier.as_str(),
+                    role,
+                    profile_fingerprint,
+                ))
+                .or_default()
+                .push(organism);
+        }
+        let mut committed_parents = BTreeSet::new();
+        for organisms in groups.values() {
+            let profile = organisms[0]
+                .reproductive_physiology
+                .as_ref()
+                .expect("reproductive group members have profiles");
+            if organisms
+                .iter()
+                .any(|organism| organism.reproductive_physiology.as_ref() != Some(profile))
+            {
+                return Err(EngineError::InvalidReproductiveCommitment(
+                    organisms[0].organism_id,
+                ));
+            }
+            let mut categories = BTreeMap::<&BirthCategory, Vec<&OrganismState>>::new();
+            for organism in organisms {
+                categories
+                    .entry(&organism.birth_category)
+                    .or_default()
+                    .push(organism);
+            }
+            for pairing in &profile.compatible_pairs {
+                let first = categories
+                    .get(&pairing.first)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .filter(|organism| {
+                        !committed_parents.contains(&organism.organism_id)
+                            && self.reproductively_ready(organism, profile)
+                    })
+                    .collect::<Vec<_>>();
+                if pairing.first == pairing.second {
+                    for pair in first.chunks_exact(2) {
+                        let left = pair[0];
+                        let right = pair[1];
+                        let Some((pair_profile, developing_parent_id)) =
+                            self.reproductive_pair(left, right)
+                        else {
+                            return Err(EngineError::InvalidReproductiveCommitment(
+                                left.organism_id,
+                            ));
+                        };
+                        if let Some(event) = self.plan_reproductive_start(
+                            left,
+                            right,
+                            &pair_profile,
+                            developing_parent_id,
+                        )? {
+                            events.push(event);
+                            committed_parents.insert(left.organism_id);
+                            committed_parents.insert(right.organism_id);
+                        }
+                    }
+                    continue;
+                }
+                let second = categories
+                    .get(&pairing.second)
+                    .map(Vec::as_slice)
+                    .unwrap_or_default()
+                    .iter()
+                    .copied()
+                    .filter(|organism| {
+                        !committed_parents.contains(&organism.organism_id)
+                            && self.reproductively_ready(organism, profile)
+                    })
+                    .collect::<Vec<_>>();
+                for (left, right) in first.into_iter().zip(second) {
+                    let Some((pair_profile, developing_parent_id)) =
+                        self.reproductive_pair(left, right)
+                    else {
+                        return Err(EngineError::InvalidReproductiveCommitment(left.organism_id));
+                    };
+                    if let Some(event) = self.plan_reproductive_start(
+                        left,
+                        right,
+                        &pair_profile,
+                        developing_parent_id,
+                    )? {
+                        events.push(event);
+                        committed_parents.insert(left.organism_id);
+                        committed_parents.insert(right.organism_id);
+                    }
+                }
+            }
+        }
+        Ok(events)
+    }
+
     fn next_bodily_regulation(
         &self,
         organism: &OrganismState,
@@ -1435,6 +1863,10 @@ impl EngineState {
             tick: self.tick,
             organisms: self.organisms.values().collect(),
             material_instances: self.material_instances.values().collect(),
+            pending_reproductive_developments: self
+                .pending_reproductive_developments
+                .values()
+                .collect(),
             partition_schedule: self.partition_schedule.as_ref(),
             celestial_state: self.celestial_state,
             celestial_tick: self.celestial_tick,
@@ -1938,6 +2370,10 @@ impl EngineState {
         self.manifest.ruleset_version >= ACTION_LEARNING_RULESET_VERSION
     }
 
+    fn uses_reproductive_physiology_driver(&self) -> bool {
+        self.manifest.ruleset_version >= REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -2013,6 +2449,18 @@ impl EngineState {
                 .get(organism_id)
                 .or_else(|| resulting_state.organisms.get(organism_id))
                 .and_then(|organism| organism.embodied_patch),
+            DomainEvent::ReproductiveDevelopmentStarted {
+                developing_parent_id,
+                ..
+            }
+            | DomainEvent::ReproductiveDevelopmentEnded {
+                developing_parent_id,
+                ..
+            } => resulting_state
+                .organisms
+                .get(developing_parent_id)
+                .or_else(|| self.organisms.get(developing_parent_id))
+                .and_then(|organism| organism.embodied_patch),
             DomainEvent::WorldStarted { .. }
             | DomainEvent::WorldConfigured { .. }
             | DomainEvent::TickAdvanced { .. }
@@ -2033,12 +2481,44 @@ impl EngineState {
     }
 
     fn validate_event_coupling(&self, events: &[DomainEvent]) -> Result<(), EngineError> {
-        let tick_advanced = events
+        let starts_world = events
             .iter()
-            .any(|event| matches!(event, DomainEvent::TickAdvanced { .. }));
+            .any(|event| matches!(event, DomainEvent::WorldStarted { .. }));
+        if self.uses_reproductive_physiology_driver()
+            && !starts_world
+            && events
+                .iter()
+                .any(|event| matches!(event, DomainEvent::OrganismInitialized { .. }))
+        {
+            return Err(EngineError::OrganismInitializationOutsideGenesis);
+        }
+        if self.uses_reproductive_physiology_driver()
+            && starts_world
+            && !events.iter().any(|event| {
+                matches!(
+                    event,
+                    DomainEvent::OrganismInitialized {
+                        role: OrganismRole::Person,
+                        ..
+                    }
+                )
+            })
+        {
+            return Err(EngineError::MissingInitialPeople);
+        }
+        let tick_advance_count = events
+            .iter()
+            .filter(|event| matches!(event, DomainEvent::TickAdvanced { .. }))
+            .count();
+        let tick_advanced = tick_advance_count != 0;
         let tick_advance_index = events
             .iter()
             .position(|event| matches!(event, DomainEvent::TickAdvanced { .. }));
+        if self.uses_reproductive_physiology_driver()
+            && (tick_advance_count > 1 || tick_advance_index.is_some_and(|index| index != 0))
+        {
+            return Err(EngineError::InvalidTickAdvanceEventSet);
+        }
         if self.uses_action_learning_driver()
             && !tick_advanced
             && let Some(organism_id) = events.iter().find_map(|event| match event {
@@ -2178,11 +2658,173 @@ impl EngineState {
                 }
             }
         }
+        if self.uses_reproductive_physiology_driver() {
+            let is_reproductive_event = |event: &DomainEvent| {
+                matches!(
+                    event,
+                    DomainEvent::ReproductiveDevelopmentStarted { .. }
+                        | DomainEvent::ReproductiveDevelopmentEnded { .. }
+                        | DomainEvent::OrganismBorn {
+                            development_id: Some(_),
+                            ..
+                        }
+                )
+            };
+            if !tick_advanced {
+                if events.iter().any(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::ReproductiveDevelopmentStarted { .. }
+                            | DomainEvent::OrganismBorn { .. }
+                    )
+                }) {
+                    return Err(EngineError::InvalidReproductiveEventSet);
+                }
+                let actual_indices = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, event)| {
+                        matches!(event, DomainEvent::ReproductiveDevelopmentEnded { .. })
+                            .then_some(index)
+                    })
+                    .collect::<Vec<_>>();
+                if let (Some(first), Some(last)) = (
+                    actual_indices.first().copied(),
+                    actual_indices.last().copied(),
+                ) && (actual_indices != (first..=last).collect::<Vec<_>>()
+                    || events[..first].iter().any(|event| {
+                        matches!(
+                            event,
+                            DomainEvent::WorldExtinct | DomainEvent::WorldArchived
+                        )
+                    })
+                    || events[last + 1..].iter().any(|event| {
+                        !matches!(
+                            event,
+                            DomainEvent::WorldExtinct | DomainEvent::WorldArchived
+                        )
+                    }))
+                {
+                    return Err(EngineError::InvalidReproductiveEventSet);
+                }
+                let core_events = events
+                    .iter()
+                    .filter(|event| {
+                        !matches!(
+                            event,
+                            DomainEvent::ReproductiveDevelopmentEnded { .. }
+                                | DomainEvent::WorldExtinct
+                                | DomainEvent::WorldArchived
+                        )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut preview = self.clone();
+                preview.apply_events(&core_events)?;
+                let expected = preview.unavailable_reproductive_endings();
+                let actual = actual_indices
+                    .iter()
+                    .map(|index| events[*index].clone())
+                    .collect::<Vec<_>>();
+                if actual != expected {
+                    return Err(EngineError::InvalidReproductiveEventSet);
+                }
+            } else {
+                if events.iter().any(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::OrganismBorn {
+                            development_id: None,
+                            ..
+                        }
+                    )
+                }) {
+                    return Err(EngineError::InvalidReproductiveEventSet);
+                }
+                let actual_indices = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, event)| is_reproductive_event(event).then_some(index))
+                    .collect::<Vec<_>>();
+                if let (Some(first), Some(last)) = (
+                    actual_indices.first().copied(),
+                    actual_indices.last().copied(),
+                ) && (actual_indices != (first..=last).collect::<Vec<_>>()
+                    || events[..first].iter().any(|event| {
+                        matches!(
+                            event,
+                            DomainEvent::WorldExtinct | DomainEvent::WorldArchived
+                        )
+                    })
+                    || events[last + 1..].iter().any(|event| {
+                        !matches!(
+                            event,
+                            DomainEvent::WorldExtinct | DomainEvent::WorldArchived
+                        )
+                    }))
+                {
+                    return Err(EngineError::InvalidReproductiveEventSet);
+                }
+                let core_events = events
+                    .iter()
+                    .filter(|event| {
+                        !is_reproductive_event(event)
+                            && !matches!(
+                                event,
+                                DomainEvent::WorldExtinct | DomainEvent::WorldArchived
+                            )
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                let mut preview = self.clone();
+                preview.apply_events(&core_events)?;
+                let expected = preview.plan_reproductive_events()?;
+                let actual = actual_indices
+                    .iter()
+                    .map(|index| events[*index].clone())
+                    .collect::<Vec<_>>();
+                if actual != expected {
+                    return Err(EngineError::InvalidReproductiveEventSet);
+                }
+            }
+        } else if events.iter().any(|event| {
+            matches!(
+                event,
+                DomainEvent::ReproductiveDevelopmentStarted { .. }
+                    | DomainEvent::ReproductiveDevelopmentEnded { .. }
+            )
+        }) {
+            return Err(EngineError::ReproductivePhysiologyUnsupported);
+        }
+        if self.uses_reproductive_physiology_driver() && self.status == WorldStatus::Running {
+            let first_lifecycle = events.iter().position(|event| {
+                matches!(
+                    event,
+                    DomainEvent::WorldExtinct | DomainEvent::WorldArchived
+                )
+            });
+            let core_events = first_lifecycle.map_or(events, |index| &events[..index]);
+            let actual_lifecycle = first_lifecycle.map_or(&[][..], |index| &events[index..]);
+            let mut preview = self.clone();
+            preview.apply_events(core_events)?;
+            let expects_extinction = preview.living_people() == 0;
+            let has_exact_extinction = matches!(
+                actual_lifecycle,
+                [DomainEvent::WorldExtinct, DomainEvent::WorldArchived]
+            );
+            if expects_extinction != has_exact_extinction
+                || (!expects_extinction && !actual_lifecycle.is_empty())
+            {
+                return Err(EngineError::InvalidWorldLifecycleEventSet);
+            }
+        }
         Ok(())
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_action_learning_driver() {
+        if self.uses_reproductive_physiology_driver() {
+            REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
+        } else if self.uses_action_learning_driver() {
             ACTION_LEARNING_EVENT_SCHEMA_VERSION
         } else if self.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
@@ -2241,7 +2883,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_action_learning_driver() {
+        if self.uses_reproductive_physiology_driver() {
+            REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_action_learning_driver() {
             ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_STATE_HASH_SCHEMA_VERSION
@@ -2295,6 +2939,7 @@ impl EngineState {
                 if self.tick != SimTick::ZERO
                     || !self.organisms.is_empty()
                     || !self.material_instances.is_empty()
+                    || !self.pending_reproductive_developments.is_empty()
                 {
                     return Err(EngineError::InvalidGenesisState);
                 }
@@ -2308,6 +2953,7 @@ impl EngineState {
                 if self.tick != SimTick::ZERO
                     || !self.organisms.is_empty()
                     || !self.material_instances.is_empty()
+                    || !self.pending_reproductive_developments.is_empty()
                 {
                     return Err(EngineError::ConfigurationAfterOrganisms);
                 }
@@ -2330,6 +2976,7 @@ impl EngineState {
                 embodied_patch,
                 metabolic_rate,
                 physiological_regulation,
+                reproductive_physiology,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
@@ -2363,6 +3010,26 @@ impl EngineState {
                         ));
                     }
                 }
+                if let Some(reproduction) = reproductive_physiology {
+                    reproduction
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if reproduction.species != *species
+                        || !reproduction.supports_category(birth_category)
+                        || self.configuration.as_ref().is_none_or(|world| {
+                            world.tick_duration_seconds != reproduction.tick_duration_seconds
+                        })
+                    {
+                        return Err(EngineError::InvalidReproductiveCommitment(*organism_id));
+                    }
+                }
+                if self.uses_reproductive_physiology_driver() && reproductive_physiology.is_none() {
+                    return Err(EngineError::MissingReproductiveCommitment(*organism_id));
+                }
+                if !self.uses_reproductive_physiology_driver() && reproductive_physiology.is_some()
+                {
+                    return Err(EngineError::ReproductivePhysiologyUnsupported);
+                }
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
                     species: species.clone(),
@@ -2379,6 +3046,8 @@ impl EngineState {
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
                     physiological_regulation: physiological_regulation.clone(),
+                    reproductive_physiology: reproductive_physiology.clone(),
+                    reproductive_available_at: None,
                     bodily_regulation: BodilyRegulationState::default(),
                     bodily_regulated_at: None,
                     perception_memory: Vec::new(),
@@ -2505,8 +3174,127 @@ impl EngineState {
                 self.tick = *to;
                 self.refresh_partition_schedule()?;
             }
+            DomainEvent::ReproductiveDevelopmentStarted {
+                development_id,
+                offspring_id,
+                species,
+                role,
+                birth_category,
+                parent_ids,
+                developing_parent_id,
+                profile_digest,
+                due_tick,
+                parents_available_at,
+            } => {
+                if !self.uses_reproductive_physiology_driver() {
+                    return Err(EngineError::ReproductivePhysiologyUnsupported);
+                }
+                if parent_ids.len() != 2
+                    || self
+                        .pending_reproductive_developments
+                        .contains_key(development_id)
+                    || self.organisms.contains_key(offspring_id)
+                    || development_id == offspring_id
+                {
+                    return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
+                }
+                let left = self
+                    .organisms
+                    .get(&parent_ids[0])
+                    .ok_or(EngineError::UnknownParent(parent_ids[0]))?;
+                let right = self
+                    .organisms
+                    .get(&parent_ids[1])
+                    .ok_or(EngineError::UnknownParent(parent_ids[1]))?;
+                let Some((profile, expected_developing_parent)) =
+                    self.reproductive_pair(left, right)
+                else {
+                    return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
+                };
+                let expected_due = self
+                    .tick
+                    .get()
+                    .checked_add(profile.development_ticks)
+                    .ok_or(EngineError::ReproductiveArithmetic)?;
+                let expected_available = expected_due
+                    .checked_add(profile.recovery_ticks)
+                    .ok_or(EngineError::ReproductiveArithmetic)?;
+                let expected_development_id = EntityId::deterministic(
+                    self.world_id(),
+                    self.reproductive_draw("development-identity", self.tick, parent_ids)?
+                        .as_bytes(),
+                );
+                let expected_offspring_id = EntityId::deterministic(
+                    self.world_id(),
+                    self.reproductive_draw("offspring-identity", self.tick, parent_ids)?
+                        .as_bytes(),
+                );
+                if !self.reproductively_ready(left, &profile)
+                    || !self.reproductively_ready(right, &profile)
+                    || !self
+                        .reproductive_opportunity_succeeds_at(&profile, parent_ids, self.tick)?
+                    || self.offspring_category_at(&profile, parent_ids, self.tick)?
+                        != *birth_category
+                    || profile.species != *species
+                    || left.role != *role
+                    || profile.profile_digest != *profile_digest
+                    || expected_developing_parent != *developing_parent_id
+                    || expected_development_id != *development_id
+                    || expected_offspring_id != *offspring_id
+                    || *due_tick != SimTick::new(expected_due)
+                    || *parents_available_at != SimTick::new(expected_available)
+                {
+                    return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
+                }
+                for parent_id in parent_ids {
+                    self.organisms
+                        .get_mut(parent_id)
+                        .expect("parent presence checked")
+                        .reproductive_available_at = Some(*parents_available_at);
+                }
+                self.pending_reproductive_developments.insert(
+                    *development_id,
+                    PendingReproductiveDevelopment {
+                        development_id: *development_id,
+                        offspring_id: *offspring_id,
+                        species: species.clone(),
+                        role: *role,
+                        birth_category: birth_category.clone(),
+                        parent_ids: parent_ids.clone(),
+                        developing_parent_id: *developing_parent_id,
+                        profile_digest: *profile_digest,
+                        started_at: self.tick,
+                        due_tick: *due_tick,
+                        parents_available_at: *parents_available_at,
+                    },
+                );
+            }
+            DomainEvent::ReproductiveDevelopmentEnded {
+                development_id,
+                developing_parent_id,
+                reason: ReproductiveDevelopmentEnd::DevelopingParentUnavailable,
+            } => {
+                if !self.uses_reproductive_physiology_driver() {
+                    return Err(EngineError::ReproductivePhysiologyUnsupported);
+                }
+                let pending = self
+                    .pending_reproductive_developments
+                    .get(development_id)
+                    .ok_or(EngineError::UnknownReproductiveDevelopment(*development_id))?;
+                if pending.developing_parent_id != *developing_parent_id
+                    || self
+                        .organisms
+                        .get(developing_parent_id)
+                        .is_some_and(OrganismState::is_alive)
+                {
+                    return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
+                }
+                self.pending_reproductive_developments
+                    .remove(development_id);
+            }
             DomainEvent::OrganismBorn {
                 organism_id,
+                development_id,
                 species,
                 role,
                 birth_category,
@@ -2515,6 +3303,7 @@ impl EngineState {
                 embodied_patch,
                 metabolic_rate,
                 physiological_regulation,
+                reproductive_physiology,
             } => {
                 self.require_status(WorldStatus::Running)?;
                 species.validate()?;
@@ -2548,6 +3337,19 @@ impl EngineState {
                         ));
                     }
                 }
+                if let Some(reproduction) = reproductive_physiology {
+                    reproduction
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if reproduction.species != *species
+                        || !reproduction.supports_category(birth_category)
+                        || self.configuration.as_ref().is_none_or(|world| {
+                            world.tick_duration_seconds != reproduction.tick_duration_seconds
+                        })
+                    {
+                        return Err(EngineError::InvalidReproductiveCommitment(*organism_id));
+                    }
+                }
                 if parent_ids.windows(2).any(|pair| pair[0] >= pair[1]) {
                     return Err(EngineError::NonCanonicalParentOrder);
                 }
@@ -2569,6 +3371,41 @@ impl EngineState {
                 }) {
                     return Err(EngineError::IncompatibleBirthLineage);
                 }
+                if self.uses_reproductive_physiology_driver() {
+                    let development_id = development_id
+                        .ok_or(EngineError::UnboundReproductiveBirth(*organism_id))?;
+                    let pending = self
+                        .pending_reproductive_developments
+                        .get(&development_id)
+                        .cloned()
+                        .ok_or(EngineError::UnknownReproductiveDevelopment(development_id))?;
+                    let developing_parent = self
+                        .organisms
+                        .get(&pending.developing_parent_id)
+                        .ok_or(EngineError::UnknownParent(pending.developing_parent_id))?;
+                    if !developing_parent.is_alive()
+                        || pending.offspring_id != *organism_id
+                        || pending.species != *species
+                        || pending.role != *role
+                        || pending.birth_category != *birth_category
+                        || pending.parent_ids != *parent_ids
+                        || pending.due_tick != self.tick
+                        || developing_parent.location_id != *location_id
+                        || developing_parent.embodied_patch != *embodied_patch
+                        || developing_parent.metabolic_rate != *metabolic_rate
+                        || developing_parent.physiological_regulation != *physiological_regulation
+                        || developing_parent.reproductive_physiology != *reproductive_physiology
+                        || reproductive_physiology
+                            .as_ref()
+                            .is_none_or(|profile| profile.profile_digest != pending.profile_digest)
+                    {
+                        return Err(EngineError::InvalidReproductiveBirth(*organism_id));
+                    }
+                    self.pending_reproductive_developments
+                        .remove(&development_id);
+                } else if development_id.is_some() || reproductive_physiology.is_some() {
+                    return Err(EngineError::ReproductivePhysiologyUnsupported);
+                }
                 self.insert_organism(OrganismState {
                     organism_id: *organism_id,
                     species: species.clone(),
@@ -2583,6 +3420,8 @@ impl EngineState {
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
                     physiological_regulation: physiological_regulation.clone(),
+                    reproductive_physiology: reproductive_physiology.clone(),
+                    reproductive_available_at: None,
                     bodily_regulation: BodilyRegulationState::default(),
                     bodily_regulated_at: None,
                     perception_memory: Vec::new(),
@@ -2964,14 +3803,30 @@ impl EngineState {
         if self.status == WorldStatus::Initializing
             && (self.tick != SimTick::ZERO
                 || !self.organisms.is_empty()
-                || !self.material_instances.is_empty())
+                || !self.material_instances.is_empty()
+                || !self.pending_reproductive_developments.is_empty())
         {
             return Err(EngineError::InvalidGenesisState);
+        }
+        if self.uses_reproductive_physiology_driver()
+            && self.status != WorldStatus::Initializing
+            && !self
+                .organisms
+                .values()
+                .any(|organism| organism.role == OrganismRole::Person)
+        {
+            return Err(EngineError::MissingInitialPeople);
         }
         if matches!(self.status, WorldStatus::Extinct | WorldStatus::Archived)
             && self.living_people() != 0
         {
             return Err(EngineError::LivingPeopleRemain);
+        }
+        if self.uses_reproductive_physiology_driver()
+            && (self.status == WorldStatus::Extinct
+                || (self.status == WorldStatus::Running && self.living_people() == 0))
+        {
+            return Err(EngineError::UnarchivedWorldExtinction);
         }
         if self.uses_celestial_driver()
             && self.tick != SimTick::ZERO
@@ -2979,7 +3834,7 @@ impl EngineState {
         {
             return Err(EngineError::MissingCelestialState(self.tick));
         }
-        if self.uses_bodily_regulation_driver() {
+        if self.uses_bodily_regulation_driver() && self.status != WorldStatus::Initializing {
             let baseline = self
                 .configuration
                 .as_ref()
@@ -3050,6 +3905,31 @@ impl EngineState {
             {
                 return Err(EngineError::PhysiologicalCommitmentUnsupported);
             }
+            if self.uses_reproductive_physiology_driver() {
+                let reproduction = organism.reproductive_physiology.as_ref().ok_or(
+                    EngineError::MissingReproductiveCommitment(organism.organism_id),
+                )?;
+                reproduction
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if reproduction.species != organism.species
+                    || !reproduction.supports_category(&organism.birth_category)
+                    || self.configuration.as_ref().is_none_or(|world| {
+                        world.tick_duration_seconds != reproduction.tick_duration_seconds
+                    })
+                    || organism
+                        .reproductive_available_at
+                        .is_some_and(|available_at| available_at < organism.initialized_at)
+                {
+                    return Err(EngineError::InvalidReproductiveCommitment(
+                        organism.organism_id,
+                    ));
+                }
+            } else if organism.reproductive_physiology.is_some()
+                || organism.reproductive_available_at.is_some()
+            {
+                return Err(EngineError::ReproductivePhysiologyUnsupported);
+            }
             if organism.perception_memory.len() > MAX_PERCEPTION_MEMORY_ENTRIES
                 || organism
                     .perception_memory
@@ -3093,6 +3973,99 @@ impl EngineState {
                 .any(|pair| pair[0] >= pair[1])
             {
                 return Err(EngineError::NonCanonicalParentOrder);
+            }
+        }
+        if !self.uses_reproductive_physiology_driver()
+            && !self.pending_reproductive_developments.is_empty()
+        {
+            return Err(EngineError::ReproductivePhysiologyUnsupported);
+        }
+        let mut pending_parents = BTreeSet::new();
+        for (development_id, pending) in &self.pending_reproductive_developments {
+            if pending.parent_ids.len() != 2 {
+                return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
+            }
+            let developing_parent = self
+                .organisms
+                .get(&pending.developing_parent_id)
+                .ok_or(EngineError::UnknownParent(pending.developing_parent_id))?;
+            let profile = developing_parent.reproductive_physiology.as_ref().ok_or(
+                EngineError::MissingReproductiveCommitment(pending.developing_parent_id),
+            )?;
+            let left = self
+                .organisms
+                .get(&pending.parent_ids[0])
+                .ok_or(EngineError::UnknownParent(pending.parent_ids[0]))?;
+            let right = self
+                .organisms
+                .get(&pending.parent_ids[1])
+                .ok_or(EngineError::UnknownParent(pending.parent_ids[1]))?;
+            let expected_due = pending
+                .started_at
+                .get()
+                .checked_add(profile.development_ticks)
+                .ok_or(EngineError::ReproductiveArithmetic)?;
+            let expected_available = expected_due
+                .checked_add(profile.recovery_ticks)
+                .ok_or(EngineError::ReproductiveArithmetic)?;
+            let expected_development_id = EntityId::deterministic(
+                self.world_id(),
+                self.reproductive_draw(
+                    "development-identity",
+                    pending.started_at,
+                    &pending.parent_ids,
+                )?
+                .as_bytes(),
+            );
+            let expected_offspring_id = EntityId::deterministic(
+                self.world_id(),
+                self.reproductive_draw(
+                    "offspring-identity",
+                    pending.started_at,
+                    &pending.parent_ids,
+                )?
+                .as_bytes(),
+            );
+            if development_id != &pending.development_id
+                || pending.development_id == pending.offspring_id
+                || self.organisms.contains_key(&pending.offspring_id)
+                || pending.parent_ids.len() != 2
+                || pending.parent_ids.windows(2).any(|pair| pair[0] >= pair[1])
+                || !pending.parent_ids.contains(&pending.developing_parent_id)
+                || pending.started_at == SimTick::ZERO
+                || pending.started_at > self.tick
+                || pending.due_tick <= self.tick
+                || pending.parents_available_at <= pending.due_tick
+                || !developing_parent.is_alive()
+                || developing_parent.species != pending.species
+                || developing_parent.role != pending.role
+                || profile.profile_digest != pending.profile_digest
+                || left.reproductive_physiology.as_ref() != Some(profile)
+                || right.reproductive_physiology.as_ref() != Some(profile)
+                || Self::reproductive_category_developer(profile, left, right)
+                    != Some(pending.developing_parent_id)
+                || pending.due_tick != SimTick::new(expected_due)
+                || pending.parents_available_at != SimTick::new(expected_available)
+                || pending.development_id != expected_development_id
+                || pending.offspring_id != expected_offspring_id
+                || self.offspring_category_at(profile, &pending.parent_ids, pending.started_at)?
+                    != pending.birth_category
+                || !self.reproductive_opportunity_succeeds_at(
+                    profile,
+                    &pending.parent_ids,
+                    pending.started_at,
+                )?
+                || pending.parent_ids.iter().any(|parent_id| {
+                    !pending_parents.insert(*parent_id)
+                        || self.organisms.get(parent_id).is_none_or(|parent| {
+                            parent.species != pending.species
+                                || parent.role != pending.role
+                                || parent.reproductive_available_at
+                                    != Some(pending.parents_available_at)
+                        })
+                })
+            {
+                return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
             }
         }
         for (id, instance) in &self.material_instances {
@@ -3181,6 +4154,8 @@ struct StateHashMaterial<'a> {
     organisms: Vec<&'a OrganismState>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     material_instances: Vec<&'a MaterialInstanceState>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pending_reproductive_developments: Vec<&'a PendingReproductiveDevelopment>,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<&'a PartitionSchedule>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -3207,7 +4182,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_action_learning_driver() {
+        let snapshot_schema_version = if state.uses_reproductive_physiology_driver() {
+            REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_action_learning_driver() {
             ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
@@ -3278,12 +4255,15 @@ impl Snapshot {
                 | DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
                 | ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+                | REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_action_learning_driver() {
+        let expected_schema_version = if self.state.uses_reproductive_physiology_driver() {
+            REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_action_learning_driver() {
             ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
@@ -3464,7 +4444,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_action_learning_driver() {
+        let expected_schema = if state.uses_reproductive_physiology_driver() {
+            REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
+        } else if state.uses_action_learning_driver() {
             ACTION_LEARNING_EVENT_SCHEMA_VERSION
         } else if state.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
@@ -3511,7 +4493,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == ACTION_LEARNING_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
+        } else if expected_schema == ACTION_LEARNING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == ACTION_LEARNING_EVENT_SCHEMA_VERSION
         } else if expected_schema == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
@@ -3598,6 +4582,16 @@ pub enum EngineError {
     InvalidGenesisState,
     #[error("initial organism list contains a duplicate identity")]
     DuplicateInitialOrganism,
+    #[error("a ruleset-fourteen genesis requires at least one person")]
+    MissingInitialPeople,
+    #[error("organisms may be initialized only in the atomic world-start batch")]
+    OrganismInitializationOutsideGenesis,
+    #[error("world extinction and archival must be the exact terminal lifecycle suffix")]
+    InvalidWorldLifecycleEventSet,
+    #[error("a ruleset-fourteen tick transition requires one TickAdvanced event at index zero")]
+    InvalidTickAdvanceEventSet,
+    #[error("a ruleset-fourteen world without living people must be archived")]
+    UnarchivedWorldExtinction,
     #[error("world configuration must be committed before initial organisms")]
     ConfigurationAfterOrganisms,
     #[error("world configuration was already committed")]
@@ -3700,6 +4694,28 @@ pub enum EngineError {
     MissingActionValueTransition(EntityId),
     #[error("organism {0} action-value observation count overflowed")]
     ActionValueObservationOverflow(EntityId),
+    #[error("reproductive physiology is unsupported by this ruleset")]
+    ReproductivePhysiologyUnsupported,
+    #[error("organism {0} lacks its species-bound reproductive commitment")]
+    MissingReproductiveCommitment(EntityId),
+    #[error("organism {0} has an invalid reproductive commitment")]
+    InvalidReproductiveCommitment(EntityId),
+    #[error("reproductive arithmetic overflowed")]
+    ReproductiveArithmetic,
+    #[error("deterministic reproductive identity collided")]
+    ReproductiveIdentityCollision,
+    #[error("reproductive development {0} is invalid")]
+    InvalidReproductiveDevelopment(EntityId),
+    #[error("reproductive development {0} is unknown")]
+    UnknownReproductiveDevelopment(EntityId),
+    #[error("reproductive development {0} passed its due tick")]
+    OverdueReproductiveDevelopment(EntityId),
+    #[error("birth {0} is not bound to a pending reproductive development")]
+    UnboundReproductiveBirth(EntityId),
+    #[error("birth {0} does not exactly resolve its pending reproductive development")]
+    InvalidReproductiveBirth(EntityId),
+    #[error("the tick's reproductive event set is missing, reordered, or fabricated")]
+    InvalidReproductiveEventSet,
     #[error("ruleset-three ticks require one source-backed celestial state")]
     CelestialStateRequired,
     #[error("this ruleset does not accept source-backed celestial states")]
@@ -3818,6 +4834,7 @@ mod tests {
             embodied_patch: None,
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         }
     }
 
@@ -3977,6 +4994,38 @@ mod tests {
             thermal_recovery_seconds: 600,
         });
         person
+    }
+
+    fn reproductive_fixture_profile(species: SpeciesIdentity) -> ReproductivePhysiologyCommitment {
+        ReproductivePhysiologyCommitment {
+            commitment_schema_version:
+                world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "reproductive-fixture-v1".to_owned(),
+            profile_digest: Digest::sha256(b"explicit reproductive fixture assumptions"),
+            species,
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+            tick_duration_seconds: 300,
+            maturity_age_ticks: 10,
+            development_ticks: 2,
+            recovery_ticks: 2,
+            opportunity_interval_ticks: 1,
+            initiation_probability_millionths: REPRODUCTIVE_PROBABILITY_SCALE,
+            compatible_pairs: vec![world_domain::ReproductiveCategoryPair {
+                first: BirthCategory::new("female").expect("category"),
+                second: BirthCategory::new("male").expect("category"),
+                developing_parent: BirthCategory::new("female").expect("category"),
+            }],
+            offspring_categories: vec![
+                world_domain::OffspringCategoryWeight {
+                    category: BirthCategory::new("female").expect("category"),
+                    weight: 1,
+                },
+                world_domain::OffspringCategoryWeight {
+                    category: BirthCategory::new("male").expect("category"),
+                    weight: 1,
+                },
+            ],
+        }
     }
 
     fn committed_history() -> Vec<EventBatch> {
@@ -4253,6 +5302,7 @@ mod tests {
         .expect("species");
         let birth = DomainEvent::OrganismBorn {
             organism_id: EntityId::deterministic(manifest.world_id, b"invalid-cross-species-birth"),
+            development_id: None,
             species: other_species,
             role: OrganismRole::Fauna,
             birth_category: BirthCategory::new("unspecified").expect("category"),
@@ -4261,6 +5311,7 @@ mod tests {
             embodied_patch: None,
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         };
         assert!(matches!(
             running.commit(EventSequence::new(2), genesis.batch_hash, vec![birth]),
@@ -4708,6 +5759,7 @@ mod tests {
             .expect("regulated genesis commit");
         let unsupported_birth = DomainEvent::OrganismBorn {
             organism_id: EntityId::from_uuid(Uuid::from_u128(0x202)),
+            development_id: None,
             species: person.species.clone(),
             role: OrganismRole::Person,
             birth_category: BirthCategory::new("female").expect("category"),
@@ -4716,6 +5768,7 @@ mod tests {
             embodied_patch: person.embodied_patch,
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         };
         assert!(matches!(
             running.commit(
@@ -5732,6 +6785,483 @@ mod tests {
     }
 
     #[test]
+    fn ruleset_fourteen_reproduces_only_through_private_committed_development() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x118));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478587),
+            REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION,
+        );
+        assert!(EngineState::new(manifest.clone()).validate().is_ok());
+        let fabricated_personless_genesis = vec![
+            DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            },
+            DomainEvent::WorldConfigured {
+                configuration: environmental_provisional_full_earth_configuration(),
+            },
+            DomainEvent::WorldExtinct,
+            DomainEvent::WorldArchived,
+        ];
+        assert!(matches!(
+            EngineState::new(manifest.clone()).commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                fabricated_personless_genesis,
+            ),
+            Err(EngineError::MissingInitialPeople)
+        ));
+        let mut forged_personless_archive = EngineState::new(manifest.clone());
+        forged_personless_archive.status = WorldStatus::Archived;
+        assert!(matches!(
+            Snapshot::new(
+                forged_personless_archive,
+                EventSequence::new(1),
+                Digest::sha256(b"forged personless archive"),
+            ),
+            Err(EngineError::MissingInitialPeople)
+        ));
+        assert!(matches!(
+            EngineState::new(manifest.clone()).plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                Vec::new(),
+            ),
+            Err(EngineError::MissingInitialPeople)
+        ));
+        let mut developing_parent =
+            regulated_full_earth_person(world_id, 0x601, 10_000_000_000, 10_000_000);
+        developing_parent.birth_category = BirthCategory::new("female").expect("category");
+        developing_parent.initial_age_ticks = 20;
+        let profile = reproductive_fixture_profile(developing_parent.species.clone());
+        developing_parent.reproductive_physiology = Some(profile.clone());
+        let mut other_parent =
+            regulated_full_earth_person(world_id, 0x602, 10_000_000_000, 10_000_000);
+        other_parent.birth_category = BirthCategory::new("male").expect("category");
+        other_parent.initial_age_ticks = 20;
+        other_parent.reproductive_physiology = Some(profile);
+
+        let mut mismatched_tick_parent = developing_parent.clone();
+        mismatched_tick_parent
+            .reproductive_physiology
+            .as_mut()
+            .expect("reproductive profile")
+            .tick_duration_seconds = 301;
+        assert!(matches!(
+            EngineState::new(manifest.clone()).plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![mismatched_tick_parent, other_parent.clone()],
+            ),
+            Err(EngineError::InvalidReproductiveCommitment(id))
+                if id == developing_parent.organism_id
+        ));
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![developing_parent.clone(), other_parent.clone()],
+            )
+            .expect("reproductive genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("reproductive genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.state_hash_schema_version(),
+            REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION
+        );
+        let injected_id = EntityId::from_uuid(Uuid::from_u128(0x603));
+        let injected = DomainEvent::OrganismInitialized {
+            organism_id: injected_id,
+            species: developing_parent.species.clone(),
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("female").expect("category"),
+            initial_age_ticks: 20,
+            location_id: None,
+            embodied_patch: developing_parent.embodied_patch,
+            metabolic_rate: developing_parent.metabolic_rate.clone(),
+            physiological_regulation: developing_parent.physiological_regulation.clone(),
+            reproductive_physiology: developing_parent.reproductive_physiology.clone(),
+        };
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, vec![injected]),
+            Err(EngineError::OrganismInitializationOutsideGenesis)
+        ));
+
+        let first_tick_events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(300),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("first reproductive tick");
+        let mut double_advance = first_tick_events.clone();
+        double_advance.insert(
+            1,
+            DomainEvent::TickAdvanced {
+                from: SimTick::new(1),
+                to: SimTick::new(2),
+            },
+        );
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, double_advance,),
+            Err(EngineError::InvalidTickAdvanceEventSet)
+        ));
+        let mut late_advance = first_tick_events.clone();
+        late_advance.swap(0, 1);
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, late_advance,),
+            Err(EngineError::InvalidTickAdvanceEventSet)
+        ));
+        let start = first_tick_events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::ReproductiveDevelopmentStarted {
+                    development_id,
+                    offspring_id,
+                    parent_ids,
+                    developing_parent_id,
+                    due_tick,
+                    ..
+                } => Some((
+                    *development_id,
+                    *offspring_id,
+                    parent_ids.clone(),
+                    *developing_parent_id,
+                    *due_tick,
+                )),
+                _ => None,
+            })
+            .expect("eligible co-located pair begins private development");
+        assert_eq!(start.2.len(), 2);
+        assert_eq!(start.3, developing_parent.organism_id);
+        assert_eq!(start.4, SimTick::new(3));
+
+        let omitted = first_tick_events
+            .iter()
+            .filter(|event| !matches!(event, DomainEvent::ReproductiveDevelopmentStarted { .. }))
+            .cloned()
+            .collect::<Vec<_>>();
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, omitted),
+            Err(EngineError::InvalidReproductiveEventSet)
+        ));
+        let (after_start, first_tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, first_tick_events)
+            .expect("committed private development");
+        assert!(
+            after_start
+                .pending_reproductive_developments
+                .contains_key(&start.0)
+        );
+        let mut fabricated_snapshot_state = after_start.clone();
+        fabricated_snapshot_state
+            .pending_reproductive_developments
+            .get_mut(&start.0)
+            .expect("pending development")
+            .started_at = SimTick::ZERO;
+        assert!(matches!(
+            Snapshot::new(
+                fabricated_snapshot_state,
+                first_tick.sequence,
+                first_tick.batch_hash,
+            ),
+            Err(EngineError::InvalidReproductiveDevelopment(id)) if id == start.0
+        ));
+        let mut mismatched_tick_snapshot_state = after_start.clone();
+        mismatched_tick_snapshot_state
+            .organisms
+            .get_mut(&developing_parent.organism_id)
+            .expect("developing parent")
+            .reproductive_physiology
+            .as_mut()
+            .expect("reproductive profile")
+            .tick_duration_seconds = 301;
+        assert!(matches!(
+            Snapshot::new(
+                mismatched_tick_snapshot_state,
+                first_tick.sequence,
+                first_tick.batch_hash,
+            ),
+            Err(EngineError::InvalidReproductiveCommitment(id))
+                if id == developing_parent.organism_id
+        ));
+
+        let non_developing_parent_id = start
+            .2
+            .iter()
+            .copied()
+            .find(|parent_id| *parent_id != start.3)
+            .expect("other parent");
+        let first_death_events = after_start
+            .plan_death(
+                non_developing_parent_id,
+                DeathCause {
+                    mechanism: "extinction_fixture".to_owned(),
+                },
+            )
+            .expect("first parent death plan");
+        let (one_parent_left, first_death) = after_start
+            .commit(
+                EventSequence::new(3),
+                first_tick.batch_hash,
+                first_death_events,
+            )
+            .expect("first parent death commit");
+        let extinction_events = one_parent_left
+            .plan_death(
+                start.3,
+                DeathCause {
+                    mechanism: "extinction_fixture".to_owned(),
+                },
+            )
+            .expect("last parent death plan");
+        assert!(matches!(
+            extinction_events.as_slice(),
+            [
+                DomainEvent::OrganismDied { .. },
+                DomainEvent::ReproductiveDevelopmentEnded { .. },
+                DomainEvent::WorldExtinct,
+                DomainEvent::WorldArchived,
+            ]
+        ));
+        let extinction_without_lifecycle =
+            extinction_events[..extinction_events.len() - 2].to_vec();
+        assert!(matches!(
+            one_parent_left.commit(
+                EventSequence::new(4),
+                first_death.batch_hash,
+                extinction_without_lifecycle,
+            ),
+            Err(EngineError::InvalidWorldLifecycleEventSet)
+        ));
+        let (archived_branch, _) = one_parent_left
+            .commit(
+                EventSequence::new(4),
+                first_death.batch_hash,
+                extinction_events,
+            )
+            .expect("exact extinction suffix commits");
+        assert_eq!(archived_branch.status(), WorldStatus::Archived);
+        let mut transient_extinct_snapshot = archived_branch.clone();
+        transient_extinct_snapshot.status = WorldStatus::Extinct;
+        assert!(matches!(
+            Snapshot::new(
+                transient_extinct_snapshot,
+                first_death.sequence,
+                first_death.batch_hash,
+            ),
+            Err(EngineError::UnarchivedWorldExtinction)
+        ));
+
+        let cancellation_events = after_start
+            .plan_death(
+                start.3,
+                DeathCause {
+                    mechanism: "test_fixture".to_owned(),
+                },
+            )
+            .expect("developing-parent death plan");
+        assert!(matches!(
+            cancellation_events.as_slice(),
+            [
+                DomainEvent::OrganismDied { .. },
+                DomainEvent::ReproductiveDevelopmentEnded {
+                    development_id,
+                    reason: ReproductiveDevelopmentEnd::DevelopingParentUnavailable,
+                    ..
+                }
+            ] if *development_id == start.0
+        ));
+        let reordered_cancellation = vec![
+            cancellation_events[0].clone(),
+            DomainEvent::WorldExtinct,
+            DomainEvent::WorldArchived,
+            cancellation_events[1].clone(),
+        ];
+        assert!(matches!(
+            after_start.commit(
+                EventSequence::new(3),
+                first_tick.batch_hash,
+                reordered_cancellation,
+            ),
+            Err(EngineError::InvalidReproductiveEventSet)
+        ));
+        let (cancelled, _) = after_start
+            .commit(
+                EventSequence::new(3),
+                first_tick.batch_hash,
+                cancellation_events,
+            )
+            .expect("private development cancellation");
+        assert!(cancelled.pending_reproductive_developments.is_empty());
+
+        let second_tick_events = after_start
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(600),
+                CartesianMillimetres::new(2, 3, 4),
+                CartesianMillimetres::new(5, 6, 7),
+            ))
+            .expect("second reproductive tick");
+        assert!(
+            !second_tick_events
+                .iter()
+                .any(|event| matches!(event, DomainEvent::OrganismBorn { .. }))
+        );
+        let (after_second, second_tick) = after_start
+            .commit(
+                EventSequence::new(3),
+                first_tick.batch_hash,
+                second_tick_events,
+            )
+            .expect("second reproductive tick commit");
+        let third_tick_events = after_second
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(900),
+                CartesianMillimetres::new(3, 4, 5),
+                CartesianMillimetres::new(6, 7, 8),
+            ))
+            .expect("birth tick");
+        let birth_index = third_tick_events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    DomainEvent::OrganismBorn {
+                        organism_id,
+                        development_id: Some(development_id),
+                        parent_ids,
+                        ..
+                    } if *organism_id == start.1
+                        && *development_id == start.0
+                        && *parent_ids == start.2
+                )
+            })
+            .expect("development resolves as a bound birth");
+        let mut reordered = third_tick_events.clone();
+        reordered.swap(birth_index - 1, birth_index);
+        assert!(matches!(
+            after_second.commit(EventSequence::new(4), second_tick.batch_hash, reordered),
+            Err(EngineError::InvalidReproductiveEventSet)
+        ));
+        let (after_birth, third_tick) = after_second
+            .commit(
+                EventSequence::new(4),
+                second_tick.batch_hash,
+                third_tick_events,
+            )
+            .expect("bound birth commit");
+        assert!(after_birth.pending_reproductive_developments.is_empty());
+        assert_eq!(
+            after_birth
+                .organisms()
+                .filter(|organism| organism.is_alive())
+                .count(),
+            3
+        );
+        let newborn = after_birth
+            .organisms
+            .get(&start.1)
+            .expect("durable newborn identity");
+        assert_eq!(newborn.parent_ids, start.2);
+        assert_eq!(newborn.born_at, Some(SimTick::new(3)));
+
+        let snapshot = Snapshot::new(
+            after_birth.clone(),
+            third_tick.sequence,
+            third_tick.batch_hash,
+        )
+        .expect("reproductive snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot.verify_integrity().expect("snapshot integrity");
+        assert_eq!(
+            replay(
+                manifest.clone(),
+                &[genesis.clone(), first_tick.clone(), second_tick, third_tick,],
+            )
+            .expect("reproductive replay")
+            .state,
+            after_birth
+        );
+
+        let downgraded = EventBatch::new(
+            ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION,
+            Digest::ZERO,
+            vec![DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            }],
+            Digest::sha256(b"downgraded reproductive state"),
+        )
+        .expect("internally valid pre-reproductive batch");
+        assert!(matches!(
+            replay(manifest, &[downgraded]),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+                actual: ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    #[test]
+    fn ruleset_thirteen_preserves_legacy_post_genesis_initialization_replay() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x119));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478588),
+            ACTION_LEARNING_RULESET_VERSION,
+        );
+        let founder = regulated_full_earth_person(world_id, 0x611, 10_000_000_000, 10_000_000);
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![founder.clone()],
+            )
+            .expect("legacy genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("legacy genesis");
+        let mut later_founder = founder;
+        later_founder.organism_id = EntityId::from_uuid(Uuid::from_u128(0x612));
+        let initialization = DomainEvent::OrganismInitialized {
+            organism_id: later_founder.organism_id,
+            species: later_founder.species,
+            role: later_founder.role,
+            birth_category: later_founder.birth_category,
+            initial_age_ticks: later_founder.initial_age_ticks,
+            location_id: later_founder.location_id,
+            embodied_patch: later_founder.embodied_patch,
+            metabolic_rate: later_founder.metabolic_rate,
+            physiological_regulation: later_founder.physiological_regulation,
+            reproductive_physiology: None,
+        };
+        let (with_legacy_initialization, initialization_batch) = running
+            .commit(
+                EventSequence::new(2),
+                genesis.batch_hash,
+                vec![initialization],
+            )
+            .expect("legacy initialization remains accepted");
+        assert_eq!(with_legacy_initialization.organisms().count(), 2);
+        assert_eq!(
+            replay(manifest, &[genesis, initialization_batch])
+                .expect("legacy initialization replay")
+                .state,
+            with_legacy_initialization
+        );
+    }
+
+    #[test]
     fn configured_event_budget_covers_genesis_and_ticks() {
         let manifest = manifest();
         let initial = EngineState::new(manifest.clone());
@@ -6085,6 +7615,7 @@ mod tests {
                         embodied_patch: None,
                         metabolic_rate: None,
                         physiological_regulation: None,
+                        reproductive_physiology: None,
                     },
                 ],
             ),

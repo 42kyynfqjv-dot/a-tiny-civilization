@@ -482,6 +482,7 @@ mod tests {
             embodied_patch: None,
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         }
     }
 

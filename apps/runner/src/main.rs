@@ -17,21 +17,21 @@ use postgres_store::PostgresStore;
 use serde::Deserialize;
 use serde_json::json;
 use sim_engine::{
-    CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, RESOLVED_MOVEMENT_RULESET_VERSION,
-    RULESET_VERSION,
+    BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism,
+    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RESOLVED_MOVEMENT_RULESET_VERSION, RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 use world_data::{
     DataLayerKind, FaunaMetabolicRatePlan, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
     FaunaRangeCandidateSet, FaunaSeededSelection, ProvisionalLandOriginSelection,
-    ProvisionalOriginEnvironment,
+    ProvisionalOrganismBodyProfilePlan, ProvisionalOriginEnvironment,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
 use world_domain::{
-    BirthCategory, CapacityExhaustionPolicy, CelestialState, EntityId, OrganismRole,
+    BirthCategory, CapacityExhaustionPolicy, CelestialState, Digest, EntityId, OrganismRole,
     PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline, S2CellId,
     SchedulerKind, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId,
     WorldManifest, WorldSeed, WorldStatus,
@@ -138,6 +138,11 @@ enum Command {
         #[arg(long)]
         fauna_metabolic_rate_plan: Option<PathBuf>,
 
+        /// Canonical provisional body profiles for every founder and planned fauna
+        /// species. Required by rulesets with canonical bodily regulation.
+        #[arg(long)]
+        provisional_organism_profile_plan: Option<PathBuf>,
+
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
 
@@ -215,6 +220,7 @@ async fn main() -> Result<()> {
             fauna_population_plan,
             fauna_metabolic_profile_set,
             fauna_metabolic_rate_plan,
+            provisional_organism_profile_plan,
             predecessor_world_id,
             tick_duration_seconds,
             max_events_per_partition_transition,
@@ -235,6 +241,7 @@ async fn main() -> Result<()> {
                 fauna_population_plan.as_deref(),
                 fauna_metabolic_profile_set.as_deref(),
                 fauna_metabolic_rate_plan.as_deref(),
+                provisional_organism_profile_plan.as_deref(),
                 predecessor_world_id,
                 tick_duration_seconds,
                 max_events_per_partition_transition,
@@ -482,6 +489,7 @@ async fn init_proof_world(
             embodied_patch: None,
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         },
         InitialOrganism {
             organism_id: EntityId::deterministic(world_id, b"proof-person-male"),
@@ -493,6 +501,7 @@ async fn init_proof_world(
             embodied_patch: None,
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         },
     ];
     let session =
@@ -524,6 +533,7 @@ async fn init_provisional_full_earth_world(
     fauna_population_plan_path: Option<&std::path::Path>,
     fauna_metabolic_profile_set_path: Option<&std::path::Path>,
     fauna_metabolic_rate_plan_path: Option<&std::path::Path>,
+    provisional_organism_profile_plan_path: Option<&std::path::Path>,
     predecessor_world_id: Option<WorldId>,
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
@@ -577,6 +587,13 @@ async fn init_provisional_full_earth_world(
         ),
     }
     .context("construct provisional full-Earth execution configuration")?;
+    if ruleset_version >= BODILY_REGULATION_RULESET_VERSION
+        && configuration.local_environment_baseline().is_none()
+    {
+        anyhow::bail!(
+            "ruleset {ruleset_version} requires --provisional-origin-environment for canonical bodily regulation"
+        );
+    }
 
     let mut manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
     if let Some(selection_digest) = initial_origin.selection_digest {
@@ -613,6 +630,7 @@ async fn init_provisional_full_earth_world(
             embodied_patch: Some(initial_patch),
             metabolic_rate: None,
             physiological_regulation: None,
+            reproductive_physiology: None,
         })
     })
     .collect::<Result<Vec<_>>>()?;
@@ -659,6 +677,17 @@ async fn init_provisional_full_earth_world(
             );
         }
         initial_organisms.extend(fauna.initial_organisms);
+    }
+    if let Some(profile_plan_digest) = apply_provisional_organism_body_profiles(
+        &mut initial_organisms,
+        ruleset_version,
+        tick_duration_seconds,
+        provisional_organism_profile_plan_path,
+    )? {
+        manifest.scientific_datasets.insert(
+            "provisional_organism_body_profile_plan".to_owned(),
+            profile_plan_digest.to_string(),
+        );
     }
     let session = initialize_or_resume_configured_world(
         store,
@@ -984,6 +1013,7 @@ fn load_provisional_fauna_initial_organisms(
                 embodied_patch: Some(initial_patch),
                 metabolic_rate: metabolic_rate.clone(),
                 physiological_regulation: None,
+                reproductive_physiology: None,
             });
         }
     }
@@ -996,6 +1026,82 @@ fn load_provisional_fauna_initial_organisms(
         metabolic_profile_set_digest,
         initial_organisms,
     }))
+}
+
+fn apply_provisional_organism_body_profiles(
+    initial_organisms: &mut [InitialOrganism],
+    ruleset_version: u32,
+    tick_duration_seconds: u32,
+    plan_path: Option<&std::path::Path>,
+) -> Result<Option<Digest>> {
+    if ruleset_version < BODILY_REGULATION_RULESET_VERSION {
+        if plan_path.is_some() {
+            anyhow::bail!(
+                "--provisional-organism-profile-plan requires ruleset {BODILY_REGULATION_RULESET_VERSION} or later"
+            );
+        }
+        return Ok(None);
+    }
+
+    let plan_path = plan_path.with_context(|| {
+        format!("ruleset {ruleset_version} requires --provisional-organism-profile-plan")
+    })?;
+    let bytes = std::fs::read(plan_path).with_context(|| {
+        format!(
+            "read provisional organism body-profile plan {}",
+            plan_path.display()
+        )
+    })?;
+    let plan = ProvisionalOrganismBodyProfilePlan::from_canonical_slice(&bytes)
+        .context("validate provisional organism body-profile plan")?;
+    if plan.tick_duration_seconds != tick_duration_seconds {
+        anyhow::bail!(
+            "provisional organism body-profile plan tick duration {} does not match world tick duration {tick_duration_seconds}",
+            plan.tick_duration_seconds
+        );
+    }
+
+    for organism in initial_organisms {
+        let profile = plan.entry_for(&organism.species).with_context(|| {
+            format!(
+                "provisional organism body-profile plan has no entry for {}:{} ({})",
+                organism.species.catalog,
+                organism.species.identifier,
+                organism.species.scientific_name
+            )
+        })?;
+        if organism
+            .metabolic_rate
+            .as_ref()
+            .is_some_and(|existing| existing != &profile.metabolic_rate)
+        {
+            anyhow::bail!(
+                "provisional organism body-profile plan conflicts with the retained metabolic rate for {}:{}",
+                organism.species.catalog,
+                organism.species.identifier
+            );
+        }
+        if ruleset_version >= REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION
+            && !profile
+                .reproductive_physiology
+                .supports_category(&organism.birth_category)
+        {
+            anyhow::bail!(
+                "provisional reproductive profile for {}:{} does not support founder category {:?}",
+                organism.species.catalog,
+                organism.species.identifier,
+                organism.birth_category
+            );
+        }
+        organism.initial_age_ticks = profile.initial_age_ticks;
+        organism.metabolic_rate = Some(profile.metabolic_rate.clone());
+        organism.physiological_regulation = Some(profile.physiological_regulation.clone());
+        organism.reproductive_physiology = (ruleset_version
+            >= REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION)
+            .then(|| profile.reproductive_physiology.clone());
+    }
+
+    Ok(Some(Digest::sha256(&bytes)))
 }
 
 async fn serve_memory_worker(
@@ -1146,6 +1252,142 @@ mod tests {
                 },
             ],
         }
+    }
+
+    fn provisional_body_profile_entry(
+        species: SpeciesIdentity,
+    ) -> world_data::ProvisionalOrganismBodyProfileEntry {
+        let female = BirthCategory::new("female").expect("female category");
+        let male = BirthCategory::new("male").expect("male category");
+        world_data::ProvisionalOrganismBodyProfileEntry {
+            species: species.clone(),
+            initial_age_ticks: 20,
+            metabolic_rate: world_domain::MetabolicRateCommitment {
+                commitment_schema_version: world_domain::METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
+                profile_set_digest: Digest::sha256(b"runner body-profile test set"),
+                observed_species: species.clone(),
+                source_record_id: "runner-body-profile-test-rate".to_owned(),
+                source_record_digest: Digest::sha256(b"runner body-profile test rate"),
+                measured_power_value: 100,
+                measured_power_decimal_places: 0,
+            },
+            physiological_regulation: world_domain::PhysiologicalRegulationCommitment {
+                commitment_schema_version:
+                    world_domain::PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "runner-body-profile-test-regulation".to_owned(),
+                profile_digest: Digest::sha256(b"runner body-profile test regulation"),
+                species: species.clone(),
+                evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+                usable_energy_reserve_joules: 1_000_000,
+                hydration_failure_seconds: 100_000,
+                fatigue_failure_seconds: 10_000,
+                fatigue_recovery_seconds: 10_000,
+                thermoneutral_min_millicelsius: 18_000,
+                thermoneutral_max_millicelsius: 26_000,
+                thermal_failure_millicelsius_seconds: 100_000,
+                thermal_recovery_seconds: 10_000,
+            },
+            reproductive_physiology: world_domain::ReproductivePhysiologyCommitment {
+                commitment_schema_version:
+                    world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "runner-body-profile-test-reproduction".to_owned(),
+                profile_digest: Digest::sha256(b"runner body-profile test reproduction"),
+                species,
+                evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+                tick_duration_seconds: 300,
+                maturity_age_ticks: 10,
+                development_ticks: 2,
+                recovery_ticks: 2,
+                opportunity_interval_ticks: 1,
+                initiation_probability_millionths: world_domain::REPRODUCTIVE_PROBABILITY_SCALE,
+                compatible_pairs: vec![world_domain::ReproductiveCategoryPair {
+                    first: female.clone(),
+                    second: male.clone(),
+                    developing_parent: female.clone(),
+                }],
+                offspring_categories: vec![
+                    world_domain::OffspringCategoryWeight {
+                        category: female,
+                        weight: 1,
+                    },
+                    world_domain::OffspringCategoryWeight {
+                        category: male,
+                        weight: 1,
+                    },
+                ],
+            },
+        }
+    }
+
+    #[test]
+    fn ruleset_fourteen_genesis_applies_one_pinned_body_profile_plan() {
+        let world_id = WorldId::from_uuid(Uuid::new_v4());
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("human species");
+        let plan = ProvisionalOrganismBodyProfilePlan {
+            plan_schema_version: world_data::PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+            status: world_data::PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS.to_owned(),
+            tick_duration_seconds: 300,
+            entries: vec![provisional_body_profile_entry(species.clone())],
+        };
+        let bytes = plan.canonical_bytes().expect("canonical body-profile plan");
+        let path = std::env::temp_dir().join(format!(
+            "atc-runner-body-profile-plan-{}.json",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&path, &bytes).expect("write body-profile plan");
+        let mut organisms = vec![InitialOrganism {
+            organism_id: EntityId::deterministic(world_id, b"profiled-founder"),
+            species,
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("female").expect("category"),
+            initial_age_ticks: 0,
+            location_id: None,
+            embodied_patch: Some("0000000000004000".parse().expect("L23 patch")),
+            metabolic_rate: None,
+            physiological_regulation: None,
+            reproductive_physiology: None,
+        }];
+
+        let digest = apply_provisional_organism_body_profiles(
+            &mut organisms,
+            REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION,
+            300,
+            Some(&path),
+        )
+        .expect("apply profile plan");
+        assert_eq!(digest, Some(Digest::sha256(&bytes)));
+        assert_eq!(organisms[0].initial_age_ticks, 20);
+        assert!(organisms[0].metabolic_rate.is_some());
+        assert!(organisms[0].physiological_regulation.is_some());
+        assert!(organisms[0].reproductive_physiology.is_some());
+
+        let mut wrong_tick = organisms.clone();
+        assert!(
+            apply_provisional_organism_body_profiles(
+                &mut wrong_tick,
+                REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION,
+                301,
+                Some(&path),
+            )
+            .is_err()
+        );
+        let mut missing = organisms;
+        assert!(
+            apply_provisional_organism_body_profiles(
+                &mut missing,
+                REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION,
+                300,
+                None,
+            )
+            .is_err()
+        );
+        std::fs::remove_file(path).expect("remove body-profile plan");
     }
 
     fn origin_environment(

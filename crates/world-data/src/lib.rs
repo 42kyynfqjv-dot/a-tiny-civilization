@@ -10,6 +10,7 @@ mod origin;
 mod origin_environment;
 mod physiology;
 mod provisional;
+mod provisional_body_profiles;
 mod scalar_field;
 mod seasonal_field;
 mod soil;
@@ -75,6 +76,12 @@ pub use provisional::{
     ProvisionalArtifactReference, ProvisionalEarthLayerReference, ProvisionalWorldComponentKind,
     ProvisionalWorldComponentReference, ProvisionalWorldComposition,
     ProvisionalWorldCompositionError, ProvisionalWorldCompositionStatus,
+};
+pub use provisional_body_profiles::{
+    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_MEDIA_TYPE,
+    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, ProvisionalOrganismBodyProfileEntry,
+    ProvisionalOrganismBodyProfilePlan, ProvisionalOrganismBodyProfilePlanError,
 };
 
 pub use scalar_field::{

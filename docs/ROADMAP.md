@@ -62,10 +62,12 @@ The order is:
 Basic integrity, licensing, schema, range, and content-hash checks still gate every
 ingest. They prevent corrupt or unusable inputs from contaminating later work, but
 publication-grade scientific validation does not hold up the next domain. Until the
-final admission pass succeeds, outputs are explicitly **provisional**, cannot become a
-canonical public world, and must not be described as scientifically validated. This
-sequencing makes validation test the complete coupled system instead of polishing
-isolated layers that may change when they are integrated.
+final admission pass succeeds, outputs are explicitly **provisional** and must not be
+described as scientifically validated. ADR 0049 permits a mechanically qualified
+public **experimental** world with a published assumption ledger; improved scientific
+inputs apply only to a successor world. This sequencing makes validation test the
+complete coupled system instead of polishing isolated layers that may change when they
+are integrated.
 
 ## Checkpoints
 
@@ -152,8 +154,9 @@ regulator retains exact energy, hydration, fatigue, and thermal load accumulator
 derives label-free need pressure without per-tick rounding drift, and emits restrained
 mechanical mortality and same-tick extinction when a fatal budget is exhausted. Every
 ruleset-ten body atomically pins measured metabolic power and a species-matching
-regulation profile. Engineering-assumption profiles exercise the implementation but
-remain ineligible for public genesis until their scientific evidence is reviewed.
+regulation profile. Engineering-assumption profiles may participate only in an
+explicitly labelled experimental genesis under ADR 0049 and must remain visible in the
+public assumption ledger.
 
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate
@@ -161,7 +164,7 @@ selection uses only canonical world state, bodily pressure, exact local reachabi
 and ordered identities; it never reads a material or species label, observer state,
 wall time, or model output. The selected act and its physical effects remain ordinary
 replayable events behind new event, snapshot, and state-hash schema boundaries. This
-is a freeform baseline, not learned cognition: imitation, reproduction/heredity, and
+is a freeform baseline, not learned cognition: imitation, reproduction, heredity, and
 coupled ecology remain subsequent causal checkpoints.
 
 Ruleset twelve adds the first neutral ingestion effect without leaking a food or water
@@ -170,8 +173,9 @@ species-bound oral-transfer profiles; a matching held-object swallow records con
 mass before applying exact energy and hydration recovery to that tick's bodily state.
 Depletion, replay, snapshots, schema downgrades, causal action/effect ordering, and
 observer privacy are enforced. The committed profiles in tests are explicit engineering
-assumptions: toxicity, injury, and digestion detail remain open, and no response profile
-is public-genesis eligible before scientific admission.
+assumptions: toxicity, injury, and digestion detail remain open. Until scientific
+admission, such a response profile may be used only by an explicitly labelled
+experimental world under ADR 0049.
 
 Ruleset thirteen records one bounded action/outcome association after every scheduled
 bodily transition. The update uses only signed total-pressure change, applies no
@@ -181,6 +185,22 @@ standalone-action rejection, bounded state, replay, snapshots, schema downgrades
 observer privacy are covered. This is broad action-kind reinforcement only;
 target/property generalization, delayed credit, imitation, teaching, beliefs, and
 forgetting remain unimplemented.
+
+Ruleset fourteen makes births a delayed world-caused outcome. Every participating body
+pins a species-bound reproductive commitment; compatible mature organisms at the same
+exact patch receive deterministic sim-time opportunities, and successful opportunities
+create private pending development with stable identities and recovery clocks. Only an
+exactly bound due development can produce a birth. Missing, fabricated, or reordered
+development/birth events fail before commit; unavailable developing parents resolve
+through a neutral private end event. Public projections omit all mechanism, category,
+partner, parentage, and profile detail and retain only the existing restrained birth
+outcome. There is no population cap. The fixture profile is an explicit engineering
+assumption; learned courtship, caregiving, non-pair modes, litter size, and individual
+genetic variation remain open. A canonical provisional body-profile plan now gives the
+supported full-Earth initializer one exact, content-addressed source for every
+founder's and selected fauna taxon's initial age, metabolism, regulation, and
+reproductive commitment; later bodily rulesets fail closed when that plan or a taxon
+entry is absent.
 
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one

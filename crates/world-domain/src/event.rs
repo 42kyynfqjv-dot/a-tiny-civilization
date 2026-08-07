@@ -4,8 +4,9 @@ use thiserror::Error;
 use crate::{
     ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId,
     EventId, EventSequence, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
-    PhysiologicalRegulationCommitment, PrimitiveAction, S2CellId, SimTick, SituatedPerception,
-    SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
+    ReproductivePhysiologyCommitment, S2CellId, SimTick, SituatedPerception, SpeciesIdentity,
+    WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -42,6 +43,9 @@ pub const MATERIAL_INGESTION_EVENT_SCHEMA_VERSION: u16 = 14;
 /// Adds one bounded, label-free action/outcome association per scheduled organism
 /// transition.
 pub const ACTION_LEARNING_EVENT_SCHEMA_VERSION: u16 = 15;
+/// Adds species-bound reproductive commitments, neutral pending development, and
+/// development-bound births.
+pub const REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION: u16 = 16;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -118,6 +122,8 @@ pub enum DomainEvent {
         metabolic_rate: Option<MetabolicRateCommitment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         physiological_regulation: Option<PhysiologicalRegulationCommitment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
     },
     /// A physical material instance. Its identity is citable, but its affordances
     /// and effects are intentionally not inferred by this event.
@@ -157,6 +163,8 @@ pub enum DomainEvent {
     },
     OrganismBorn {
         organism_id: EntityId,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        development_id: Option<EntityId>,
         species: SpeciesIdentity,
         role: OrganismRole,
         birth_category: BirthCategory,
@@ -168,6 +176,28 @@ pub enum DomainEvent {
         metabolic_rate: Option<MetabolicRateCommitment>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         physiological_regulation: Option<PhysiologicalRegulationCommitment>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
+    },
+    /// A private physiological process began. It carries only canonical identifiers,
+    /// timing, and a committed profile—not prose or agent-facing reproductive labels.
+    ReproductiveDevelopmentStarted {
+        development_id: EntityId,
+        offspring_id: EntityId,
+        species: SpeciesIdentity,
+        role: OrganismRole,
+        birth_category: BirthCategory,
+        parent_ids: Vec<EntityId>,
+        developing_parent_id: EntityId,
+        profile_digest: Digest,
+        due_tick: SimTick,
+        parents_available_at: SimTick,
+    },
+    /// A pending private process ended without a birth.
+    ReproductiveDevelopmentEnded {
+        development_id: EntityId,
+        developing_parent_id: EntityId,
+        reason: ReproductiveDevelopmentEnd,
     },
     OrganismDied {
         organism_id: EntityId,
@@ -364,6 +394,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
             | MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
             | ACTION_LEARNING_EVENT_SCHEMA_VERSION
+            | REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -488,15 +519,38 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::ReproductiveDevelopmentStarted { .. }
+                | DomainEvent::ReproductiveDevelopmentEnded { .. }
+                | DomainEvent::OrganismInitialized {
+                    reproductive_physiology: Some(_),
+                    ..
+                }
+                | DomainEvent::OrganismBorn {
+                    development_id: Some(_),
+                    ..
+                }
+                | DomainEvent::OrganismBorn {
+                    reproductive_physiology: Some(_),
+                    ..
+                }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             metabolic_rate,
             physiological_regulation,
+            reproductive_physiology,
             ..
         }
         | DomainEvent::OrganismBorn {
             metabolic_rate,
             physiological_regulation,
+            reproductive_physiology,
             ..
         } => {
             if let Some(metabolic_rate) = metabolic_rate {
@@ -506,6 +560,11 @@ fn validate_event_for_schema(
             }
             if let Some(regulation) = physiological_regulation {
                 regulation
+                    .validate()
+                    .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+            if let Some(reproduction) = reproductive_physiology {
+                reproduction
                     .validate()
                     .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
             }
@@ -572,6 +631,33 @@ fn validate_event_for_schema(
             if to.observations != expected_observations {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "action-value transition skipped an observation".to_owned(),
+                ));
+            }
+        }
+        DomainEvent::ReproductiveDevelopmentStarted {
+            development_id,
+            offspring_id,
+            species,
+            parent_ids,
+            developing_parent_id,
+            profile_digest,
+            due_tick,
+            parents_available_at,
+            ..
+        } => {
+            species
+                .validate()
+                .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            if development_id == offspring_id
+                || *profile_digest == Digest::ZERO
+                || parent_ids.is_empty()
+                || parent_ids.windows(2).any(|pair| pair[0] >= pair[1])
+                || !parent_ids.contains(developing_parent_id)
+                || due_tick == &SimTick::ZERO
+                || parents_available_at <= due_tick
+            {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "invalid reproductive-development commitment".to_owned(),
                 ));
             }
         }
@@ -689,6 +775,16 @@ mod tests {
             WorldSeed::new(17),
             1,
         )
+    }
+
+    fn species() -> SpeciesIdentity {
+        SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("species")
     }
 
     fn configuration() -> WorldConfiguration {
@@ -1163,5 +1259,48 @@ mod tests {
             ),
             Err(EventBatchError::InvalidEmbodiedEvent(_))
         ));
+    }
+
+    #[test]
+    fn reproductive_development_requires_schema_sixteen() {
+        let manifest = manifest();
+        let developing_parent_id = EntityId::from_uuid(Uuid::from_u128(0xA14));
+        let other_parent_id = EntityId::from_uuid(Uuid::from_u128(0xA15));
+        let event = DomainEvent::ReproductiveDevelopmentStarted {
+            development_id: EntityId::from_uuid(Uuid::from_u128(0xA16)),
+            offspring_id: EntityId::from_uuid(Uuid::from_u128(0xA17)),
+            species: species(),
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("female").expect("category"),
+            parent_ids: vec![developing_parent_id, other_parent_id],
+            developing_parent_id,
+            profile_digest: Digest::sha256(b"reproductive profile"),
+            due_tick: SimTick::new(2),
+            parents_available_at: SimTick::new(3),
+        };
+        assert!(matches!(
+            EventBatch::new(
+                ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                14,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"reproductive state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::new(1),
+            14,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"reproductive state"),
+        )
+        .expect("schema sixteen accepts private reproductive development");
     }
 }

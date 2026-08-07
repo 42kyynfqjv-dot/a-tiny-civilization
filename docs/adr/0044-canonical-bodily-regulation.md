@@ -16,8 +16,9 @@ observer must never receive graphic or mechanism-level presentation.
 Implementing the causal machinery before scientific validation is useful only if the
 engine cannot disguise convenient game constants as measurements. The parameter set
 that drives each body therefore needs to be an immutable part of world history, with
-an explicit evidence basis and digest. Engineering assumptions can exercise the
-ruleset, but they cannot pass the public-genesis quality gate.
+an explicit evidence basis and digest. Under ADR 0049, engineering assumptions may
+shape an explicitly labelled experimental genesis but cannot be presented as measured
+or scientifically admitted.
 
 ## Decision
 
@@ -50,5 +51,6 @@ ruleset, but they cannot pass the public-genesis quality gate.
 The engine has a replayable survival substrate without claiming that provisional
 profiles are scientifically admitted. Later material ingestion, exposure, injury,
 reproduction, and deterministic policy rules can change these same neutral pressures.
-Before public genesis, every participating real taxon needs a reviewed profile whose
-evidence and transformations satisfy the scientific quality gate.
+Every participating real taxon needs an immutable profile and disclosed evidence
+class. Scientific review may replace provisional assumptions only in a successor
+world under ADR 0049.
