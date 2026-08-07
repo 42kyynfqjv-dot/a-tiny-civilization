@@ -308,6 +308,33 @@ pub enum PrimitiveActionKind {
     EmitSignal,
 }
 
+pub const ACTION_VALUE_STATE_SCHEMA_VERSION: u16 = 1;
+pub const ACTION_VALUE_MIN: i16 = -128;
+pub const ACTION_VALUE_MAX: i16 = 128;
+
+/// Bounded experience retained for one primitive action kind. The value is a
+/// label-free association with total bodily pressure change, not a belief about an
+/// object, a use, a goal, or the scientific cause of an outcome.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct ActionValueState {
+    pub value_schema_version: u16,
+    pub action_kind: PrimitiveActionKind,
+    pub observations: u32,
+    pub value: i16,
+}
+
+impl ActionValueState {
+    pub fn validate(self) -> Result<(), EmbodimentError> {
+        if self.value_schema_version != ACTION_VALUE_STATE_SCHEMA_VERSION {
+            return Err(EmbodimentError::UnsupportedActionValueSchema);
+        }
+        if self.observations == 0 || !(ACTION_VALUE_MIN..=ACTION_VALUE_MAX).contains(&self.value) {
+            return Err(EmbodimentError::InvalidActionValueState);
+        }
+        Ok(())
+    }
+}
+
 /// A primitive bodily command with an optional local target; effects are resolved by
 /// world physics, not by an action name implying a desired cultural outcome.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -351,6 +378,10 @@ pub enum EmbodimentError {
     UnsupportedPhysiologicalRegulationSchema,
     #[error("invalid physiological-regulation commitment")]
     InvalidPhysiologicalRegulationCommitment,
+    #[error("unsupported action-value state schema")]
+    UnsupportedActionValueSchema,
+    #[error("invalid action-value state")]
+    InvalidActionValueState,
     #[error("need signal intensity must be greater than zero")]
     ZeroNeedIntensity,
     #[error("perception property code {0:?} is invalid")]
@@ -418,6 +449,28 @@ mod tests {
             .validate()
             .is_err()
         );
+    }
+
+    #[test]
+    fn action_values_are_bounded_observations_not_use_labels() {
+        ActionValueState {
+            value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+            action_kind: PrimitiveActionKind::Swallow,
+            observations: 1,
+            value: 7,
+        }
+        .validate()
+        .expect("bounded action experience");
+        assert!(matches!(
+            ActionValueState {
+                value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind: PrimitiveActionKind::Swallow,
+                observations: 0,
+                value: 0,
+            }
+            .validate(),
+            Err(EmbodimentError::InvalidActionValueState)
+        ));
     }
 
     #[test]

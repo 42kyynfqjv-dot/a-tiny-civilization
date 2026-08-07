@@ -2,8 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId, EventId,
-    EventSequence, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
+    ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState, Digest, EntityId,
+    EventId, EventSequence, MaterialIdentity, MetabolicRateCommitment, OralTransferCommitment,
     PhysiologicalRegulationCommitment, PrimitiveAction, S2CellId, SimTick, SituatedPerception,
     SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
@@ -39,6 +39,9 @@ pub const DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION: u16 = 13;
 /// Adds retained material mass, species-bound oral-transfer commitments, and exact
 /// resolved oral mass transfers.
 pub const MATERIAL_INGESTION_EVENT_SCHEMA_VERSION: u16 = 14;
+/// Adds one bounded, label-free action/outcome association per scheduled organism
+/// transition.
+pub const ACTION_LEARNING_EVENT_SCHEMA_VERSION: u16 = 15;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -200,6 +203,13 @@ pub enum DomainEvent {
         from: BodilyRegulationState,
         to: BodilyRegulationState,
     },
+    /// One bounded update derived from the organism's own primitive action and total
+    /// bodily-pressure change. It carries no material, use, or observer label.
+    OrganismActionValueChanged {
+        organism_id: EntityId,
+        from: Option<ActionValueState>,
+        to: ActionValueState,
+    },
     /// A source-backed Sun/Moon state for the current simulation tick. This is a
     /// physical input only; observer projections must not expose its mechanism.
     CelestialStateRecorded {
@@ -353,6 +363,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | BODILY_REGULATION_EVENT_SCHEMA_VERSION
             | DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
             | MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
+            | ACTION_LEARNING_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -472,6 +483,11 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < ACTION_LEARNING_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::OrganismActionValueChanged { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             metabolic_rate,
@@ -529,6 +545,33 @@ fn validate_event_for_schema(
             {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "invalid material oral-transfer arithmetic".to_owned(),
+                ));
+            }
+        }
+        DomainEvent::OrganismActionValueChanged { from, to, .. } => {
+            to.validate()
+                .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            let expected_observations = match from {
+                Some(from) => {
+                    from.validate().map_err(|error| {
+                        EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                    })?;
+                    if from.action_kind != to.action_kind {
+                        return Err(EventBatchError::InvalidEmbodiedEvent(
+                            "action-value transition changed action kind".to_owned(),
+                        ));
+                    }
+                    from.observations.checked_add(1).ok_or_else(|| {
+                        EventBatchError::InvalidEmbodiedEvent(
+                            "action-value observation count overflowed".to_owned(),
+                        )
+                    })?
+                }
+                None => 1,
+            };
+            if to.observations != expected_observations {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "action-value transition skipped an observation".to_owned(),
                 ));
             }
         }
@@ -1055,6 +1098,68 @@ mod tests {
                 Digest::ZERO,
                 vec![invalid_transfer],
                 Digest::sha256(b"invalid oral state"),
+            ),
+            Err(EventBatchError::InvalidEmbodiedEvent(_))
+        ));
+    }
+
+    #[test]
+    fn action_value_updates_require_schema_fifteen_and_contiguous_observations() {
+        let manifest = manifest();
+        let first = ActionValueState {
+            value_schema_version: crate::ACTION_VALUE_STATE_SCHEMA_VERSION,
+            action_kind: crate::PrimitiveActionKind::Rest,
+            observations: 1,
+            value: 4,
+        };
+        let event = DomainEvent::OrganismActionValueChanged {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0xA13)),
+            from: None,
+            to: first,
+        };
+        assert!(matches!(
+            EventBatch::new(
+                MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                13,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"action value state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::new(1),
+            13,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"action value state"),
+        )
+        .expect("schema fifteen accepts a first action observation");
+
+        let skipped = DomainEvent::OrganismActionValueChanged {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0xA13)),
+            from: Some(first),
+            to: ActionValueState {
+                observations: 3,
+                ..first
+            },
+        };
+        assert!(matches!(
+            EventBatch::new(
+                ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(2),
+                SimTick::new(2),
+                13,
+                Digest::ZERO,
+                vec![skipped],
+                Digest::sha256(b"skipped action value state"),
             ),
             Err(EventBatchError::InvalidEmbodiedEvent(_))
         ));

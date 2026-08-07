@@ -161,8 +161,8 @@ selection uses only canonical world state, bodily pressure, exact local reachabi
 and ordered identities; it never reads a material or species label, observer state,
 wall time, or model output. The selected act and its physical effects remain ordinary
 replayable events behind new event, snapshot, and state-hash schema boundaries. This
-is a freeform baseline, not learned cognition: action-value learning, imitation,
-reproduction/heredity, and coupled ecology remain subsequent causal checkpoints.
+is a freeform baseline, not learned cognition: imitation, reproduction/heredity, and
+coupled ecology remain subsequent causal checkpoints.
 
 Ruleset twelve adds the first neutral ingestion effect without leaking a food or water
 label into action selection. Material instances can retain exact mass plus ordered,
@@ -170,8 +170,17 @@ species-bound oral-transfer profiles; a matching held-object swallow records con
 mass before applying exact energy and hydration recovery to that tick's bodily state.
 Depletion, replay, snapshots, schema downgrades, causal action/effect ordering, and
 observer privacy are enforced. The committed profiles in tests are explicit engineering
-assumptions: toxicity, injury, digestion detail, and learned action values remain open,
-and no response profile is public-genesis eligible before scientific admission.
+assumptions: toxicity, injury, and digestion detail remain open, and no response profile
+is public-genesis eligible before scientific admission.
+
+Ruleset thirteen records one bounded action/outcome association after every scheduled
+bodily transition. The update uses only signed total-pressure change, applies no
+action-to-need answer key, and biases future primitive-action weights without reducing
+any action below a nonzero exploration floor. Event/action/body/value ordering,
+standalone-action rejection, bounded state, replay, snapshots, schema downgrades, and
+observer privacy are covered. This is broad action-kind reinforcement only;
+target/property generalization, delayed credit, imitation, teaching, beliefs, and
+forgetting remain unimplemented.
 
 A separate provisional-world composition schema now requires all seven Earth roles,
 the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one

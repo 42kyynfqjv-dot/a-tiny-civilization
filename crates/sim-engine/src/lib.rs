@@ -16,10 +16,11 @@ use partition::{
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    BODILY_REGULATION_EVENT_SCHEMA_VERSION, BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory,
-    BodilyNeedState, BodilyRegulationState, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
-    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState,
-    DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
+    ACTION_LEARNING_EVENT_SCHEMA_VERSION, ACTION_VALUE_MAX, ACTION_VALUE_MIN,
+    ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+    BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, BodilyNeedState, BodilyRegulationState,
+    CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError,
+    CelestialState, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
     EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
     LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
@@ -69,6 +70,10 @@ pub const DETERMINISTIC_POLICY_RULESET_VERSION: u32 = 11;
 /// exact mass transfer and energy/hydration recovery without exposing that profile to
 /// the action policy.
 pub const MATERIAL_INGESTION_RULESET_VERSION: u32 = 12;
+/// Ruleset thirteen records bounded associations between each primitive action and
+/// the organism's own total bodily-pressure change, then feeds only that association
+/// back into future action weights.
+pub const ACTION_LEARNING_RULESET_VERSION: u32 = 13;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -84,6 +89,7 @@ pub const SIGNAL_PROPAGATION_SNAPSHOT_SCHEMA_VERSION: u16 = 12;
 pub const BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION: u16 = 13;
 pub const DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION: u16 = 14;
 pub const MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION: u16 = 15;
+pub const ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 16;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -104,6 +110,7 @@ const SIGNAL_PROPAGATION_STATE_HASH_SCHEMA_VERSION: u16 = 12;
 const BODILY_REGULATION_STATE_HASH_SCHEMA_VERSION: u16 = 13;
 const DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION: u16 = 14;
 const MATERIAL_INGESTION_STATE_HASH_SCHEMA_VERSION: u16 = 15;
+const ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 16;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -240,6 +247,43 @@ struct OralRecovery {
     hydration_seconds: u64,
 }
 
+fn total_bodily_pressure(needs: BodilyNeedState) -> u64 {
+    u64::from(needs.energy_deficit)
+        + u64::from(needs.hydration_deficit)
+        + u64::from(needs.thermal_discomfort)
+        + u64::from(needs.pain)
+        + u64::from(needs.fatigue)
+}
+
+fn action_outcome_reward(from: BodilyNeedState, to: BodilyNeedState) -> i16 {
+    let change = i64::try_from(total_bodily_pressure(from)).expect("pressure fits i64")
+        - i64::try_from(total_bodily_pressure(to)).expect("pressure fits i64");
+    if change == 0 {
+        return 0;
+    }
+    let magnitude = (change.unsigned_abs().saturating_add(1_023) / 1_024).min(32);
+    let signed = i16::try_from(magnitude).expect("reward magnitude is at most 32");
+    if change.is_positive() {
+        signed
+    } else {
+        -signed
+    }
+}
+
+fn learned_candidate_weight(base: u32, value: Option<ActionValueState>) -> u32 {
+    let Some(value) = value else {
+        return base;
+    };
+    if value.value > 0 {
+        base.saturating_add(u32::from(value.value.unsigned_abs()).div_ceil(8))
+    } else if value.value < 0 {
+        base.saturating_sub(u32::from(value.value.unsigned_abs()).div_ceil(16))
+            .max(1)
+    } else {
+        base
+    }
+}
+
 fn decimal_to_millicelsius(value: i64, decimal_places: u8) -> Result<i64, EngineError> {
     if decimal_places <= 3 {
         let factor = 10_i128.pow(u32::from(3 - decimal_places));
@@ -306,6 +350,10 @@ pub struct OrganismState {
     bodily_regulated_at: Option<SimTick>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     perception_memory: Vec<PerceptionMemoryEntry>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    action_values: Vec<ActionValueState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    action_values_updated_at: Option<SimTick>,
     death: Option<DeathRecord>,
 }
 
@@ -427,6 +475,13 @@ impl OrganismState {
     #[must_use]
     pub const fn physiological_regulation(&self) -> Option<&PhysiologicalRegulationCommitment> {
         self.physiological_regulation.as_ref()
+    }
+
+    fn action_value(&self, action_kind: PrimitiveActionKind) -> Option<ActionValueState> {
+        self.action_values
+            .binary_search_by_key(&action_kind, |entry| entry.action_kind)
+            .ok()
+            .map(|index| self.action_values[index])
     }
 
     fn age_ticks(&self) -> Option<u64> {
@@ -988,6 +1043,15 @@ impl EngineState {
             },
         ]);
 
+        if self.uses_action_learning_driver() {
+            for candidate in &mut candidates {
+                candidate.weight = learned_candidate_weight(
+                    candidate.weight,
+                    organism.action_value(candidate.action.kind),
+                );
+            }
+        }
+
         Ok(candidates)
     }
 
@@ -1000,7 +1064,11 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: 1,
+            policy_version: if self.uses_action_learning_driver() {
+                2
+            } else {
+                1
+            },
             world_seed: self.manifest.seed.get(),
             organism_id: organism.organism_id,
             tick: self.tick.checked_next()?,
@@ -1029,6 +1097,33 @@ impl EngineState {
         let mut action = selected.action;
         action.intensity = u16::from(digest.as_bytes()[8] % 4) + 1;
         Ok(action)
+    }
+
+    fn next_action_value(
+        &self,
+        organism: &OrganismState,
+        action_kind: PrimitiveActionKind,
+        from: BodilyNeedState,
+        to: BodilyNeedState,
+    ) -> Result<(Option<ActionValueState>, ActionValueState), EngineError> {
+        let prior = organism.action_value(action_kind);
+        let observations =
+            prior.map_or(Ok(1), |prior| {
+                prior.observations.checked_add(1).ok_or(
+                    EngineError::ActionValueObservationOverflow(organism.organism_id),
+                )
+            })?;
+        let prior_value = prior.map_or(0_i32, |prior| i32::from(prior.value));
+        let value = prior_value
+            .saturating_add(i32::from(action_outcome_reward(from, to)))
+            .clamp(i32::from(ACTION_VALUE_MIN), i32::from(ACTION_VALUE_MAX));
+        let next = ActionValueState {
+            value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+            action_kind,
+            observations,
+            value: i16::try_from(value).expect("bounded action value fits i16"),
+        };
+        Ok((prior, next))
     }
 
     fn next_bodily_regulation(
@@ -1687,6 +1782,19 @@ impl EngineState {
                     from: organism.bodily_regulation,
                     to,
                 });
+                if self.uses_action_learning_driver() {
+                    let (from, to_value) = self.next_action_value(
+                        organism,
+                        action.kind,
+                        organism.bodily_regulation.needs,
+                        to.needs,
+                    )?;
+                    events.push(DomainEvent::OrganismActionValueChanged {
+                        organism_id: organism.organism_id,
+                        from,
+                        to: to_value,
+                    });
+                }
                 if let Some(cause) = Self::regulation_death_cause(to.needs) {
                     deaths.push(DomainEvent::OrganismDied {
                         organism_id: organism.organism_id,
@@ -1826,6 +1934,10 @@ impl EngineState {
         self.manifest.ruleset_version >= MATERIAL_INGESTION_RULESET_VERSION
     }
 
+    fn uses_action_learning_driver(&self) -> bool {
+        self.manifest.ruleset_version >= ACTION_LEARNING_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -1894,6 +2006,7 @@ impl EngineState {
             DomainEvent::OrganismDied { organism_id, .. }
             | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
             | DomainEvent::OrganismNeedsChanged { organism_id, .. }
+            | DomainEvent::OrganismActionValueChanged { organism_id, .. }
             | DomainEvent::OrganismPerceived { organism_id, .. }
             | DomainEvent::OrganismActed { organism_id, .. } => self
                 .organisms
@@ -1923,6 +2036,18 @@ impl EngineState {
         let tick_advanced = events
             .iter()
             .any(|event| matches!(event, DomainEvent::TickAdvanced { .. }));
+        let tick_advance_index = events
+            .iter()
+            .position(|event| matches!(event, DomainEvent::TickAdvanced { .. }));
+        if self.uses_action_learning_driver()
+            && !tick_advanced
+            && let Some(organism_id) = events.iter().find_map(|event| match event {
+                DomainEvent::OrganismActed { organism_id, .. } => Some(*organism_id),
+                _ => None,
+            })
+        {
+            return Err(EngineError::InvalidActionValueTransition(organism_id));
+        }
         for (index, event) in events.iter().enumerate() {
             let DomainEvent::MaterialOralPortionTransferred {
                 object_id,
@@ -1961,11 +2086,105 @@ impl EngineState {
                 return Err(EngineError::InvalidMaterialOralTransfer(*object_id));
             }
         }
+        for (index, event) in events.iter().enumerate() {
+            if let DomainEvent::OrganismActionValueChanged {
+                organism_id,
+                from,
+                to,
+            } = event
+            {
+                if !self.uses_action_learning_driver() || !tick_advanced {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                }
+                let matching_actions = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(prior_index, prior)| {
+                        matches!(
+                            prior,
+                            DomainEvent::OrganismActed { organism_id: actor_id, action }
+                                if actor_id == organism_id && action.kind == to.action_kind
+                        )
+                        .then_some(prior_index)
+                    })
+                    .collect::<Vec<_>>();
+                let matching_needs = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(prior_index, prior)| {
+                        matches!(
+                            prior,
+                            DomainEvent::OrganismNeedsChanged { organism_id: actor_id, .. }
+                                if actor_id == organism_id
+                        )
+                        .then_some(prior_index)
+                    })
+                    .collect::<Vec<_>>();
+                if matching_actions.len() != 1 || matching_needs.len() != 1 {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                }
+                let action_index = matching_actions[0];
+                let needs_index = matching_needs[0];
+                let Some(tick_index) = tick_advance_index else {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                };
+                if !(tick_index < action_index && action_index < needs_index && needs_index < index)
+                {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                }
+                let DomainEvent::OrganismActed { action, .. } = &events[action_index] else {
+                    unreachable!("action index was selected from action events")
+                };
+                let DomainEvent::OrganismNeedsChanged {
+                    from: body_from,
+                    to: body_to,
+                    ..
+                } = &events[needs_index]
+                else {
+                    unreachable!("needs index was selected from body transitions")
+                };
+                let organism = self
+                    .organisms
+                    .get(organism_id)
+                    .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                let expected =
+                    self.next_action_value(organism, action.kind, body_from.needs, body_to.needs)?;
+                if expected.0 != *from || expected.1 != *to {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                }
+            }
+            if self.uses_action_learning_driver()
+                && tick_advanced
+                && let DomainEvent::OrganismActed {
+                    organism_id,
+                    action,
+                } = event
+            {
+                let matching_updates = events[index + 1..]
+                    .iter()
+                    .filter(|later| {
+                        matches!(
+                            later,
+                            DomainEvent::OrganismActionValueChanged {
+                                organism_id: actor_id,
+                                to,
+                                ..
+                            } if actor_id == organism_id && to.action_kind == action.kind
+                        )
+                    })
+                    .count();
+                if matching_updates != 1 {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                }
+            }
+        }
         Ok(())
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_material_ingestion_driver() {
+        if self.uses_action_learning_driver() {
+            ACTION_LEARNING_EVENT_SCHEMA_VERSION
+        } else if self.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
         } else if self.uses_deterministic_policy_driver() {
             DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
@@ -2022,7 +2241,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_material_ingestion_driver() {
+        if self.uses_action_learning_driver() {
+            ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_deterministic_policy_driver() {
             DETERMINISTIC_POLICY_STATE_HASH_SCHEMA_VERSION
@@ -2161,6 +2382,8 @@ impl EngineState {
                     bodily_regulation: BodilyRegulationState::default(),
                     bodily_regulated_at: None,
                     perception_memory: Vec::new(),
+                    action_values: Vec::new(),
+                    action_values_updated_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -2363,6 +2586,8 @@ impl EngineState {
                     bodily_regulation: BodilyRegulationState::default(),
                     bodily_regulated_at: None,
                     perception_memory: Vec::new(),
+                    action_values: Vec::new(),
+                    action_values_updated_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -2510,6 +2735,44 @@ impl EngineState {
                     .expect("body presence checked above");
                 organism.bodily_regulation = *to;
                 organism.bodily_regulated_at = Some(self.tick);
+            }
+            DomainEvent::OrganismActionValueChanged {
+                organism_id,
+                from,
+                to,
+            } => {
+                if !self.uses_action_learning_driver() {
+                    return Err(EngineError::ActionLearningUnsupported);
+                }
+                self.require_living_organism(*organism_id)?;
+                to.validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                let organism = self
+                    .organisms
+                    .get_mut(organism_id)
+                    .expect("living organism presence checked");
+                let expected_observations = match from {
+                    Some(from) => from
+                        .observations
+                        .checked_add(1)
+                        .ok_or(EngineError::ActionValueObservationOverflow(*organism_id))?,
+                    None => 1,
+                };
+                if organism.action_values_updated_at == Some(self.tick)
+                    || organism.action_value(to.action_kind) != *from
+                    || to.observations != expected_observations
+                    || from.is_some_and(|from| from.action_kind != to.action_kind)
+                {
+                    return Err(EngineError::InvalidActionValueTransition(*organism_id));
+                }
+                match organism
+                    .action_values
+                    .binary_search_by_key(&to.action_kind, |entry| entry.action_kind)
+                {
+                    Ok(index) => organism.action_values[index] = *to,
+                    Err(index) => organism.action_values.insert(index, *to),
+                }
+                organism.action_values_updated_at = Some(self.tick);
             }
             DomainEvent::CelestialStateRecorded { state } => {
                 if !self.uses_celestial_driver() {
@@ -2795,6 +3058,35 @@ impl EngineState {
             {
                 return Err(EngineError::InvalidPerceptionMemory(organism.organism_id));
             }
+            if self.uses_action_learning_driver() {
+                if organism
+                    .action_values
+                    .windows(2)
+                    .any(|pair| pair[0].action_kind >= pair[1].action_kind)
+                    || organism
+                        .action_values
+                        .iter()
+                        .any(|entry| entry.validate().is_err())
+                    || organism
+                        .action_values_updated_at
+                        .is_some_and(|updated_at| updated_at > self.tick)
+                {
+                    return Err(EngineError::InvalidActionValueState(organism.organism_id));
+                }
+                if organism.is_alive()
+                    && self.tick != SimTick::ZERO
+                    && organism.born_at != Some(self.tick)
+                    && organism.action_values_updated_at != Some(self.tick)
+                {
+                    return Err(EngineError::MissingActionValueTransition(
+                        organism.organism_id,
+                    ));
+                }
+            } else if !organism.action_values.is_empty()
+                || organism.action_values_updated_at.is_some()
+            {
+                return Err(EngineError::ActionLearningUnsupported);
+            }
             if organism
                 .parent_ids
                 .windows(2)
@@ -2915,7 +3207,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_material_ingestion_driver() {
+        let snapshot_schema_version = if state.uses_action_learning_driver() {
+            ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_deterministic_policy_driver() {
             DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
@@ -2983,12 +3277,15 @@ impl Snapshot {
                 | BODILY_REGULATION_SNAPSHOT_SCHEMA_VERSION
                 | DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
+                | ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_material_ingestion_driver() {
+        let expected_schema_version = if self.state.uses_action_learning_driver() {
+            ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_deterministic_policy_driver() {
             DETERMINISTIC_POLICY_SNAPSHOT_SCHEMA_VERSION
@@ -3167,7 +3464,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_material_ingestion_driver() {
+        let expected_schema = if state.uses_action_learning_driver() {
+            ACTION_LEARNING_EVENT_SCHEMA_VERSION
+        } else if state.uses_material_ingestion_driver() {
             MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
         } else if state.uses_deterministic_policy_driver() {
             DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
@@ -3212,7 +3511,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == ACTION_LEARNING_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == ACTION_LEARNING_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
         } else if expected_schema == DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
@@ -3389,6 +3690,16 @@ pub enum EngineError {
     DuplicateScheduledAction(EntityId),
     #[error("organism {0} emitted no scheduled action before bodily regulation")]
     MissingScheduledAction(EntityId),
+    #[error("action learning is unsupported by this ruleset")]
+    ActionLearningUnsupported,
+    #[error("organism {0} has an invalid action-value state")]
+    InvalidActionValueState(EntityId),
+    #[error("organism {0} has an invalid or duplicate action-value transition")]
+    InvalidActionValueTransition(EntityId),
+    #[error("organism {0} is missing its action-value transition for this tick")]
+    MissingActionValueTransition(EntityId),
+    #[error("organism {0} action-value observation count overflowed")]
+    ActionValueObservationOverflow(EntityId),
     #[error("ruleset-three ticks require one source-backed celestial state")]
     CelestialStateRequired,
     #[error("this ruleset does not accept source-backed celestial states")]
@@ -5171,6 +5482,251 @@ mod tests {
             Err(EngineError::BatchEventSchemaMismatch {
                 expected: MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
                 actual: DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION,
+            })
+        ));
+    }
+
+    #[test]
+    fn ruleset_thirteen_learns_only_from_bodily_pressure_and_replays() {
+        let relieved = BodilyNeedState {
+            energy_deficit: 50_000,
+            hydration_deficit: 40_000,
+            fatigue: 10_000,
+            ..BodilyNeedState::default()
+        };
+        let after_relief = BodilyNeedState {
+            energy_deficit: 20_000,
+            hydration_deficit: 10_000,
+            fatigue: 11_000,
+            ..BodilyNeedState::default()
+        };
+        assert_eq!(action_outcome_reward(relieved, after_relief), 32);
+        assert_eq!(action_outcome_reward(after_relief, relieved), -32);
+        assert_eq!(
+            learned_candidate_weight(
+                2,
+                Some(ActionValueState {
+                    value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                    action_kind: PrimitiveActionKind::Swallow,
+                    observations: 2,
+                    value: 64,
+                })
+            ),
+            10
+        );
+        assert_eq!(
+            learned_candidate_weight(
+                2,
+                Some(ActionValueState {
+                    value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                    action_kind: PrimitiveActionKind::Swallow,
+                    observations: 2,
+                    value: -64,
+                })
+            ),
+            1
+        );
+
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x117));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012822),
+            ACTION_LEARNING_RULESET_VERSION,
+        );
+        let person = regulated_full_earth_person(world_id, 0x501, 10_000_000, 1_000_000);
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("learning genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("learning genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            ACTION_LEARNING_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.state_hash_schema_version(),
+            ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION
+        );
+
+        let organism = running
+            .organisms
+            .get(&person.organism_id)
+            .expect("learning organism");
+        let (no_prior, first_swallow_value) = running
+            .next_action_value(
+                organism,
+                PrimitiveActionKind::Swallow,
+                relieved,
+                after_relief,
+            )
+            .expect("first action outcome");
+        assert_eq!(no_prior, None);
+        assert_eq!(first_swallow_value.observations, 1);
+        assert_eq!(first_swallow_value.value, 32);
+        let (_, first_rest_value) = running
+            .next_action_value(organism, PrimitiveActionKind::Rest, relieved, after_relief)
+            .expect("same bodily outcome for another primitive act");
+        assert_eq!(
+            first_swallow_value.value, first_rest_value.value,
+            "the update must not encode which action is supposed to solve a need"
+        );
+
+        let unscheduled_action = running
+            .plan_action(
+                person.organism_id,
+                PrimitiveAction {
+                    kind: PrimitiveActionKind::Orient,
+                    target_id: None,
+                    intensity: 1,
+                },
+            )
+            .expect("primitive action plan");
+        assert!(matches!(
+            running.commit(
+                EventSequence::new(2),
+                genesis.batch_hash,
+                unscheduled_action
+            ),
+            Err(EngineError::InvalidActionValueTransition(id)) if id == person.organism_id
+        ));
+
+        let expected_action = running
+            .deterministic_policy_action(organism, 1)
+            .expect("learning policy action");
+        let events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(300),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("learning tick");
+        let action_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    DomainEvent::OrganismActed { organism_id, action }
+                        if *organism_id == person.organism_id && *action == expected_action
+                )
+            })
+            .expect("scheduled primitive action");
+        let needs_index = events
+            .iter()
+            .position(|event| {
+                matches!(
+                    event,
+                    DomainEvent::OrganismNeedsChanged { organism_id, .. }
+                        if *organism_id == person.organism_id
+                )
+            })
+            .expect("same-tick body outcome");
+        let learned = events
+            .iter()
+            .enumerate()
+            .find_map(|(index, event)| match event {
+                DomainEvent::OrganismActionValueChanged {
+                    organism_id,
+                    from: None,
+                    to,
+                } if *organism_id == person.organism_id => Some((index, *to)),
+                _ => None,
+            })
+            .expect("same-tick action-value observation");
+        assert!(action_index < needs_index && needs_index < learned.0);
+        assert_eq!(learned.1.action_kind, expected_action.kind);
+        assert_eq!(learned.1.observations, 1);
+        let mut reordered = events.clone();
+        reordered.swap(action_index, needs_index);
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, reordered),
+            Err(EngineError::InvalidActionValueTransition(id)) if id == person.organism_id
+        ));
+        let body_to = events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::OrganismNeedsChanged { to, .. } => Some(*to),
+                _ => None,
+            })
+            .expect("body transition");
+        assert_eq!(
+            learned.1.value,
+            action_outcome_reward(BodilyNeedState::default(), body_to.needs)
+        );
+
+        let mut fabricated = events.clone();
+        let fabricated_value = fabricated
+            .iter_mut()
+            .find_map(|event| match event {
+                DomainEvent::OrganismActionValueChanged {
+                    organism_id, to, ..
+                } if *organism_id == person.organism_id => Some(&mut to.value),
+                _ => None,
+            })
+            .expect("fabricated action-value target");
+        *fabricated_value = if *fabricated_value < ACTION_VALUE_MAX {
+            *fabricated_value + 1
+        } else {
+            *fabricated_value - 1
+        };
+        assert!(matches!(
+            running.commit(EventSequence::new(2), genesis.batch_hash, fabricated),
+            Err(EngineError::InvalidActionValueTransition(id)) if id == person.organism_id
+        ));
+
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, events)
+            .expect("learning tick commit");
+        let learned_organism = after_tick
+            .organisms
+            .get(&person.organism_id)
+            .expect("learned organism");
+        assert_eq!(
+            learned_organism.action_value(expected_action.kind),
+            Some(learned.1)
+        );
+        assert_eq!(
+            learned_organism.action_values_updated_at,
+            Some(SimTick::new(1))
+        );
+        let snapshot = Snapshot::new(after_tick.clone(), tick.sequence, tick.batch_hash)
+            .expect("learning snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("learning snapshot verifies");
+        assert_eq!(
+            replay(manifest.clone(), &[genesis.clone(), tick])
+                .expect("learning replay")
+                .state,
+            after_tick
+        );
+
+        let downgraded = EventBatch::new(
+            MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            ACTION_LEARNING_RULESET_VERSION,
+            Digest::ZERO,
+            vec![DomainEvent::WorldStarted {
+                manifest: manifest.clone(),
+            }],
+            Digest::sha256(b"downgraded learning state"),
+        )
+        .expect("internally valid pre-learning batch");
+        assert!(matches!(
+            replay(manifest, &[downgraded]),
+            Err(EngineError::BatchEventSchemaMismatch {
+                expected: ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+                actual: MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
             })
         ));
     }

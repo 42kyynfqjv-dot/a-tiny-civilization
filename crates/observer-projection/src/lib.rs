@@ -129,6 +129,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismMoved { .. }
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::OrganismNeedsChanged { .. }
+                | DomainEvent::OrganismActionValueChanged { .. }
                 | DomainEvent::CelestialStateRecorded { .. } => {
                     return None;
                 }
@@ -323,6 +324,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismMoved { .. }
             | DomainEvent::OrganismAgeAdvanced { .. }
             | DomainEvent::OrganismNeedsChanged { .. }
+            | DomainEvent::OrganismActionValueChanged { .. }
             | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
@@ -550,8 +552,10 @@ mod tests {
     use super::*;
     use uuid::Uuid;
     use world_domain::{
+        ACTION_LEARNING_EVENT_SCHEMA_VERSION, ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState,
         BODILY_REGULATION_EVENT_SCHEMA_VERSION, BodilyNeedState, BodilyRegulationState, Digest,
-        EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, WorldManifest, WorldSeed,
+        EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, PrimitiveActionKind,
+        WorldManifest, WorldSeed,
     };
 
     fn species() -> SpeciesIdentity {
@@ -760,6 +764,33 @@ mod tests {
             Digest::sha256(b"private oral transfer state"),
         )
         .expect("valid internal oral-transfer event");
+        assert!(project_public_timeline(&batch).is_empty());
+        assert!(project_public_organisms(&batch).is_empty());
+    }
+
+    #[test]
+    fn learned_action_value_is_private_internal_state() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(36));
+        let batch = EventBatch::new(
+            ACTION_LEARNING_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(6),
+            SimTick::new(5),
+            13,
+            Digest::ZERO,
+            vec![DomainEvent::OrganismActionValueChanged {
+                organism_id: EntityId::from_uuid(Uuid::from_u128(37)),
+                from: None,
+                to: ActionValueState {
+                    value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                    action_kind: PrimitiveActionKind::Swallow,
+                    observations: 1,
+                    value: 12,
+                },
+            }],
+            Digest::sha256(b"private learned action value"),
+        )
+        .expect("valid internal learning event");
         assert!(project_public_timeline(&batch).is_empty());
         assert!(project_public_organisms(&batch).is_empty());
     }
