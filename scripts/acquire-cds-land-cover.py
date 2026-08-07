@@ -15,6 +15,9 @@ DATASET = "satellite-land-cover"
 VERSION = "v2_1_1"
 YEAR = "2022"
 TARGET_NAME = "copernicus-satellite-land-cover-v2.1.1-2022.zip"
+EXPECTED_ARCHIVE_MEMBERS = (
+    "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1.nc",
+)
 
 
 def request() -> dict[str, object]:
@@ -28,6 +31,11 @@ def validate_response(path: Path) -> tuple[str, ...]:
             if not members:
                 raise ValueError("land-cover response ZIP is empty")
             names = tuple(member.filename for member in members)
+            if names != EXPECTED_ARCHIVE_MEMBERS:
+                raise ValueError(
+                    "archive members changed from the fixed land-cover schema: "
+                    f"expected {EXPECTED_ARCHIVE_MEMBERS}, got {names}"
+                )
             for member in members:
                 relative = PurePosixPath(member.filename)
                 if (

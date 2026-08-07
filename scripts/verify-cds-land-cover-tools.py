@@ -43,8 +43,13 @@ def main() -> int:
     with tempfile.TemporaryDirectory(prefix="atc-land-cover-") as directory:
         root = Path(directory)
         valid = root / "valid.zip"
-        write_archive(valid, {"global-land-cover-2022.nc": b"CDF\x01evidence"})
-        assert module.validate_response(valid) == ("global-land-cover-2022.nc",)
+        expected_member = "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1.nc"
+        write_archive(valid, {expected_member: b"CDF\x01evidence"})
+        assert module.validate_response(valid) == (expected_member,)
+
+        changed_schema = root / "changed-schema.zip"
+        write_archive(changed_schema, {"global-land-cover-2022.nc": b"CDF\x01evidence"})
+        expect_rejected(module, changed_schema)
 
         unsafe = root / "unsafe.zip"
         write_archive(unsafe, {"../escaped.nc": b"not allowed"})
