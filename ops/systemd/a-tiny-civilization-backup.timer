@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily A Tiny Civilization encrypted PostgreSQL base backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00 UTC
+RandomizedDelaySec=20m
+Persistent=true
+Unit=a-tiny-civilization-backup.service
+
+[Install]
+WantedBy=timers.target
+

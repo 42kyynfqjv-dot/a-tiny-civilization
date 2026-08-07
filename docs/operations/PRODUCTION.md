@@ -89,6 +89,29 @@ Verify locally that `http://127.0.0.1:3000/` and `http://127.0.0.1:8080/health/r
 work, then verify only the intended hostname through Cloudflare. Confirm that direct
 public connections to PostgreSQL and the observer API fail.
 
+## Scheduled backup checks
+
+After the first successful encrypted base backup, install the checked-in systemd units
+on the host. They assume the repository is deployed at `/opt/a-tiny-civilization` and
+the root-readable secret environment is `/etc/a-tiny-civilization/production.env`;
+change both paths in the copied unit files if the deployment uses another location.
+
+```bash
+sudo install -d -m 0755 /etc/systemd/system
+sudo install -m 0644 ops/systemd/a-tiny-civilization-backup.service /etc/systemd/system/
+sudo install -m 0644 ops/systemd/a-tiny-civilization-backup.timer /etc/systemd/system/
+sudo install -m 0644 ops/systemd/a-tiny-civilization-backup-status.service /etc/systemd/system/
+sudo install -m 0644 ops/systemd/a-tiny-civilization-backup-status.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now a-tiny-civilization-backup.timer a-tiny-civilization-backup-status.timer
+systemctl list-timers 'a-tiny-civilization-*'
+```
+
+The base backup runs daily with a bounded random delay; freshness and WAL archival are
+checked hourly. A failed unit is intentionally visible in `systemctl` and the journal
+rather than being silently retried as if the backup were current. Configure host-level
+alerting to notify an operator for either failed service.
+
 ## Required gates before public canonical-world launch
 
 - a verified canonical full-Earth scientific bundle and unpreviewed seed procedure;

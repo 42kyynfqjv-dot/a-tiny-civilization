@@ -1,0 +1,11 @@
+[Unit]
+Description=Hourly A Tiny Civilization PostgreSQL backup freshness check
+
+[Timer]
+OnCalendar=hourly
+RandomizedDelaySec=5m
+Persistent=true
+Unit=a-tiny-civilization-backup-status.service
+
+[Install]
+WantedBy=timers.target
