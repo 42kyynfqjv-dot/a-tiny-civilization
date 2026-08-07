@@ -20,11 +20,12 @@ use world_domain::{
     CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, DeathCause, Digest,
     DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
     EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
-    LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity,
-    MetabolicRateCommitment, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading, S2CellId,
-    S2CellIdError, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick,
-    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    LEGACY_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
+    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MaterialIdentity, MetabolicRateCommitment,
+    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
+    PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
+    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
@@ -50,6 +51,8 @@ pub const RESOLVED_MOVEMENT_RULESET_VERSION: u32 = 6;
 /// Ruleset seven makes bounded direct perceptions durable internal state. It is the
 /// substrate for a later deterministic policy and is not an observer projection.
 pub const PERSISTENT_PERCEPTION_RULESET_VERSION: u32 = 7;
+/// Ruleset eight resolves neutral grasp and release actions against local material.
+pub const MATERIAL_HANDLING_RULESET_VERSION: u32 = 8;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -60,6 +63,7 @@ pub const CELESTIAL_DRIVER_SNAPSHOT_SCHEMA_VERSION: u16 = 7;
 pub const BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 8;
 pub const PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION: u16 = 9;
 pub const MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION: u16 = 10;
+pub const MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION: u16 = 11;
 /// The first deterministic execution phase: every living embodied organism receives
 /// one body/ecology-process slot per tick. Ruleset-specific processes can later emit
 /// physical state changes through this fixed barrier without changing its ordering.
@@ -75,6 +79,7 @@ const CELESTIAL_DRIVER_STATE_HASH_SCHEMA_VERSION: u16 = 7;
 const BODY_PROVENANCE_STATE_HASH_SCHEMA_VERSION: u16 = 8;
 const PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION: u16 = 9;
 const MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION: u16 = 10;
+const MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION: u16 = 11;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -162,6 +167,8 @@ pub struct MaterialInstanceState {
     object_id: EntityId,
     material: MaterialIdentity,
     embodied_patch: S2CellId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    held_by: Option<EntityId>,
 }
 
 impl MaterialInstanceState {
@@ -178,6 +185,11 @@ impl MaterialInstanceState {
     #[must_use]
     pub const fn material(&self) -> &MaterialIdentity {
         &self.material
+    }
+
+    #[must_use]
+    pub const fn held_by(&self) -> Option<EntityId> {
+        self.held_by
     }
 }
 
@@ -494,10 +506,33 @@ impl EngineState {
         action
             .validate()
             .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
-        Ok(vec![DomainEvent::OrganismActed {
+        let mut events = vec![DomainEvent::OrganismActed {
             organism_id,
-            action,
-        }])
+            action: action.clone(),
+        }];
+        if self.uses_material_handling_driver() {
+            match action.kind {
+                PrimitiveActionKind::Grasp => {
+                    let object_id = action.target_id.ok_or(EngineError::MissingActionTarget)?;
+                    self.validate_grasp(organism_id, object_id)?;
+                    events.push(DomainEvent::MaterialInstanceHeld {
+                        object_id,
+                        holder_id: organism_id,
+                    });
+                }
+                PrimitiveActionKind::Release => {
+                    let object_id = action.target_id.ok_or(EngineError::MissingActionTarget)?;
+                    let embodied_patch = self.validate_release(organism_id, object_id)?;
+                    events.push(DomainEvent::MaterialInstanceReleased {
+                        object_id,
+                        holder_id: organism_id,
+                        embodied_patch,
+                    });
+                }
+                _ => {}
+            }
+        }
+        Ok(events)
     }
 
     /// Record a resolved relocation between two full-Earth embodied patches. The
@@ -865,6 +900,10 @@ impl EngineState {
         self.manifest.ruleset_version >= PERSISTENT_PERCEPTION_RULESET_VERSION
     }
 
+    fn uses_material_handling_driver(&self) -> bool {
+        self.manifest.ruleset_version >= MATERIAL_HANDLING_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -918,6 +957,12 @@ impl EngineState {
             DomainEvent::MaterialInstanceInitialized { embodied_patch, .. } => {
                 Some(*embodied_patch)
             }
+            DomainEvent::MaterialInstanceHeld { holder_id, .. } => self
+                .organisms
+                .get(holder_id)
+                .or_else(|| resulting_state.organisms.get(holder_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::MaterialInstanceReleased { embodied_patch, .. } => Some(*embodied_patch),
             DomainEvent::OrganismMoved { to_patch, .. } => Some(*to_patch),
             DomainEvent::OrganismDied { organism_id, .. }
             | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
@@ -947,7 +992,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if !self.material_instances.is_empty() {
+        if self.uses_material_handling_driver() {
+            MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
+        } else if !self.material_instances.is_empty() {
             MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
         } else if self.has_metabolic_rate_commitments() {
             BODY_PROVENANCE_EVENT_SCHEMA_VERSION
@@ -994,7 +1041,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if !self.material_instances.is_empty() {
+        if self.uses_material_handling_driver() {
+            MATERIAL_HANDLING_STATE_HASH_SCHEMA_VERSION
+        } else if !self.material_instances.is_empty() {
             MATERIAL_INSTANCE_STATE_HASH_SCHEMA_VERSION
         } else if self.has_perception_memory() {
             PERCEPTION_MEMORY_STATE_HASH_SCHEMA_VERSION
@@ -1122,12 +1171,41 @@ impl EngineState {
                             object_id: *object_id,
                             material: material.clone(),
                             embodied_patch: *embodied_patch,
+                            held_by: None,
                         },
                     )
                     .is_some()
                 {
                     return Err(EngineError::DuplicateMaterialInstance(*object_id));
                 }
+            }
+            DomainEvent::MaterialInstanceHeld {
+                object_id,
+                holder_id,
+            } => {
+                self.require_living_organism(*holder_id)?;
+                self.validate_grasp(*holder_id, *object_id)?;
+                self.material_instances
+                    .get_mut(object_id)
+                    .expect("validated material instance")
+                    .held_by = Some(*holder_id);
+            }
+            DomainEvent::MaterialInstanceReleased {
+                object_id,
+                holder_id,
+                embodied_patch,
+            } => {
+                self.require_living_organism(*holder_id)?;
+                let expected_patch = self.validate_release(*holder_id, *object_id)?;
+                if *embodied_patch != expected_patch {
+                    return Err(EngineError::InvalidMaterialReleasePatch(*object_id));
+                }
+                let instance = self
+                    .material_instances
+                    .get_mut(object_id)
+                    .expect("validated material instance");
+                instance.held_by = None;
+                instance.embodied_patch = *embodied_patch;
             }
             DomainEvent::TickAdvanced { from, to } => {
                 self.require_status(WorldStatus::Running)?;
@@ -1408,6 +1486,45 @@ impl EngineState {
         Ok(())
     }
 
+    fn validate_grasp(&self, holder_id: EntityId, object_id: EntityId) -> Result<(), EngineError> {
+        let holder_patch = self
+            .organisms
+            .get(&holder_id)
+            .and_then(|holder| holder.embodied_patch)
+            .ok_or(EngineError::MissingEmbodiedPatch(holder_id))?;
+        let instance = self
+            .material_instances
+            .get(&object_id)
+            .ok_or(EngineError::UnknownMaterialInstance(object_id))?;
+        if instance.held_by.is_some() {
+            return Err(EngineError::MaterialInstanceAlreadyHeld(object_id));
+        }
+        if instance.embodied_patch != holder_patch {
+            return Err(EngineError::NonLocalMaterialAction(object_id));
+        }
+        Ok(())
+    }
+
+    fn validate_release(
+        &self,
+        holder_id: EntityId,
+        object_id: EntityId,
+    ) -> Result<S2CellId, EngineError> {
+        let holder_patch = self
+            .organisms
+            .get(&holder_id)
+            .and_then(|holder| holder.embodied_patch)
+            .ok_or(EngineError::MissingEmbodiedPatch(holder_id))?;
+        let instance = self
+            .material_instances
+            .get(&object_id)
+            .ok_or(EngineError::UnknownMaterialInstance(object_id))?;
+        if instance.held_by != Some(holder_id) {
+            return Err(EngineError::MaterialInstanceNotHeldByActor(object_id));
+        }
+        Ok(holder_patch)
+    }
+
     fn validate(&self) -> Result<(), EngineError> {
         if self.manifest.ruleset_version == 0 {
             return Err(EngineError::ZeroRulesetVersion);
@@ -1528,7 +1645,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if !state.material_instances.is_empty() {
+        let snapshot_schema_version = if state.uses_material_handling_driver() {
+            MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
+        } else if !state.material_instances.is_empty() {
             MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
         } else if state.has_perception_memory() {
             PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
@@ -1581,12 +1700,15 @@ impl Snapshot {
                 | BODY_PROVENANCE_SNAPSHOT_SCHEMA_VERSION
                 | PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
+                | MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if !self.state.material_instances.is_empty() {
+        let expected_schema_version = if self.state.uses_material_handling_driver() {
+            MATERIAL_HANDLING_SNAPSHOT_SCHEMA_VERSION
+        } else if !self.state.material_instances.is_empty() {
             MATERIAL_INSTANCE_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.has_perception_memory() {
             PERCEPTION_MEMORY_SNAPSHOT_SCHEMA_VERSION
@@ -1748,8 +1870,18 @@ fn replay_from_cursor(
                 DomainEvent::MaterialInstanceInitialized { .. }
             )
         });
-        let expected_schema = if !state.material_instances.is_empty() || batch_has_material_instance
+        let batch_has_material_handling = batch.events.iter().any(|record| {
+            matches!(
+                &record.event,
+                DomainEvent::MaterialInstanceHeld { .. }
+                    | DomainEvent::MaterialInstanceReleased { .. }
+            )
+        });
+        let expected_schema = if state.uses_material_handling_driver()
+            || batch_has_material_handling
         {
+            MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
+        } else if !state.material_instances.is_empty() || batch_has_material_instance {
             MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
         } else if state.has_metabolic_rate_commitments() || batch_has_metabolic_rate_commitment {
             BODY_PROVENANCE_EVENT_SCHEMA_VERSION
@@ -1784,7 +1916,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
         } else if expected_schema == BODY_PROVENANCE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == BODY_PROVENANCE_EVENT_SCHEMA_VERSION
@@ -1888,6 +2022,18 @@ pub enum EngineError {
     DuplicateOrganism(EntityId),
     #[error("material instance {0} already exists")]
     DuplicateMaterialInstance(EntityId),
+    #[error("material instance {0} does not exist")]
+    UnknownMaterialInstance(EntityId),
+    #[error("a grasp or release action requires a material target")]
+    MissingActionTarget,
+    #[error("material instance {0} is already held")]
+    MaterialInstanceAlreadyHeld(EntityId),
+    #[error("material instance {0} is not at the actor's current patch")]
+    NonLocalMaterialAction(EntityId),
+    #[error("material instance {0} is not held by the acting organism")]
+    MaterialInstanceNotHeldByActor(EntityId),
+    #[error("material instance {0} release patch does not match the holder")]
+    InvalidMaterialReleasePatch(EntityId),
     #[error("organism map key {0} does not match its value")]
     OrganismKeyMismatch(EntityId),
     #[error("material instance map key {0} does not match its value")]
@@ -2529,6 +2675,95 @@ mod tests {
         snapshot.verify_integrity().expect("snapshot verifies");
         let replayed = replay(manifest, &[batch]).expect("replay material event");
         assert_eq!(replayed.state, running);
+    }
+
+    #[test]
+    fn material_handling_requires_a_local_object_and_replays() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x108));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(7640891576956012817),
+            MATERIAL_HANDLING_RULESET_VERSION,
+        );
+        let patch: S2CellId = "0000000000004000".parse().expect("L23 patch");
+        let mut person = initial_person(world_id);
+        person.embodied_patch = Some(patch);
+        let object_id = EntityId::deterministic(world_id, b"handled-water-instance");
+        let initial = EngineState::new(manifest.clone());
+        let mut genesis_events = initial
+            .plan_configured_genesis(full_earth_configuration(), vec![person.clone()])
+            .expect("genesis plan");
+        genesis_events.push(DomainEvent::MaterialInstanceInitialized {
+            object_id,
+            material: MaterialIdentity::new(
+                "pubchem",
+                "962",
+                "water",
+                "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+            )
+            .expect("citable material"),
+            embodied_patch: patch,
+        });
+        let (after_genesis, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("material genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
+        );
+
+        let grasp = after_genesis
+            .plan_action(
+                person.organism_id,
+                PrimitiveAction {
+                    kind: PrimitiveActionKind::Grasp,
+                    target_id: Some(object_id),
+                    intensity: 1,
+                },
+            )
+            .expect("local grasp plan");
+        assert!(matches!(
+            grasp.as_slice(),
+            [
+                DomainEvent::OrganismActed { .. },
+                DomainEvent::MaterialInstanceHeld { .. }
+            ]
+        ));
+        let (after_grasp, grasp_batch) = after_genesis
+            .commit(EventSequence::new(2), genesis.batch_hash, grasp)
+            .expect("grasp commit");
+        assert_eq!(
+            after_grasp
+                .material_instances()
+                .next()
+                .expect("material")
+                .held_by(),
+            Some(person.organism_id)
+        );
+        let release = after_grasp
+            .plan_action(
+                person.organism_id,
+                PrimitiveAction {
+                    kind: PrimitiveActionKind::Release,
+                    target_id: Some(object_id),
+                    intensity: 1,
+                },
+            )
+            .expect("release plan");
+        let (after_release, release_batch) = after_grasp
+            .commit(EventSequence::new(3), grasp_batch.batch_hash, release)
+            .expect("release commit");
+        assert_eq!(
+            after_release
+                .material_instances()
+                .next()
+                .expect("material")
+                .held_by(),
+            None
+        );
+        let replayed =
+            replay(manifest, &[genesis, grasp_batch, release_batch]).expect("handling replay");
+        assert_eq!(replayed.state, after_release);
     }
 
     #[test]

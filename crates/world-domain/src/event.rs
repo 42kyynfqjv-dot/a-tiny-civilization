@@ -26,6 +26,8 @@ pub const CELESTIAL_STATE_EVENT_SCHEMA_VERSION: u16 = 7;
 pub const BODY_PROVENANCE_EVENT_SCHEMA_VERSION: u16 = 8;
 /// Adds cited real-world material instances at durable full-Earth patches.
 pub const MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION: u16 = 9;
+/// Adds resolved neutral handling transitions for material instances.
+pub const MATERIAL_HANDLING_EVENT_SCHEMA_VERSION: u16 = 10;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,6 +108,17 @@ pub enum DomainEvent {
     MaterialInstanceInitialized {
         object_id: EntityId,
         material: MaterialIdentity,
+        embodied_patch: S2CellId,
+    },
+    /// A material instance became physically held after a neutral grasp action.
+    MaterialInstanceHeld {
+        object_id: EntityId,
+        holder_id: EntityId,
+    },
+    /// A held material instance was released at the holder's current patch.
+    MaterialInstanceReleased {
+        object_id: EntityId,
+        holder_id: EntityId,
         embodied_patch: S2CellId,
     },
     TickAdvanced {
@@ -299,6 +312,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | CELESTIAL_STATE_EVENT_SCHEMA_VERSION
             | BODY_PROVENANCE_EVENT_SCHEMA_VERSION
             | MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
+            | MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -373,6 +387,14 @@ fn validate_event_for_schema(
     }
     if event_schema_version < MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::MaterialInstanceInitialized { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::MaterialInstanceHeld { .. } | DomainEvent::MaterialInstanceReleased { .. }
+        )
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
