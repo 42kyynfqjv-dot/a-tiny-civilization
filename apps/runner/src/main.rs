@@ -17,7 +17,7 @@ use postgres_store::PostgresStore;
 use serde::Deserialize;
 use serde_json::json;
 use sim_engine::{
-    CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, LOCAL_ENVIRONMENT_RULESET_VERSION,
+    CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, RESOLVED_MOVEMENT_RULESET_VERSION,
     RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -38,7 +38,7 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = LOCAL_ENVIRONMENT_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = RESOLVED_MOVEMENT_RULESET_VERSION;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization simulation runner")]
@@ -1220,7 +1220,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, LOCAL_ENVIRONMENT_RULESET_VERSION);
+        assert_eq!(ruleset_version, RESOLVED_MOVEMENT_RULESET_VERSION);
     }
 
     #[test]

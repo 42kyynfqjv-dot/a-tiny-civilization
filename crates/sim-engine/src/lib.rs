@@ -19,12 +19,12 @@ use world_domain::{
     BirthCategory, CELESTIAL_STATE_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
     CanonicalHashError, CelestialState, DeathCause, Digest, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
-    EventBatchError, EventSequence, ExecutionScale, LEGACY_EVENT_SCHEMA_VERSION, OrganismRole,
-    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PrimitiveAction,
-    PrimitiveActionKind, PropertyReading, S2CellId, S2CellIdError,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
-    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
+    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
+    LEGACY_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
+    PerceptionChannel, PrimitiveAction, PrimitiveActionKind, PropertyReading, S2CellId,
+    S2CellIdError, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick,
+    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -44,6 +44,8 @@ pub const EMBODIED_ACTIVITY_RULESET_VERSION: u32 = 4;
 /// Ruleset five admits only source-pinned local physical readings, not weather or
 /// ecological conclusions, into the organism execution barrier.
 pub const LOCAL_ENVIRONMENT_RULESET_VERSION: u32 = 5;
+/// Ruleset six resolves a closed-grammar move into one adjacent S2 patch.
+pub const RESOLVED_MOVEMENT_RULESET_VERSION: u32 = 6;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -608,23 +610,51 @@ impl EngineState {
                                     },
                                 ));
                             }
+                            let action_kind = if self.uses_resolved_movement_driver() && phase == 3
+                            {
+                                PrimitiveActionKind::Move
+                            } else {
+                                motor_action_for_phase(phase)
+                            };
+                            let action_index = if self.uses_local_environment_driver() {
+                                3
+                            } else {
+                                2
+                            };
                             events.push(Emission::new(
                                 partition.partition(),
                                 work.key(),
-                                if self.uses_local_environment_driver() {
-                                    3
-                                } else {
-                                    2
-                                },
+                                action_index,
                                 DomainEvent::OrganismActed {
                                     organism_id: organism.organism_id,
                                     action: PrimitiveAction {
-                                        kind: motor_action_for_phase(phase),
+                                        kind: action_kind,
                                         target_id: None,
                                         intensity: 1,
                                     },
                                 },
                             ));
+                            if action_kind == PrimitiveActionKind::Move {
+                                let from_patch = organism.embodied_patch.ok_or_else(|| {
+                                    EngineError::MissingEmbodiedPatch(organism.organism_id)
+                                })?;
+                                let direction = usize::try_from(
+                                    (organism.organism_id.as_uuid().as_u128() >> 2) & 3,
+                                )
+                                .expect("direction fits");
+                                let to_patch = s2_edge_neighbors(from_patch)
+                                    .map_err(EngineError::from)?[direction];
+                                events.push(Emission::new(
+                                    partition.partition(),
+                                    work.key(),
+                                    action_index + 1,
+                                    DomainEvent::OrganismMoved {
+                                        organism_id: organism.organism_id,
+                                        from_patch,
+                                        to_patch,
+                                    },
+                                ));
+                            }
                         }
                         Ok(WorkOutput::new(work.key(), events, Vec::new()))
                     })
@@ -737,6 +767,10 @@ impl EngineState {
 
     fn uses_local_environment_driver(&self) -> bool {
         self.manifest.ruleset_version >= LOCAL_ENVIRONMENT_RULESET_VERSION
+    }
+
+    fn uses_resolved_movement_driver(&self) -> bool {
+        self.manifest.ruleset_version >= RESOLVED_MOVEMENT_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -1653,6 +1687,8 @@ pub enum EngineError {
     Scheduler(#[from] SchedulerError),
     #[error(transparent)]
     S2(#[from] S2CellIdError),
+    #[error(transparent)]
+    Geographic(#[from] GeographicRoutingError),
 }
 
 #[cfg(test)]
@@ -2191,6 +2227,56 @@ mod tests {
             replay(manifest, &[genesis, tick]).expect("replay").state,
             after_tick
         );
+    }
+
+    #[test]
+    fn resolved_movement_ruleset_replays_one_face_safe_relocation() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = RESOLVED_MOVEMENT_RULESET_VERSION;
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![full_earth_person(manifest.world_id)],
+            )
+            .expect("genesis");
+        let (mut state, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("commit genesis");
+        let mut batches = vec![genesis];
+        let mut moved = false;
+        for sequence in 2..=5 {
+            let events = state
+                .plan_next_tick_with_celestial(CelestialState::new(
+                    TdbSecondsSinceJ2000::new(i128::from(sequence)),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ))
+                .expect("tick");
+            if let Some(DomainEvent::OrganismMoved {
+                from_patch,
+                to_patch,
+                ..
+            }) = events
+                .iter()
+                .find(|event| matches!(event, DomainEvent::OrganismMoved { .. }))
+            {
+                assert!(
+                    s2_edge_neighbors(*from_patch)
+                        .expect("neighbors")
+                        .contains(to_patch)
+                );
+                moved = true;
+            }
+            let previous = batches.last().expect("previous batch").batch_hash;
+            let (next, batch) = state
+                .commit(EventSequence::new(sequence), previous, events)
+                .expect("commit tick");
+            state = next;
+            batches.push(batch);
+        }
+        assert!(moved, "four motor phases include one move");
+        assert_eq!(replay(manifest, &batches).expect("replay").state, state);
     }
 
     #[test]
