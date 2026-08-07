@@ -112,6 +112,18 @@ impl ObserverFindingStore for PostgresStore {
                     )
                     .await?;
                 }
+                DomainEvent::OrganismMoved { .. } => {
+                    insert_finding(
+                        &mut tx,
+                        batch,
+                        record,
+                        PublicFindingKind::First,
+                        "first_confirmed_relocation",
+                        "A first relocation was confirmed",
+                        "A living organism reached a different recorded patch.",
+                    )
+                    .await?;
+                }
                 DomainEvent::WorldExtinct => {
                     insert_finding(
                         &mut tx,
@@ -140,7 +152,6 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
                 | DomainEvent::OrganismActed { .. }
-                | DomainEvent::OrganismMoved { .. }
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::CelestialStateRecorded { .. } => {}
             }

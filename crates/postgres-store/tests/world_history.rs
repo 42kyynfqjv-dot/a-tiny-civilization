@@ -690,8 +690,14 @@ async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool)
     let store = PostgresStore::from_pool(pool.clone());
     let manifest = manifest(508);
     let created = store.create_world(&manifest, None).await?;
-    let (_, batch, snapshot) = genesis(&manifest, vec![initial_person(manifest.world_id)])?;
-    store
+    let initial = EngineState::new(manifest.clone());
+    let events = initial.plan_configured_genesis(
+        provisional_configuration(),
+        vec![provisional_initial_person(manifest.world_id)],
+    )?;
+    let (running, batch) = initial.commit(EventSequence::new(1), Digest::ZERO, events)?;
+    let snapshot = Snapshot::new(running.clone(), batch.sequence, batch.batch_hash)?;
+    let persisted = store
         .commit_transition(
             created.cursor,
             &batch,
@@ -701,6 +707,30 @@ async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool)
         .await?;
     assert!(store.apply_public_finding_batch(&batch).await?);
     assert!(!store.apply_public_finding_batch(&batch).await?);
+    let organism_id = provisional_initial_person(manifest.world_id).organism_id;
+    let from_patch = running
+        .organisms()
+        .next()
+        .and_then(sim_engine::OrganismState::embodied_patch)
+        .expect("configured person has an embodied patch");
+    let to_patch = world_domain::s2_edge_neighbors(from_patch)?[0];
+    let movement_events = running.plan_movement(organism_id, to_patch)?;
+    let (after_movement, movement_batch) =
+        running.commit(EventSequence::new(2), batch.batch_hash, movement_events)?;
+    let movement_snapshot = Snapshot::new(
+        after_movement,
+        movement_batch.sequence,
+        movement_batch.batch_hash,
+    )?;
+    store
+        .commit_transition(
+            persisted.cursor,
+            &movement_batch,
+            &movement_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    assert!(store.apply_public_finding_batch(&movement_batch).await?);
     let findings = store.list_public_findings(manifest.world_id, 20).await?;
     let keys = findings
         .iter()
@@ -709,6 +739,7 @@ async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool)
     assert!(keys.contains(&"world_began"));
     assert!(keys.contains(&"first_person_recorded"));
     assert!(keys.contains(&"people_population_record_1"));
+    assert!(keys.contains(&"first_confirmed_relocation"));
     assert!(
         findings
             .iter()
@@ -716,7 +747,7 @@ async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool)
     );
     assert_eq!(
         store.public_finding_cursor(manifest.world_id).await?,
-        EventSequence::new(1)
+        EventSequence::new(2)
     );
     let mutation = sqlx::query("UPDATE observer_findings SET title = title WHERE world_id = $1")
         .bind(manifest.world_id.as_uuid())
