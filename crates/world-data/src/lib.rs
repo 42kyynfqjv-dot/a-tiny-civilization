@@ -6,6 +6,7 @@ mod fauna_evidence;
 mod fauna_ranges;
 mod gbif_catalog;
 mod land_cover;
+mod origin;
 mod provisional;
 mod scalar_field;
 mod seasonal_field;
@@ -46,6 +47,11 @@ pub use land_cover::{
     LandCoverEvidenceTileError, LandCoverSignedValueCount,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_SCHEMA_VERSION,
     PackedLandCoverEvidenceTile,
+};
+
+pub use origin::{
+    PROVISIONAL_LAND_ORIGIN_SELECTION_MEDIA_TYPE, PROVISIONAL_LAND_ORIGIN_SELECTION_SCHEMA_VERSION,
+    ProvisionalLandOriginSelection, ProvisionalLandOriginSelectionError,
 };
 
 pub use provisional::{

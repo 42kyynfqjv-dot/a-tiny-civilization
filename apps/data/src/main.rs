@@ -28,11 +28,11 @@ use world_data::{
     PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
     PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
     PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
-    SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell,
-    SeasonalSourceArtifact, SoilDepth, SoilGridsProperty, SoilGridsPropertySource,
-    SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact, SourceSnapshotManifest,
-    TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
-    soilgrids_source_set_digest,
+    ProvisionalLandOriginSelection, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
+    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
+    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
+    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
+    WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -114,6 +114,16 @@ enum InspectCommand {
         input: PathBuf,
         #[arg(long)]
         candidates: PathBuf,
+    },
+    /// Recompute a seed-derived provisional land origin against its exact Natural
+    /// Earth land-reference tile tree.
+    ProvisionalLandOriginSelection {
+        #[arg(long)]
+        input: PathBuf,
+        #[arg(long)]
+        land_reference_root_index: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
     },
     /// Compare retained fauna-source names against the frozen accepted GBIF catalog.
     /// This only reports exact-name matches; it never guesses synonym mappings.
@@ -408,6 +418,21 @@ enum InspectCommand {
 
 #[derive(Debug, Subcommand)]
 enum DeriveCommand {
+    /// Select one source-confirmed land patch from the public world seed.
+    ///
+    /// This makes no habitat, population, or survivability assertion.
+    ProvisionalLandOriginSelection {
+        #[arg(long)]
+        land_reference_root_index: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long)]
+        world_seed: u64,
+        #[arg(long, default_value_t = 23)]
+        embodied_patch_level: u8,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Select a bounded, seed-derived subset of one exact local modeled-range pool.
     ///
     /// This creates no organisms and makes no abundance claim. It only makes the
@@ -651,6 +676,15 @@ async fn main() -> Result<()> {
             InspectCommand::FaunaSeededSelection { input, candidates } => {
                 inspect_fauna_seeded_selection(&input, &candidates)
             }
+            InspectCommand::ProvisionalLandOriginSelection {
+                input,
+                land_reference_root_index,
+                artifact_root,
+            } => inspect_provisional_land_origin_selection(
+                &input,
+                &land_reference_root_index,
+                &artifact_root,
+            ),
             InspectCommand::NaturalEarthLand {
                 source_snapshot,
                 artifact_root,
@@ -857,6 +891,19 @@ async fn main() -> Result<()> {
             } => inspect_jpl_de441_epoch(&input_directory, tdb_seconds_from_j2000),
         },
         Command::Derive { command } => match command {
+            DeriveCommand::ProvisionalLandOriginSelection {
+                land_reference_root_index,
+                artifact_root,
+                world_seed,
+                embodied_patch_level,
+                output,
+            } => derive_provisional_land_origin_selection(
+                &land_reference_root_index,
+                &artifact_root,
+                WorldSeed::new(world_seed),
+                embodied_patch_level,
+                &output,
+            ),
             DeriveCommand::FaunaSeededSelection {
                 candidates,
                 world_seed,
@@ -1561,6 +1608,174 @@ fn inspect_fauna_seeded_selection(input: &Path, candidates_path: &Path) -> Resul
         }))?
     );
     Ok(())
+}
+
+fn derive_provisional_land_origin_selection(
+    root_index_path: &Path,
+    artifact_root: &Path,
+    world_seed: WorldSeed,
+    embodied_patch_level: u8,
+    output_path: &Path,
+) -> Result<()> {
+    let (root_digest, eligible_patches) =
+        eligible_land_reference_patches(root_index_path, artifact_root)?;
+    let selection = ProvisionalLandOriginSelection::select(
+        world_seed,
+        root_digest,
+        eligible_patches,
+        embodied_patch_level,
+    )
+    .context("select deterministic provisional land origin")?;
+    let bytes = selection
+        .canonical_bytes()
+        .context("encode provisional land origin")?;
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "eligible_patch_count": selection.eligible_patch_count,
+            "land_reference_root_digest": selection.land_reference_root_digest,
+            "selected_patch": selection.selected_patch,
+            "selected_embodied_patch": selection.selected_embodied_patch,
+            "status": "seed-derived-land-origin-not-habitat-or-population",
+            "world_seed": selection.world_seed,
+        }))?
+    );
+    Ok(())
+}
+
+fn inspect_provisional_land_origin_selection(
+    input: &Path,
+    root_index_path: &Path,
+    artifact_root: &Path,
+) -> Result<()> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("read provisional land origin {}", input.display()))?;
+    let selection = ProvisionalLandOriginSelection::from_canonical_slice(&bytes)
+        .with_context(|| format!("decode provisional land origin {}", input.display()))?;
+    let (root_digest, eligible_patches) =
+        eligible_land_reference_patches(root_index_path, artifact_root)?;
+    if selection.land_reference_root_digest != root_digest {
+        bail!("provisional land origin references a different land-reference root");
+    }
+    selection
+        .validate_against(eligible_patches)
+        .context("recompute provisional land origin")?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "eligible_patch_count": selection.eligible_patch_count,
+            "land_reference_root_digest": selection.land_reference_root_digest,
+            "selected_patch": selection.selected_patch,
+            "selected_embodied_patch": selection.selected_embodied_patch,
+            "status": "verified-seed-derived-land-origin-not-habitat-or-population",
+            "world_seed": selection.world_seed,
+        }))?
+    );
+    Ok(())
+}
+
+fn eligible_land_reference_patches(
+    root_index_path: &Path,
+    artifact_root: &Path,
+) -> Result<(Digest, Vec<S2CellId>)> {
+    let root_bytes = fs::read(root_index_path).with_context(|| {
+        format!(
+            "read land-reference root index {}",
+            root_index_path.display()
+        )
+    })?;
+    let root_digest = Digest::sha256(&root_bytes);
+    let root_index = TileTreeIndex::from_canonical_slice(&root_bytes)
+        .context("decode canonical land-reference root index")?;
+    if root_index.layer_id != "land-reference" {
+        bail!("land-origin selection requires the land-reference layer");
+    }
+    let artifact_root = artifact_root.canonicalize().with_context(|| {
+        format!(
+            "resolve land-reference artifact root {}",
+            artifact_root.display()
+        )
+    })?;
+    let mut pending = VecDeque::from(root_index.entries);
+    let mut tile_entries = Vec::new();
+    while let Some(entry) = pending.pop_front() {
+        match entry.kind {
+            TileTreeEntryKind::Index => {
+                let bytes = read_tile_tree_artifact(&artifact_root, &entry)?;
+                let index = TileTreeIndex::from_canonical_slice(&bytes)
+                    .context("decode canonical land-reference child index")?;
+                if index.layer_id != "land-reference" {
+                    bail!("land-reference child index has another layer id");
+                }
+                pending.extend(index.entries);
+            }
+            TileTreeEntryKind::Tile => tile_entries.push(entry),
+        }
+    }
+    let eligible_patches = tile_entries
+        .par_iter()
+        .map(|entry| {
+            let bytes = read_tile_tree_artifact(&artifact_root, entry)?;
+            let tile = PackedBooleanFieldTile::from_canonical_slice(&bytes)
+                .context("decode canonical land-reference tile")?;
+            if tile.layer_id != "land-reference" {
+                bail!("land-reference tile has another layer id");
+            }
+            Ok::<_, anyhow::Error>(
+                tile.cells
+                    .into_iter()
+                    .filter(|cell| cell.true_samples > 0)
+                    .map(|cell| cell.s2_cell_id)
+                    .collect::<Vec<_>>(),
+            )
+        })
+        .collect::<Result<Vec<_>>>()?
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>();
+    let mut eligible_patches = eligible_patches;
+    eligible_patches.sort_unstable();
+    if eligible_patches.windows(2).any(|pair| pair[0] == pair[1]) {
+        bail!("land-reference tile tree contains duplicate target patches");
+    }
+    Ok((root_digest, eligible_patches))
+}
+
+fn read_tile_tree_artifact(artifact_root: &Path, entry: &TileTreeEntry) -> Result<Vec<u8>> {
+    if entry
+        .artifact
+        .path
+        .split('/')
+        .any(|segment| segment.is_empty() || segment == "." || segment == "..")
+    {
+        bail!("unsafe tile-tree artifact path {:?}", entry.artifact.path);
+    }
+    let requested = artifact_root.join(&entry.artifact.path);
+    let metadata = fs::symlink_metadata(&requested)
+        .with_context(|| format!("inspect tile-tree artifact {}", requested.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        bail!(
+            "tile-tree artifact is not a regular file: {}",
+            requested.display()
+        );
+    }
+    let resolved = requested
+        .canonicalize()
+        .with_context(|| format!("resolve tile-tree artifact {}", requested.display()))?;
+    if !resolved.starts_with(artifact_root) {
+        bail!("tile-tree artifact escapes the artifact root");
+    }
+    let bytes = fs::read(&resolved)
+        .with_context(|| format!("read tile-tree artifact {}", resolved.display()))?;
+    if u64::try_from(bytes.len())? != entry.artifact.byte_length
+        || Digest::sha256(&bytes) != entry.artifact.content_hash
+    {
+        bail!("tile-tree artifact bytes disagree with its canonical reference");
+    }
+    Ok(bytes)
 }
 
 #[derive(Debug, Serialize)]
