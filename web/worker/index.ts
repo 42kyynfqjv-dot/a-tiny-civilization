@@ -38,28 +38,50 @@ const worker = {
         (typeof process === "undefined" ? undefined : process.env.OBSERVER_API_URL);
 
       if (!observerApiUrl) {
-        return Response.json(
-          { error: { code: "observer_api_unconfigured", message: "observer API is unavailable" } },
-          { status: 503 },
+        return withSecurityHeaders(
+          Response.json(
+            { error: { code: "observer_api_unconfigured", message: "observer API is unavailable" } },
+            { status: 503 },
+          ),
         );
       }
       const upstream = new URL(url.pathname + url.search, observerApiUrl);
-      return fetch(new Request(upstream, request));
+      return withSecurityHeaders(await fetch(new Request(upstream, request)));
     }
 
     if (url.pathname === "/_vinext/image") {
       const allowedWidths = [...DEFAULT_DEVICE_SIZES, ...DEFAULT_IMAGE_SIZES];
-      return handleImageOptimization(request, {
+      return withSecurityHeaders(await handleImageOptimization(request, {
         fetchAsset: (path) => env.ASSETS.fetch(new Request(new URL(path, request.url))),
         transformImage: async (body, { width, format, quality }) => {
           const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
-      }, allowedWidths);
+      }, allowedWidths));
     }
 
-    return handler.fetch(request, env, ctx);
+    return withSecurityHeaders(await handler.fetch(request, env, ctx));
   },
 };
+
+function withSecurityHeaders(response: Response): Response {
+  const headers = new Headers(response.headers);
+  headers.set(
+    "content-security-policy",
+    "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests",
+  );
+  headers.set("cross-origin-opener-policy", "same-origin");
+  headers.set("permissions-policy", "camera=(), geolocation=(), microphone=(), payment=()");
+  headers.set("referrer-policy", "strict-origin-when-cross-origin");
+  headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
+  headers.set("x-content-type-options", "nosniff");
+  headers.set("x-frame-options", "DENY");
+
+  return new Response(response.body, {
+    headers,
+    status: response.status,
+    statusText: response.statusText,
+  });
+}
 
 export default worker;
