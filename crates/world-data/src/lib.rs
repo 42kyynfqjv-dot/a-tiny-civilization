@@ -1,6 +1,7 @@
 //! Deterministic, provenance-complete scientific input bundles.
 
 mod boolean_field;
+mod land_cover;
 mod scalar_field;
 mod seasonal_field;
 mod terrain;
@@ -8,6 +9,13 @@ mod terrain;
 pub use boolean_field::{
     BooleanFieldCell, BooleanFieldTileError, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_BOOLEAN_FIELD_TILE_SCHEMA_VERSION, PackedBooleanFieldTile,
+};
+
+pub use land_cover::{
+    COPERNICUS_LCCS_CLASSES, LandCoverClassCount, LandCoverEvidenceCell,
+    LandCoverEvidenceTileError, LandCoverSignedValueCount,
+    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_SCHEMA_VERSION,
+    PackedLandCoverEvidenceTile,
 };
 
 pub use scalar_field::{

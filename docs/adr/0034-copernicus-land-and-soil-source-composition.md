@@ -47,6 +47,9 @@ ERA5-Land after any dataset-specific terms are accepted; SoilGrids is public CC 
 Substantial deterministic normalization and ecological inference still remain, and no
 source response becomes a canonical layer merely because it was downloaded.
 
+The observed-class target-support and packed quality schema are fixed separately in
+[ADR 0036](0036-copernicus-land-cover-l10-target-support.md).
+
 References: [CDS satellite land cover](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=documentation),
 [ERA5-Land monthly means](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-land-monthly-means?tab=overview),
 and [SoilGrids](https://docs.isric.org/globaldata/soilgrids/index.html).

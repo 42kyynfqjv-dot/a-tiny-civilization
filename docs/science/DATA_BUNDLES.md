@@ -212,6 +212,18 @@ cargo run --release --locked -p civilization-data -- \
   --output /tmp/copernicus-land-cover-census.json
 ```
 
+The v1 L10 target-support rule can be inspected without opening the source archive.
+It places 32 × 32 exact rational face-UV midpoints inside one S2 cell, converts them
+through the fixed WGS 84 inverse route, and reports the selected Copernicus area cells
+plus a fingerprint over all 1,024 addresses. See
+[ADR 0036](../adr/0036-copernicus-land-cover-l10-target-support.md).
+
+```bash
+cargo run --release --locked -p civilization-data -- \
+  inspect copernicus-land-cover-target-support \
+  --s2-cell-id 1000010000000000 --points-per-axis 32
+```
+
 One raw grid cell can be examined without a GIS dependency. The zero-based row and
 column refer only to the retained source-axis order; the result emits raw coordinate
 and `Band1` IEEE-754 bits, not a converted temperature or an S2 assignment. See

@@ -59,6 +59,8 @@ standalone NetCDF source artifacts. Their immutable acquisition and future
 normalization boundary are fixed in [ADR 0032](../adr/0032-era5-archive-evidence.md).
 The shared CDS/SoilGrids source composition for habitat, initial coastline evidence,
 and soil is fixed in [ADR 0034](../adr/0034-copernicus-land-and-soil-source-composition.md).
+The Copernicus observed-class target-support and quality-preserving L10 payload are
+fixed in [ADR 0036](../adr/0036-copernicus-land-cover-l10-target-support.md).
 The open-evidence composition for freshwater storage and drainage is fixed in
 [ADR 0035](../adr/0035-open-global-hydrography-composition.md).
 

@@ -13,18 +13,19 @@ use netcdf_reader::{NcAttrValue, NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
 use serde::Serialize;
 use sha2::{Digest as _, Sha256};
 use world_data::{
-    BooleanFieldCell, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PackedBooleanFieldTile, PackedScalarTerrainTile, ScalarTerrainCell, SourceSnapshotArtifact,
-    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
-    WorldDataBundle,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PackedBooleanFieldTile, PackedScalarTerrainTile,
+    ScalarTerrainCell, SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference,
+    TileTreeEntry, TileTreeEntryKind, TileTreeIndex, WorldDataBundle,
 };
 use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
     Digest, GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, MAX_S2_LEVEL, S2CellId,
-    WorldConfiguration, decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2,
-    s2_face_ij_center_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
+    S2FaceUv, WorldConfiguration, decode_s2_face_ij, route_geographic_to_s2,
+    route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray,
+    s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -181,6 +182,13 @@ enum InspectCommand {
         /// Optionally publish deterministic pretty JSON to a new path.
         #[arg(long)]
         output: Option<PathBuf>,
+    },
+    /// Inspect fixed target-support samples for one S2 land-cover cell.
+    CopernicusLandCoverTargetSupport {
+        #[arg(long)]
+        s2_cell_id: S2CellId,
+        #[arg(long, default_value_t = 32)]
+        points_per_axis: u8,
     },
     /// Route one exact WGS 84 geographic coordinate through the shared S2 contract.
     GeographicRoute {
@@ -464,6 +472,10 @@ async fn main() -> Result<()> {
                 &artifact_root,
                 output.as_deref(),
             ),
+            InspectCommand::CopernicusLandCoverTargetSupport {
+                s2_cell_id,
+                points_per_axis,
+            } => inspect_copernicus_land_cover_target_support(s2_cell_id, points_per_axis),
             InspectCommand::GeographicRoute {
                 latitude_e7,
                 longitude_e7,
@@ -2902,46 +2914,6 @@ const COPERNICUS_LAND_COVER_LATITUDE_ENDPOINT_BITS: [u64; 2] =
     [0x4056_7fe9_3e93_e940, 0xc056_7fe9_3e93_e93f];
 const COPERNICUS_LAND_COVER_LONGITUDE_ENDPOINT_BITS: [u64; 2] =
     [0xc066_7ff4_9f49_f49f, 0x4066_7ff4_9f49_f4a0];
-const COPERNICUS_LCCS_CLASSES: &[(u8, &str)] = &[
-    (0, "no_data"),
-    (10, "cropland_rainfed"),
-    (11, "cropland_rainfed_herbaceous_cover"),
-    (12, "cropland_rainfed_tree_or_shrub_cover"),
-    (20, "cropland_irrigated"),
-    (30, "mosaic_cropland"),
-    (40, "mosaic_natural_vegetation"),
-    (50, "tree_broadleaved_evergreen_closed_to_open"),
-    (60, "tree_broadleaved_deciduous_closed_to_open"),
-    (61, "tree_broadleaved_deciduous_closed"),
-    (62, "tree_broadleaved_deciduous_open"),
-    (70, "tree_needleleaved_evergreen_closed_to_open"),
-    (71, "tree_needleleaved_evergreen_closed"),
-    (72, "tree_needleleaved_evergreen_open"),
-    (80, "tree_needleleaved_deciduous_closed_to_open"),
-    (81, "tree_needleleaved_deciduous_closed"),
-    (82, "tree_needleleaved_deciduous_open"),
-    (90, "tree_mixed"),
-    (100, "mosaic_tree_and_shrub"),
-    (110, "mosaic_herbaceous"),
-    (120, "shrubland"),
-    (121, "shrubland_evergreen"),
-    (122, "shrubland_deciduous"),
-    (130, "grassland"),
-    (140, "lichens_and_mosses"),
-    (150, "sparse_vegetation"),
-    (151, "sparse_tree"),
-    (152, "sparse_shrub"),
-    (153, "sparse_herbaceous"),
-    (160, "tree_cover_flooded_fresh_or_brakish_water"),
-    (170, "tree_cover_flooded_saline_water"),
-    (180, "shrub_or_herbaceous_cover_flooded"),
-    (190, "urban"),
-    (200, "bare_areas"),
-    (201, "bare_areas_consolidated"),
-    (202, "bare_areas_unconsolidated"),
-    (210, "water"),
-    (220, "snow_and_ice"),
-];
 
 #[derive(Serialize)]
 struct CopernicusLandCoverInspection {
@@ -3012,6 +2984,28 @@ struct LccsClassCensus {
 struct RasterValueCount {
     value: i64,
     cells: u64,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+struct CopernicusLandCoverSourceSample {
+    latitude_e7: i32,
+    longitude_e7: i32,
+    source_row: u32,
+    source_column: u32,
+}
+
+#[derive(Serialize)]
+struct CopernicusLandCoverTargetSupportInspection {
+    inspection_schema_version: u16,
+    target_s2_cell_id: S2CellId,
+    target_s2_level: u8,
+    sample_policy: String,
+    points_per_axis: u8,
+    support_samples: u64,
+    distinct_source_cells: u64,
+    sample_fingerprint: Digest,
+    first_sample: CopernicusLandCoverSourceSample,
+    last_sample: CopernicusLandCoverSourceSample,
 }
 
 fn expected_copernicus_land_cover_variables() -> BTreeMap<&'static str, (NcType, Vec<u64>)> {
@@ -3666,6 +3660,160 @@ fn inspect_copernicus_land_cover_census(
     } else {
         println!("{}", serde_json::to_string(&census)?);
     }
+    Ok(())
+}
+
+fn interpolate_s2_face_uv_midpoint(
+    lower: S2FaceUv,
+    upper: S2FaceUv,
+    index: u8,
+    points_per_axis: u8,
+    use_u_axis: bool,
+) -> Result<(i128, i128)> {
+    if points_per_axis == 0 || points_per_axis > 64 || index >= points_per_axis {
+        bail!("Copernicus target-support quadrature must use 1..=64 points per axis");
+    }
+    if lower.face != upper.face || lower.denominator != upper.denominator {
+        bail!("S2 target-support vertices do not share one face projection");
+    }
+    let high_weight = i128::from(index)
+        .checked_mul(2)
+        .and_then(|value| value.checked_add(1))
+        .context("target-support midpoint weight overflow")?;
+    let denominator_weight = i128::from(points_per_axis)
+        .checked_mul(2)
+        .context("target-support denominator weight overflow")?;
+    let low_weight = denominator_weight
+        .checked_sub(high_weight)
+        .context("target-support low weight underflow")?;
+    let (low, high) = if use_u_axis {
+        (lower.u_numerator, upper.u_numerator)
+    } else {
+        (lower.v_numerator, upper.v_numerator)
+    };
+    let numerator = low
+        .checked_mul(low_weight)
+        .and_then(|value| {
+            high.checked_mul(high_weight)
+                .and_then(|high| value.checked_add(high))
+        })
+        .context("target-support interpolation overflow")?;
+    let denominator = lower
+        .denominator
+        .checked_mul(denominator_weight)
+        .context("target-support denominator overflow")?;
+    Ok((numerator, denominator))
+}
+
+fn copernicus_source_area_cell(coordinate: GeographicCoordinateE7) -> Result<(u32, u32)> {
+    const E7_PER_DEGREE: i64 = 10_000_000;
+    const SOURCE_CELLS_PER_DEGREE: i64 = 360;
+    let latitude_distance_from_north = 900_000_000_i64
+        .checked_sub(i64::from(coordinate.latitude_e7()))
+        .context("Copernicus latitude lookup overflow")?;
+    let mut row = latitude_distance_from_north
+        .checked_mul(SOURCE_CELLS_PER_DEGREE)
+        .context("Copernicus latitude lookup overflow")?
+        / E7_PER_DEGREE;
+    if row == i64::try_from(COPERNICUS_LAND_COVER_LATITUDE_CELLS)? {
+        row -= 1;
+    }
+    let longitude_distance_from_west = i64::from(coordinate.longitude_e7())
+        .checked_add(1_800_000_000)
+        .context("Copernicus longitude lookup overflow")?;
+    let column = longitude_distance_from_west
+        .checked_mul(SOURCE_CELLS_PER_DEGREE)
+        .context("Copernicus longitude lookup overflow")?
+        / E7_PER_DEGREE;
+    if row < 0
+        || row >= i64::try_from(COPERNICUS_LAND_COVER_LATITUDE_CELLS)?
+        || column < 0
+        || column >= i64::try_from(COPERNICUS_LAND_COVER_LONGITUDE_CELLS)?
+    {
+        bail!("geographic coordinate does not select a Copernicus source area cell");
+    }
+    Ok((u32::try_from(row)?, u32::try_from(column)?))
+}
+
+fn copernicus_land_cover_target_support_samples(
+    target: S2CellId,
+    points_per_axis: u8,
+) -> Result<Vec<CopernicusLandCoverSourceSample>> {
+    if points_per_axis == 0 || points_per_axis > 64 {
+        bail!("Copernicus target-support quadrature must use 1..=64 points per axis");
+    }
+    let ij = decode_s2_face_ij(target);
+    let upper_i = ij.i.checked_add(1).context("S2 target i overflow")?;
+    let upper_j = ij.j.checked_add(1).context("S2 target j overflow")?;
+    let lower = s2_face_ij_vertex_uv(ij, ij.i, ij.j)?;
+    let upper = s2_face_ij_vertex_uv(ij, upper_i, upper_j)?;
+    let sample_count = usize::from(points_per_axis)
+        .checked_mul(usize::from(points_per_axis))
+        .context("Copernicus target-support sample count overflow")?;
+    let mut samples = Vec::with_capacity(sample_count);
+    for v_index in 0..points_per_axis {
+        let (v_numerator, denominator) =
+            interpolate_s2_face_uv_midpoint(lower, upper, v_index, points_per_axis, false)?;
+        for u_index in 0..points_per_axis {
+            let (u_numerator, u_denominator) =
+                interpolate_s2_face_uv_midpoint(lower, upper, u_index, points_per_axis, true)?;
+            if u_denominator != denominator {
+                bail!("target-support axes produced different denominators");
+            }
+            let coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(S2FaceUv {
+                face: ij.face,
+                u_numerator,
+                v_numerator,
+                denominator,
+            })?)?;
+            let (source_row, source_column) = copernicus_source_area_cell(coordinate)?;
+            samples.push(CopernicusLandCoverSourceSample {
+                latitude_e7: coordinate.latitude_e7(),
+                longitude_e7: coordinate.longitude_e7(),
+                source_row,
+                source_column,
+            });
+        }
+    }
+    Ok(samples)
+}
+
+fn copernicus_target_support_fingerprint(samples: &[CopernicusLandCoverSourceSample]) -> Digest {
+    let mut bytes = Vec::with_capacity(samples.len() * 16);
+    for sample in samples {
+        bytes.extend_from_slice(&sample.latitude_e7.to_le_bytes());
+        bytes.extend_from_slice(&sample.longitude_e7.to_le_bytes());
+        bytes.extend_from_slice(&sample.source_row.to_le_bytes());
+        bytes.extend_from_slice(&sample.source_column.to_le_bytes());
+    }
+    Digest::sha256(&bytes)
+}
+
+fn inspect_copernicus_land_cover_target_support(
+    target: S2CellId,
+    points_per_axis: u8,
+) -> Result<()> {
+    let samples = copernicus_land_cover_target_support_samples(target, points_per_axis)?;
+    let distinct_source_cells = samples
+        .iter()
+        .map(|sample| (sample.source_row, sample.source_column))
+        .collect::<std::collections::BTreeSet<_>>()
+        .len();
+    println!(
+        "{}",
+        serde_json::to_string(&CopernicusLandCoverTargetSupportInspection {
+            inspection_schema_version: 1,
+            target_s2_cell_id: target,
+            target_s2_level: target.level(),
+            sample_policy: format!("s2-face-uv-q{points_per_axis}-e7-source-area-v1"),
+            points_per_axis,
+            support_samples: u64::try_from(samples.len())?,
+            distinct_source_cells: u64::try_from(distinct_source_cells)?,
+            sample_fingerprint: copernicus_target_support_fingerprint(&samples),
+            first_sample: *samples.first().context("target support is empty")?,
+            last_sample: *samples.last().context("target support is empty")?,
+        })?
+    );
     Ok(())
 }
 
@@ -5083,6 +5231,78 @@ mod tests {
                 .as_u64(),
             Some(994)
         );
+    }
+
+    #[test]
+    fn copernicus_source_area_lookup_has_explicit_global_edge_ownership() {
+        assert_eq!(
+            copernicus_source_area_cell(
+                GeographicCoordinateE7::new(900_000_000, -1_800_000_000).expect("northwest corner")
+            )
+            .expect("northwest source area"),
+            (0, 0)
+        );
+        assert_eq!(
+            copernicus_source_area_cell(
+                GeographicCoordinateE7::new(0, 0).expect("prime-meridian origin")
+            )
+            .expect("central source area"),
+            (32_400, 64_800)
+        );
+        assert_eq!(
+            copernicus_source_area_cell(
+                GeographicCoordinateE7::new(-900_000_000, 1_799_999_999)
+                    .expect("southeast terminal coordinate")
+            )
+            .expect("southeast source area"),
+            (64_799, 129_599)
+        );
+    }
+
+    #[test]
+    fn copernicus_l10_q32_target_support_has_a_stable_full_fingerprint() {
+        let target: S2CellId = "1000010000000000".parse().expect("equatorial L10 cell");
+        let samples = copernicus_land_cover_target_support_samples(target, 32)
+            .expect("Copernicus target support");
+        assert_eq!(samples.len(), 1_024);
+        assert_eq!(
+            copernicus_target_support_fingerprint(&samples).to_string(),
+            "213ce73747aa77914e0fb5f41f7382377d4b8da7a872f7c43e79ad493794c834"
+        );
+        assert_eq!(
+            samples.first(),
+            Some(&CopernicusLandCoverSourceSample {
+                latitude_e7: 11_747,
+                longitude_e7: 11_668,
+                source_row: 32_399,
+                source_column: 64_800,
+            })
+        );
+        assert_eq!(
+            samples.last(),
+            Some(&CopernicusLandCoverSourceSample {
+                latitude_e7: 740_052,
+                longitude_e7: 735_099,
+                source_row: 32_373,
+                source_column: 64_826,
+            })
+        );
+        assert_eq!(
+            samples
+                .iter()
+                .map(|sample| (sample.source_row, sample.source_column))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            729
+        );
+        for sample in samples {
+            let coordinate = GeographicCoordinateE7::new(sample.latitude_e7, sample.longitude_e7)
+                .expect("retained sample coordinate");
+            assert_eq!(
+                route_geographic_to_s2(coordinate, 10).expect("route retained target sample"),
+                target
+            );
+        }
     }
 
     fn temporary_root(label: &str) -> PathBuf {
