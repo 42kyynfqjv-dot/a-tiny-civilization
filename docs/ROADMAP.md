@@ -88,10 +88,10 @@ isolated layers that may change when they are integrated.
 
 The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction transition,
 authorized successor operation, and tamper detection are implemented and covered by
-the full repository checks. Canonical world initialization remains intentionally
-blocked on the full-Earth scientific bundle and partition scheduler; the available
-initialization command is visibly non-production and requires an explicit world
-identifier and seed.
+the full repository checks. The engine-level partition foundation now replays, but
+canonical world initialization remains intentionally blocked on admitted full-Earth
+inputs and the first real scheduled causal process; the available initialization
+command is visibly non-production and requires an explicit world identifier and seed.
 
 ### 2. Full Earth, reference tile, and embodied lives
 
@@ -136,10 +136,18 @@ changing events, snapshots, configuration, or PostgreSQL. A private conserved
 L10-to-L14 reference now enumerates all 256 children, allocates generic sourced
 extensive totals with exact order-independent integer arithmetic, and reaggregates them
 without loss. It explicitly proves why a synthesis generation must be retained rather
-than recalculated. It likewise changes no durable boundary. The next checkpoints are
-measurement-oriented global source snapshots and normalized L10 roots, a coupled
-ecological quantity policy with retained refinement state and deltas, and durable
-embodied position/movement integration.
+than recalculated. Durable embodied patches, conditional movement, and an empty
+partition schedule are now integrated. The next engine checkpoints are a coupled
+ecological quantity policy with retained refinement state and deltas, physical
+movement resolution, and the first real scheduled causal process.
+
+A separate provisional-world composition schema now requires all seven Earth roles,
+the celestial ephemeris, the real fauna catalog, and fauna trait evidence in one
+content-addressed manifest. Its only status is
+`provisional-not-scientifically-admitted`, it must publish outstanding coupled-
+validation gaps, and its bytes cannot decode as a genesis-eligible world-data bundle.
+This is the structural boundary that permits breadth-first integration before the
+final scientific admission pass.
 
 Six upstream snapshots are now committed independently of any world bundle. They pin
 Natural Earth v5.1.2 generalized land polygons, NOAA ETOPO 2022 v1 bedrock relief, two

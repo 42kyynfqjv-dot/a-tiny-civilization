@@ -4,6 +4,7 @@ mod boolean_field;
 mod fauna;
 mod fauna_evidence;
 mod land_cover;
+mod provisional;
 mod scalar_field;
 mod seasonal_field;
 mod soil;
@@ -31,6 +32,13 @@ pub use land_cover::{
     LandCoverEvidenceTileError, LandCoverSignedValueCount,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_SCHEMA_VERSION,
     PackedLandCoverEvidenceTile,
+};
+
+pub use provisional::{
+    PROVISIONAL_WORLD_COMPOSITION_MEDIA_TYPE, PROVISIONAL_WORLD_COMPOSITION_SCHEMA_VERSION,
+    ProvisionalArtifactReference, ProvisionalEarthLayerReference, ProvisionalWorldComponentKind,
+    ProvisionalWorldComponentReference, ProvisionalWorldComposition,
+    ProvisionalWorldCompositionError, ProvisionalWorldCompositionStatus,
 };
 
 pub use scalar_field::{
