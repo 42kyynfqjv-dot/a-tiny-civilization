@@ -3,6 +3,7 @@
 mod boolean_field;
 mod fauna;
 mod fauna_evidence;
+mod gbif_catalog;
 mod land_cover;
 mod provisional;
 mod scalar_field;
@@ -25,6 +26,11 @@ pub use fauna_evidence::{
     FaunaAssumptionBasis, FaunaEvidenceBasis, FaunaEvidenceLicense, FaunaEvidenceManifest,
     FaunaEvidenceManifestError, FaunaEvidenceSource, FaunaEvidenceSourceManifest,
     FaunaEvidenceStatus, FaunaTraitAssumption, ObservedFaunaTrait, ScaledFaunaTraitValue,
+};
+
+pub use gbif_catalog::{
+    GBIF_ANIMALIA_CATALOG_MAGIC, GBIF_ANIMALIA_CATALOG_SCHEMA_VERSION, GbifAnimaliaCatalogError,
+    GbifAnimaliaCatalogHeader, GbifAnimaliaCatalogReader, GbifAnimaliaSpecies,
 };
 
 pub use land_cover::{
