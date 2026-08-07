@@ -19,7 +19,9 @@ use serde_json::json;
 use sim_engine::{CELESTIAL_DRIVER_RULESET_VERSION, InitialOrganism, RULESET_VERSION};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
-use world_data::{FaunaRangeCandidateSet, FaunaSeededSelection};
+use world_data::{
+    DataLayerKind, FaunaRangeCandidateSet, FaunaSeededSelection, ProvisionalLandOriginSelection,
+};
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
@@ -83,8 +85,15 @@ enum Command {
         artifact_root: PathBuf,
 
         /// Exact lowercase 16-hex-character S2 cell at the configured embodied-patch level.
+        /// Explicit integration-only starting patch. Mutually exclusive with a
+        /// seed-derived `--provisional-land-origin-selection`.
         #[arg(long)]
-        initial_patch: S2CellId,
+        initial_patch: Option<S2CellId>,
+
+        /// Canonical source-auditable origin derived from the world seed and the
+        /// composition's Natural Earth land-reference root.
+        #[arg(long)]
+        provisional_land_origin_selection: Option<PathBuf>,
 
         /// Canonical point-scoped modeled-range candidates. Must be supplied with
         /// `--fauna-seeded-selection` and `--fauna-individuals-per-selected-species`.
@@ -169,6 +178,7 @@ async fn main() -> Result<()> {
             composition,
             artifact_root,
             initial_patch,
+            provisional_land_origin_selection,
             fauna_range_candidates,
             fauna_seeded_selection,
             fauna_individuals_per_selected_species,
@@ -184,6 +194,7 @@ async fn main() -> Result<()> {
                 &composition,
                 &artifact_root,
                 initial_patch,
+                provisional_land_origin_selection.as_deref(),
                 fauna_range_candidates.as_deref(),
                 fauna_seeded_selection.as_deref(),
                 fauna_individuals_per_selected_species,
@@ -461,7 +472,8 @@ async fn init_provisional_full_earth_world(
     seed: u64,
     composition_path: &std::path::Path,
     artifact_root: &std::path::Path,
-    initial_patch: S2CellId,
+    initial_patch: Option<S2CellId>,
+    provisional_land_origin_selection_path: Option<&std::path::Path>,
     fauna_range_candidates_path: Option<&std::path::Path>,
     fauna_seeded_selection_path: Option<&std::path::Path>,
     fauna_individuals_per_selected_species: Option<u32>,
@@ -475,12 +487,14 @@ async fn init_provisional_full_earth_world(
     let verified = verify_provisional_world_artifacts(&composition, artifact_root)
         .context("verify every provisional full-Earth artifact")?;
     let embodied_level = composition.full_earth_grid.levels.embodied_patch;
-    if initial_patch.level() != embodied_level {
-        anyhow::bail!(
-            "initial patch {initial_patch} is S2 level {}, expected configured level {embodied_level}",
-            initial_patch.level()
-        );
-    }
+    let initial_origin = resolve_provisional_initial_origin(
+        &composition,
+        WorldSeed::new(seed),
+        embodied_level,
+        initial_patch,
+        provisional_land_origin_selection_path,
+    )?;
+    let initial_patch = initial_origin.patch;
     let partition_level = composition.full_earth_grid.levels.planetary_aggregate;
     let composition_reference = composition
         .execution_reference()
@@ -501,6 +515,12 @@ async fn init_provisional_full_earth_world(
     .context("construct provisional full-Earth execution configuration")?;
 
     let mut manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
+    if let Some(selection_digest) = initial_origin.selection_digest {
+        manifest.scientific_datasets.insert(
+            "provisional_land_origin_selection".to_owned(),
+            selection_digest.to_string(),
+        );
+    }
     let species = SpeciesIdentity::new(
         "gbif",
         "2436436",
@@ -568,6 +588,72 @@ async fn init_provisional_full_earth_world(
         session.world.cursor.sequence, session.world.cursor.tick, session.world.cursor.state_hash
     );
     Ok(())
+}
+
+struct ResolvedInitialOrigin {
+    patch: S2CellId,
+    selection_digest: Option<world_domain::Digest>,
+}
+
+fn resolve_provisional_initial_origin(
+    composition: &world_data::ProvisionalWorldComposition,
+    world_seed: WorldSeed,
+    embodied_level: u8,
+    explicit_patch: Option<S2CellId>,
+    selection_path: Option<&std::path::Path>,
+) -> Result<ResolvedInitialOrigin> {
+    match (explicit_patch, selection_path) {
+        (Some(_), Some(_)) | (None, None) => anyhow::bail!(
+            "provide exactly one of --initial-patch or --provisional-land-origin-selection"
+        ),
+        (Some(patch), None) => {
+            if patch.level() != embodied_level {
+                anyhow::bail!(
+                    "initial patch {patch} is S2 level {}, expected configured level {embodied_level}",
+                    patch.level()
+                );
+            }
+            Ok(ResolvedInitialOrigin {
+                patch,
+                selection_digest: None,
+            })
+        }
+        (None, Some(selection_path)) => {
+            let bytes = std::fs::read(selection_path).with_context(|| {
+                format!(
+                    "read provisional land-origin selection {}",
+                    selection_path.display()
+                )
+            })?;
+            let selection = ProvisionalLandOriginSelection::from_canonical_slice(&bytes)
+                .context("validate provisional land-origin selection")?;
+            if selection.world_seed != world_seed {
+                anyhow::bail!(
+                    "provisional land-origin selection world seed does not match the world seed"
+                );
+            }
+            if selection.selected_embodied_patch.level() != embodied_level {
+                anyhow::bail!(
+                    "provisional land-origin selection targets S2 level {}, expected configured level {embodied_level}",
+                    selection.selected_embodied_patch.level()
+                );
+            }
+            let coastline = composition
+                .earth_layers
+                .iter()
+                .find(|layer| layer.kind == DataLayerKind::Coastline)
+                .context("provisional composition has no coastline release")?;
+            if selection.land_reference_root_digest != coastline.release.content_hash {
+                anyhow::bail!(
+                    "provisional land-origin selection does not match the composition coastline root"
+                );
+            }
+            Ok(ResolvedInitialOrigin {
+                patch: selection.selected_embodied_patch,
+                selection_digest: Some(world_domain::Digest::sha256(&bytes)),
+            })
+        }
+    }
 }
 
 struct ProvisionalFaunaGenesis {
