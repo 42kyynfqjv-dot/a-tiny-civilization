@@ -155,6 +155,14 @@ scientific bundle, or startable full-Earth world.
 The ETOPO path has independently generated its global L6→L10 four-point-quadrature
 terrain release over the same 6,291,456 target cells, with root-index SHA-256
 `0794832d533a81e0889779a78aa39d730a3b09a98edff37b57ef76f394504876`.
+The CHELSA path has now generated and independently traversed its provisional global
+L6→L10 monthly near-surface temperature-normal release over all 6,291,456 target
+cells. Its 24,576 tiles commit under root-index SHA-256
+`7ff41b785e85f6314689bd31fcddd6546608dc9bd23ed60456a9b4826671cd9e`;
+the inspector reports 18,404 cells without land-source support and monthly source
+ranges from -63.850 °C through 40.050 °C. It remains land-only CHELSA evidence, not a
+globally complete admitted climate: ERA5 ocean, sea-surface, precipitation, wind, and
+sea-ice composition plus integrated validation are still required.
 The acquired Copernicus land-cover artifact contains one verified 2,351,763,989-byte
 NetCDF member on its documented 64,800 × 129,600 grid, with LCCS class and all four
 quality fields. Its portable inspector independently verifies the complete snapshot,
@@ -266,6 +274,17 @@ the foundation does not invent placeholder experiences.
 - Cloudflare Tunnel for the web origin only and Access for administrative routes;
 - PostgreSQL WAL/base backups to offsite object storage with restore drills;
 - service budgets, incident disclosure, metrics, and archive checksums.
+
+The production path now pins Cloudflare Tunnel 2026.7.2 by multi-architecture image
+digest and structurally limits it to the web-only edge network. PostgreSQL 17 has a
+checksum-pinned WAL-G 3.0.8 image, continuous archived-WAL configuration, private
+Cloudflare R2 destination contract, bucket-scoped credentials, and independent
+libsodium client-side encryption. Checked-in wrappers take base backups and create a
+fresh isolated restore project; the restore verifier replays a selected world from
+genesis, checks snapshot-plus-tail equivalence, and compares event/state hashes to the
+committed cursor. The complete local encrypted base-backup/WAL-recovery probe passed.
+R2 bucket/token creation, persistent encryption-key escrow, the first real offsite
+backup, and a recorded production restore drill remain owner-account handoffs.
 
 ## Vertical-slice proof
 
