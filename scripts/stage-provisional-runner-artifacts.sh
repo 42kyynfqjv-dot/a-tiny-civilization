@@ -19,7 +19,7 @@ if [[ -e "${destination}" ]]; then
 fi
 
 entries=(
-  "data/provisional/full-earth-breadth-first-0.1.0.json|4187ceb79a1e19e9479a61a97a454399446c0808300d23c168f84bed5feea6b4|8946"
+  "data/provisional/full-earth-breadth-first-0.1.0.json|85056213cebc792e389b70e6c574efe59de1d5bb8851427dc8352e67209c4db2|9647"
   "data/derived-cache/etopo-2022-v1-l6-l10-q4-atomic/layers/bedrock-relief/root.index|0794832d533a81e0889779a78aa39d730a3b09a98edff37b57ef76f394504876|7741506"
   "data/derived-cache/chelsa-bioclim-plus-v2.1-tas-annual-l6-l10-v1/layers/near-surface-air-temperature-normal/root.index|7ff41b785e85f6314689bd31fcddd6546608dc9bd23ed60456a9b4826671cd9e|8257711"
   "data/derived-cache/natural-earth-10m-land-v5.1.2-l6-l10-reference/layers/land-reference/root.index|d8ac669b89f2903987766a2f55763b415bd7234097307ff63fcb7771099580ac|7716930"
@@ -31,6 +31,7 @@ entries=(
   "data/source-cache/jpl-de441/de441_part-2.bsp|3abb17dae2d78dd34880377544aacb54892104a0d4462b322cb9f4454d4887f6|1656830976"
   "data/derived-cache/gbif-animalia-2023-08-28-v1.bin|b0597d47bc616b8ed2c18e7ba625a460538e9bac4bbae920f3f016095b966fa0|256508217"
   "data/source-inspections/fauna-traits-v1-inventory.json|b03ce7a3bf08188ba756e256f353f11b6f5d651b652e132a829a60bb844e0499|5640"
+  "data/source-inspections/fauna-physiology-catalog-v1.json|ad76dba8b53f656aab69cb3286d77a376585200fa4ecfea25ab24a515b7fd0b5|808"
 )
 
 install -d -m 0750 -o root -g 10001 "${destination}"
