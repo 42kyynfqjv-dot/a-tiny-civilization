@@ -171,13 +171,18 @@ sudo ./scripts/provision-local-cognition.sh
 Compose subsequently mounts that external volume into an unexposed `local-cognition` service on the
 private backend network. Runtime cloud access is disabled for that service.
 
-Install the same complete check as a periodic host monitor after deployment:
+The deployment helper installs the same complete check as a periodic host monitor after every
+successful public-edge verification. The installer writes a systemd drop-in bound to the exact
+clean checkout and protected environment, so this host's `/home/shmuel/codex/emergent-civilization`
+path does not inherit the portable unit template's `/opt/a-tiny-civilization` default. It enables
+the two-minute timer and fails deployment unless systemd reports the timer both enabled and active.
+
+To repair or reinstall it independently after an operating-system change:
 
 ```bash
-sudo install -m 0644 ops/systemd/a-tiny-civilization-backend-status.service /etc/systemd/system/
-sudo install -m 0644 ops/systemd/a-tiny-civilization-backend-status.timer /etc/systemd/system/
-sudo systemctl daemon-reload
-sudo systemctl enable --now a-tiny-civilization-backend-status.timer
+sudo ./scripts/install-production-backend-monitor.sh \
+  --env-file /etc/a-tiny-civilization-production.env \
+  --confirm-production-monitor-install
 sudo systemctl start a-tiny-civilization-backend-status.service
 systemctl status a-tiny-civilization-backend-status.service
 ```

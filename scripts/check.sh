@@ -43,6 +43,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-public-genesis-preflight.sh
 ./scripts/verify-live-genesis-gate.sh
 ./scripts/verify-backend-status.sh
+./scripts/verify-production-monitor-installer.sh
 ./scripts/verify-hindsight-runtime.sh
 ./scripts/verify-qualification-status.sh
 bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qualified-world.sh \
@@ -50,6 +51,7 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/deploy-production-app.sh ./scripts/activate-qualified-canonical-world.sh \
   ./scripts/prepare-production-genesis-database.sh ./scripts/activate-production-genesis.sh \
   ./scripts/verify-production-checkout.sh \
+  ./scripts/install-production-backend-monitor.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \
   ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh \
   ./scripts/verify-public-edge.sh

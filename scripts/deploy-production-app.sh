@@ -192,3 +192,6 @@ fi
   "http://${api_origin}" "$running_world_id" "$running_world_sequence"
 
 "${project_root}/scripts/verify-public-edge.sh" https://atinycivilization.com
+"${project_root}/scripts/install-production-backend-monitor.sh" \
+  --env-file "$environment_file" \
+  --confirm-production-monitor-install
