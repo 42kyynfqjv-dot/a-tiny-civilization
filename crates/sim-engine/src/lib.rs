@@ -3458,13 +3458,7 @@ impl EngineState {
                                         "temperature does not fit perception range".to_owned(),
                                     )
                                 })?;
-                                let mut readings = vec![PropertyReading {
-                                    channel: PerceptionChannel::Touch,
-                                    property_code: "temperature".to_owned(),
-                                    quantized_value: temperature,
-                                    uncertainty: 0,
-                                }];
-                                if self.uses_local_atmospheric_flux_driver() {
+                                let readings = if self.uses_local_atmospheric_flux_driver() {
                                     let (water_flux, air_motion) = self
                                         .local_atmospheric_flux_at_tick(configuration)
                                         .map_err(|error| {
@@ -3480,21 +3474,34 @@ impl EngineState {
                                             "air motion does not fit perception range".to_owned(),
                                         )
                                     })?;
-                                    readings.extend([
-                                        PropertyReading {
-                                            channel: PerceptionChannel::Touch,
-                                            property_code: "water_flux".to_owned(),
-                                            quantized_value: water_flux,
-                                            uncertainty: 0,
-                                        },
+                                    vec![
                                         PropertyReading {
                                             channel: PerceptionChannel::Touch,
                                             property_code: "air_motion".to_owned(),
                                             quantized_value: air_motion,
                                             uncertainty: 0,
                                         },
-                                    ]);
-                                }
+                                        PropertyReading {
+                                            channel: PerceptionChannel::Touch,
+                                            property_code: "temperature".to_owned(),
+                                            quantized_value: temperature,
+                                            uncertainty: 0,
+                                        },
+                                        PropertyReading {
+                                            channel: PerceptionChannel::Touch,
+                                            property_code: "water_flux".to_owned(),
+                                            quantized_value: water_flux,
+                                            uncertainty: 0,
+                                        },
+                                    ]
+                                } else {
+                                    vec![PropertyReading {
+                                        channel: PerceptionChannel::Touch,
+                                        property_code: "temperature".to_owned(),
+                                        quantized_value: temperature,
+                                        uncertainty: 0,
+                                    }]
+                                };
                                 events.push(Emission::new(
                                     partition.partition(),
                                     work.key(),
@@ -12861,6 +12868,102 @@ mod tests {
             .expect("commit tick");
         assert_eq!(
             replay(manifest, &[genesis, tick]).expect("replay").state,
+            after_tick
+        );
+    }
+
+    #[test]
+    fn atmospheric_flux_ruleset_emits_canonically_ordered_physical_readings() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION;
+        let mut person =
+            regulated_full_earth_person(manifest.world_id, 0x1281, 10_000_000_000, 10_000_000);
+        person.birth_category = BirthCategory::new("female").expect("category");
+        person.reproductive_physiology = Some(reproductive_fixture_profile(person.species.clone()));
+        person.heritable_disposition_profile =
+            Some(heritable_fixture_profile(person.species.clone()));
+        let patch = person.embodied_patch.expect("founder patch");
+        let water = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("real water identity");
+        let material = InitialMaterialInstance {
+            object_id: EntityId::deterministic(manifest.world_id, b"flux-test-water"),
+            material: water.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000),
+            oral_transfer_profiles: vec![OralTransferCommitment {
+                commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "flux-test-water-oral-v1".to_owned(),
+                profile_digest: Digest::sha256(b"flux test water oral fixture"),
+                material: water.clone(),
+                species: person.species.clone(),
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                transfer_mass_milligrams: 1,
+                recoverable_energy_joules: 1,
+                hydration_recovery_seconds: 1,
+            }],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "flux-test-water-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"flux test water reservoir fixture"),
+                material: water,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("L10 coverage"),
+                maximum_mass_milligrams: 2_000_000,
+                replenishment_mass_milligrams_per_tick: 1,
+            }),
+        };
+        let initial = EngineState::new(manifest.clone());
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial
+                    .plan_configured_genesis_with_materials(
+                        weather_provisional_full_earth_configuration(),
+                        vec![person],
+                        vec![material],
+                    )
+                    .expect("atmospheric-flux genesis"),
+            )
+            .expect("commit atmospheric-flux genesis");
+        let events = running
+            .plan_next_tick_with_celestial(CelestialState::new(
+                TdbSecondsSinceJ2000::new(123),
+                CartesianMillimetres::new(1, 2, 3),
+                CartesianMillimetres::new(4, 5, 6),
+            ))
+            .expect("atmospheric-flux tick");
+        let readings = events.iter().find_map(|event| match event {
+            DomainEvent::OrganismPerceived { perception, .. } if perception.readings.len() == 3 => {
+                Some(&perception.readings)
+            }
+            _ => None,
+        });
+        assert_eq!(
+            readings
+                .expect("combined physical perception")
+                .iter()
+                .map(|reading| reading.property_code.as_str())
+                .collect::<Vec<_>>(),
+            ["air_motion", "temperature", "water_flux"]
+        );
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, events)
+            .expect("commit atmospheric-flux tick");
+        assert_eq!(
+            tick.event_schema_version,
+            LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, tick])
+                .expect("atmospheric-flux replay")
+                .state,
             after_tick
         );
     }
