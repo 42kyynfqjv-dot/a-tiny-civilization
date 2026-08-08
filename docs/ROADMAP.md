@@ -815,3 +815,10 @@ The candidate-v10 memory-delivery timing is now an explicit runner mode. `memory
 uses the same durable claim, idempotent Hindsight retain, and acknowledgement path, but removes the
 continuous service's idle delay and exits only on an empty ready queue. Delivery and storage errors
 are fatal in drain mode. Production's continuous retrying worker remains unchanged.
+
+The next canonical input revision corrects EltonTraits fixed-decimal body-mass retention. Physiology
+catalog v4 contains 174,070 EltonTraits profiles, and canonical preparation selects adult mass from
+that independent set before falling back to Amniote. Source-informed coverage at the committed
+origin rises from five to 24 of 32 fauna taxa without merging publications or making mass causal.
+Composition 0.1.2 and ADR 0117 pin the correction; it requires a fresh genesis and qualification
+before it can supersede the existing immutable candidate.

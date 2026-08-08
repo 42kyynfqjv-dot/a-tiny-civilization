@@ -106,7 +106,7 @@ enum Command {
         /// Canonical schema-v1 provisional composition manifest.
         #[arg(
             long,
-            default_value = "data/provisional/full-earth-breadth-first-0.1.1.json"
+            default_value = "data/provisional/full-earth-breadth-first-0.1.2.json"
         )]
         composition: PathBuf,
 
@@ -3109,7 +3109,7 @@ mod tests {
     #[test]
     fn provisional_origin_environment_must_bind_to_the_selected_origin_and_composition() {
         let composition = ProvisionalWorldComposition::from_canonical_slice(include_bytes!(
-            "../../../data/provisional/full-earth-breadth-first-0.1.1.json"
+            "../../../data/provisional/full-earth-breadth-first-0.1.2.json"
         ))
         .expect("checked-in provisional composition");
         let selected_l10_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");

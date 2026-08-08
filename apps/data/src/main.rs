@@ -601,8 +601,10 @@ enum DeriveCommand {
         selection: PathBuf,
         #[arg(long)]
         origin_environment: PathBuf,
-        #[arg(long)]
-        body_mass_profiles: PathBuf,
+        /// Independent canonical profile sets in deterministic priority order.
+        /// Repeat the flag to provide a fallback source without merging evidence.
+        #[arg(long, required = true)]
+        body_mass_profiles: Vec<PathBuf>,
         #[arg(long)]
         output: PathBuf,
     },
@@ -650,8 +652,10 @@ enum DeriveCommand {
         /// Canonical source-compiled physiology profiles. Exact adult-body-mass
         /// aggregates are retained as literature approximations; missing species
         /// receive explicit non-evidentiary assumptions.
+        /// Independent canonical profile sets used by the plan. Repeat once per
+        /// pinned source; each selected species retains its source-set digest.
         #[arg(long, requires = "body_mass_plan")]
-        body_mass_profiles: Option<PathBuf>,
+        body_mass_profiles: Vec<PathBuf>,
         /// Explicit selection from the body-mass profile set. Optional only as a
         /// pair with `--body-mass-profiles`.
         #[arg(long, requires = "body_mass_profiles")]
@@ -1657,7 +1661,7 @@ async fn main() -> Result<()> {
                     metabolic_profiles: metabolic_profiles.as_deref(),
                     metabolic_rate_plan: metabolic_rate_plan.as_deref(),
                     life_history_profiles: life_history_profiles.as_deref(),
-                    body_mass_profiles: body_mass_profiles.as_deref(),
+                    body_mass_profiles: &body_mass_profiles,
                     body_mass_plan: body_mass_plan.as_deref(),
                 },
                 tick_duration_seconds,
@@ -2570,6 +2574,30 @@ fn load_metabolic_profiles(path: &Path) -> Result<(FaunaPhysiologyProfileSet, Di
     Ok((profiles, Digest::sha256(&bytes)))
 }
 
+fn load_body_mass_profile_sets(
+    paths: &[PathBuf],
+) -> Result<Vec<(FaunaPhysiologyProfileSet, Digest)>> {
+    if paths.is_empty() {
+        bail!("at least one body-mass profile set is required");
+    }
+    let mut seen = HashSet::new();
+    paths
+        .iter()
+        .map(|path| {
+            let loaded = load_metabolic_profiles(path)
+                .with_context(|| format!("load body-mass profile set {}", path.display()))?;
+            if !seen.insert(loaded.1) {
+                bail!(
+                    "duplicate body-mass profile-set digest {} from {}",
+                    loaded.1,
+                    path.display()
+                );
+            }
+            Ok(loaded)
+        })
+        .collect()
+}
+
 fn canonical_metabolic_profile<'a>(
     profiles: &'a FaunaPhysiologyProfileSet,
     species: &SpeciesIdentity,
@@ -3009,7 +3037,7 @@ fn derive_fauna_body_mass_plan(
     candidates_path: &Path,
     selection_path: &Path,
     origin_environment_path: &Path,
-    body_mass_profiles_path: &Path,
+    body_mass_profiles_paths: &[PathBuf],
     output_path: &Path,
 ) -> Result<()> {
     let (_, _, _, population) = load_population_plan_inputs(
@@ -3018,18 +3046,13 @@ fn derive_fauna_body_mass_plan(
         origin_environment_path,
         population_plan_path,
     )?;
-    let (profiles, profile_set_digest) = load_metabolic_profiles(body_mass_profiles_path)?;
+    let profile_sets = load_body_mass_profile_sets(body_mass_profiles_paths)?;
     let mut selections = population
         .entries
         .iter()
         .filter_map(|entry| {
-            let profile = profiles.profiles.iter().find(|profile| {
-                profile.species.catalog == entry.species.catalog
-                    && profile.species.identifier == entry.species.identifier
-                    && profile.trait_id == "adult-body-mass"
-                    && profile.value.unit == "g"
-                    && profile.value.value > 0
-            })?;
+            let (profile, profile_set_digest) =
+                select_body_mass_profile(&entry.species, &profile_sets)?;
             Some(FaunaBodyMassSelection {
                 selection_schema_version: world_data::FAUNA_BODY_MASS_SELECTION_SCHEMA_VERSION,
                 profile_set_digest,
@@ -3050,8 +3073,13 @@ fn derive_fauna_body_mass_plan(
         .canonical_bytes()
         .context("encode fauna body-mass plan")?;
     for selection in &plan.selections {
+        let profiles = profile_sets
+            .iter()
+            .find(|(_, digest)| *digest == selection.profile_set_digest)
+            .map(|(profiles, _)| profiles)
+            .context("selected body-mass profile set was not loaded")?;
         selection
-            .resolve(&profiles)
+            .resolve(profiles)
             .context("resolve selected adult-body-mass observation")?;
     }
     write_new_artifact(output_path, &bytes)?;
@@ -3062,10 +3090,30 @@ fn derive_fauna_body_mass_plan(
             "planned_species_count": population.entries.len(),
             "source_measured_species_count": plan.selections.len(),
             "uncovered_species_count": population.entries.len() - plan.selections.len(),
-            "policy": "first canonical exact positive adult-body-mass observation for each covered planned species; the explicit selection is pinned and observations are never averaged",
+            "profile_set_count": profile_sets.len(),
+            "policy": "first canonical exact positive adult-body-mass observation from the first covering profile set in explicit command-line priority order; every selection pins its independent source-set digest and observations are never averaged",
         }))?
     );
     Ok(())
+}
+
+fn select_body_mass_profile<'a>(
+    species: &SpeciesIdentity,
+    profile_sets: &'a [(FaunaPhysiologyProfileSet, Digest)],
+) -> Option<(&'a world_data::FaunaPhysiologyProfile, Digest)> {
+    profile_sets.iter().find_map(|(profiles, digest)| {
+        profiles
+            .profiles
+            .iter()
+            .find(|profile| {
+                profile.species.catalog == species.catalog
+                    && profile.species.identifier == species.identifier
+                    && profile.trait_id == "adult-body-mass"
+                    && profile.value.unit == "g"
+                    && profile.value.value > 0
+            })
+            .map(|profile| (profile, *digest))
+    })
 }
 
 fn derive_fauna_ecology_plan(
@@ -3245,7 +3293,7 @@ fn engineering_body_profile_entry(
     tick_duration_seconds: u32,
     range_package: &str,
     life_history_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
-    sourced_body_mass: Option<&(FaunaPhysiologyProfileSet, FaunaBodyMassPlan)>,
+    sourced_body_mass: Option<&SourcedBodyMass>,
 ) -> Result<ProvisionalOrganismBodyProfileEntry> {
     let life_history = provisional_life_history(range_package);
     let profile_digest = Digest::sha256(
@@ -3310,11 +3358,14 @@ fn engineering_body_profile_entry(
             .as_slice(),
     );
     let selected_mass = sourced_body_mass
-        .and_then(|(profiles, plan)| {
-            plan.selection_for(&species)
-                .map(|selection| (profiles, selection))
+        .and_then(|evidence| {
+            evidence
+                .plan
+                .selection_for(&species)
+                .map(|selection| (evidence, selection))
         })
-        .map(|(profiles, selection)| {
+        .map(|(evidence, selection)| {
+            let profiles = evidence.profiles_for(selection)?;
             selection
                 .resolve(profiles)
                 .context("resolve exact fauna body-mass observation")
@@ -3341,8 +3392,9 @@ fn engineering_body_profile_entry(
             }
         },
         |profile| {
-            let (_, plan) = sourced_body_mass.expect("a selected profile requires its plan");
-            let selection = plan
+            let evidence = sourced_body_mass.expect("a selected profile requires its evidence");
+            let selection = evidence
+                .plan
                 .selection_for(&species)
                 .expect("a selected profile requires its selection");
             AdultBodyMassCommitment {
@@ -3476,8 +3528,26 @@ struct BodyProfileEvidencePaths<'a> {
     metabolic_profiles: Option<&'a Path>,
     metabolic_rate_plan: Option<&'a Path>,
     life_history_profiles: Option<&'a Path>,
-    body_mass_profiles: Option<&'a Path>,
+    body_mass_profiles: &'a [PathBuf],
     body_mass_plan: Option<&'a Path>,
+}
+
+struct SourcedBodyMass {
+    profile_sets: Vec<(FaunaPhysiologyProfileSet, Digest)>,
+    plan: FaunaBodyMassPlan,
+}
+
+impl SourcedBodyMass {
+    fn profiles_for(
+        &self,
+        selection: &FaunaBodyMassSelection,
+    ) -> Result<&FaunaPhysiologyProfileSet> {
+        self.profile_sets
+            .iter()
+            .find(|(_, digest)| *digest == selection.profile_set_digest)
+            .map(|(profiles, _)| profiles)
+            .context("selected body-mass profile set was not loaded")
+    }
 }
 
 fn derive_provisional_organism_body_profile_plan(
@@ -3535,13 +3605,13 @@ fn derive_provisional_organism_body_profile_plan(
             Ok::<_, anyhow::Error>((profiles, Digest::sha256(&bytes)))
         })
         .transpose()?;
-    let sourced_body_mass = match (evidence.body_mass_profiles, evidence.body_mass_plan) {
-        (None, None) => None,
-        (Some(profiles_path), Some(plan_path)) => {
-            let profile_bytes = fs::read(profiles_path)
-                .with_context(|| format!("read body-mass profiles {}", profiles_path.display()))?;
-            let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&profile_bytes)
-                .context("validate body-mass profile set")?;
+    let sourced_body_mass = match (
+        evidence.body_mass_profiles.is_empty(),
+        evidence.body_mass_plan,
+    ) {
+        (true, None) => None,
+        (false, Some(plan_path)) => {
+            let profile_sets = load_body_mass_profile_sets(evidence.body_mass_profiles)?;
             let plan = FaunaBodyMassPlan::from_canonical_slice(
                 &fs::read(plan_path)
                     .with_context(|| format!("read body-mass plan {}", plan_path.display()))?,
@@ -3558,11 +3628,16 @@ fn derive_provisional_organism_body_profile_plan(
                         selected.species.scientific_name
                     );
                 }
+                let profiles = profile_sets
+                    .iter()
+                    .find(|(_, digest)| *digest == selected.profile_set_digest)
+                    .map(|(profiles, _)| profiles)
+                    .context("selected body-mass profile set was not supplied")?;
                 selected
-                    .resolve(&profiles)
+                    .resolve(profiles)
                     .context("resolve selected fauna body-mass observation")?;
             }
-            Some((profiles, plan))
+            Some(SourcedBodyMass { profile_sets, plan })
         }
         _ => {
             bail!("body-mass profiles and body-mass plan must be supplied together or both omitted")
@@ -3640,7 +3715,7 @@ fn derive_provisional_organism_body_profile_plan(
             "source_informed_adult_body_mass_count": plan.entries.iter().filter_map(|entry| entry.adult_body_mass.as_ref()).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
             "engineering_assumption_adult_body_mass_count": plan.entries.iter().filter_map(|entry| entry.adult_body_mass.as_ref()).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
             "provisional_reproduction_pacing": "each female and male category uses its exact retained species maturity aggregate when present; every missing category falls back independently to a coarse simulation-time engineering guardrail",
-            "policy": "human metabolism, regulation, reproduction, body mass, and heredity remain engineering assumptions; retained Amniote maturity and adult-body-mass aggregates are source-addressed literature approximations, never raw observations; every uncovered category, mass, and metabolic rate remains an explicit engineering assumption",
+            "policy": "human metabolism, regulation, reproduction, body mass, and heredity remain engineering assumptions; retained maturity and independently source-pinned adult-body-mass aggregates are source-addressed literature approximations, never raw observations; every uncovered category, mass, and metabolic rate remains an explicit engineering assumption",
         }))?
     );
     Ok(())
@@ -15521,13 +15596,17 @@ mod tests {
             }],
         };
         body_mass_plan.validate().expect("valid body-mass plan");
+        let evidence = SourcedBodyMass {
+            profile_sets: vec![(profiles, profile_set_digest)],
+            plan: body_mass_plan,
+        };
         let entry = engineering_body_profile_entry(
             species.clone(),
             engineering_metabolic_commitment(species),
             300,
             "homo_sapiens",
             None,
-            Some(&(profiles, body_mass_plan)),
+            Some(&evidence),
         )
         .expect("body profile");
         let mass = entry.adult_body_mass.expect("adult body mass");
@@ -15540,6 +15619,65 @@ mod tests {
             PhysiologicalEvidenceBasis::LiteratureApproximation
         );
         mass.validate().expect("valid retained body mass");
+    }
+
+    #[test]
+    fn body_mass_profile_sets_use_explicit_priority_and_independent_fallbacks() {
+        let first_species = SpeciesIdentity::new(
+            "gbif",
+            "1",
+            "First species",
+            "https://www.gbif.org/species/1",
+        )
+        .expect("test species");
+        let fallback_species = SpeciesIdentity::new(
+            "gbif",
+            "2",
+            "Fallback species",
+            "https://www.gbif.org/species/2",
+        )
+        .expect("test species");
+        let profile =
+            |species: SpeciesIdentity, value, record: &str| world_data::FaunaPhysiologyProfile {
+                species,
+                trait_id: "adult-body-mass".to_owned(),
+                value: world_data::ScaledFaunaTraitValue {
+                    value,
+                    decimal_places: 0,
+                    unit: "g".to_owned(),
+                },
+                source: world_data::FaunaEvidenceSource::EltonTraitsV1_0,
+                source_field: "BodyMass-Value".to_owned(),
+                source_record_id: record.to_owned(),
+                source_record_digest: Digest::sha256(record.as_bytes()),
+                evidence_basis: world_data::FaunaEvidenceBasis::SourceCompiledSpeciesAggregate,
+            };
+        let preferred = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: world_data::FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
+            source_artifact_digest: Digest::sha256(b"preferred source"),
+            profiles: vec![profile(first_species.clone(), 10, "preferred-row")],
+        };
+        let fallback = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: world_data::FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
+            source_artifact_digest: Digest::sha256(b"fallback source"),
+            profiles: vec![
+                profile(first_species.clone(), 99, "lower-priority-row"),
+                profile(fallback_species.clone(), 20, "fallback-row"),
+            ],
+        };
+        let preferred_digest = Digest::canonical(&preferred).expect("preferred digest");
+        let fallback_digest = Digest::canonical(&fallback).expect("fallback digest");
+        let profile_sets = vec![(preferred, preferred_digest), (fallback, fallback_digest)];
+
+        let (selected, digest) = select_body_mass_profile(&first_species, &profile_sets)
+            .expect("preferred source covers first species");
+        assert_eq!(selected.source_record_id, "preferred-row");
+        assert_eq!(digest, preferred_digest);
+
+        let (selected, digest) = select_body_mass_profile(&fallback_species, &profile_sets)
+            .expect("second source covers fallback species");
+        assert_eq!(selected.source_record_id, "fallback-row");
+        assert_eq!(digest, fallback_digest);
     }
 
     #[test]

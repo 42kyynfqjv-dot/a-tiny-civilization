@@ -2,7 +2,7 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-composition="data/provisional/full-earth-breadth-first-0.1.1.json"
+composition="data/provisional/full-earth-breadth-first-0.1.2.json"
 
 cd "$project_root"
 
@@ -11,13 +11,13 @@ import hashlib, json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
 raw = path.read_bytes()
-if len(raw) != 9842 or hashlib.sha256(raw).hexdigest() != "bf574653def31ba3a93a4ba8ab9dbc3dd9600c1461285fa196f3ef8ae656ebe4":
+if len(raw) != 9842 or hashlib.sha256(raw).hexdigest() != "449ecf9e2956af072eaffbef4bd31c51160d4494d109a81eb5d7c485d187868f":
     raise SystemExit("active provisional composition bytes changed")
 value = json.loads(raw)
 physiology = next(item for item in value["world_components"] if item["kind"] == "fauna_physiology_evidence")
 release = physiology["release"]
-if release["artifact_path"] != "data/derived-cache/fauna-physiology-catalog-v3.json":
-    raise SystemExit("active composition does not pin normalized fauna physiology v3")
+if release["artifact_path"] != "data/derived-cache/fauna-physiology-catalog-v4.json":
+    raise SystemExit("active composition does not pin normalized fauna physiology v4")
 PY
 
 if [[ "${ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE:-0}" == "1" ]]; then
@@ -27,7 +27,7 @@ if [[ "${ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE:-0}" == "1" ]]; then
     exit 2
   fi
   validation="$($data_executable validate-provisional --artifact-root . "$composition")"
-  grep -qx 'composition: full-earth-breadth-first@0.1.1' <<<"$validation"
+  grep -qx 'composition: full-earth-breadth-first@0.1.2' <<<"$validation"
   grep -qx 'artifacts: 147466 (10164215509 bytes verified)' <<<"$validation"
 elif [[ "${ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE:-0}" != "0" ]]; then
   echo "ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE must be 0 or 1" >&2
@@ -40,7 +40,7 @@ for source in \
   scripts/initialize-provisional-world.sh \
   scripts/stage-provisional-runner-artifacts.sh; do
   if ! grep -qF "$composition" "$source"; then
-    echo "active genesis entry point does not pin composition 0.1.1: $source" >&2
+    echo "active genesis entry point does not pin composition 0.1.2: $source" >&2
     exit 1
   fi
 done
@@ -52,13 +52,25 @@ if grep -qF 'full-earth-breadth-first-0.1.0.json' \
   echo "an active genesis entry point still selects composition 0.1.0" >&2
   exit 1
 fi
+if grep -qF 'full-earth-breadth-first-0.1.1.json' \
+  apps/runner/src/main.rs \
+  scripts/prepare-provisional-genesis.sh \
+  scripts/initialize-provisional-world.sh \
+  scripts/stage-provisional-runner-artifacts.sh; then
+  echo "an active genesis entry point still selects composition 0.1.1" >&2
+  exit 1
+fi
 
 grep -q -- '--ruleset-version 30' scripts/initialize-provisional-world.sh
 grep -qF 'ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY' scripts/prepare-canonical-genesis.sh
 grep -qF 'ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1' scripts/prepare-canonical-genesis.sh
 grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-world.sh
+grep -qF -- '--body-mass-profiles data/derived-cache/eltontraits-ecology-v2.json' \
+  scripts/prepare-provisional-genesis.sh
 grep -qF -- '--body-mass-profiles data/derived-cache/amniote-life-history-v1.json' \
   scripts/prepare-provisional-genesis.sh
+grep -qF -- '--fauna-ecology-profile-set data/derived-cache/eltontraits-ecology-v2.json' \
+  scripts/initialize-provisional-world.sh
 grep -qF 'derive fauna-body-mass-plan' scripts/prepare-provisional-genesis.sh
 grep -qF 'derive fauna-ecology-plan' scripts/prepare-provisional-genesis.sh
 grep -qF 'derive provisional-origin-climate-evidence' scripts/prepare-provisional-genesis.sh

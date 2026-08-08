@@ -43,10 +43,10 @@ class QualityWorldAdmissionTests(unittest.TestCase):
         self.addCleanup(pathlib.Path(temporary.name).unlink)
         return pathlib.Path(temporary.name)
 
-    def test_accepts_the_exact_experimental_quality_world(self):
+    def test_rejects_the_superseded_experimental_quality_world(self):
         result = self.run_verifier()
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn('"status":"experimental-quality-world-admission-passed"', result.stdout)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("qualified source boundary differs", result.stderr)
 
     def test_rejects_deployment_authorization(self):
         admission = self.changed_admission(

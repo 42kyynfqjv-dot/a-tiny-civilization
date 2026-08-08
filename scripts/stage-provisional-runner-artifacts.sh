@@ -12,7 +12,7 @@ fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 destination="$(realpath -m "${1:-${project_root}/runtime-artifacts}")"
-composition="data/provisional/full-earth-breadth-first-0.1.1.json"
+composition="data/provisional/full-earth-breadth-first-0.1.2.json"
 data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/release/civilization-data}"
 if [[ -e "${destination}" ]]; then
   echo "staging destination already exists: ${destination}" >&2

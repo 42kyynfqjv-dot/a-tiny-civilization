@@ -53,7 +53,7 @@ material_resources="${output_directory}/material-resource-plan.json"
 
 "${data_executable}" derive provisional-origin-environment \
   --origin-selection "${origin_selection}" \
-  --composition data/provisional/full-earth-breadth-first-0.1.1.json \
+  --composition data/provisional/full-earth-breadth-first-0.1.2.json \
   --artifact-root . \
   --output "${origin_environment}"
 
@@ -132,6 +132,7 @@ fi
   --candidates "${fauna_candidates}" \
   --selection "${fauna_selection}" \
   --origin-environment "${origin_environment}" \
+  --body-mass-profiles data/derived-cache/eltontraits-ecology-v2.json \
   --body-mass-profiles data/derived-cache/amniote-life-history-v1.json \
   --output "${fauna_body_masses}"
 
@@ -140,7 +141,7 @@ fi
   --candidates "${fauna_candidates}" \
   --selection "${fauna_selection}" \
   --origin-environment "${origin_environment}" \
-  --ecology-profiles data/derived-cache/eltontraits-ecology-v1.json \
+  --ecology-profiles data/derived-cache/eltontraits-ecology-v2.json \
   --output "${fauna_ecology}"
 
 "${data_executable}" derive provisional-organism-body-profile-plan \
@@ -151,6 +152,7 @@ fi
   --metabolic-profiles data/derived-cache/animaltraits-metabolic-rate-v1.json \
   --metabolic-rate-plan "${fauna_metabolic_rates}" \
   --life-history-profiles data/derived-cache/amniote-life-history-v1.json \
+  --body-mass-profiles data/derived-cache/eltontraits-ecology-v2.json \
   --body-mass-profiles data/derived-cache/amniote-life-history-v1.json \
   --body-mass-plan "${fauna_body_masses}" \
   --tick-duration-seconds 300 \

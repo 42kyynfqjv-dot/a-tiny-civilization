@@ -4,7 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runtime_root="$(realpath -m "${1:-${project_root}/runtime-artifacts}")"
 data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/release/civilization-data}"
-composition_relative="data/provisional/full-earth-breadth-first-0.1.1.json"
+composition_relative="data/provisional/full-earth-breadth-first-0.1.2.json"
 
 if (($# > 1)); then
   echo "usage: $0 [RUNTIME_ARTIFACT_ROOT]" >&2
