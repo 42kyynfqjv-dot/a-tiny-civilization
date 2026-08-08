@@ -18,6 +18,12 @@ Keep the host firewall closed to public inbound HTTP and database traffic. Use S
 key-based access for the host and Cloudflare Access for any administrative route that
 is later added. The observatory itself remains read-only.
 
+The web origin applies the browser security policy to rendered pages, assets, error
+responses, and proxied observer JSON. Dynamic pages and `/api/` responses are
+`no-store`; content-hashed framework assets remain immutable. Verify these origin
+headers through the public hostname after each web deployment rather than relying only
+on dashboard settings.
+
 ### Docker bridge prerequisite
 
 This deployment deliberately separates `edge`, `web-api`, and `backend` onto Docker

@@ -43,10 +43,11 @@ const worker = {
             { error: { code: "observer_api_unconfigured", message: "observer API is unavailable" } },
             { status: 503 },
           ),
+          url.pathname,
         );
       }
       const upstream = new URL(url.pathname + url.search, observerApiUrl);
-      return withSecurityHeaders(await fetch(new Request(upstream, request)));
+      return withSecurityHeaders(await fetch(new Request(upstream, request)), url.pathname);
     }
 
     if (url.pathname === "/_vinext/image") {
@@ -57,25 +58,35 @@ const worker = {
           const result = await env.IMAGES.input(body).transform(width > 0 ? { width } : {}).output({ format, quality });
           return result.response();
         },
-      }, allowedWidths));
+      }, allowedWidths), url.pathname);
     }
 
-    return withSecurityHeaders(await handler.fetch(request, env, ctx));
+    return withSecurityHeaders(await handler.fetch(request, env, ctx), url.pathname);
   },
 };
 
-function withSecurityHeaders(response: Response): Response {
+function withSecurityHeaders(response: Response, pathname: string): Response {
   const headers = new Headers(response.headers);
   headers.set(
     "content-security-policy",
-    "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; upgrade-insecure-requests",
+    "default-src 'self'; base-uri 'self'; connect-src 'self'; font-src 'self'; form-action 'self'; frame-ancestors 'none'; img-src 'self' data: blob:; manifest-src 'self'; object-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; worker-src 'self' blob:; upgrade-insecure-requests",
   );
+  headers.set("cross-origin-resource-policy", "same-origin");
   headers.set("cross-origin-opener-policy", "same-origin");
+  headers.set("origin-agent-cluster", "?1");
   headers.set("permissions-policy", "camera=(), geolocation=(), microphone=(), payment=()");
   headers.set("referrer-policy", "strict-origin-when-cross-origin");
   headers.set("strict-transport-security", "max-age=31536000; includeSubDomains");
   headers.set("x-content-type-options", "nosniff");
   headers.set("x-frame-options", "DENY");
+  headers.set("x-permitted-cross-domain-policies", "none");
+
+  if (
+    pathname.startsWith("/api/") ||
+    (!pathname.startsWith("/_next/static/") && pathname !== "/_vinext/image")
+  ) {
+    headers.set("cache-control", "no-store");
+  }
 
   return new Response(response.body, {
     headers,

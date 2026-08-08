@@ -19,6 +19,10 @@ test("server-renders the civilization observatory", async () => {
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   assert.equal(response.headers.get("x-content-type-options"), "nosniff");
   assert.equal(response.headers.get("x-frame-options"), "DENY");
+  assert.equal(response.headers.get("cross-origin-resource-policy"), "same-origin");
+  assert.equal(response.headers.get("origin-agent-cluster"), "?1");
+  assert.equal(response.headers.get("x-permitted-cross-domain-policies"), "none");
+  assert.equal(response.headers.get("cache-control"), "no-store");
   assert.match(response.headers.get("content-security-policy") ?? "", /frame-ancestors 'none'/);
   assert.match(response.headers.get("permissions-policy") ?? "", /payment=\(\)/);
 
@@ -73,6 +77,7 @@ test("proxies only observer API paths when configured", async () => {
     assert.equal(upstream.href, "http://observer.internal:8080/api/v1/status?sample=1");
     assert.equal(response.headers.get("x-content-type-options"), "nosniff");
     assert.match(response.headers.get("content-security-policy") ?? "", /default-src 'self'/);
+    assert.equal(response.headers.get("cache-control"), "no-store");
   } finally {
     globalThis.fetch = originalFetch;
   }
