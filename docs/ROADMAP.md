@@ -106,8 +106,9 @@ authorized successor operation, and tamper detection are implemented and covered
 the full repository checks. The complete provisional full-Earth input closure and its
 source-backed ruleset-26 causal path are now admitted. Canonical preparation and
 initialization wrappers accept only an offline-verified public seed resolution and
-derive the world identifier without operator choice; public launch remains gated on
-resolving the already-published future-beacon commitment and qualifying that exact world.
+derive the world identifier without operator choice. The published beacon resolution is now
+fixed, and the exact ruleset-26 candidate has passed isolated mechanical qualification; public
+launch remains gated on scientific and observatory admission rather than seed resolution.
 
 ### 2. Full Earth, reference tile, and embodied lives
 
@@ -129,8 +130,9 @@ Legacy bounded schema-v1 bytes remain supported. The engine can now configure, t
 snapshot, and replay the full-Earth foundation with a durable ruleset-two per-organism
 body-clock schedule. Subsequent rulesets add source-backed organisms, ecology,
 materials, memory, learning, and neutral artifact traces. The production canonical
-initializer now exists behind the public-seed verification boundary, and the first
-canonical seed commitment is public but cannot be resolved before its committed round.
+initializer now exists behind the public-seed verification boundary. The first
+canonical seed commitment and its post-round resolution are public, immutable, and mechanically
+qualified without rerolling.
 
 Full-Earth organism state now has a schema-v4 durable S2 embodied-patch position and
 conditional movement fact. Full-Earth initialization/birth requires the configured
