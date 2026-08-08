@@ -8,13 +8,26 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
+confirmed=0
 
-if [[ "${1:-}" == "--env-file" ]]; then
-  environment_file="${2:-}"
-  shift 2
-fi
-if (($#)); then
-  echo "usage: $0 [--env-file /absolute/path/to/production.env]" >&2
+while (($#)); do
+  case "$1" in
+    --env-file)
+      environment_file="${2:-}"
+      shift 2
+      ;;
+    --confirm-public-deployment)
+      confirmed=1
+      shift
+      ;;
+    *)
+      echo "usage: $0 [--env-file /absolute/path/to/production.env] --confirm-public-deployment" >&2
+      exit 2
+      ;;
+  esac
+done
+if ((confirmed != 1)); then
+  echo "deployment requires the literal --confirm-public-deployment argument" >&2
   exit 2
 fi
 

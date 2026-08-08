@@ -15,6 +15,10 @@ if ((preflight_number >= runtime_number || runtime_number >= mutation_number)); 
   echo "runtime artifact verification must follow env preflight and precede Compose mutation" >&2
   exit 1
 fi
+if ! rg -q 'requires the literal --confirm-public-deployment argument' "$deployment"; then
+  echo "production deployment lost its explicit confirmation boundary" >&2
+  exit 1
+fi
 
 required_contracts=(
   'validate-provisional'

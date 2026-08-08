@@ -93,7 +93,8 @@ environment itself and never removes unrelated containers such as Hindsight.
 
 ```bash
 sudo ./scripts/deploy-production-app.sh \
-  --env-file /etc/a-tiny-civilization-production.env
+  --env-file /etc/a-tiny-civilization-production.env \
+  --confirm-public-deployment
 ```
 
 The helper first runs the complete production preflight against the exact root-protected env file
@@ -107,6 +108,8 @@ without allowing Compose defaults to recreate its API dependency. It waits for w
 responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
 worker, and cognition worker. It deliberately does **not** configure a tunnel or
 off-site backups; those remain separate operational changes.
+The literal confirmation argument is required even for root and has no environment-variable
+equivalent, preventing a copied preflight command from becoming a deployment by implication.
 
 Before the first deployment, populate the external local-model volume. The provisioner uses a
 pinned Ollama image, host networking only while downloading, a loopback-bound API, and verifies the
