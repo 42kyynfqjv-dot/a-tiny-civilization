@@ -30,6 +30,9 @@ pub const FAUNA_BODY_MASS_SELECTION_MEDIA_TYPE: &str =
 pub const FAUNA_BODY_MASS_PLAN_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_BODY_MASS_PLAN_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-body-mass-plan+json";
+pub const FAUNA_ECOLOGY_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_ECOLOGY_PLAN_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.fauna-ecology-plan+json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaPhysiologyProfile {
@@ -113,6 +116,97 @@ pub struct FaunaBodyMassSelection {
 pub struct FaunaBodyMassPlan {
     pub plan_schema_version: u16,
     pub selections: Vec<FaunaBodyMassSelection>,
+}
+
+/// Exact source rows retained for one real taxon, without converting descriptive
+/// ecology into an agent drive, action, affordance, or habitat decision.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaEcologyPlanEntry {
+    pub species: SpeciesIdentity,
+    pub source_record_ids: Vec<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaEcologyPlan {
+    pub plan_schema_version: u16,
+    pub profile_set_digest: Digest,
+    pub entries: Vec<FaunaEcologyPlanEntry>,
+}
+
+impl FaunaEcologyPlan {
+    pub fn validate(&self) -> Result<(), FaunaPhysiologyProfileError> {
+        if self.plan_schema_version != FAUNA_ECOLOGY_PLAN_SCHEMA_VERSION
+            || self.profile_set_digest == Digest::ZERO
+        {
+            return Err(FaunaPhysiologyProfileError::InvalidEcologyPlan);
+        }
+        for pair in self.entries.windows(2) {
+            if ecology_entry_key(&pair[0]) >= ecology_entry_key(&pair[1]) {
+                return Err(FaunaPhysiologyProfileError::NonCanonicalEcologyPlanOrder);
+            }
+        }
+        for entry in &self.entries {
+            entry
+                .species
+                .validate()
+                .map_err(|_| FaunaPhysiologyProfileError::InvalidEcologyPlan)?;
+            if entry.source_record_ids.is_empty()
+                || entry
+                    .source_record_ids
+                    .iter()
+                    .any(|value| !technical(value))
+                || entry
+                    .source_record_ids
+                    .windows(2)
+                    .any(|pair| pair[0] >= pair[1])
+            {
+                return Err(FaunaPhysiologyProfileError::InvalidEcologyPlan);
+            }
+        }
+        Ok(())
+    }
+
+    pub fn resolve<'a>(
+        &self,
+        profiles: &'a FaunaPhysiologyProfileSet,
+    ) -> Result<Vec<&'a FaunaPhysiologyProfile>, FaunaPhysiologyProfileError> {
+        self.validate()?;
+        if Digest::sha256(&profiles.canonical_bytes()?) != self.profile_set_digest {
+            return Err(FaunaPhysiologyProfileError::EcologyProfileSetMismatch);
+        }
+        let mut resolved = Vec::new();
+        for entry in &self.entries {
+            for record_id in &entry.source_record_ids {
+                let profile = profiles
+                    .profiles
+                    .iter()
+                    .find(|profile| {
+                        same_catalog_taxon(&profile.species, &entry.species)
+                            && profile.source_record_id == *record_id
+                            && (profile.trait_id.starts_with("diet-")
+                                || profile.trait_id.starts_with("activity-"))
+                    })
+                    .ok_or(FaunaPhysiologyProfileError::SelectedEcologyProfileMissing)?;
+                resolved.push(profile);
+            }
+        }
+        Ok(resolved)
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaunaPhysiologyProfileError> {
+        self.validate()?;
+        serde_json::to_vec(self)
+            .map_err(|error| FaunaPhysiologyProfileError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, FaunaPhysiologyProfileError> {
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| FaunaPhysiologyProfileError::Decode(error.to_string()))?;
+        if value.canonical_bytes()? != bytes {
+            return Err(FaunaPhysiologyProfileError::NonCanonicalEncoding);
+        }
+        Ok(value)
+    }
 }
 
 impl FaunaBodyMassPlan {
@@ -427,6 +521,10 @@ fn body_mass_selection_key(selection: &FaunaBodyMassSelection) -> (&str, &str) {
     (&selection.species.catalog, &selection.species.identifier)
 }
 
+fn ecology_entry_key(entry: &FaunaEcologyPlanEntry) -> (&str, &str) {
+    (&entry.species.catalog, &entry.species.identifier)
+}
+
 fn same_catalog_taxon(left: &SpeciesIdentity, right: &SpeciesIdentity) -> bool {
     left.catalog == right.catalog && left.identifier == right.identifier
 }
@@ -491,6 +589,14 @@ pub enum FaunaPhysiologyProfileError {
     SelectedBodyMassProfileMissing,
     #[error("selected body-mass profile is not a positive gram observation")]
     InvalidSelectedBodyMassProfile,
+    #[error("invalid fauna ecology plan")]
+    InvalidEcologyPlan,
+    #[error("fauna ecology plan is not canonically ordered")]
+    NonCanonicalEcologyPlanOrder,
+    #[error("fauna ecology plan does not match the supplied profile set")]
+    EcologyProfileSetMismatch,
+    #[error("selected fauna ecology profile is absent")]
+    SelectedEcologyProfileMissing,
     #[error("decode error: {0}")]
     Decode(String),
     #[error("encoding error: {0}")]
@@ -676,6 +782,49 @@ mod tests {
         };
         let bytes = plan.canonical_bytes().expect("canonical plan");
         assert_eq!(FaunaBodyMassPlan::from_canonical_slice(&bytes), Ok(plan));
+    }
+
+    #[test]
+    fn ecology_plan_retains_rows_without_creating_behavior() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "5219173",
+            "Canis lupus",
+            "https://www.gbif.org/species/5219173",
+        )
+        .expect("valid fixture species");
+        let profile = FaunaPhysiologyProfile {
+            species: species.clone(),
+            trait_id: "diet-terrestrial-vertebrate-share-percent".to_owned(),
+            value: ScaledFaunaTraitValue {
+                value: 80,
+                decimal_places: 0,
+                unit: "percent".to_owned(),
+            },
+            source: FaunaEvidenceSource::EltonTraitsV1_0,
+            source_field: "VertEnd".to_owned(),
+            source_record_id: "elton-mammal-line-7-diet-vertend".to_owned(),
+            source_record_digest: Digest::sha256(b"ecology row"),
+            evidence_basis: FaunaEvidenceBasis::SourceCompiledSpeciesAggregate,
+        };
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: 1,
+            source_artifact_digest: Digest::sha256(b"Elton source"),
+            profiles: vec![profile.clone()],
+        };
+        let plan = FaunaEcologyPlan {
+            plan_schema_version: FAUNA_ECOLOGY_PLAN_SCHEMA_VERSION,
+            profile_set_digest: Digest::sha256(
+                &profiles.canonical_bytes().expect("canonical profiles"),
+            ),
+            entries: vec![FaunaEcologyPlanEntry {
+                species,
+                source_record_ids: vec![profile.source_record_id.clone()],
+            }],
+        };
+        assert_eq!(plan.resolve(&profiles), Ok(vec![&profile]));
+        let bytes = plan.canonical_bytes().expect("canonical ecology plan");
+        assert_eq!(FaunaEcologyPlan::from_canonical_slice(&bytes), Ok(plan));
     }
 
     #[test]

@@ -658,3 +658,9 @@ explicit assumption, and mass remains noncausal. The fresh candidate passed at t
 exact replay, 3,939 error-free Hindsight deliveries, current projections, and one pre-deadline
 loopback Qwen receipt with paid dispatch disabled. Its immutable evidence supersedes candidate v4
 for launch review but does not authorize deployment or scientific admission.
+
+The next noncausal evidence boundary is now typed for fauna ecology. A canonical plan can retain
+exact EltonTraits diet/activity source rows by stable taxon identity while being structurally unable
+to create an agent drive, action, affordance, habitat decision, or food label. The committed-origin
+source currently covers 23 of 32 selected fauna taxa; derivation and manifest wiring are the next
+integration step, followed only later by separately reviewed causal ecology.
