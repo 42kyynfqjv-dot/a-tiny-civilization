@@ -75,6 +75,12 @@ mortality-mechanism, parentage, location, and internal-identity detail from publ
 copy. The observer API only reads that projection. See
 [ADR 0018](adr/0018-public-timeline-projection.md).
 
+World progress and read-model freshness use a separate incremental telemetry
+projection. Its public endpoint exposes committed batch/event volume, canonical JSON
+bytes, latest commit time, living projected populations, and each projection's exact
+cursor/lag without rescanning history per request. See
+[ADR 0062](adr/0062-incremental-public-world-telemetry.md).
+
 The same process independently maintains `public-organism-v1`: immutable organism
 introduction and ending facts join into safe people/animal records with sourced species
 citations and event provenance. It omits reproductive category, parentage, location,

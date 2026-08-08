@@ -644,9 +644,17 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
     assert_eq!(store.apply_public_timeline_batches(&batches).await?, 2);
     assert_eq!(store.apply_public_organism_batches(&batches).await?, 2);
     assert_eq!(store.apply_public_finding_batches(&batches).await?, 2);
+    assert_eq!(
+        store.apply_public_world_telemetry_batches(&batches).await?,
+        2
+    );
     assert_eq!(store.apply_public_timeline_batches(&batches).await?, 0);
     assert_eq!(store.apply_public_organism_batches(&batches).await?, 0);
     assert_eq!(store.apply_public_finding_batches(&batches).await?, 0);
+    assert_eq!(
+        store.apply_public_world_telemetry_batches(&batches).await?,
+        0
+    );
     assert_eq!(
         store.public_timeline_cursor(manifest.world_id).await?,
         EventSequence::new(2)
@@ -680,6 +688,28 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
             .len()
             >= 2
     );
+    let telemetry = store
+        .public_world_telemetry(manifest.world_id)
+        .await?
+        .expect("public telemetry");
+    assert_eq!(telemetry.through_sequence, EventSequence::new(2));
+    assert_eq!(telemetry.committed_batches, 2);
+    assert_eq!(
+        telemetry.committed_events,
+        u64::try_from(
+            batches
+                .iter()
+                .map(|batch| batch.events.len())
+                .sum::<usize>()
+        )?
+    );
+    assert!(telemetry.canonical_payload_bytes > 0);
+    assert_eq!(telemetry.timeline_lag_batches, 0);
+    assert_eq!(telemetry.organism_index_lag_batches, 0);
+    assert_eq!(telemetry.findings_lag_batches, 0);
+    assert_eq!(telemetry.telemetry_lag_batches, 0);
+    assert_eq!(telemetry.living_people, 1);
+    assert_eq!(telemetry.living_fauna, 0);
     Ok(())
 }
 

@@ -220,9 +220,36 @@ pub struct PublicWorld {
     pub composition_hash: Option<Digest>,
 }
 
+/// Wall-clock observer telemetry derived from durable storage and disposable read
+/// models. These measurements are never simulation inputs.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicWorldTelemetry {
+    pub world_id: WorldId,
+    pub through_sequence: EventSequence,
+    pub tick: SimTick,
+    pub committed_batches: u64,
+    pub committed_events: u64,
+    pub canonical_payload_bytes: u64,
+    pub last_committed_at: chrono::DateTime<chrono::Utc>,
+    pub timeline_through_sequence: EventSequence,
+    pub organism_index_through_sequence: EventSequence,
+    pub findings_through_sequence: EventSequence,
+    pub telemetry_through_sequence: EventSequence,
+    pub timeline_lag_batches: u64,
+    pub organism_index_lag_batches: u64,
+    pub findings_lag_batches: u64,
+    pub telemetry_lag_batches: u64,
+    pub living_people: u64,
+    pub living_fauna: u64,
+}
+
 #[async_trait]
 pub trait ObserverWorldStore: Send + Sync {
     async fn list_public_worlds(&self) -> Result<Vec<PublicWorld>, ObserverProjectionStoreError>;
+    async fn public_world_telemetry(
+        &self,
+        world_id: WorldId,
+    ) -> Result<Option<PublicWorldTelemetry>, ObserverProjectionStoreError>;
 }
 
 /// A deterministic observer finding. It points to evidence rather than narrating a

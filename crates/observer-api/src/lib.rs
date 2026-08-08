@@ -13,7 +13,7 @@ use axum::{
 use chrono::{DateTime, Utc};
 use observer_projection::{
     ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
-    PublicFinding, PublicOrganism, PublicTimelineItem, PublicWorld,
+    PublicFinding, PublicOrganism, PublicTimelineItem, PublicWorld, PublicWorldTelemetry,
 };
 use serde::Deserialize;
 use serde::Serialize;
@@ -63,6 +63,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/ready", get(ready))
         .route("/api/v1/status", get(status))
         .route("/api/v1/worlds", get(public_worlds))
+        .route(
+            "/api/v1/worlds/{world_id}/telemetry",
+            get(public_world_telemetry),
+        )
         .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
         .route("/api/v1/worlds/{world_id}/findings", get(public_findings))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
@@ -153,6 +157,22 @@ async fn public_worlds(State(state): State<ApiState>) -> Result<Json<WorldsRespo
         .await
         .map_err(log_observer_error)?;
     Ok(Json(WorldsResponse { worlds }))
+}
+
+async fn public_world_telemetry(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+) -> Result<Json<PublicWorldTelemetry>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let telemetry = state
+        .store
+        .public_world_telemetry(world_id)
+        .await
+        .map_err(log_observer_error)?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(telemetry))
 }
 
 #[derive(Debug, Deserialize)]
