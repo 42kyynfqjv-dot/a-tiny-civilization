@@ -17,6 +17,14 @@ if [[ "$mode" == "all" || "$mode" == "rust" ]]; then
     echo "dependency audit requires exactly cargo-audit 0.22.2" >&2
     exit 2
   fi
+  if ! command -v cargo-deny >/dev/null; then
+    echo "cargo-deny 0.20.2 is required" >&2
+    exit 2
+  fi
+  if [[ "$(cargo-deny --version)" != "cargo-deny 0.20.2" ]]; then
+    echo "dependency audit requires exactly cargo-deny 0.20.2" >&2
+    exit 2
+  fi
   rsa_tree="$(cd "$project_root" && cargo tree --locked --target all -i rsa@0.9.10 2>/dev/null)"
   if [[ -n "$rsa_tree" ]]; then
     echo "RUSTSEC-2023-0071 exception is invalid because rsa became reachable" >&2
@@ -24,10 +32,13 @@ if [[ "$mode" == "all" || "$mode" == "rust" ]]; then
     exit 1
   fi
   (cd "$project_root" && cargo audit --ignore RUSTSEC-2023-0071)
+  (cd "$project_root" && cargo deny --locked check licenses sources)
 fi
 
 if [[ "$mode" == "all" || "$mode" == "web" ]]; then
   (cd "$project_root/web" && npm audit --omit=dev --audit-level=low)
+  (cd "$project_root/web" && npm query '*' --json) \
+    | python3 "$project_root/scripts/verify-web-dependency-licenses.py"
 fi
 
 echo "Locked dependency advisory audit passed for ${mode}."

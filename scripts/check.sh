@@ -58,6 +58,7 @@ python3 scripts/test_verify_launch_candidate_evidence.py
 python3 -m py_compile scripts/verify-quality-world-admission.py
 python3 -m py_compile scripts/verify-public-edge-headers.py
 python3 scripts/test_verify_public_edge_headers.py
+python3 -m py_compile scripts/verify-web-dependency-licenses.py
 python3 scripts/test_verify_quality_world_admission.py
 ./scripts/verify-demo.sh
 

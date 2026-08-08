@@ -19,3 +19,10 @@ The advisory has no patched release. Removing or replacing this exception requir
 resolution that omits the unused optional package or an upstream constant-time RSA fix. The project
 does not use RSA private-key operations through this package; Apple client assertions use the
 separately configured elliptic-curve signing path.
+
+Rust license and source policy is independently enforced by pinned `cargo-deny 0.20.2` using
+`deny.toml`. The allowlist contains only commercially usable SPDX choices, and dependencies from an
+unknown registry or Git source fail the build. Web dependencies undergo the same fail-closed check;
+licenses with attribution, file-level copyleft, or relinking obligations are enumerated at exact
+package versions in `WEB_LICENSE_REVIEW.json`. The project does not publish the CI container images,
+but this review remains mandatory before that distribution model can change.
