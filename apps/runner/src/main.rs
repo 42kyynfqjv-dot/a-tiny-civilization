@@ -243,6 +243,10 @@ enum Command {
 
         #[arg(long, env = "HINDSIGHT_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
         request_timeout_seconds: u64,
+
+        /// Drain every currently ready entry and exit. Any delivery or store failure is fatal.
+        #[arg(long, default_value_t = false)]
+        drain: bool,
     },
     /// Prepare replay-safe Hindsight recall and free-first model results. This
     /// process never writes canonical events; the simulation runner admits only
@@ -409,6 +413,7 @@ async fn main() -> Result<()> {
             poll_milliseconds,
             claim_lease_seconds,
             request_timeout_seconds,
+            drain,
         } => {
             let memory = HindsightMemory::new(
                 &hindsight_base_url,
@@ -422,6 +427,7 @@ async fn main() -> Result<()> {
                 &worker_id,
                 poll_milliseconds,
                 claim_lease_seconds,
+                drain,
             )
             .await
         }
@@ -1880,6 +1886,7 @@ async fn serve_memory_worker(
     worker_id: &str,
     poll_milliseconds: u64,
     claim_lease_seconds: u32,
+    drain: bool,
 ) -> Result<()> {
     let heartbeat = ServiceHeartbeat {
         service_name: "memory-worker".to_owned(),
@@ -1890,14 +1897,16 @@ async fn serve_memory_worker(
             "mode": "hindsight-delivery",
         }),
     };
-    let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(1)));
+    let effective_poll_milliseconds = if drain { 1 } else { poll_milliseconds.max(1) };
+    let mut interval = tokio::time::interval(Duration::from_millis(effective_poll_milliseconds));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tracing::info!(
         worker_id,
-        poll_milliseconds = poll_milliseconds.max(1),
+        poll_milliseconds = effective_poll_milliseconds,
         claim_lease_seconds = claim_lease_seconds.max(1),
+        drain,
         "subjective-memory delivery worker started"
     );
 
@@ -1951,11 +1960,23 @@ async fn serve_memory_worker(
                                         "could not reschedule subjective-memory delivery"
                                     );
                                 }
+                                if drain {
+                                    anyhow::bail!(
+                                        "Hindsight drain stopped after delivery failure for {operation_id}: {error}"
+                                    );
+                                }
                             }
                         }
                     }
+                    Ok(None) if drain => {
+                        tracing::info!(worker_id, "subjective-memory outbox drain complete");
+                        break;
+                    }
                     Ok(None) => {}
                     Err(error) => {
+                        if drain {
+                            return Err(error).context("memory outbox drain could not claim work");
+                        }
                         tracing::warn!(%error, "memory outbox unavailable; will retry");
                     }
                 }
@@ -2790,6 +2811,30 @@ mod tests {
         assert!(is_production_environment(Some(" Production ")));
         assert!(!is_production_environment(Some("development")));
         assert!(!is_production_environment(None));
+    }
+
+    #[test]
+    fn memory_drain_is_explicit_and_does_not_change_continuous_defaults() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "--database-url",
+            "postgres://example",
+            "memory-worker",
+            "--hindsight-base-url",
+            "http://127.0.0.1:8888",
+            "--drain",
+        ])
+        .expect("parse finite memory drain");
+        let Some(Command::MemoryWorker {
+            drain,
+            poll_milliseconds,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected memory worker command");
+        };
+        assert!(drain);
+        assert_eq!(poll_milliseconds, 500);
     }
 
     #[test]

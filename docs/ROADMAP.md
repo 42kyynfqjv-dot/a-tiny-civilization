@@ -738,3 +738,8 @@ deliveries complete without error, all five projections current, and one consume
 Qwen receipt. Its immutable evidence supersedes candidate v9 for mechanical launch review but does
 not authorize deployment or scientific admission. A prior disposable attempt caught canonical
 property ordering before any tick committed and was preserved rather than rewritten or promoted.
+
+The candidate-v10 memory-delivery timing is now an explicit runner mode. `memory-worker --drain`
+uses the same durable claim, idempotent Hindsight retain, and acknowledgement path, but removes the
+continuous service's idle delay and exits only on an empty ready queue. Delivery and storage errors
+are fatal in drain mode. Production's continuous retrying worker remains unchanged.

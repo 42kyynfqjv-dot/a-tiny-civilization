@@ -226,6 +226,10 @@ driver, but refuses `APP_ENV=production` and cannot change a public world's pace
 # tick, waits for the free local result without advancing simulation time, then
 # completes the exact bounded run.
 ./scripts/advance-cognition-qualified-world.sh "$QUALIFICATION_WORLD_ID" 1000
+# After the bounded advance, a finite isolated-database drain avoids waiting on
+# the continuous service's deliberately conservative idle poll cadence.
+civilization-runner memory-worker \
+  --hindsight-base-url http://127.0.0.1:8888 --drain
 civilization-runner verify-world --world-id "$QUALIFICATION_WORLD_ID"
 civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 ./scripts/qualification-status.sh "$QUALIFICATION_WORLD_ID" > qualification-status.json
@@ -239,7 +243,11 @@ million ticks per invocation and stops early with an error if the world reaches 
 The cognition-qualified wrapper requires the exact tick-zero cursor, refuses resume from any other
 cursor, and fails rather than crossing the first fixed deadline without a durable model receipt.
 It does not start workers or alter the simulation clock while waiting.
-The status command is read-only apart from the runner's replay verification reads. It exits nonzero
+`memory-worker --drain` forces a one-millisecond work cadence, exits successfully only after no
+ready outbox entry remains, and treats a delivery or store failure as fatal. It is for an isolated
+qualification database after bounded advancement; the normal production worker remains continuous
+and retains its configured idle poll interval. The status command is read-only apart from the
+runner's replay verification reads. It exits nonzero
 unless canonical replay, snapshots, projections, memory delivery, cognition deadlines, one actual
 Hindsight-backed cognition result, and observer content all pass; its single JSON object is suitable
 for the retained launch-evidence bundle.
