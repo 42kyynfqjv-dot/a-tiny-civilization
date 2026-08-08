@@ -394,6 +394,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
  "world-data",
  "world-data-filesystem",

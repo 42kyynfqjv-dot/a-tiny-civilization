@@ -76,6 +76,11 @@ impl CognitionProviderId {
     pub fn nvidia_build() -> Self {
         Self::known("nvidia_build")
     }
+
+    #[must_use]
+    pub fn local_openai() -> Self {
+        Self::known("local_openai")
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
@@ -103,6 +108,15 @@ pub struct CognitionModelRoute {
 }
 
 impl CognitionModelRoute {
+    #[must_use]
+    pub fn local_gpt_oss_20b() -> Self {
+        Self {
+            provider: CognitionProviderId::local_openai(),
+            requested_model: "gpt-oss-20b".to_owned(),
+            billing_class: CognitionBillingClass::FreeAllocation,
+        }
+    }
+
     #[must_use]
     pub fn cloudflare_gpt_oss_20b() -> Self {
         Self {
@@ -211,6 +225,9 @@ impl CognitionModelRoute {
             return Err(CognitionContractError::UnapprovedRoute);
         }
         let allowed = match (self.provider.as_str(), self.billing_class) {
+            ("local_openai", CognitionBillingClass::FreeAllocation) => {
+                self.requested_model == "gpt-oss-20b"
+            }
             ("cloudflare_workers_ai", CognitionBillingClass::FreeAllocation) => {
                 matches!(
                     self.requested_model.as_str(),
@@ -260,6 +277,7 @@ impl CognitionRouteRegistry {
         Self {
             policy_version: COGNITION_ROUTE_POLICY_VERSION,
             routes: vec![
+                CognitionModelRoute::local_gpt_oss_20b(),
                 CognitionModelRoute::cloudflare_gpt_oss_20b(),
                 CognitionModelRoute::cloudflare_gpt_oss_120b(),
                 CognitionModelRoute::groq_gpt_oss_20b(),
@@ -1067,6 +1085,7 @@ mod tests {
     #[test]
     fn route_allowlist_is_exact() {
         for route in [
+            CognitionModelRoute::local_gpt_oss_20b(),
             CognitionModelRoute::cloudflare_gpt_oss_20b(),
             CognitionModelRoute::cloudflare_gpt_oss_120b(),
             CognitionModelRoute::groq_gpt_oss_20b(),
@@ -1092,6 +1111,7 @@ mod tests {
     #[test]
     fn production_registry_has_capacity_without_relaxing_route_approval() {
         let registry = CognitionRouteRegistry::production_default();
+        assert_eq!(registry.routes[0], CognitionModelRoute::local_gpt_oss_20b());
         assert_eq!(
             registry.validate(CognitionRoutePurpose::ProductionWorld),
             Ok(())

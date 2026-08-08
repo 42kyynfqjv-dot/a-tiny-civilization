@@ -253,6 +253,7 @@ impl OpenAiCompatibleCognition {
         }
         let client = Client::builder()
             .timeout(timeout.max(Duration::from_secs(1)))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| ModelAdapterConfigError::Client(error.to_string()))?;
         Ok(Self {
@@ -811,6 +812,24 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn loopback_route_uses_the_same_strict_free_receipt() {
+        let response = json!({
+            "id": "local-1",
+            "model": "gpt-oss-20b",
+            "choices": [{"message": {"content": "{\"action_kind\":\"move\",\"contact_region\":null,\"signal_intensity\":null,\"movement_direction\":2}"}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::local_openai(), response).await;
+        let receipt = adapter
+            .infer(&CognitionModelRoute::local_gpt_oss_20b(), &request())
+            .await
+            .expect("local bounded receipt");
+        assert_eq!(receipt.provider, CognitionProviderId::local_openai());
+        assert_eq!(receipt.movement_direction, Some(2));
+        assert_eq!(receipt.billed_micro_usd, 0);
+    }
+
+    #[tokio::test]
     async fn free_route_rejects_reported_cost_and_extra_output_fields() {
         let charged = json!({
             "id": "generation-2",
@@ -911,6 +930,7 @@ mod tests {
                 .map(|attempt| attempt.status)
                 .collect::<Vec<_>>(),
             vec![
+                CognitionRouteAttemptStatus::SkippedUnconfigured,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::SkippedCooldown,
@@ -992,9 +1012,9 @@ mod tests {
             .await
             .expect("bounded result");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(result.attempts.len(), 2);
+        assert_eq!(result.attempts.len(), 3);
         assert_eq!(
-            result.attempts[1].status,
+            result.attempts[2].status,
             CognitionRouteAttemptStatus::StoppedAttemptLimit
         );
     }

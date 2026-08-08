@@ -29,6 +29,7 @@ use sim_engine::{
     SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use url::Url;
 use uuid::Uuid;
 use world_data::{
     DataLayerKind, FaunaMetabolicRatePlan, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
@@ -247,6 +248,10 @@ enum Command {
         )]
         external_export_approved: bool,
 
+        /// Loopback-only OpenAI-compatible `/v1` base. Private context never leaves this host.
+        #[arg(long, env = "LOCAL_COGNITION_BASE_URL")]
+        local_cognition_base_url: Option<String>,
+
         /// Full OpenAI-compatible Workers AI base ending in `/ai/v1`.
         #[arg(long, env = "CLOUDFLARE_WORKERS_AI_BASE_URL")]
         cloudflare_workers_ai_base_url: Option<String>,
@@ -384,6 +389,7 @@ async fn main() -> Result<()> {
             claim_lease_seconds,
             request_timeout_seconds,
             external_export_approved,
+            local_cognition_base_url,
             cloudflare_workers_ai_base_url,
             cloudflare_workers_ai_api_key,
             groq_api_key,
@@ -395,6 +401,7 @@ async fn main() -> Result<()> {
             let memory = HindsightMemory::new(&hindsight_base_url, hindsight_api_key, timeout)
                 .context("configure Hindsight cognition recall adapter")?;
             let adapters = cognition_adapters(
+                local_cognition_base_url,
                 cloudflare_workers_ai_base_url,
                 cloudflare_workers_ai_api_key,
                 groq_api_key,
@@ -402,7 +409,11 @@ async fn main() -> Result<()> {
                 openrouter_api_key,
                 timeout,
             )?;
-            validate_cognition_export_approval(adapters.len(), external_export_approved)?;
+            let external_provider_count = adapters
+                .keys()
+                .filter(|provider| provider.as_str() != "local_openai")
+                .count();
+            validate_cognition_export_approval(external_provider_count, external_export_approved)?;
             let configuration = CognitionWorkerConfiguration::production(paid_enabled);
             serve_cognition_worker(
                 &store,
@@ -1609,6 +1620,7 @@ async fn serve_memory_worker(
 }
 
 fn cognition_adapters(
+    local_base_url: Option<String>,
     cloudflare_base_url: Option<String>,
     cloudflare_api_key: Option<String>,
     groq_api_key: Option<String>,
@@ -1617,6 +1629,16 @@ fn cognition_adapters(
     timeout: Duration,
 ) -> Result<BTreeMap<CognitionProviderId, Arc<dyn CognitionModel>>> {
     let mut adapters = BTreeMap::<CognitionProviderId, Arc<dyn CognitionModel>>::new();
+    if let Some(base_url) = nonempty(local_base_url) {
+        validate_loopback_cognition_base_url(&base_url)?;
+        insert_cognition_adapter(
+            &mut adapters,
+            CognitionProviderId::local_openai(),
+            &base_url,
+            "loopback-only".to_owned(),
+            timeout,
+        )?;
+    }
     match (nonempty(cloudflare_base_url), nonempty(cloudflare_api_key)) {
         (Some(base_url), Some(api_key)) => insert_cognition_adapter(
             &mut adapters,
@@ -1658,6 +1680,23 @@ fn cognition_adapters(
         )?;
     }
     Ok(adapters)
+}
+
+fn validate_loopback_cognition_base_url(base_url: &str) -> Result<()> {
+    let url = Url::parse(base_url).context("parse local cognition base URL")?;
+    if url.scheme() != "http"
+        || url.username() != ""
+        || url.password().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+        || !matches!(
+            url.host_str(),
+            Some("127.0.0.1" | "[::1]" | "::1" | "localhost")
+        )
+    {
+        anyhow::bail!("LOCAL_COGNITION_BASE_URL must be an uncredentialed loopback HTTP URL");
+    }
+    Ok(())
 }
 
 fn insert_cognition_adapter(
@@ -2298,6 +2337,27 @@ mod tests {
         validate_cognition_export_approval(0, false).expect("local fallback needs no export");
         validate_cognition_export_approval(1, true).expect("explicitly approved provider");
         assert!(validate_cognition_export_approval(1, false).is_err());
+    }
+
+    #[test]
+    fn local_cognition_is_strictly_loopback_and_needs_no_export_approval() {
+        for base_url in [
+            "http://127.0.0.1:11434/v1",
+            "http://localhost:8080/v1",
+            "http://[::1]:11434/v1",
+        ] {
+            validate_loopback_cognition_base_url(base_url).expect("loopback URL");
+        }
+        for base_url in [
+            "https://127.0.0.1:11434/v1",
+            "http://example.com/v1",
+            "http://user@localhost:8080/v1",
+            "http://localhost:8080/v1?forward=1",
+        ] {
+            assert!(validate_loopback_cognition_base_url(base_url).is_err());
+        }
+        validate_cognition_export_approval(0, false)
+            .expect("loopback adapter is excluded from external providers");
     }
 
     #[test]

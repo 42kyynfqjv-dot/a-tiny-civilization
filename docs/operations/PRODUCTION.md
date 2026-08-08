@@ -209,6 +209,11 @@ The evidence command requires a clean committed worktree, verifies the original 
 reruns the qualification report, and atomically creates a checksum-covered directory containing no
 canonical event payloads. It never replaces prior evidence.
 
+For a same-host OpenAI-compatible GPT-OSS 20B service, set
+`LOCAL_COGNITION_BASE_URL=http://127.0.0.1:PORT/v1`. The runner rejects non-loopback URLs and HTTP
+redirects; this route needs no external-export approval because private context never leaves the
+host. See ADR 0103.
+
 Provider authentication and response compatibility can be tested separately without a database or
 world-data export. This sends only the fixed synthetic request specified by ADR 0088 and still
 requires the provider key in the protected process environment:
