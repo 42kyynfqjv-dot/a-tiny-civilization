@@ -4,7 +4,7 @@ use std::{
     path::PathBuf,
     process::Command as ProcessCommand,
     sync::Arc,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use anyhow::{Context, Result};
@@ -21,13 +21,14 @@ use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
 use model_adapter::OpenAiCompatibleCognition;
 use postgres_store::PostgresStore;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
     BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION,
+    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, TOPSOIL_MOVEMENT_RULESET_VERSION,
+    run_partition_capacity_probe,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
@@ -225,6 +226,17 @@ enum Command {
         #[arg(long, default_value_t = 30)]
         request_timeout_seconds: u64,
     },
+    /// Measure the deterministic partition kernel across population and active-fraction samples.
+    CapacitySweep {
+        #[arg(long, value_delimiter = ',', default_value = "66,660,6600,66000")]
+        populations: Vec<u32>,
+
+        #[arg(long, value_delimiter = ',', default_value = "1,10,100")]
+        active_percents: Vec<u8>,
+
+        #[arg(long, default_value_t = 64)]
+        ticks: u32,
+    },
     /// Deliver committed subjective-memory records without blocking simulation ticks.
     MemoryWorker {
         #[arg(long, env = "HINDSIGHT_BASE_URL")]
@@ -312,6 +324,81 @@ enum Command {
     },
 }
 
+#[derive(Serialize)]
+struct CapacitySweepSample {
+    #[serde(flatten)]
+    probe: PartitionCapacityProbe,
+    elapsed_nanoseconds: u64,
+    ticks_per_second_milli: u64,
+    events_per_second: u64,
+}
+
+#[derive(Serialize)]
+struct CapacitySweepReport {
+    report_schema_version: u16,
+    status: &'static str,
+    workload: &'static str,
+    build_profile: &'static str,
+    logical_parallelism: usize,
+    samples: Vec<CapacitySweepSample>,
+}
+
+fn capacity_sweep(populations: &[u32], active_percents: &[u8], ticks: u32) -> Result<()> {
+    if cfg!(debug_assertions) {
+        anyhow::bail!("capacity-sweep must run from a --release build");
+    }
+    let mut populations = populations.to_vec();
+    populations.sort_unstable();
+    populations.dedup();
+    if populations.len() < 2 {
+        anyhow::bail!("capacity-sweep requires at least two distinct populations");
+    }
+    let mut active_percents = active_percents.to_vec();
+    active_percents.sort_unstable();
+    active_percents.dedup();
+    if active_percents.len() < 2 {
+        anyhow::bail!("capacity-sweep requires at least two distinct active percentages");
+    }
+
+    let mut samples = Vec::with_capacity(populations.len() * active_percents.len());
+    for population in populations {
+        for active_percent in &active_percents {
+            let started = Instant::now();
+            let probe = run_partition_capacity_probe(population, *active_percent, ticks)
+                .context("execute deterministic partition capacity sample")?;
+            let elapsed_nanoseconds = u64::try_from(started.elapsed().as_nanos())
+                .context("capacity sample duration exceeds u64 nanoseconds")?
+                .max(1);
+            let ticks_per_second_milli =
+                u64::from(ticks).saturating_mul(1_000_000_000_000) / elapsed_nanoseconds;
+            let events_per_second =
+                probe.emitted_events.saturating_mul(1_000_000_000) / elapsed_nanoseconds;
+            samples.push(CapacitySweepSample {
+                probe,
+                elapsed_nanoseconds,
+                ticks_per_second_milli,
+                events_per_second,
+            });
+        }
+    }
+
+    let report = CapacitySweepReport {
+        report_schema_version: 1,
+        status: "operational-partition-kernel-capacity-evidence",
+        workload: "synthetic-durable-individuals-one-event-per-active-subject-tick",
+        build_profile: "release",
+        logical_parallelism: std::thread::available_parallelism()
+            .map(usize::from)
+            .unwrap_or(1),
+        samples,
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&report).context("encode capacity sweep report")?
+    );
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
@@ -324,10 +411,17 @@ async fn main() -> Result<()> {
     {
         return probe_openrouter_free(api_key, *request_timeout_seconds).await;
     }
-    let database_url = cli
-        .database_url
-        .as_deref()
-        .context("--database-url or DATABASE_URL is required except for probe-openrouter-free")?;
+    if let Some(Command::CapacitySweep {
+        populations,
+        active_percents,
+        ticks,
+    }) = &cli.command
+    {
+        return capacity_sweep(populations, active_percents, *ticks);
+    }
+    let database_url = cli.database_url.as_deref().context(
+        "--database-url or DATABASE_URL is required except for database-free probe commands",
+    )?;
     let store = PostgresStore::connect(database_url, cli.database_max_connections)
         .await
         .context("connect runner to PostgreSQL")?;
@@ -406,6 +500,9 @@ async fn main() -> Result<()> {
         }
         Command::ProbeOpenrouterFree { .. } => {
             unreachable!("synthetic provider probe returns before database connection")
+        }
+        Command::CapacitySweep { .. } => {
+            unreachable!("capacity sweep returns before database connection")
         }
         Command::MemoryWorker {
             hindsight_base_url,
@@ -2981,6 +3078,32 @@ mod tests {
         assert!(first.action_values.is_empty());
         assert!(first.recalled_memories.is_empty());
         assert_eq!(first.bodily_needs, BodilyNeedState::default());
+    }
+
+    #[test]
+    fn capacity_sweep_is_database_free_and_has_an_explicit_matrix() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "capacity-sweep",
+            "--populations",
+            "66,660,6600",
+            "--active-percents",
+            "10,100",
+            "--ticks",
+            "32",
+        ])
+        .expect("parse capacity sweep");
+        let Some(Command::CapacitySweep {
+            populations,
+            active_percents,
+            ticks,
+        }) = cli.command
+        else {
+            panic!("expected capacity sweep command");
+        };
+        assert_eq!(populations, [66, 660, 6600]);
+        assert_eq!(active_percents, [10, 100]);
+        assert_eq!(ticks, 32);
     }
 
     #[test]

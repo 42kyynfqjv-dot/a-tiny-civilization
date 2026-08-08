@@ -13,6 +13,7 @@ use partition::{
     Emission, PartitionOutput, PartitionSchedule, ScheduledWork, SchedulerError, SubjectKey,
     WorkKey, WorkOutput,
 };
+pub use partition::{PartitionCapacityProbe, run_partition_capacity_probe};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;

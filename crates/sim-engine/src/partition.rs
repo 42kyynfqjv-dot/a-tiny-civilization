@@ -17,6 +17,9 @@ use world_domain::{
 /// Version for the private, strict persisted scheduler checkpoint envelope.
 pub(super) const PARTITION_SCHEDULE_SCHEMA_VERSION: u16 = 1;
 
+const CAPACITY_PROBE_MAX_POPULATION: u32 = 1_000_000;
+const CAPACITY_PROBE_MAX_TICKS: u32 = 10_000;
+
 /// One execution partition at the configured planetary S2 level.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Hash, PartialEq, Serialize)]
 pub struct PartitionId(S2CellId);
@@ -721,6 +724,214 @@ impl<E> ResolvedTick<E> {
     }
 }
 
+/// Deterministic output from the operational partition-capacity workload.
+///
+/// This is not canonical world history. It exercises the same queue, routing, result
+/// validation, barrier ordering, checkpoint, and event-budget code with a caller-sized
+/// population so release builds can publish a reproducible scheduler envelope.
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+pub struct PartitionCapacityProbe {
+    pub population: u32,
+    pub active_percent: u8,
+    pub active_population: u32,
+    pub ticks: u32,
+    pub emitted_events: u64,
+    pub canonical_event_bytes: u64,
+    pub event_stream_digest: Digest,
+    pub final_schedule_digest: Digest,
+}
+
+#[derive(Clone, Debug)]
+struct CapacityProbeSubject {
+    id: EntityId,
+    location: S2CellId,
+    next_due: SimTick,
+    completed_steps: u32,
+}
+
+#[derive(Serialize)]
+struct CapacityProbeEvent {
+    tick: SimTick,
+    subject_id: EntityId,
+    location: S2CellId,
+    completed_steps: u32,
+    next_due: SimTick,
+}
+
+fn capacity_probe_work(subject: &CapacityProbeSubject) -> Result<ScheduledWork, SchedulerError> {
+    ScheduledWork::routed(
+        subject.next_due,
+        subject.location,
+        10,
+        WorkKey::new(
+            10,
+            SubjectKey::from_entity(subject.id),
+            20,
+            subject.completed_steps,
+        )?,
+    )
+}
+
+/// Run a database-free deterministic population/active-fraction scheduler sample.
+/// Wall-clock measurement deliberately belongs to the caller and cannot enter this
+/// result or any simulation state.
+pub fn run_partition_capacity_probe(
+    population: u32,
+    active_percent: u8,
+    ticks: u32,
+) -> Result<PartitionCapacityProbe, SchedulerError> {
+    if population == 0 || population > CAPACITY_PROBE_MAX_POPULATION {
+        return Err(SchedulerError::InvalidCapacityProbePopulation(population));
+    }
+    if !(1..=100).contains(&active_percent) {
+        return Err(SchedulerError::InvalidCapacityProbeActivePercent(
+            active_percent,
+        ));
+    }
+    if ticks == 0 || ticks > CAPACITY_PROBE_MAX_TICKS {
+        return Err(SchedulerError::InvalidCapacityProbeTicks(ticks));
+    }
+
+    let active_population =
+        u32::try_from((u64::from(population) * u64::from(active_percent)).div_ceil(100))
+            .map_err(|_| SchedulerError::EventCountOverflow)?;
+    let inactive_due = SimTick::new(u64::from(ticks) + 1);
+    let locations = [
+        "0000000100000000",
+        "2000000100000000",
+        "4000000100000000",
+        "6000000100000000",
+        "8000000100000000",
+        "a000000100000000",
+    ]
+    .map(str::parse::<S2CellId>)
+    .into_iter()
+    .collect::<Result<Vec<_>, _>>()?;
+    let mut subjects = (0..population)
+        .map(|index| {
+            let id = EntityId::from_uuid(uuid::Uuid::from_u128(u128::from(index) + 1));
+            let location_index = usize::try_from(index % 6).expect("index modulo six fits usize");
+            let subject = CapacityProbeSubject {
+                id,
+                location: locations[location_index],
+                next_due: if index < active_population {
+                    SimTick::new(1)
+                } else {
+                    inactive_due
+                },
+                completed_steps: 0,
+            };
+            (SubjectKey::from_entity(id), subject)
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut schedule = PartitionSchedule::new(
+        10,
+        subjects
+            .values()
+            .map(capacity_probe_work)
+            .collect::<Result<Vec<_>, _>>()?,
+    )?;
+    let mut current_tick = SimTick::ZERO;
+    let mut emitted_events = 0_u64;
+    let mut canonical_event_bytes = 0_u64;
+    let mut event_stream_digest = Digest::ZERO;
+
+    for _ in 0..ticks {
+        let plan = schedule.plan_next_tick(current_tick)?;
+        let outputs = plan
+            .partitions()
+            .iter()
+            .map(|partition| {
+                let work_outputs = partition
+                    .work()
+                    .iter()
+                    .map(|work| {
+                        let subject = subjects
+                            .get(&work.key().subject())
+                            .expect("scheduled capacity subject exists");
+                        let completed_steps = subject
+                            .completed_steps
+                            .checked_add(1)
+                            .ok_or(SchedulerError::EventCountOverflow)?;
+                        let next_due = plan.to_tick().checked_next()?;
+                        let next_subject = CapacityProbeSubject {
+                            id: subject.id,
+                            location: subject.location,
+                            next_due,
+                            completed_steps,
+                        };
+                        let event = CapacityProbeEvent {
+                            tick: plan.to_tick(),
+                            subject_id: subject.id,
+                            location: subject.location,
+                            completed_steps,
+                            next_due,
+                        };
+                        Ok(WorkOutput::new(
+                            work.key(),
+                            vec![Emission::new(work.partition(), work.key(), 0, event)],
+                            vec![DeferredWork::new(
+                                work.key(),
+                                0,
+                                capacity_probe_work(&next_subject)?,
+                            )],
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, SchedulerError>>()?;
+                Ok(PartitionOutput::new(partition.partition(), work_outputs))
+            })
+            .collect::<Result<Vec<_>, SchedulerError>>()?;
+        let resolved = plan.complete(outputs, population)?;
+        for emission in resolved.emissions() {
+            let event = emission.event();
+            let bytes = serde_json::to_vec(event)
+                .map_err(|error| SchedulerError::Encoding(error.to_string()))?;
+            canonical_event_bytes = canonical_event_bytes
+                .checked_add(
+                    u64::try_from(bytes.len()).map_err(|_| SchedulerError::EventCountOverflow)?,
+                )
+                .ok_or(SchedulerError::EventCountOverflow)?;
+            emitted_events = emitted_events
+                .checked_add(1)
+                .ok_or(SchedulerError::EventCountOverflow)?;
+            let mut digest_input = Vec::with_capacity(40 + bytes.len());
+            digest_input.extend_from_slice(event_stream_digest.as_bytes());
+            digest_input.extend_from_slice(
+                &u64::try_from(bytes.len())
+                    .map_err(|_| SchedulerError::EventCountOverflow)?
+                    .to_be_bytes(),
+            );
+            digest_input.extend_from_slice(&bytes);
+            event_stream_digest = Digest::sha256(&digest_input);
+            let subject = subjects
+                .get_mut(&emission.origin_work().subject())
+                .expect("resolved capacity subject exists");
+            subject.next_due = event.next_due;
+            subject.completed_steps = event.completed_steps;
+        }
+        current_tick = resolved.to_tick();
+        schedule = resolved.next_schedule().clone();
+    }
+    let expected_events = u64::from(active_population) * u64::from(ticks);
+    if emitted_events != expected_events {
+        return Err(SchedulerError::CapacityProbeEventCountMismatch {
+            expected: expected_events,
+            actual: emitted_events,
+        });
+    }
+    let final_schedule_digest = PartitionScheduleCheckpoint::new(schedule).content_digest()?;
+    Ok(PartitionCapacityProbe {
+        population,
+        active_percent,
+        active_population,
+        ticks,
+        emitted_events,
+        canonical_event_bytes,
+        event_stream_digest,
+        final_schedule_digest,
+    })
+}
+
 #[derive(Debug, Error, Eq, PartialEq)]
 pub enum SchedulerError {
     #[error("partition S2 level {0} is outside 0 through 30")]
@@ -775,6 +986,14 @@ pub enum SchedulerError {
     Encoding(String),
     #[error("could not decode scheduler checkpoint: {0}")]
     Decode(String),
+    #[error("capacity probe population {0} is outside 1 through 1000000")]
+    InvalidCapacityProbePopulation(u32),
+    #[error("capacity probe active percent {0} is outside 1 through 100")]
+    InvalidCapacityProbeActivePercent(u8),
+    #[error("capacity probe tick count {0} is outside 1 through 10000")]
+    InvalidCapacityProbeTicks(u32),
+    #[error("capacity probe emitted {actual} events instead of {expected}")]
+    CapacityProbeEventCountMismatch { expected: u64, actual: u64 },
     #[error(transparent)]
     S2(#[from] S2CellIdError),
     #[error(transparent)]
@@ -1485,6 +1704,31 @@ mod tests {
             reference_schedule = reference_resolved.next_schedule().clone();
             disrupted_schedule = disrupted_resolved.next_schedule().clone();
         }
+    }
+
+    #[test]
+    fn capacity_probe_is_bounded_reproducible_and_counts_only_active_subjects() {
+        let first = run_partition_capacity_probe(101, 10, 7).expect("capacity probe");
+        let second = run_partition_capacity_probe(101, 10, 7).expect("same capacity probe");
+        assert_eq!(first, second);
+        assert_eq!(first.active_population, 11);
+        assert_eq!(first.emitted_events, 77);
+        assert!(first.canonical_event_bytes > first.emitted_events);
+        assert_ne!(first.event_stream_digest, Digest::ZERO);
+        assert_ne!(first.final_schedule_digest, Digest::ZERO);
+
+        assert!(matches!(
+            run_partition_capacity_probe(0, 10, 7),
+            Err(SchedulerError::InvalidCapacityProbePopulation(0))
+        ));
+        assert!(matches!(
+            run_partition_capacity_probe(101, 0, 7),
+            Err(SchedulerError::InvalidCapacityProbeActivePercent(0))
+        ));
+        assert!(matches!(
+            run_partition_capacity_probe(101, 10, 0),
+            Err(SchedulerError::InvalidCapacityProbeTicks(0))
+        ));
     }
 
     #[test]
