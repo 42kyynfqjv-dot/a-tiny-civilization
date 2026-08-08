@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "commitment_digest": "f015ce240db76a4e9dd2bba7d9fda23352f0d9ea5e27b982b78bbd4f495d864b",
+  "target_beacon": {
+    "round": 31125752,
+    "randomness": "8be4919e4bdefd44cc70b700b5e82a29709777f812806395708a9fd18a63fdb6",
+    "signature": "a8b171317627cedb20cd4ada432eefee28870d68a8b635f232ae54a9d76ac911fd6d298cf96bd0cd91b3d37f42e24407"
+  },
+  "derivation_domain": "a-tiny-civilization/world-seed/v1",
+  "derivation_digest": "fb5782de5316e8205765a7c63881b57b8c11b7cd9785ceeb214005dac225fbe4",
+  "world_seed": "18111088317882099744",
+  "world_id": "b3ea736d-7a5a-5161-a74b-fa8c4302d333",
+  "verified_relays": [
+    "https://api.drand.sh",
+    "https://drand.cloudflare.com"
+  ]
+}
