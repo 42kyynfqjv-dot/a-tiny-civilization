@@ -145,6 +145,27 @@ impl ProvisionalLocalWeatherBaseline {
                 .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
         ))
     }
+
+    pub fn flux_means_at_normal_phase(
+        &self,
+        phase: usize,
+    ) -> Result<(i64, i64, i64), LocalEnvironmentError> {
+        self.validate()?;
+        Ok((
+            *self
+                .precipitation_normal_mean
+                .get(phase)
+                .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
+            *self
+                .eastward_wind_normal_mean
+                .get(phase)
+                .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
+            *self
+                .northward_wind_normal_mean
+                .get(phase)
+                .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
+        ))
+    }
 }
 
 fn unit(value: &str) -> bool {
@@ -240,6 +261,10 @@ mod tests {
         assert_eq!(
             weather.temperature_range_at_normal_phase(0),
             Ok((10_000, 15_000, 20_000))
+        );
+        assert_eq!(
+            weather.flux_means_at_normal_phase(0),
+            Ok((1_000, 500, -500))
         );
         weather.precipitation_normal_mean[0] = -1;
         assert_eq!(

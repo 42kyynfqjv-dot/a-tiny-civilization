@@ -723,3 +723,11 @@ tribal knowledge. A cognition-qualified wrapper requires tick 0 / sequence 1, ad
 waits without moving simulation time for one durable free local receipt, and only then invokes the
 unchanged bounded runner for the exact remainder. Timeout fails the disposable attempt instead of
 moving a cognition deadline or slowing a real world. ADR 0121 records the separation.
+
+Ruleset 28 makes the remaining pinned ERA5 atmospheric summaries physically perceptible without
+granting agents weather concepts. A seed-bound paired-day `water_flux` draw exactly preserves every
+30-day phase mean, while `air_motion` is the checked absolute-component sum of the measured monthly
+wind means rather than a fabricated speed distribution. Both are private touch-channel scalars;
+rain, wind, direction, season, forecast, and use labels remain absent. Event, snapshot, and
+state-hash schemas advance to 28, fresh genesis and qualification default to it, and the gate
+requires both readings in canonical history. ADR 0122 records the provisional boundary.

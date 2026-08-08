@@ -28,7 +28,8 @@ use world_domain::{
     EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
     HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
     HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
-    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION, LOCAL_WEATHER_EVENT_SCHEMA_VERSION,
+    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION, LOCAL_WEATHER_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
     MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
@@ -131,6 +132,9 @@ pub const PERSON_COGNITION_RULESET_VERSION: u32 = 26;
 /// Ruleset twenty-seven derives replay-stable, smoothly interpolated local
 /// physical weather readings from the source-bound ERA5 normal-period contract.
 pub const LOCAL_WEATHER_RULESET_VERSION: u32 = 27;
+/// Ruleset twenty-eight exposes label-free local water-flux and air-motion
+/// magnitudes from the source-bound atmospheric contract.
+pub const LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION: u32 = 28;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -158,6 +162,7 @@ pub const SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 24;
 pub const MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 25;
 pub const SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 26;
 pub const LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION: u16 = 27;
+pub const LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION: u16 = 28;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -197,6 +202,7 @@ const MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION: u16 = 22;
 const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
 const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
 const LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION: u16 = 27;
+const LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION: u16 = 28;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
@@ -412,6 +418,15 @@ struct LocalTemperatureDraw {
     world_seed: u64,
     source_normals_digest: Digest,
     day_index: u64,
+}
+
+#[derive(Serialize)]
+struct LocalWaterFluxDraw {
+    driver_version: u16,
+    world_seed: u64,
+    source_normals_digest: Digest,
+    normal_phase: u8,
+    paired_day_index: u64,
 }
 
 fn first_digest_u64(digest: Digest) -> u64 {
@@ -909,6 +924,10 @@ impl EngineState {
         self.manifest.ruleset_version >= LOCAL_WEATHER_RULESET_VERSION
     }
 
+    fn uses_local_atmospheric_flux_driver(&self) -> bool {
+        self.manifest.ruleset_version >= LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION
+    }
+
     fn local_temperature_at_tick(
         &self,
         configuration: &WorldConfiguration,
@@ -1004,6 +1023,77 @@ impl EngineState {
                 )
             })?,
             weather.air_temperature_decimal_places,
+        ))
+    }
+
+    fn local_atmospheric_flux_at_tick(
+        &self,
+        configuration: &WorldConfiguration,
+    ) -> Result<(i64, i64), EngineError> {
+        if !self.uses_local_atmospheric_flux_driver() {
+            return Err(EngineError::LocalAtmosphericFluxUnsupported);
+        }
+        const DAY_SECONDS: u64 = 86_400;
+        let weather = configuration.local_weather_baseline().ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic(
+                "local atmospheric flux requires a weather baseline".to_owned(),
+            )
+        })?;
+        let elapsed_seconds = self
+            .tick
+            .get()
+            .checked_mul(u64::from(configuration.tick_duration_seconds))
+            .ok_or_else(|| {
+                EngineError::PhysiologicalArithmetic(
+                    "local atmospheric flux elapsed time overflowed".to_owned(),
+                )
+            })?;
+        let day_index = elapsed_seconds / DAY_SECONDS;
+        let phase = usize::try_from((day_index / 30) % 12).expect("normal phase fits usize");
+        let (water_flux_mean, eastward_air_mean, northward_air_mean) = weather
+            .flux_means_at_normal_phase(phase)
+            .map_err(|error| EngineError::PhysiologicalArithmetic(error.to_string()))?;
+
+        let paired_total = i128::from(water_flux_mean).checked_mul(2).ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic("paired water-flux total overflowed".to_owned())
+        })?;
+        let span = u128::try_from(paired_total.checked_add(1).ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic("water-flux draw span overflowed".to_owned())
+        })?)
+        .map_err(|_| {
+            EngineError::PhysiologicalArithmetic("water-flux mean is negative".to_owned())
+        })?;
+        let digest = Digest::canonical(&LocalWaterFluxDraw {
+            driver_version: 1,
+            world_seed: self.manifest.seed.get(),
+            source_normals_digest: weather.source_normals_digest,
+            normal_phase: u8::try_from(phase).expect("normal phase fits u8"),
+            paired_day_index: day_index / 2,
+        })?;
+        let draw = (u128::from(first_digest_u64(digest)) << 64
+            | u128::from(second_digest_u64(digest)))
+            % span;
+        let draw = i128::try_from(draw).map_err(|_| {
+            EngineError::PhysiologicalArithmetic("water-flux draw exceeds i128".to_owned())
+        })?;
+        let water_flux = if day_index.is_multiple_of(2) {
+            draw
+        } else {
+            paired_total - draw
+        };
+        let air_motion = i128::from(eastward_air_mean)
+            .abs()
+            .checked_add(i128::from(northward_air_mean).abs())
+            .ok_or_else(|| {
+                EngineError::PhysiologicalArithmetic("air-motion magnitude overflowed".to_owned())
+            })?;
+        Ok((
+            i64::try_from(water_flux).map_err(|_| {
+                EngineError::PhysiologicalArithmetic("water flux exceeds i64".to_owned())
+            })?,
+            i64::try_from(air_motion).map_err(|_| {
+                EngineError::PhysiologicalArithmetic("air motion exceeds i64".to_owned())
+            })?,
         ))
     }
 
@@ -3368,6 +3458,43 @@ impl EngineState {
                                         "temperature does not fit perception range".to_owned(),
                                     )
                                 })?;
+                                let mut readings = vec![PropertyReading {
+                                    channel: PerceptionChannel::Touch,
+                                    property_code: "temperature".to_owned(),
+                                    quantized_value: temperature,
+                                    uncertainty: 0,
+                                }];
+                                if self.uses_local_atmospheric_flux_driver() {
+                                    let (water_flux, air_motion) = self
+                                        .local_atmospheric_flux_at_tick(configuration)
+                                        .map_err(|error| {
+                                            EngineError::PartitionScheduleState(error.to_string())
+                                        })?;
+                                    let water_flux = i32::try_from(water_flux).map_err(|_| {
+                                        EngineError::PartitionScheduleState(
+                                            "water flux does not fit perception range".to_owned(),
+                                        )
+                                    })?;
+                                    let air_motion = i32::try_from(air_motion).map_err(|_| {
+                                        EngineError::PartitionScheduleState(
+                                            "air motion does not fit perception range".to_owned(),
+                                        )
+                                    })?;
+                                    readings.extend([
+                                        PropertyReading {
+                                            channel: PerceptionChannel::Touch,
+                                            property_code: "water_flux".to_owned(),
+                                            quantized_value: water_flux,
+                                            uncertainty: 0,
+                                        },
+                                        PropertyReading {
+                                            channel: PerceptionChannel::Touch,
+                                            property_code: "air_motion".to_owned(),
+                                            quantized_value: air_motion,
+                                            uncertainty: 0,
+                                        },
+                                    ]);
+                                }
                                 events.push(Emission::new(
                                     partition.partition(),
                                     work.key(),
@@ -3376,12 +3503,7 @@ impl EngineState {
                                         organism_id: organism.organism_id,
                                         perception: SituatedPerception {
                                             subject_id: None,
-                                            readings: vec![PropertyReading {
-                                                channel: PerceptionChannel::Touch,
-                                                property_code: "temperature".to_owned(),
-                                                quantized_value: temperature,
-                                                uncertainty: 0,
-                                            }],
+                                            readings,
                                         },
                                     },
                                 ));
@@ -4886,7 +5008,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_local_weather_driver() {
+        if self.uses_local_atmospheric_flux_driver() {
+            LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
+        } else if self.uses_local_weather_driver() {
             LOCAL_WEATHER_EVENT_SCHEMA_VERSION
         } else if self.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
@@ -4969,7 +5093,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_local_weather_driver() {
+        if self.uses_local_atmospheric_flux_driver() {
+            LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_local_weather_driver() {
             LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION
@@ -7222,7 +7348,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_local_weather_driver() {
+        let snapshot_schema_version = if state.uses_local_atmospheric_flux_driver() {
+            LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_local_weather_driver() {
             LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
@@ -7326,12 +7454,15 @@ impl Snapshot {
                 | MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
                 | SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
                 | LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
+                | LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_local_weather_driver() {
+        let expected_schema_version = if self.state.uses_local_atmospheric_flux_driver() {
+            LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_local_weather_driver() {
             LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
@@ -7534,7 +7665,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_local_weather_driver() {
+        let expected_schema = if state.uses_local_atmospheric_flux_driver() {
+            LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
+        } else if state.uses_local_weather_driver() {
             LOCAL_WEATHER_EVENT_SCHEMA_VERSION
         } else if state.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
@@ -7796,6 +7929,8 @@ pub enum EngineError {
     MissingLocalWeather,
     #[error("invalid local-weather baseline: {0}")]
     InvalidLocalWeather(String),
+    #[error("local atmospheric flux is unsupported by this ruleset")]
+    LocalAtmosphericFluxUnsupported,
     #[error("physiological arithmetic failed: {0}")]
     PhysiologicalArithmetic(String),
     #[error("organism {0} has an invalid bodily-regulation state")]
@@ -8252,6 +8387,73 @@ mod tests {
         snapshot
             .verify_integrity()
             .expect("weather snapshot integrity");
+    }
+
+    #[test]
+    fn ruleset_twenty_eight_flux_is_source_bound_conservative_and_replay_stable() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x128));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed28),
+            LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION,
+        );
+        let configuration = weather_provisional_full_earth_configuration();
+        let mut first = EngineState::new(manifest.clone());
+        let mut second = EngineState::new(manifest);
+
+        first.tick = SimTick::ZERO;
+        second.tick = SimTick::ZERO;
+        let first_day = first
+            .local_atmospheric_flux_at_tick(&configuration)
+            .expect("first-day flux");
+        assert_eq!(
+            first_day,
+            second
+                .local_atmospheric_flux_at_tick(&configuration)
+                .expect("replayed first-day flux")
+        );
+        first.tick = SimTick::new(288);
+        second.tick = SimTick::new(288);
+        let second_day = first
+            .local_atmospheric_flux_at_tick(&configuration)
+            .expect("second-day flux");
+        assert_eq!(
+            second_day,
+            second
+                .local_atmospheric_flux_at_tick(&configuration)
+                .expect("replayed second-day flux")
+        );
+        assert_eq!(first_day.0 + second_day.0, 2_000);
+        assert_eq!(first_day.1, 1_000);
+        assert_eq!(second_day.1, 1_000);
+
+        let legacy = EngineState::new(WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed27),
+            LOCAL_WEATHER_RULESET_VERSION,
+        ));
+        assert!(matches!(
+            legacy.local_atmospheric_flux_at_tick(&configuration),
+            Err(EngineError::LocalAtmosphericFluxUnsupported)
+        ));
+
+        let snapshot = Snapshot::new(
+            EngineState::new(WorldManifest::new(
+                world_id,
+                WorldSeed::new(0x005e_ed28),
+                LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION,
+            )),
+            EventSequence::ZERO,
+            Digest::ZERO,
+        )
+        .expect("atmospheric-flux schema snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("atmospheric-flux snapshot integrity");
     }
 
     #[test]

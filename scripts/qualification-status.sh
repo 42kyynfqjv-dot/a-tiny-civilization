@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-27}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-28}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -143,7 +143,21 @@ WITH selected_world AS (
                       ->> 'configuration_schema_version')::INTEGER = 5
                  AND event -> 'event' -> 'data' -> 'configuration'
                       -> 'local_weather_baseline' IS NOT NULL
-           )::BIGINT AS weather_configurations
+           )::BIGINT AS weather_configurations,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_perceived'
+                 AND jsonb_path_exists(
+                       event -> 'event' -> 'data' -> 'perception' -> 'readings',
+                       '$[*] ? (@.property_code == "water_flux")'
+                     )
+           )::BIGINT AS water_flux_perceptions,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_perceived'
+                 AND jsonb_path_exists(
+                       event -> 'event' -> 'data' -> 'perception' -> 'readings',
+                       '$[*] ? (@.property_code == "air_motion")'
+                     )
+           )::BIGINT AS air_motion_perceptions
     FROM event_batches batch
     CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
     WHERE batch.world_id = :'world_id'::UUID
@@ -247,10 +261,11 @@ WITH selected_world AS (
                AS signal_motor_association_exercised
            , (ruleset_version < 26 OR non_person_requests = 0)
                AS person_only_cognition
-           , (ruleset_version < 27 OR (
-                 minimum_event_schema = 27 AND maximum_event_schema = 27
-                 AND weather_configurations = 1
-             )) AS local_weather_bound
+           , (ruleset_version < 27 OR weather_configurations = 1) AS local_weather_bound
+           , (ruleset_version < 28 OR (
+                 minimum_event_schema = 28 AND maximum_event_schema = 28
+                 AND water_flux_perceptions > 0 AND air_motion_perceptions > 0
+             )) AS local_atmospheric_flux_exercised
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -264,7 +279,7 @@ SELECT jsonb_build_object(
       AND acoustic_variation_exercised AND signal_action_association_exercised
       AND selectable_movement_exercised AND movement_direction_learning_exercised
       AND signal_motor_association_exercised AND person_only_cognition
-      AND local_weather_bound,
+      AND local_weather_bound AND local_atmospheric_flux_exercised,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -300,6 +315,8 @@ SELECT jsonb_build_object(
       , 'directed_moves', directed_moves
       , 'movement_direction_values', movement_direction_values
       , 'weather_configurations', weather_configurations
+      , 'water_flux_perceptions', water_flux_perceptions
+      , 'air_motion_perceptions', air_motion_perceptions
     ),
     'checks', jsonb_build_object(
       'running', running, 'expected_ruleset', expected_ruleset,
@@ -320,6 +337,7 @@ SELECT jsonb_build_object(
       , 'signal_motor_association_exercised', signal_motor_association_exercised
       , 'person_only_cognition', person_only_cognition
       , 'local_weather_bound', local_weather_bound
+      , 'local_atmospheric_flux_exercised', local_atmospheric_flux_exercised
     )
 )::TEXT
 FROM checks;
