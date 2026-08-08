@@ -3,6 +3,12 @@ set -euo pipefail
 
 readonly expected_project='a-tiny-civilization'
 readonly -a public_bindings=('3000:web' '5432:db' '8080:api')
+readonly -a protected_volumes=(
+  'a-tiny-civilization-postgres-v1'
+  'a-tiny-civilization-hindsight-v1'
+  'a-tiny-civilization-hindsight-model-cache-v1'
+  'atiny-ollama'
+)
 
 for binding in "${public_bindings[@]}"; do
   IFS=: read -r port service <<<"$binding"
@@ -18,4 +24,17 @@ for binding in "${public_bindings[@]}"; do
   done < <(docker ps --filter "publish=${port}" --format '{{.ID}}')
 done
 
-echo "Production loopback ports are free or owned only by the production Compose project."
+for volume in "${protected_volumes[@]}"; do
+  while IFS= read -r container_id; do
+    [[ -n "$container_id" ]] || continue
+    project="$(docker inspect --format '{{ index .Config.Labels "com.docker.compose.project" }}' "$container_id")"
+    name="$(docker inspect --format '{{.Name}}' "$container_id")"
+    name="${name#/}"
+    if [[ "$project" != "$expected_project" ]]; then
+      echo "production/shared volume ${volume} is mounted by non-production container ${name}; stop the legacy/dev consumer before deployment" >&2
+      exit 1
+    fi
+  done < <(docker ps --filter "volume=${volume}" --format '{{.ID}}')
+done
+
+echo "Production loopback ports and protected volumes are free or owned only by the production Compose project."

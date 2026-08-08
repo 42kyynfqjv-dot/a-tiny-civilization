@@ -10,7 +10,9 @@ required=(
   "'3000:web'"
   "'5432:db'"
   "'8080:api'"
+  "'atiny-ollama'"
   'docker ps --filter "publish=${port}"'
+  'docker ps --filter "volume=${volume}"'
   'com.docker.compose.project'
   'stop the legacy/dev listener before deployment'
 )
@@ -30,4 +32,4 @@ if ((port_number >= mutation_number)); then
   exit 1
 fi
 
-echo "Production cutover rejects foreign loopback listeners before mutation."
+echo "Production cutover rejects foreign loopback listeners and protected-volume consumers before mutation."

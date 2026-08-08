@@ -117,6 +117,8 @@ The helper also refuses to mutate Compose when ports 3000, 5432, or 8080 are hel
 outside the `a-tiny-civilization` production project. On the long-term host this intentionally
 requires the legacy development stack to be stopped during the deliberate cutover; its separate
 volume and 139,382-tick development world are retained, not promoted or deleted.
+The same guard rejects foreign running containers attached to any production data volume or the
+shared `atiny-ollama` model volume. This prevents concurrent local-model writers during cutover.
 
 Before the first deployment, populate the external local-model volume. The provisioner uses a
 pinned Ollama image, host networking only while downloading, a loopback-bound API, and verifies the

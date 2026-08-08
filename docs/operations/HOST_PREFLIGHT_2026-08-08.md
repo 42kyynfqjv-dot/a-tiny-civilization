@@ -49,3 +49,5 @@ The empty ownership-labelled production volumes now exist as
 the distinct legacy `emergent-civilization_postgres-data` volume. Development currently owns
 loopback ports 3000, 5432, and 8080; the deployment helper now rejects that state before mutation
 and requires a deliberate service cutover without deleting the legacy volume.
+It also rejects the legacy local-cognition container while that container holds the shared
+`atiny-ollama` model volume, preventing two Ollama processes from sharing its writable state.
