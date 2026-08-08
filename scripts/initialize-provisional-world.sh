@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Atomically initialize (or exactly resume) one ruleset-20 world from the
+# Atomically initialize (or exactly resume) one ruleset-21 world from the
 # artifacts produced by prepare-provisional-genesis.sh. The runner is not started.
 
 if (( $# < 3 || $# > 4 )); then

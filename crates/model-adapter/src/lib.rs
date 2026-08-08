@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{Digest, PrimitiveActionKind};
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v2";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v3";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -316,7 +316,7 @@ fn api_request(
         "messages": [
             {
                 "role": "system",
-                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be an integer from 0 through 7 to bias one directly sensed motor contact region; otherwise it must be null. A region is only a motor coordinate, never a symbol or named use. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
+                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be an integer from 0 through 7; otherwise it must be null. For emit_signal only, signal_intensity may be an integer from 1 through 8; otherwise it must be null. These are physical motor coordinates only, never symbols, words, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
             },
             {
                 "role": "user",
@@ -347,9 +347,15 @@ fn api_request(
                                 {"type": "integer", "minimum": 0, "maximum": 7},
                                 {"type": "null"}
                             ]
+                        },
+                        "signal_intensity": {
+                            "anyOf": [
+                                {"type": "integer", "minimum": 1, "maximum": 8},
+                                {"type": "null"}
+                            ]
                         }
                     },
-                    "required": ["action_kind", "contact_region"],
+                    "required": ["action_kind", "contact_region", "signal_intensity"],
                     "additionalProperties": false
                 }
             }
@@ -405,6 +411,8 @@ struct BoundedAction {
     action_kind: PrimitiveActionKind,
     #[serde(default)]
     contact_region: Option<u8>,
+    #[serde(default)]
+    signal_intensity: Option<u8>,
 }
 
 fn parse_response(
@@ -469,6 +477,7 @@ fn parse_response(
         billed_micro_usd,
         action_kind: action.action_kind,
         contact_region: action.contact_region,
+        signal_intensity: action.signal_intensity,
         provider_response_hash: response_hash,
         adapter_version: MODEL_ADAPTER_VERSION.to_owned(),
     };
@@ -605,6 +614,7 @@ mod tests {
                     billed_micro_usd: 0,
                     action_kind,
                     contact_region: None,
+                    signal_intensity: None,
                     provider_response_hash: Digest::sha256(b"fake-response"),
                     adapter_version: "fake-v1".to_owned(),
                 }),
@@ -740,6 +750,20 @@ mod tests {
                 .await,
             Err(CognitionModelError::InvalidResponse(_))
         ));
+
+        let signal = json!({
+            "id": "generation-signal",
+            "model": "openai/gpt-oss-120b:free",
+            "choices": [{"message": {"content": "{\"action_kind\":\"emit_signal\",\"contact_region\":null,\"signal_intensity\":8}"}}],
+            "usage": {"prompt_tokens": 91, "completion_tokens": 9, "cost": 0}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter(), signal).await;
+        let receipt = adapter
+            .infer(&CognitionModelRoute::openrouter_free(), &request())
+            .await
+            .expect("valid bounded signal intensity");
+        assert_eq!(receipt.action_kind, PrimitiveActionKind::EmitSignal);
+        assert_eq!(receipt.signal_intensity, Some(8));
     }
 
     #[tokio::test]

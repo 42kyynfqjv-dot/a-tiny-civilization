@@ -495,6 +495,8 @@ pub struct ModelCognitionReceipt {
     pub action_kind: PrimitiveActionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_region: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_intensity: Option<u8>,
     pub provider_response_hash: Digest,
     pub adapter_version: String,
 }
@@ -526,6 +528,9 @@ impl ModelCognitionReceipt {
             || self.usage.completion_tokens > u32::from(request.max_output_tokens)
             || self.contact_region.is_some_and(|region| {
                 self.action_kind != PrimitiveActionKind::ApplyForce || region >= 8
+            })
+            || self.signal_intensity.is_some_and(|intensity| {
+                self.action_kind != PrimitiveActionKind::EmitSignal || !(1..=8).contains(&intensity)
             })
         {
             return Err(CognitionContractError::InvalidReceipt);

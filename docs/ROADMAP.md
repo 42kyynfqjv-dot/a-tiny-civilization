@@ -554,3 +554,9 @@ qualification history reached tick 1,000 with 85 regional transitions spanning a
 all five observer projections current, and exact stop/resume/replay. ADR 0096 records the schema and
 observer boundaries. Hindsight delivery and the audited cognition fallback are exercised separately;
 a non-null real provider receipt remains a fail-closed launch requirement.
+
+Ruleset 21 removes a separate emergence ceiling in communication: autonomous local sound now has
+eight selectable physical intensities instead of one invariant amplitude. The values have no token,
+word, message, or meaning, but direct source-bound sound memories and bounded cognition can
+distinguish them. The next provisional world and qualification default to ruleset 21; ruleset-20
+history remains byte-identical. ADR 0098 records the policy and model-contract boundary.

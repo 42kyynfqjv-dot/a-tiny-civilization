@@ -182,6 +182,8 @@ pub struct CognitionModelEvidence {
     pub action_kind: PrimitiveActionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_region: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_intensity: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -317,6 +319,10 @@ impl CognitionDeadlineInput {
                     || evidence.contact_region.is_some_and(|region| {
                         evidence.action_kind != PrimitiveActionKind::ApplyForce || region >= 8
                     })
+                    || evidence.signal_intensity.is_some_and(|intensity| {
+                        evidence.action_kind != PrimitiveActionKind::EmitSignal
+                            || !(1..=8).contains(&intensity)
+                    })
                     || self.recall_outcome_hash == Digest::ZERO
                     || self.route_registry_hash == Digest::ZERO
                     || self.result_hash == Digest::ZERO
@@ -375,6 +381,14 @@ impl CognitionDeadlineInput {
     pub const fn contact_region(&self) -> Option<u8> {
         match &self.outcome {
             CognitionInputOutcome::Model(evidence) => evidence.contact_region,
+            CognitionInputOutcome::Unavailable { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn signal_intensity(&self) -> Option<u8> {
+        match &self.outcome {
+            CognitionInputOutcome::Model(evidence) => evidence.signal_intensity,
             CognitionInputOutcome::Unavailable { .. } => None,
         }
     }
@@ -496,6 +510,7 @@ mod tests {
                 billed_micro_usd: 0,
                 action_kind: PrimitiveActionKind::Orient,
                 contact_region: None,
+                signal_intensity: None,
             },
         )
         .expect("valid model input");
@@ -516,6 +531,21 @@ mod tests {
             evidence.contact_region = Some(7);
         }
         assert!(invalid_region.validate().is_ok());
+
+        if let CognitionInputOutcome::Model(evidence) = &mut invalid_region.outcome {
+            evidence.action_kind = PrimitiveActionKind::EmitSignal;
+            evidence.contact_region = None;
+            evidence.signal_intensity = Some(8);
+        }
+        assert!(invalid_region.validate().is_ok());
+        assert_eq!(invalid_region.signal_intensity(), Some(8));
+        if let CognitionInputOutcome::Model(evidence) = &mut invalid_region.outcome {
+            evidence.signal_intensity = Some(0);
+        }
+        assert!(matches!(
+            invalid_region.validate(),
+            Err(CognitionContractError::InvalidModelEvidence)
+        ));
 
         let mut forged_selection = selection.clone();
         forged_selection.model_max_output_tokens = 1;

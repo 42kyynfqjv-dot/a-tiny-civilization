@@ -105,6 +105,9 @@ pub const MATERIAL_SURFACE_TRACE_RULESET_VERSION: u32 = 19;
 /// Ruleset twenty retains eight independently addressable, label-free contact
 /// regions on each material object. Regions are physical motor coordinates only.
 pub const MATERIAL_SURFACE_REGIONS_RULESET_VERSION: u32 = 20;
+/// Ruleset twenty-one gives neutral local sound eight selectable physical
+/// intensities. The values carry no token, word, meaning, or purpose.
+pub const ACOUSTIC_VARIATION_RULESET_VERSION: u32 = 21;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -166,6 +169,7 @@ const SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 21;
 const MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION: u16 = 22;
 const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
+const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
@@ -1603,7 +1607,7 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         age_ticks: u64,
-        cognition_preference: Option<(PrimitiveActionKind, Option<u8>)>,
+        cognition_preference: Option<(PrimitiveActionKind, Option<u8>, Option<u8>)>,
     ) -> Result<Vec<PolicyCandidate>, EngineError> {
         let patch = organism
             .embodied_patch
@@ -1771,17 +1775,29 @@ impl EngineState {
                 }
             }
         }
-        candidates.extend([
-            PolicyCandidate {
-                action: PrimitiveAction {
-                    kind: PrimitiveActionKind::Rest,
-                    target_id: None,
-                    intensity: 1,
-                    contact_region: None,
-                },
-                weight: rest_drive,
+        candidates.push(PolicyCandidate {
+            action: PrimitiveAction {
+                kind: PrimitiveActionKind::Rest,
+                target_id: None,
+                intensity: 1,
+                contact_region: None,
             },
-            PolicyCandidate {
+            weight: rest_drive,
+        });
+        if self.uses_acoustic_variation_driver() {
+            for intensity in 1..=SIGNAL_INTENSITY_VARIANT_COUNT {
+                candidates.push(PolicyCandidate {
+                    action: PrimitiveAction {
+                        kind: PrimitiveActionKind::EmitSignal,
+                        target_id: None,
+                        intensity,
+                        contact_region: None,
+                    },
+                    weight: 2,
+                });
+            }
+        } else {
+            candidates.push(PolicyCandidate {
                 action: PrimitiveAction {
                     kind: PrimitiveActionKind::EmitSignal,
                     target_id: None,
@@ -1789,8 +1805,8 @@ impl EngineState {
                     contact_region: None,
                 },
                 weight: 2,
-            },
-        ]);
+            });
+        }
 
         if self.uses_heritable_disposition_driver() {
             let profile = organism.heritable_disposition_profile.as_ref().ok_or(
@@ -1830,11 +1846,15 @@ impl EngineState {
             }
         }
 
-        if let Some((cognition_action_kind, cognition_contact_region)) = cognition_preference {
+        if let Some((cognition_action_kind, cognition_contact_region, cognition_signal_intensity)) =
+            cognition_preference
+        {
             for candidate in &mut candidates {
                 if candidate.action.kind == cognition_action_kind
                     && cognition_contact_region
                         .is_none_or(|region| candidate.action.contact_region == Some(region))
+                    && cognition_signal_intensity
+                        .is_none_or(|intensity| candidate.action.intensity == u16::from(intensity))
                 {
                     candidate.weight = candidate
                         .weight
@@ -1860,7 +1880,7 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         age_ticks: u64,
-        cognition_preference: Option<(PrimitiveActionKind, Option<u8>)>,
+        cognition_preference: Option<(PrimitiveActionKind, Option<u8>, Option<u8>)>,
     ) -> Result<PrimitiveAction, EngineError> {
         let candidates = self.deterministic_policy_candidates_with_cognition(
             organism,
@@ -1870,7 +1890,9 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_social_learning_driver() {
+            policy_version: if self.uses_acoustic_variation_driver() {
+                6
+            } else if self.uses_social_learning_driver() {
                 5
             } else if self.uses_cognition_driver() {
                 4
@@ -3011,9 +3033,9 @@ impl EngineState {
                                 let cognition_preference = cognition_input
                                     .filter(|input| input.organism_id == organism.organism_id)
                                     .and_then(|input| {
-                                        input
-                                            .action_kind()
-                                            .map(|kind| (kind, input.contact_region()))
+                                        input.action_kind().map(|kind| {
+                                            (kind, input.contact_region(), input.signal_intensity())
+                                        })
                                     });
                                 let action = self.deterministic_policy_action_with_cognition(
                                     organism,
@@ -3431,6 +3453,10 @@ impl EngineState {
 
     fn uses_material_surface_regions_driver(&self) -> bool {
         self.manifest.ruleset_version >= MATERIAL_SURFACE_REGIONS_RULESET_VERSION
+    }
+
+    fn uses_acoustic_variation_driver(&self) -> bool {
+        self.manifest.ruleset_version >= ACOUSTIC_VARIATION_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -10600,7 +10626,7 @@ mod tests {
             .deterministic_policy_candidates_with_cognition(
                 organism,
                 1,
-                Some((PrimitiveActionKind::ApplyForce, Some(3))),
+                Some((PrimitiveActionKind::ApplyForce, Some(3), None)),
             )
             .expect("region-biased candidates");
         assert_eq!(base_candidates.len(), region_biased.len());
@@ -10624,6 +10650,43 @@ mod tests {
                 .count(),
             MATERIAL_SURFACE_REGION_COUNT
         );
+        let mut acoustic_state = state.clone();
+        acoustic_state.manifest.ruleset_version = ACOUSTIC_VARIATION_RULESET_VERSION;
+        let acoustic_organism = acoustic_state
+            .organisms
+            .get(&organism_id)
+            .expect("acoustic founder");
+        let acoustic_base = acoustic_state
+            .deterministic_policy_candidates_with_cognition(acoustic_organism, 1, None)
+            .expect("acoustic candidates");
+        let acoustic_biased = acoustic_state
+            .deterministic_policy_candidates_with_cognition(
+                acoustic_organism,
+                1,
+                Some((PrimitiveActionKind::EmitSignal, None, Some(6))),
+            )
+            .expect("intensity-biased acoustic candidates");
+        assert_eq!(
+            acoustic_base
+                .iter()
+                .filter(|candidate| candidate.action.kind == PrimitiveActionKind::EmitSignal)
+                .map(|candidate| candidate.action.intensity)
+                .collect::<Vec<_>>(),
+            (1..=SIGNAL_INTENSITY_VARIANT_COUNT).collect::<Vec<_>>()
+        );
+        for (base, biased) in acoustic_base.iter().zip(&acoustic_biased) {
+            let receives_bonus =
+                base.action.kind == PrimitiveActionKind::EmitSignal && base.action.intensity == 6;
+            assert_eq!(
+                biased.weight,
+                base.weight
+                    + if receives_bonus {
+                        COGNITION_ACTION_WEIGHT_BONUS
+                    } else {
+                        0
+                    }
+            );
+        }
         assert!(
             state
                 .organisms
@@ -10712,7 +10775,7 @@ mod tests {
             .deterministic_policy_candidates_with_cognition(
                 organism,
                 21,
-                Some((PrimitiveActionKind::Rest, None)),
+                Some((PrimitiveActionKind::Rest, None, None)),
             )
             .expect("biased candidates");
         assert_eq!(base.len(), biased.len());

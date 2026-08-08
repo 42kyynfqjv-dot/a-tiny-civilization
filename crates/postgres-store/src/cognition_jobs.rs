@@ -1091,6 +1091,7 @@ fn build_deadline_input(
                         billed_micro_usd: receipt.billed_micro_usd,
                         action_kind: receipt.action_kind,
                         contact_region: receipt.contact_region,
+                        signal_intensity: receipt.signal_intensity,
                     },
                 )
                 .map_err(corrupt)
