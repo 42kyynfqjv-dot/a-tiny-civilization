@@ -9,8 +9,8 @@ use application::{
     ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
     PaidCognitionReservationDecision, RecallUnavailableReason, RecalledMemory, StoreError,
     StoredWorld, TransitionEffects, WorldStore, advance_world,
-    initialize_or_resume_configured_world, initialize_or_resume_world, process_next_cognition_job,
-    resume_world,
+    initialize_or_resume_configured_world, initialize_or_resume_configured_world_with_materials,
+    initialize_or_resume_world, process_next_cognition_job, resume_world,
 };
 use async_trait::async_trait;
 use observer_projection::{
@@ -20,7 +20,8 @@ use observer_projection::{
 };
 use postgres_store::PostgresStore;
 use sim_engine::{
-    COGNITION_RULESET_VERSION, EngineState, InitialOrganism, RULESET_VERSION, Snapshot, replay,
+    COGNITION_RULESET_VERSION, EngineState, InitialMaterialInstance, InitialOrganism,
+    MATERIAL_RESERVOIR_RULESET_VERSION, RULESET_VERSION, Snapshot, replay,
 };
 use sqlx::PgPool;
 use std::{
@@ -35,9 +36,11 @@ use world_domain::{
     BirthCategory, CapacityExhaustionPolicy, CartesianMillimetres, CelestialState,
     CognitionInputOutcome, CognitionUnavailableReason, DeathCause, Digest, DomainEvent,
     EarthResolutionLevels, EntityId, EventBatch, EventId, EventSequence, FullEarthGrid,
-    HeritableDispositionProfile, MetabolicRateCommitment, OrganismRole, PartitionedExecution,
-    PersonRepresentation, PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment,
-    PrimitiveActionKind, ProvisionalLocalEnvironmentBaseline, ProvisionalWorldCompositionReference,
+    HeritableDispositionProfile, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION, MaterialIdentity,
+    MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
+    OralTransferEvidenceBasis, OrganismRole, PartitionedExecution, PersonRepresentation,
+    PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment, PrimitiveActionKind,
+    ProvisionalLocalEnvironmentBaseline, ProvisionalWorldCompositionReference,
     ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2Projection,
     SchedulerKind, SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId,
     WorldManifest, WorldSeed, WorldStatus,
@@ -222,6 +225,44 @@ fn cognition_initial_person(world_id: WorldId) -> InitialOrganism {
         mutation_max_step: 2,
     });
     person
+}
+
+fn shared_water_reservoir(world_id: WorldId, person: &InitialOrganism) -> InitialMaterialInstance {
+    let material = MaterialIdentity::new(
+        "pubchem",
+        "962",
+        "water",
+        "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+    )
+    .expect("citable water identity");
+    let embodied_patch = person.embodied_patch.expect("embodied founder patch");
+    InitialMaterialInstance {
+        object_id: EntityId::deterministic(world_id, b"postgres-shared-water-reservoir"),
+        material: material.clone(),
+        embodied_patch,
+        initial_mass_milligrams: Some(1_000_000),
+        oral_transfer_profiles: vec![OralTransferCommitment {
+            commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "postgres-water-human-v1".to_owned(),
+            profile_digest: Digest::sha256(b"PostgreSQL water response fixture"),
+            material: material.clone(),
+            species: person.species.clone(),
+            evidence_basis: OralTransferEvidenceBasis::EngineeringAssumption,
+            transfer_mass_milligrams: 250_000,
+            recoverable_energy_joules: 0,
+            hydration_recovery_seconds: 14_400,
+        }],
+        reservoir: Some(MaterialReservoirCommitment {
+            commitment_schema_version: world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "postgres-shared-water-reservoir-v1".to_owned(),
+            profile_digest: Digest::sha256(b"PostgreSQL shared water reservoir fixture"),
+            material,
+            evidence_basis: OralTransferEvidenceBasis::EngineeringAssumption,
+            coverage_patch: embodied_patch.ancestor(10).expect("L10 coverage"),
+            maximum_mass_milligrams: 10_000_000,
+            replenishment_mass_milligrams_per_tick: 1_000_000,
+        }),
+    }
 }
 
 async fn claimed_cognition_job(
@@ -651,6 +692,63 @@ async fn provisional_full_earth_resumes_and_projects_exact_input_status(
     );
     assert_eq!(worlds[0].composition_version.as_deref(), Some("0.1.0"));
     assert_eq!(worlds[0].composition_hash, Some(reference.content_hash));
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn material_genesis_is_atomic_idempotent_and_replayable(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let world_id = WorldId::from_uuid(Uuid::new_v4());
+    let manifest = WorldManifest::new(
+        world_id,
+        WorldSeed::new(17_017),
+        MATERIAL_RESERVOIR_RULESET_VERSION,
+    );
+    let mut female = cognition_initial_person(world_id);
+    female.organism_id = EntityId::deterministic(world_id, b"postgres-resource-female");
+    female.birth_category = BirthCategory::new("female").expect("category");
+    let mut male = female.clone();
+    male.organism_id = EntityId::deterministic(world_id, b"postgres-resource-male");
+    male.birth_category = BirthCategory::new("male").expect("category");
+    let material = shared_water_reservoir(world_id, &female);
+
+    let initialized = initialize_or_resume_configured_world_with_materials(
+        &store,
+        manifest.clone(),
+        None,
+        cognition_configuration(),
+        vec![female.clone(), male.clone()],
+        vec![material.clone()],
+    )
+    .await?;
+    let idempotent = initialize_or_resume_configured_world_with_materials(
+        &store,
+        manifest,
+        None,
+        cognition_configuration(),
+        vec![male, female],
+        vec![material],
+    )
+    .await?;
+
+    assert_eq!(idempotent, initialized);
+    assert_eq!(resume_world(&store, world_id).await?, initialized);
+    let batches = store
+        .load_event_batches(world_id, EventSequence::ZERO)
+        .await?;
+    assert_eq!(batches.len(), 1, "genesis must remain one atomic append");
+    assert_eq!(
+        batches[0].event_schema_version,
+        MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+    );
+    assert_eq!(
+        batches[0]
+            .events
+            .iter()
+            .filter(|event| matches!(event.event, DomainEvent::MaterialReservoirCommitted { .. }))
+            .count(),
+        1
+    );
     Ok(())
 }
 

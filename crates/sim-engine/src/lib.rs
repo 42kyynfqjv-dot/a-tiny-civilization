@@ -30,7 +30,8 @@ use world_domain::{
     HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
     HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
-    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MAX_COGNITION_SELECTION_READINGS, MaterialIdentity,
+    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
+    MAX_COGNITION_SELECTION_READINGS, MaterialIdentity, MaterialReservoirCommitment,
     MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
     PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
     PrimitiveAction, PrimitiveActionKind, PropertyReading,
@@ -91,6 +92,9 @@ pub const HERITABLE_DISPOSITION_RULESET_VERSION: u32 = 15;
 /// Ruleset sixteen adds deterministic world-total external-cognition request
 /// selection and pending deadline state. Remote services remain optional inputs.
 pub const COGNITION_RULESET_VERSION: u32 = 16;
+/// Ruleset seventeen adds bounded, spatially anchored real-material reservoirs,
+/// ordered shared transfers, and deterministic replenishment.
+pub const MATERIAL_RESERVOIR_RULESET_VERSION: u32 = 17;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -110,6 +114,7 @@ pub const ACTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 16;
 pub const REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION: u16 = 17;
 pub const HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 18;
 pub const COGNITION_SNAPSHOT_SCHEMA_VERSION: u16 = 19;
+pub const MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION: u16 = 20;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -143,6 +148,7 @@ const ACTION_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 16;
 const REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION: u16 = 17;
 const HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION: u16 = 18;
 const COGNITION_STATE_HASH_SCHEMA_VERSION: u16 = 19;
+const MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION: u16 = 20;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -419,6 +425,19 @@ pub struct InitialOrganism {
     pub heritable_disposition_profile: Option<HeritableDispositionProfile>,
 }
 
+/// One explicitly planned real-material instance committed with genesis.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct InitialMaterialInstance {
+    pub object_id: EntityId,
+    pub material: MaterialIdentity,
+    pub embodied_patch: S2CellId,
+    pub initial_mass_milligrams: Option<u64>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub oral_transfer_profiles: Vec<OralTransferCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservoir: Option<MaterialReservoirCommitment>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct DeathRecord {
     pub tick: SimTick,
@@ -490,6 +509,10 @@ pub struct MaterialInstanceState {
     remaining_mass_milligrams: Option<u64>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     oral_transfer_profiles: Vec<OralTransferCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reservoir: Option<MaterialReservoirCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    reservoir_settled_at: Option<SimTick>,
 }
 
 /// Private canonical state for one development that may later resolve as a birth.
@@ -538,8 +561,26 @@ impl MaterialInstanceState {
         self.remaining_mass_milligrams
     }
 
+    #[must_use]
+    pub const fn reservoir(&self) -> Option<&MaterialReservoirCommitment> {
+        self.reservoir.as_ref()
+    }
+
     fn is_physically_present(&self) -> bool {
         self.remaining_mass_milligrams != Some(0)
+    }
+
+    fn is_accessible_from(&self, embodied_patch: S2CellId) -> bool {
+        match &self.reservoir {
+            Some(reservoir) => {
+                self.held_by.is_none() && reservoir.coverage_patch.contains(embodied_patch)
+            }
+            None => {
+                self.is_physically_present()
+                    && self.held_by.is_none()
+                    && self.embodied_patch == embodied_patch
+            }
+        }
     }
 }
 
@@ -737,7 +778,7 @@ impl EngineState {
         &self,
         initial_organisms: Vec<InitialOrganism>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
-        self.plan_genesis_internal(None, initial_organisms)
+        self.plan_genesis_internal(None, initial_organisms, Vec::new())
     }
 
     pub fn plan_configured_genesis(
@@ -746,13 +787,24 @@ impl EngineState {
         initial_organisms: Vec<InitialOrganism>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
         configuration.validate()?;
-        self.plan_genesis_internal(Some(configuration), initial_organisms)
+        self.plan_genesis_internal(Some(configuration), initial_organisms, Vec::new())
+    }
+
+    pub fn plan_configured_genesis_with_materials(
+        &self,
+        configuration: WorldConfiguration,
+        initial_organisms: Vec<InitialOrganism>,
+        initial_materials: Vec<InitialMaterialInstance>,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        configuration.validate()?;
+        self.plan_genesis_internal(Some(configuration), initial_organisms, initial_materials)
     }
 
     fn plan_genesis_internal(
         &self,
         configuration: Option<WorldConfiguration>,
         mut initial_organisms: Vec<InitialOrganism>,
+        mut initial_materials: Vec<InitialMaterialInstance>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_status(WorldStatus::Initializing)?;
         if self.manifest.ruleset_version == 0 {
@@ -766,12 +818,26 @@ impl EngineState {
         {
             return Err(EngineError::DuplicateInitialOrganism);
         }
+        initial_materials.sort_by_key(|instance| instance.object_id);
+        if initial_materials
+            .windows(2)
+            .any(|pair| pair[0].object_id == pair[1].object_id)
+        {
+            return Err(EngineError::DuplicateInitialMaterial);
+        }
         if self.uses_reproductive_physiology_driver()
             && !initial_organisms
                 .iter()
                 .any(|organism| organism.role == OrganismRole::Person)
         {
             return Err(EngineError::MissingInitialPeople);
+        }
+        if self.uses_material_reservoir_driver()
+            && !initial_materials
+                .iter()
+                .any(|instance| instance.reservoir.is_some())
+        {
+            return Err(EngineError::MissingInitialMaterialReservoir);
         }
         if self.uses_heritable_disposition_driver() {
             let mut profiles_by_species = BTreeMap::new();
@@ -804,6 +870,7 @@ impl EngineState {
         let mut events = Vec::with_capacity(
             initial_organisms
                 .len()
+                .saturating_add(initial_materials.len().saturating_mul(2))
                 .saturating_add(1 + usize::from(configuration.is_some())),
         );
         if self.uses_bodily_regulation_driver() {
@@ -921,6 +988,21 @@ impl EngineState {
                 heritable_disposition_profile,
                 heritable_disposition,
             });
+        }
+        for instance in initial_materials {
+            events.push(DomainEvent::MaterialInstanceInitialized {
+                object_id: instance.object_id,
+                material: instance.material,
+                embodied_patch: instance.embodied_patch,
+                initial_mass_milligrams: instance.initial_mass_milligrams,
+                oral_transfer_profiles: instance.oral_transfer_profiles,
+            });
+            if let Some(commitment) = instance.reservoir {
+                events.push(DomainEvent::MaterialReservoirCommitted {
+                    object_id: instance.object_id,
+                    commitment,
+                });
+            }
         }
         Ok(events)
     }
@@ -1276,6 +1358,7 @@ impl EngineState {
             events.extend(self.local_signal_perceptions(organism_id, action.intensity)?);
         }
         if self.uses_material_ingestion_driver()
+            && !self.uses_material_reservoir_driver()
             && action.kind == PrimitiveActionKind::Swallow
             && let Some(object_id) = action.target_id
             && let Some((profile_digest, from_mass_milligrams, transferred_mass_milligrams)) =
@@ -1381,6 +1464,7 @@ impl EngineState {
             .map(|instance| instance.object_id)
             .collect::<Vec<_>>();
         let target = if held_objects.is_empty() {
+            let may_select_shared_source = self.uses_material_reservoir_driver();
             let patch_leader = self
                 .organisms
                 .values()
@@ -1388,17 +1472,16 @@ impl EngineState {
                 .map(|candidate| candidate.organism_id)
                 .min()
                 == Some(organism.organism_id);
-            if patch_leader {
-                let local_objects = self
-                    .material_instances
-                    .values()
-                    .filter(|instance| {
-                        instance.held_by.is_none()
-                            && instance.embodied_patch == patch
-                            && instance.is_physically_present()
-                    })
-                    .map(|instance| instance.object_id)
-                    .collect::<Vec<_>>();
+            let local_objects = self
+                .material_instances
+                .values()
+                .filter(|instance| {
+                    instance.is_accessible_from(patch)
+                        && (instance.reservoir.is_some() || patch_leader)
+                })
+                .map(|instance| instance.object_id)
+                .collect::<Vec<_>>();
+            if may_select_shared_source || patch_leader {
                 self.deterministic_policy_target(organism, age_ticks, &local_objects)?
             } else {
                 None
@@ -1443,14 +1526,45 @@ impl EngineState {
         ];
         if let Some(target_id) = target {
             if held_objects.is_empty() {
-                candidates.push(PolicyCandidate {
-                    action: PrimitiveAction {
-                        kind: PrimitiveActionKind::Grasp,
-                        target_id: Some(target_id),
-                        intensity: 1,
-                    },
-                    weight: oral_drive,
-                });
+                let target_is_reservoir = self
+                    .material_instances
+                    .get(&target_id)
+                    .is_some_and(|instance| instance.reservoir.is_some());
+                if target_is_reservoir {
+                    for kind in [
+                        PrimitiveActionKind::ApplyForce,
+                        PrimitiveActionKind::Bite,
+                        PrimitiveActionKind::Chew,
+                        PrimitiveActionKind::Swallow,
+                    ] {
+                        candidates.push(PolicyCandidate {
+                            action: PrimitiveAction {
+                                kind,
+                                target_id: Some(target_id),
+                                intensity: 1,
+                            },
+                            weight: if matches!(
+                                kind,
+                                PrimitiveActionKind::Bite
+                                    | PrimitiveActionKind::Chew
+                                    | PrimitiveActionKind::Swallow
+                            ) {
+                                oral_drive
+                            } else {
+                                1
+                            },
+                        });
+                    }
+                } else {
+                    candidates.push(PolicyCandidate {
+                        action: PrimitiveAction {
+                            kind: PrimitiveActionKind::Grasp,
+                            target_id: Some(target_id),
+                            intensity: 1,
+                        },
+                        weight: oral_drive,
+                    });
+                }
             } else {
                 for kind in [
                     PrimitiveActionKind::Release,
@@ -2769,6 +2883,10 @@ impl EngineState {
             .iter()
             .map(|emission| emission.event().clone())
             .collect::<Vec<_>>();
+        if self.uses_material_reservoir_driver() {
+            let oral_transfers = self.plan_ordered_oral_transfers(&events)?;
+            events.extend(oral_transfers);
+        }
         if self.uses_bodily_regulation_driver() {
             // Regulation is a final causal phase after every organism's sensory and
             // motor emissions. This prevents arbitrary subject-key ordering from
@@ -2785,6 +2903,13 @@ impl EngineState {
                     return Err(EngineError::DuplicateScheduledAction(*organism_id));
                 }
                 if let DomainEvent::MaterialOralPortionTransferred {
+                    object_id,
+                    organism_id,
+                    profile_digest,
+                    transferred_mass_milligrams,
+                    ..
+                }
+                | DomainEvent::MaterialReservoirOralPortionTransferred {
                     object_id,
                     organism_id,
                     profile_digest,
@@ -3013,6 +3138,10 @@ impl EngineState {
         self.manifest.ruleset_version >= COGNITION_RULESET_VERSION
     }
 
+    fn uses_material_reservoir_driver(&self) -> bool {
+        self.manifest.ruleset_version >= MATERIAL_RESERVOIR_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -3066,6 +3195,11 @@ impl EngineState {
             DomainEvent::MaterialInstanceInitialized { embodied_patch, .. } => {
                 Some(*embodied_patch)
             }
+            DomainEvent::MaterialReservoirCommitted { object_id, .. } => self
+                .material_instances
+                .get(object_id)
+                .or_else(|| resulting_state.material_instances.get(object_id))
+                .map(|instance| instance.embodied_patch),
             DomainEvent::MaterialInstanceHeld { holder_id, .. } => self
                 .organisms
                 .get(holder_id)
@@ -3073,6 +3207,11 @@ impl EngineState {
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::MaterialInstanceReleased { embodied_patch, .. } => Some(*embodied_patch),
             DomainEvent::MaterialOralPortionTransferred { organism_id, .. } => self
+                .organisms
+                .get(organism_id)
+                .or_else(|| resulting_state.organisms.get(organism_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::MaterialReservoirOralPortionTransferred { organism_id, .. } => self
                 .organisms
                 .get(organism_id)
                 .or_else(|| resulting_state.organisms.get(organism_id))
@@ -3133,6 +3272,20 @@ impl EngineState {
         let starts_world = events
             .iter()
             .any(|event| matches!(event, DomainEvent::WorldStarted { .. }));
+        let has_material_reservoir_commitment = events
+            .iter()
+            .any(|event| matches!(event, DomainEvent::MaterialReservoirCommitted { .. }));
+        if has_material_reservoir_commitment
+            && (!self.uses_material_reservoir_driver() || !starts_world)
+        {
+            return Err(EngineError::MaterialReservoirUnsupported);
+        }
+        if self.uses_material_reservoir_driver()
+            && starts_world
+            && !has_material_reservoir_commitment
+        {
+            return Err(EngineError::MissingInitialMaterialReservoir);
+        }
         if self.uses_reproductive_physiology_driver()
             && !starts_world
             && events
@@ -3177,12 +3330,46 @@ impl EngineState {
         {
             return Err(EngineError::InvalidActionValueTransition(organism_id));
         }
+        if self.uses_material_reservoir_driver() {
+            let actual_transfers = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::MaterialOralPortionTransferred { .. }
+                            | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let expected_transfers = if tick_advanced {
+                self.plan_ordered_oral_transfers(events)?
+            } else {
+                Vec::new()
+            };
+            if actual_transfers != expected_transfers {
+                return Err(EngineError::InvalidMaterialReservoirEventSet);
+            }
+        } else if events.iter().any(|event| {
+            matches!(
+                event,
+                DomainEvent::MaterialReservoirCommitted { .. }
+                    | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
+            )
+        }) {
+            return Err(EngineError::MaterialReservoirUnsupported);
+        }
         for (index, event) in events.iter().enumerate() {
-            let DomainEvent::MaterialOralPortionTransferred {
+            let (DomainEvent::MaterialOralPortionTransferred {
                 object_id,
                 organism_id,
                 ..
-            } = event
+            }
+            | DomainEvent::MaterialReservoirOralPortionTransferred {
+                object_id,
+                organism_id,
+                ..
+            }) = event
             else {
                 continue;
             };
@@ -3471,7 +3658,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_cognition_driver() {
+        if self.uses_material_reservoir_driver() {
+            MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+        } else if self.uses_cognition_driver() {
             COGNITION_EVENT_SCHEMA_VERSION
         } else if self.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
@@ -3536,7 +3725,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_cognition_driver() {
+        if self.uses_material_reservoir_driver() {
+            MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_cognition_driver() {
             COGNITION_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION
@@ -3760,12 +3951,41 @@ impl EngineState {
                             held_by: None,
                             remaining_mass_milligrams: *initial_mass_milligrams,
                             oral_transfer_profiles: oral_transfer_profiles.clone(),
+                            reservoir: None,
+                            reservoir_settled_at: None,
                         },
                     )
                     .is_some()
                 {
                     return Err(EngineError::DuplicateMaterialInstance(*object_id));
                 }
+            }
+            DomainEvent::MaterialReservoirCommitted {
+                object_id,
+                commitment,
+            } => {
+                if !self.uses_material_reservoir_driver() || self.tick != SimTick::ZERO {
+                    return Err(EngineError::MaterialReservoirUnsupported);
+                }
+                commitment
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                let instance = self
+                    .material_instances
+                    .get_mut(object_id)
+                    .ok_or(EngineError::UnknownMaterialInstance(*object_id))?;
+                let initial_mass = instance
+                    .remaining_mass_milligrams
+                    .ok_or(EngineError::MissingMaterialMass(*object_id))?;
+                if instance.material != commitment.material
+                    || instance.reservoir.is_some()
+                    || initial_mass > commitment.maximum_mass_milligrams
+                    || !commitment.coverage_patch.contains(instance.embodied_patch)
+                {
+                    return Err(EngineError::InvalidMaterialReservoir(*object_id));
+                }
+                instance.reservoir = Some(commitment.clone());
+                instance.reservoir_settled_at = Some(self.tick);
             }
             DomainEvent::MaterialInstanceHeld {
                 object_id,
@@ -3839,6 +4059,81 @@ impl EngineState {
                 if *to_mass_milligrams == 0 {
                     instance.held_by = None;
                 }
+            }
+            DomainEvent::MaterialReservoirOralPortionTransferred {
+                object_id,
+                organism_id,
+                profile_digest,
+                settled_from_tick,
+                settled_to_tick,
+                from_mass_milligrams,
+                replenished_mass_milligrams,
+                transferred_mass_milligrams,
+                to_mass_milligrams,
+            } => {
+                if !self.uses_material_reservoir_driver() {
+                    return Err(EngineError::MaterialReservoirUnsupported);
+                }
+                self.require_living_organism(*organism_id)?;
+                let organism = self
+                    .organisms
+                    .get(organism_id)
+                    .expect("living organism presence checked");
+                let organism_species = organism.species.clone();
+                let organism_patch = organism
+                    .embodied_patch
+                    .ok_or(EngineError::MissingEmbodiedPatch(*organism_id))?;
+                let instance = self
+                    .material_instances
+                    .get_mut(object_id)
+                    .ok_or(EngineError::UnknownMaterialInstance(*object_id))?;
+                let reservoir = instance
+                    .reservoir
+                    .as_ref()
+                    .ok_or(EngineError::InvalidMaterialReservoir(*object_id))?;
+                let profile = instance
+                    .oral_transfer_profiles
+                    .iter()
+                    .find(|profile| {
+                        profile.species == organism_species
+                            && profile.profile_digest == *profile_digest
+                    })
+                    .ok_or(EngineError::InvalidMaterialOralTransfer(*object_id))?;
+                let current_mass = instance
+                    .remaining_mass_milligrams
+                    .ok_or(EngineError::MissingMaterialMass(*object_id))?;
+                let current_settled_at = instance
+                    .reservoir_settled_at
+                    .ok_or(EngineError::InvalidMaterialReservoir(*object_id))?;
+                let elapsed_ticks = settled_to_tick
+                    .get()
+                    .checked_sub(settled_from_tick.get())
+                    .ok_or(EngineError::InvalidMaterialReservoir(*object_id))?;
+                let capacity_remaining = reservoir
+                    .maximum_mass_milligrams
+                    .checked_sub(current_mass)
+                    .ok_or(EngineError::InvalidMaterialReservoir(*object_id))?;
+                let expected_replenished = reservoir
+                    .replenishment_mass_milligrams_per_tick
+                    .saturating_mul(elapsed_ticks)
+                    .min(capacity_remaining);
+                let expected_to = current_mass
+                    .checked_add(expected_replenished)
+                    .and_then(|available| available.checked_sub(*transferred_mass_milligrams))
+                    .ok_or(EngineError::InvalidMaterialOralTransfer(*object_id))?;
+                if instance.held_by.is_some()
+                    || !reservoir.coverage_patch.contains(organism_patch)
+                    || current_mass != *from_mass_milligrams
+                    || current_settled_at != *settled_from_tick
+                    || *settled_to_tick != self.tick
+                    || *replenished_mass_milligrams != expected_replenished
+                    || *transferred_mass_milligrams != profile.transfer_mass_milligrams
+                    || *to_mass_milligrams != expected_to
+                {
+                    return Err(EngineError::InvalidMaterialOralTransfer(*object_id));
+                }
+                instance.remaining_mass_milligrams = Some(*to_mass_milligrams);
+                instance.reservoir_settled_at = Some(*settled_to_tick);
             }
             DomainEvent::TickAdvanced { from, to } => {
                 self.require_status(WorldStatus::Running)?;
@@ -4528,6 +4823,134 @@ impl EngineState {
         Ok(())
     }
 
+    /// Resolve all ruleset-seventeen oral transfers after the partition barrier has
+    /// fixed action order. Shared reservoirs therefore have one deterministic mass
+    /// sequence even when many organisms act against the same source in one tick.
+    fn plan_ordered_oral_transfers(
+        &self,
+        events: &[DomainEvent],
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        let mut remaining = self
+            .material_instances
+            .iter()
+            .filter_map(|(object_id, instance)| {
+                instance
+                    .remaining_mass_milligrams
+                    .map(|mass| (*object_id, mass))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut reservoir_settled_at = self
+            .material_instances
+            .iter()
+            .filter_map(|(object_id, instance)| {
+                instance
+                    .reservoir_settled_at
+                    .map(|settled_at| (*object_id, settled_at))
+            })
+            .collect::<BTreeMap<_, _>>();
+        let settlement_tick = self.tick.checked_next()?;
+        let mut transfers = Vec::new();
+        for event in events {
+            let DomainEvent::OrganismActed {
+                organism_id,
+                action,
+            } = event
+            else {
+                continue;
+            };
+            if action.kind != PrimitiveActionKind::Swallow {
+                continue;
+            }
+            let Some(object_id) = action.target_id else {
+                continue;
+            };
+            let organism = self
+                .organisms
+                .get(organism_id)
+                .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+            let embodied_patch = organism
+                .embodied_patch
+                .ok_or(EngineError::MissingEmbodiedPatch(*organism_id))?;
+            let instance = self
+                .material_instances
+                .get(&object_id)
+                .ok_or(EngineError::UnknownMaterialInstance(object_id))?;
+            let accessible = match &instance.reservoir {
+                Some(reservoir) => {
+                    instance.held_by.is_none() && reservoir.coverage_patch.contains(embodied_patch)
+                }
+                None => instance.held_by == Some(*organism_id),
+            };
+            if !accessible {
+                return Err(EngineError::InvalidMaterialOralTransfer(object_id));
+            }
+            let Some(profile) = instance
+                .oral_transfer_profiles
+                .iter()
+                .find(|profile| profile.species == organism.species)
+            else {
+                continue;
+            };
+            let from_mass_milligrams = *remaining
+                .get(&object_id)
+                .ok_or(EngineError::MissingMaterialMass(object_id))?;
+            if let Some(reservoir) = &instance.reservoir {
+                let settled_from_tick = *reservoir_settled_at
+                    .get(&object_id)
+                    .ok_or(EngineError::InvalidMaterialReservoir(object_id))?;
+                let elapsed_ticks = settlement_tick
+                    .get()
+                    .checked_sub(settled_from_tick.get())
+                    .ok_or(EngineError::InvalidMaterialReservoir(object_id))?;
+                let capacity_remaining = reservoir
+                    .maximum_mass_milligrams
+                    .checked_sub(from_mass_milligrams)
+                    .ok_or(EngineError::InvalidMaterialReservoir(object_id))?;
+                let replenished_mass_milligrams = reservoir
+                    .replenishment_mass_milligrams_per_tick
+                    .saturating_mul(elapsed_ticks)
+                    .min(capacity_remaining);
+                let available = from_mass_milligrams
+                    .checked_add(replenished_mass_milligrams)
+                    .ok_or(EngineError::InvalidMaterialReservoir(object_id))?;
+                let Some(to_mass_milligrams) =
+                    available.checked_sub(profile.transfer_mass_milligrams)
+                else {
+                    continue;
+                };
+                remaining.insert(object_id, to_mass_milligrams);
+                reservoir_settled_at.insert(object_id, settlement_tick);
+                transfers.push(DomainEvent::MaterialReservoirOralPortionTransferred {
+                    object_id,
+                    organism_id: *organism_id,
+                    profile_digest: profile.profile_digest,
+                    settled_from_tick,
+                    settled_to_tick: settlement_tick,
+                    from_mass_milligrams,
+                    replenished_mass_milligrams,
+                    transferred_mass_milligrams: profile.transfer_mass_milligrams,
+                    to_mass_milligrams,
+                });
+            } else {
+                let Some(to_mass_milligrams) =
+                    from_mass_milligrams.checked_sub(profile.transfer_mass_milligrams)
+                else {
+                    continue;
+                };
+                remaining.insert(object_id, to_mass_milligrams);
+                transfers.push(DomainEvent::MaterialOralPortionTransferred {
+                    object_id,
+                    organism_id: *organism_id,
+                    profile_digest: profile.profile_digest,
+                    from_mass_milligrams,
+                    transferred_mass_milligrams: profile.transfer_mass_milligrams,
+                    to_mass_milligrams,
+                });
+            }
+        }
+        Ok(transfers)
+    }
+
     fn validate_grasp(&self, holder_id: EntityId, object_id: EntityId) -> Result<(), EngineError> {
         let holder_patch = self
             .organisms
@@ -4538,6 +4961,9 @@ impl EngineState {
             .material_instances
             .get(&object_id)
             .ok_or(EngineError::UnknownMaterialInstance(object_id))?;
+        if instance.reservoir.is_some() {
+            return Err(EngineError::MaterialReservoirCannotBeHeld(object_id));
+        }
         if instance.held_by.is_some() {
             return Err(EngineError::MaterialInstanceAlreadyHeld(object_id));
         }
@@ -5011,6 +5437,28 @@ impl EngineState {
             if instance.remaining_mass_milligrams == Some(0) && instance.held_by.is_some() {
                 return Err(EngineError::MaterialInstanceDepleted(*id));
             }
+            match (&instance.reservoir, instance.reservoir_settled_at) {
+                (None, None) => {}
+                (Some(reservoir), Some(settled_at)) => {
+                    reservoir
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    let remaining_mass = instance
+                        .remaining_mass_milligrams
+                        .ok_or(EngineError::MissingMaterialMass(*id))?;
+                    if !self.uses_material_reservoir_driver()
+                        || reservoir.material != instance.material
+                        || !reservoir.coverage_patch.contains(instance.embodied_patch)
+                        || remaining_mass > reservoir.maximum_mass_milligrams
+                        || instance.held_by.is_some()
+                        || settled_at > self.tick
+                        || instance.oral_transfer_profiles.is_empty()
+                    {
+                        return Err(EngineError::InvalidMaterialReservoir(*id));
+                    }
+                }
+                _ => return Err(EngineError::InvalidMaterialReservoir(*id)),
+            }
             let mut previous_species_key = None;
             for profile in &instance.oral_transfer_profiles {
                 profile
@@ -5036,6 +5484,15 @@ impl EngineState {
                     return Err(EngineError::MaterialInstanceNotHeldByActor(*id));
                 }
             }
+        }
+        if self.uses_material_reservoir_driver()
+            && self.status != WorldStatus::Initializing
+            && !self
+                .material_instances
+                .values()
+                .any(|instance| instance.reservoir.is_some())
+        {
+            return Err(EngineError::MissingInitialMaterialReservoir);
         }
         match (self.partition_profile(), &self.partition_schedule) {
             (None, None) => {}
@@ -5104,7 +5561,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_cognition_driver() {
+        let snapshot_schema_version = if state.uses_material_reservoir_driver() {
+            MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_cognition_driver() {
             COGNITION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
@@ -5184,12 +5643,15 @@ impl Snapshot {
                 | REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION
                 | HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
                 | COGNITION_SNAPSHOT_SCHEMA_VERSION
+                | MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_cognition_driver() {
+        let expected_schema_version = if self.state.uses_material_reservoir_driver() {
+            MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_cognition_driver() {
             COGNITION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
@@ -5376,7 +5838,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_cognition_driver() {
+        let expected_schema = if state.uses_material_reservoir_driver() {
+            MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+        } else if state.uses_cognition_driver() {
             COGNITION_EVENT_SCHEMA_VERSION
         } else if state.uses_heritable_disposition_driver() {
             HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
@@ -5429,7 +5893,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == COGNITION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+        } else if expected_schema == COGNITION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == COGNITION_EVENT_SCHEMA_VERSION
         } else if expected_schema == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
@@ -5522,6 +5988,8 @@ pub enum EngineError {
     InvalidGenesisState,
     #[error("initial organism list contains a duplicate identity")]
     DuplicateInitialOrganism,
+    #[error("initial material list contains a duplicate identity")]
+    DuplicateInitialMaterial,
     #[error("a ruleset-fourteen genesis requires at least one person")]
     MissingInitialPeople,
     #[error("organisms may be initialized only in the atomic world-start batch")]
@@ -5590,6 +6058,16 @@ pub enum EngineError {
     MaterialInstanceDepleted(EntityId),
     #[error("material instance {0} has an invalid oral mass transfer")]
     InvalidMaterialOralTransfer(EntityId),
+    #[error("ruleset seventeen requires at least one initial material reservoir")]
+    MissingInitialMaterialReservoir,
+    #[error("material-reservoir mechanics are unsupported by this ruleset")]
+    MaterialReservoirUnsupported,
+    #[error("material reservoir {0} is invalid")]
+    InvalidMaterialReservoir(EntityId),
+    #[error("material reservoir {0} cannot be held")]
+    MaterialReservoirCannotBeHeld(EntityId),
+    #[error("material-reservoir transfer events do not match ordered action resolution")]
+    InvalidMaterialReservoirEventSet,
     #[error("organism map key {0} does not match its value")]
     OrganismKeyMismatch(EntityId),
     #[error("material instance map key {0} does not match its value")]
@@ -8759,6 +9237,196 @@ mod tests {
             EngineState::new(legacy_manifest).plan_cognition_request(organism_id),
             Err(EngineError::CognitionUnsupported)
         ));
+    }
+
+    #[test]
+    fn ruleset_seventeen_orders_shared_reservoir_transfers_and_replays_lazy_renewal() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x123));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478594),
+            MATERIAL_RESERVOIR_RULESET_VERSION,
+        );
+        let mut first = regulated_full_earth_person(world_id, 0x721, 10_000_000, 1_000_000);
+        let mut second = regulated_full_earth_person(world_id, 0x722, 10_000_000, 1_000_000);
+        first.birth_category = BirthCategory::new("female").expect("category");
+        second.birth_category = BirthCategory::new("male").expect("category");
+        for founder in [&mut first, &mut second] {
+            founder.reproductive_physiology =
+                Some(reproductive_fixture_profile(founder.species.clone()));
+            founder.heritable_disposition_profile =
+                Some(heritable_fixture_profile(founder.species.clone()));
+        }
+        let patch = first.embodied_patch.expect("founder patch");
+        let material = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("real water identity");
+        let profile = OralTransferCommitment {
+            commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "water-human-reservoir-fixture-v1".to_owned(),
+            profile_digest: Digest::sha256(b"ruleset seventeen water response"),
+            material: material.clone(),
+            species: human(),
+            evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+            transfer_mass_milligrams: 250_000,
+            recoverable_energy_joules: 100,
+            hydration_recovery_seconds: 200,
+        };
+        let object_id = EntityId::deterministic(world_id, b"shared-water-reservoir");
+        let initial_material = InitialMaterialInstance {
+            object_id,
+            material: material.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(500_000),
+            oral_transfer_profiles: vec![profile],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "shared-water-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"ruleset seventeen shared reservoir"),
+                material,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("L10 coverage"),
+                maximum_mass_milligrams: 1_000_000,
+                replenishment_mass_milligrams_per_tick: 100_000,
+            }),
+        };
+
+        let probe_initial = EngineState::new(manifest.clone());
+        let probe_events = probe_initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![first.clone(), second.clone()],
+                vec![initial_material.clone()],
+            )
+            .expect("reservoir probe genesis");
+        let (probe, _) = probe_initial
+            .commit(EventSequence::new(1), Digest::ZERO, probe_events)
+            .expect("reservoir probe commit");
+        for founder in [&mut first, &mut second] {
+            let organism = probe
+                .organisms
+                .get(&founder.organism_id)
+                .expect("probe founder");
+            let swallow_age = (1..=10_000)
+                .find(|age_ticks| {
+                    probe
+                        .deterministic_policy_action(organism, *age_ticks)
+                        .is_ok_and(|action| {
+                            action.kind == PrimitiveActionKind::Swallow
+                                && action.target_id == Some(object_id)
+                        })
+                })
+                .expect("seeded policy eventually selects reservoir swallow");
+            founder.initial_age_ticks = swallow_age - 1;
+        }
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![first.clone(), second.clone()],
+                vec![initial_material],
+            )
+            .expect("reservoir genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("reservoir genesis commit");
+        assert_eq!(
+            genesis.event_schema_version,
+            MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.state_hash_schema_version(),
+            MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION
+        );
+
+        let tick_events = running
+            .plan_next_tick_with_celestial_and_cognition(
+                CelestialState::new(
+                    TdbSecondsSinceJ2000::new(300),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ),
+                &[],
+            )
+            .expect("shared reservoir tick");
+        let transfers = tick_events
+            .iter()
+            .filter_map(|event| match event {
+                DomainEvent::MaterialReservoirOralPortionTransferred { .. } => Some(event.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(transfers.len(), 2);
+        assert!(matches!(
+            transfers[0],
+            DomainEvent::MaterialReservoirOralPortionTransferred {
+                settled_from_tick,
+                settled_to_tick,
+                from_mass_milligrams: 500_000,
+                replenished_mass_milligrams: 100_000,
+                transferred_mass_milligrams: 250_000,
+                to_mass_milligrams: 350_000,
+                ..
+            } if settled_from_tick == SimTick::ZERO && settled_to_tick == SimTick::new(1)
+        ));
+        assert!(matches!(
+            transfers[1],
+            DomainEvent::MaterialReservoirOralPortionTransferred {
+                settled_from_tick,
+                settled_to_tick,
+                from_mass_milligrams: 350_000,
+                replenished_mass_milligrams: 0,
+                transferred_mass_milligrams: 250_000,
+                to_mass_milligrams: 100_000,
+                ..
+            } if settled_from_tick == SimTick::new(1) && settled_to_tick == SimTick::new(1)
+        ));
+
+        let mut missing_transfer = tick_events.clone();
+        let second_index = missing_transfer
+            .iter()
+            .rposition(|event| {
+                matches!(
+                    event,
+                    DomainEvent::MaterialReservoirOralPortionTransferred { .. }
+                )
+            })
+            .expect("second transfer index");
+        missing_transfer.remove(second_index);
+        assert!(matches!(
+            running
+                .clone()
+                .commit(EventSequence::new(2), genesis.batch_hash, missing_transfer),
+            Err(EngineError::InvalidMaterialReservoirEventSet)
+        ));
+
+        let (after_tick, tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, tick_events)
+            .expect("shared reservoir tick commit");
+        let reservoir = after_tick
+            .material_instances
+            .get(&object_id)
+            .expect("shared reservoir state");
+        assert_eq!(reservoir.remaining_mass_milligrams(), Some(100_000));
+        assert_eq!(reservoir.reservoir_settled_at, Some(SimTick::new(1)));
+        let snapshot = Snapshot::new(after_tick.clone(), tick.sequence, tick.batch_hash)
+            .expect("reservoir snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, tick])
+                .expect("reservoir replay")
+                .state,
+            after_tick
+        );
     }
 
     #[test]

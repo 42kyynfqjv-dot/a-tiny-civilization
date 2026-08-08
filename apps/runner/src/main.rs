@@ -11,8 +11,9 @@ use application::{
     AgentMemory, CognitionModel, CognitionProviderId, CognitionWorkerConfiguration,
     CognitionWorkerStep, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
     WorldSession, WorldStore, advance_world, advance_world_with_celestial,
-    advance_world_with_celestial_and_cognition, initialize_or_resume_configured_world,
-    initialize_or_resume_world, process_next_cognition_job, resume_world, schedule_world_cognition,
+    advance_world_with_celestial_and_cognition,
+    initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
+    process_next_cognition_job, resume_world, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -22,15 +23,16 @@ use serde::Deserialize;
 use serde_json::json;
 use sim_engine::{
     BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    HERITABLE_DISPOSITION_RULESET_VERSION, InitialOrganism,
-    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RESOLVED_MOVEMENT_RULESET_VERSION, RULESET_VERSION,
+    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
+    MATERIAL_RESERVOIR_RULESET_VERSION, REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 use world_data::{
     DataLayerKind, FaunaMetabolicRatePlan, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
     FaunaRangeCandidateSet, FaunaSeededSelection, ProvisionalLandOriginSelection,
-    ProvisionalOrganismBodyProfilePlan, ProvisionalOriginEnvironment,
+    ProvisionalMaterialResourcePlan, ProvisionalOrganismBodyProfilePlan,
+    ProvisionalOriginEnvironment,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -44,7 +46,7 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = RESOLVED_MOVEMENT_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = MATERIAL_RESERVOIR_RULESET_VERSION;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization simulation runner")]
@@ -147,6 +149,11 @@ enum Command {
         /// species. Required by rulesets with canonical bodily regulation.
         #[arg(long)]
         provisional_organism_profile_plan: Option<PathBuf>,
+
+        /// Canonical provisional real-material reservoirs. Required by rulesets
+        /// with shared renewable material-source mechanics.
+        #[arg(long)]
+        provisional_material_resource_plan: Option<PathBuf>,
 
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
@@ -271,6 +278,7 @@ async fn main() -> Result<()> {
             fauna_metabolic_profile_set,
             fauna_metabolic_rate_plan,
             provisional_organism_profile_plan,
+            provisional_material_resource_plan,
             predecessor_world_id,
             tick_duration_seconds,
             max_events_per_partition_transition,
@@ -292,6 +300,7 @@ async fn main() -> Result<()> {
                 fauna_metabolic_profile_set.as_deref(),
                 fauna_metabolic_rate_plan.as_deref(),
                 provisional_organism_profile_plan.as_deref(),
+                provisional_material_resource_plan.as_deref(),
                 predecessor_world_id,
                 tick_duration_seconds,
                 max_events_per_partition_transition,
@@ -638,6 +647,7 @@ async fn init_provisional_full_earth_world(
     fauna_metabolic_profile_set_path: Option<&std::path::Path>,
     fauna_metabolic_rate_plan_path: Option<&std::path::Path>,
     provisional_organism_profile_plan_path: Option<&std::path::Path>,
+    provisional_material_resource_plan_path: Option<&std::path::Path>,
     predecessor_world_id: Option<WorldId>,
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
@@ -794,12 +804,30 @@ async fn init_provisional_full_earth_world(
             profile_plan_digest.to_string(),
         );
     }
-    let session = initialize_or_resume_configured_world(
+    let (material_resource_plan_digest, initial_materials) = load_provisional_material_resources(
+        world_id,
+        WorldSeed::new(seed),
+        ruleset_version,
+        tick_duration_seconds,
+        initial_patch,
+        provisional_material_resource_plan_path,
+        provisional_organism_profile_plan_path,
+        fauna_population_plan_path,
+        fauna_origin_environment_path,
+    )?;
+    if let Some(material_resource_plan_digest) = material_resource_plan_digest {
+        manifest.scientific_datasets.insert(
+            "provisional_material_resource_plan".to_owned(),
+            material_resource_plan_digest.to_string(),
+        );
+    }
+    let session = initialize_or_resume_configured_world_with_materials(
         store,
         manifest,
         predecessor_world_id,
         configuration,
         initial_organisms,
+        initial_materials,
     )
     .await
     .context("initialize provisional full-Earth world")?;
@@ -1242,6 +1270,83 @@ fn apply_provisional_organism_body_profiles(
     }
 
     Ok(Some(Digest::sha256(&bytes)))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn load_provisional_material_resources(
+    world_id: WorldId,
+    world_seed: WorldSeed,
+    ruleset_version: u32,
+    tick_duration_seconds: u32,
+    initial_patch: S2CellId,
+    resource_plan_path: Option<&std::path::Path>,
+    body_profile_plan_path: Option<&std::path::Path>,
+    fauna_population_plan_path: Option<&std::path::Path>,
+    origin_environment_path: Option<&std::path::Path>,
+) -> Result<(Option<Digest>, Vec<InitialMaterialInstance>)> {
+    if ruleset_version < MATERIAL_RESERVOIR_RULESET_VERSION {
+        if resource_plan_path.is_some() {
+            anyhow::bail!(
+                "--provisional-material-resource-plan requires ruleset {MATERIAL_RESERVOIR_RULESET_VERSION} or later"
+            );
+        }
+        return Ok((None, Vec::new()));
+    }
+    let resource_plan_path = resource_plan_path.with_context(|| {
+        format!("ruleset {ruleset_version} requires --provisional-material-resource-plan")
+    })?;
+    let body_profile_plan_path = body_profile_plan_path
+        .context("material-resource validation requires --provisional-organism-profile-plan")?;
+    let fauna_population_plan_path = fauna_population_plan_path
+        .context("material-resource validation requires --fauna-population-plan")?;
+    let origin_environment_path = origin_environment_path
+        .context("material-resource validation requires --fauna-origin-environment")?;
+
+    let body_bytes = std::fs::read(body_profile_plan_path)
+        .context("read body-profile plan for material-resource validation")?;
+    let body_profiles = ProvisionalOrganismBodyProfilePlan::from_canonical_slice(&body_bytes)
+        .context("validate body-profile plan for material resources")?;
+    let population_bytes = std::fs::read(fauna_population_plan_path)
+        .context("read fauna population plan for material-resource validation")?;
+    let environment_bytes = std::fs::read(origin_environment_path)
+        .context("read origin environment for material-resource validation")?;
+    let resource_bytes = std::fs::read(resource_plan_path).with_context(|| {
+        format!(
+            "read provisional material-resource plan {}",
+            resource_plan_path.display()
+        )
+    })?;
+    let plan =
+        ProvisionalMaterialResourcePlan::from_canonical_slice(&resource_bytes, &body_profiles)
+            .context("validate provisional material-resource plan")?;
+    if plan.world_seed != world_seed
+        || plan.tick_duration_seconds != tick_duration_seconds
+        || plan.embodied_patch != initial_patch
+        || plan.origin_environment_digest != Digest::sha256(&environment_bytes)
+        || plan.fauna_population_plan_digest != Digest::sha256(&population_bytes)
+        || plan.organism_body_profile_plan_digest != Digest::sha256(&body_bytes)
+    {
+        anyhow::bail!(
+            "provisional material-resource plan does not match this world seed, origin, population, body plan, patch, or tick duration"
+        );
+    }
+
+    let initial_materials = plan
+        .sources
+        .into_iter()
+        .map(|source| InitialMaterialInstance {
+            object_id: EntityId::deterministic(
+                world_id,
+                format!("provisional-material-source:{}", source.source_id).as_bytes(),
+            ),
+            material: source.material,
+            embodied_patch: source.anchor_patch,
+            initial_mass_milligrams: Some(source.initial_mass_milligrams),
+            oral_transfer_profiles: source.oral_transfer_profiles,
+            reservoir: Some(source.reservoir),
+        })
+        .collect();
+    Ok((Some(Digest::sha256(&resource_bytes)), initial_materials))
 }
 
 async fn serve_memory_worker(
@@ -1956,7 +2061,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, RESOLVED_MOVEMENT_RULESET_VERSION);
+        assert_eq!(ruleset_version, MATERIAL_RESERVOIR_RULESET_VERSION);
     }
 
     #[test]

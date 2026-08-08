@@ -7,9 +7,10 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
-use crate::{Digest, SpeciesIdentity};
+use crate::{Digest, S2CellId, SpeciesIdentity};
 
 pub const ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION: u16 = 1;
 
 /// A stable, citable identity for a real-world physical material.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -67,6 +68,53 @@ pub enum OralTransferEvidenceBasis {
     SourceMeasurement,
     LiteratureApproximation,
     EngineeringAssumption,
+}
+
+/// Canonical physical behavior of one spatially anchored material reservoir.
+///
+/// The coverage and replenishment values are infrastructure-visible mechanics, not
+/// concepts exposed to organisms. A source identity tells observers what the material
+/// really is; the evidence basis says whether the quantitative ecology is measured or
+/// merely an explicit engineering assumption.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct MaterialReservoirCommitment {
+    pub commitment_schema_version: u16,
+    pub profile_id: String,
+    pub profile_digest: Digest,
+    pub material: MaterialIdentity,
+    pub evidence_basis: OralTransferEvidenceBasis,
+    /// Every embodied patch contained by this cell can physically access the source.
+    pub coverage_patch: S2CellId,
+    pub maximum_mass_milligrams: u64,
+    pub replenishment_mass_milligrams_per_tick: u64,
+}
+
+impl MaterialReservoirCommitment {
+    pub fn validate(&self) -> Result<(), MaterialReservoirCommitmentError> {
+        if self.commitment_schema_version != MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION {
+            return Err(MaterialReservoirCommitmentError::UnsupportedSchema);
+        }
+        self.material
+            .validate()
+            .map_err(|_| MaterialReservoirCommitmentError::InvalidCommitment)?;
+        if !is_technical(&self.profile_id)
+            || self.profile_digest == Digest::ZERO
+            || self.maximum_mass_milligrams == 0
+            || self.replenishment_mass_milligrams_per_tick == 0
+            || self.replenishment_mass_milligrams_per_tick > self.maximum_mass_milligrams
+        {
+            return Err(MaterialReservoirCommitmentError::InvalidCommitment);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
+pub enum MaterialReservoirCommitmentError {
+    #[error("unsupported material-reservoir commitment schema")]
+    UnsupportedSchema,
+    #[error("invalid material-reservoir commitment")]
+    InvalidCommitment,
 }
 
 /// Species-specific physical consequences of transferring one retained portion of a
@@ -183,6 +231,35 @@ mod tests {
         assert_eq!(
             zero_mass.validate(),
             Err(OralTransferCommitmentError::InvalidCommitment)
+        );
+    }
+
+    #[test]
+    fn material_reservoirs_are_bounded_spatial_and_explicitly_evidenced() {
+        let material = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("citable material");
+        let reservoir = MaterialReservoirCommitment {
+            commitment_schema_version: MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "provisional-water-reservoir-v1".to_owned(),
+            profile_digest: Digest::sha256(b"water reservoir fixture"),
+            material,
+            evidence_basis: OralTransferEvidenceBasis::EngineeringAssumption,
+            coverage_patch: S2CellId::new(1_u64 << 60).expect("face root"),
+            maximum_mass_milligrams: 1_000_000,
+            replenishment_mass_milligrams_per_tick: 250_000,
+        };
+        reservoir.validate().expect("valid material reservoir");
+
+        let mut impossible = reservoir;
+        impossible.replenishment_mass_milligrams_per_tick = 1_000_001;
+        assert_eq!(
+            impossible.validate(),
+            Err(MaterialReservoirCommitmentError::InvalidCommitment)
         );
     }
 }

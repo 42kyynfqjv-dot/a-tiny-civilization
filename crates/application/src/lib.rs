@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sim_engine::{
-    EngineError, EngineState, InitialOrganism, PERSISTENT_PERCEPTION_RULESET_VERSION, Snapshot,
-    replay, replay_from_snapshot,
+    EngineError, EngineState, InitialMaterialInstance, InitialOrganism,
+    PERSISTENT_PERCEPTION_RULESET_VERSION, Snapshot, replay, replay_from_snapshot,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -158,6 +158,7 @@ pub async fn initialize_or_resume_world<S: WorldStore + ?Sized>(
         predecessor_world_id,
         None,
         initial_organisms,
+        Vec::new(),
     )
     .await
 }
@@ -181,6 +182,28 @@ pub async fn initialize_or_resume_configured_world<S: WorldStore + ?Sized>(
         predecessor_world_id,
         Some(configuration),
         initial_organisms,
+        Vec::new(),
+    )
+    .await
+}
+
+/// Creates or resumes one configured world whose organisms and material instances
+/// are committed atomically in the same genesis batch.
+pub async fn initialize_or_resume_configured_world_with_materials<S: WorldStore + ?Sized>(
+    store: &S,
+    manifest: WorldManifest,
+    predecessor_world_id: Option<WorldId>,
+    configuration: WorldConfiguration,
+    initial_organisms: Vec<InitialOrganism>,
+    initial_materials: Vec<InitialMaterialInstance>,
+) -> Result<WorldSession, WorldRuntimeError> {
+    initialize_or_resume_world_internal(
+        store,
+        manifest,
+        predecessor_world_id,
+        Some(configuration),
+        initial_organisms,
+        initial_materials,
     )
     .await
 }
@@ -191,12 +214,22 @@ async fn initialize_or_resume_world_internal<S: WorldStore + ?Sized>(
     predecessor_world_id: Option<WorldId>,
     configuration: Option<WorldConfiguration>,
     initial_organisms: Vec<InitialOrganism>,
+    initial_materials: Vec<InitialMaterialInstance>,
 ) -> Result<WorldSession, WorldRuntimeError> {
     let initial = EngineState::new(manifest.clone());
     let initial_hash = initial.state_hash().map_err(EngineError::from)?;
     let genesis_events = match configuration {
-        Some(configuration) => initial.plan_configured_genesis(configuration, initial_organisms)?,
-        None => initial.plan_genesis(initial_organisms)?,
+        Some(configuration) => initial.plan_configured_genesis_with_materials(
+            configuration,
+            initial_organisms,
+            initial_materials,
+        )?,
+        None if initial_materials.is_empty() => initial.plan_genesis(initial_organisms)?,
+        None => {
+            return Err(WorldRuntimeError::Integrity(
+                "initial material instances require a configured world".to_owned(),
+            ));
+        }
     };
     let genesis_sequence = EventSequence::new(1);
     let (running, genesis_batch) =

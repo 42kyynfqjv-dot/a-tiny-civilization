@@ -119,6 +119,31 @@ sudo ./scripts/stage-provisional-runner-artifacts.sh ./runtime-artifacts
 The runner mounts that directory read-only at `/runtime`. The command is deliberately
 for the provisional integration path only; it does not authorize canonical genesis.
 
+### Prepare and initialize the canonical provisional world
+
+After publishing the seed by the committed, unpreviewed procedure, build the two
+one-time operator binaries and derive the entire seed-bound chain into a new directory.
+The preparation script resolves the selected L10 centre itself, queries the pinned
+iNaturalist range release, and refuses to replace any output.
+
+```bash
+cargo build --release --locked -p civilization-data -p civilization-runner
+./scripts/prepare-provisional-genesis.sh "$WORLD_SEED" \
+  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
+```
+
+With `DATABASE_URL` loaded from the root-protected production environment, initialize
+all founders and material reservoirs in one append and immediately replay-verify it:
+
+```bash
+./scripts/initialize-provisional-world.sh \
+  "$WORLD_ID" "$WORLD_SEED" "/var/lib/a-tiny-civilization/genesis/$WORLD_ID"
+```
+
+The second command is retry-safe only for byte-identical inputs. Do not enable or
+restart the long-running runner until the printed replay hashes and the public seed
+commitment have been recorded in the launch evidence.
+
 The static preflight rejects missing core settings, an absent cognition provider, the
 documented development password, a non-production environment, partial paid, backup,
 or tunnel configuration, mutable `cloudflared` image references, and invalid Compose
@@ -157,6 +182,9 @@ alerting to notify an operator for either failed service.
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
+- a ruleset-17 genesis chain produced by `prepare-provisional-genesis.sh`, verified by
+  `SHA256SUMS`, atomically initialized by `initialize-provisional-world.sh`, and replayed
+  before the long-running runner is enabled;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is

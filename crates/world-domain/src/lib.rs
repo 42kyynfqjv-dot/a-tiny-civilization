@@ -59,9 +59,9 @@ pub use event::{
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EventBatch, EventBatchError,
     EventRecord, HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
-    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
-    REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
-    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
@@ -83,8 +83,10 @@ pub use illumination::{
 };
 pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
 pub use material::{
-    MaterialIdentity, MaterialIdentityError, ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
-    OralTransferCommitment, OralTransferCommitmentError, OralTransferEvidenceBasis,
+    MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION, MaterialIdentity, MaterialIdentityError,
+    MaterialReservoirCommitment, MaterialReservoirCommitmentError,
+    ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION, OralTransferCommitment, OralTransferCommitmentError,
+    OralTransferEvidenceBasis,
 };
 pub use reproduction::{
     OffspringCategoryWeight, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,

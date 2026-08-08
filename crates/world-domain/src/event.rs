@@ -4,10 +4,11 @@ use thiserror::Error;
 use crate::{
     ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState,
     CognitionDeadlineInput, CognitionRequestSelection, Digest, EntityId, EventId, EventSequence,
-    HeritableDisposition, HeritableDispositionProfile, MaterialIdentity, MetabolicRateCommitment,
-    OralTransferCommitment, PhysiologicalRegulationCommitment, PrimitiveAction,
-    ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, SimTick,
-    SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
+    MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
+    PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
+    ReproductivePhysiologyCommitment, S2CellId, SimTick, SituatedPerception, SpeciesIdentity,
+    WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -53,6 +54,9 @@ pub const HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION: u16 = 17;
 /// Adds deterministic world-total external-cognition selection facts. Responses are
 /// admitted separately at their fixed deadline and replay never calls a provider.
 pub const COGNITION_EVENT_SCHEMA_VERSION: u16 = 18;
+/// Adds spatially anchored, bounded real-material reservoirs and deterministic
+/// replenishment transitions. Quantitative ecology remains evidence-labelled.
+pub const MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION: u16 = 19;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -147,6 +151,12 @@ pub enum DomainEvent {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         oral_transfer_profiles: Vec<OralTransferCommitment>,
     },
+    /// Commits one material instance as a spatially anchored, replenishing source.
+    /// This is private world physics and conveys no use label to an organism.
+    MaterialReservoirCommitted {
+        object_id: EntityId,
+        commitment: MaterialReservoirCommitment,
+    },
     /// A material instance became physically held after a neutral grasp action.
     MaterialInstanceHeld {
         object_id: EntityId,
@@ -165,6 +175,19 @@ pub enum DomainEvent {
         organism_id: EntityId,
         profile_digest: Digest,
         from_mass_milligrams: u64,
+        transferred_mass_milligrams: u64,
+        to_mass_milligrams: u64,
+    },
+    /// One ordered oral withdrawal from a shared reservoir, including exact lazy
+    /// replenishment since that reservoir's previous committed settlement.
+    MaterialReservoirOralPortionTransferred {
+        object_id: EntityId,
+        organism_id: EntityId,
+        profile_digest: Digest,
+        settled_from_tick: SimTick,
+        settled_to_tick: SimTick,
+        from_mass_milligrams: u64,
+        replenished_mass_milligrams: u64,
         transferred_mass_milligrams: u64,
         to_mass_milligrams: u64,
     },
@@ -426,6 +449,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
             | HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
             | COGNITION_EVENT_SCHEMA_VERSION
+            | MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -606,6 +630,15 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::MaterialReservoirCommitted { .. }
+                | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             species,
@@ -682,6 +715,9 @@ fn validate_event_for_schema(
                 oral_transfer_profiles,
             )?;
         }
+        DomainEvent::MaterialReservoirCommitted { commitment, .. } => commitment
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
         DomainEvent::MaterialOralPortionTransferred {
             profile_digest,
             from_mass_milligrams,
@@ -696,6 +732,29 @@ fn validate_event_for_schema(
             {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "invalid material oral-transfer arithmetic".to_owned(),
+                ));
+            }
+        }
+        DomainEvent::MaterialReservoirOralPortionTransferred {
+            profile_digest,
+            settled_from_tick,
+            settled_to_tick,
+            from_mass_milligrams,
+            replenished_mass_milligrams,
+            transferred_mass_milligrams,
+            to_mass_milligrams,
+            ..
+        } => {
+            if *profile_digest == Digest::ZERO
+                || settled_to_tick < settled_from_tick
+                || *transferred_mass_milligrams == 0
+                || from_mass_milligrams
+                    .checked_add(*replenished_mass_milligrams)
+                    .and_then(|available| available.checked_sub(*transferred_mass_milligrams))
+                    != Some(*to_mass_milligrams)
+            {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "invalid material-reservoir oral-transfer arithmetic".to_owned(),
                 ));
             }
         }

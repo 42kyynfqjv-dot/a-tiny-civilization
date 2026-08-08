@@ -370,9 +370,11 @@ ladder are now implemented under ADR 0051. The versioned registry has 256 route 
 separates production allocations from trial/development endpoints, caps one job at
 sixteen network attempts, records normalized attempt outcomes, and leaves the sole
 approved paid DeepSeek V4 Flash route unreachable without per-job authorization.
-Ruleset 16 now canonically selects one world-total request from exact body-owned state,
+Ruleset 16 canonically selects one world-total request from exact body-owned state,
 commits its fixed simulated-time deadline, and carries it through event schema 18 and
-snapshot/state-hash schema 19 under ADR 0052. Hindsight results are normalized and
+snapshot/state-hash schema 19 under ADR 0052. Ruleset 17 preserves that boundary while
+adding shared real-material reservoirs under ADR 0057, event schema 19, and
+snapshot/state-hash schema 20. Hindsight results are normalized and
 re-admitted only by exact comparison with accepted local memory deliveries. PostgreSQL
 job insertion and exclusive request leases now commit against migration 0011 under
 ADR 0053. The same migration establishes immutable recall/result/latch tables, a
@@ -388,6 +390,16 @@ auditable and billable but cannot replace the latch. The local Compose profile s
 the worker with every provider optional and the approved paid route disabled by
 default. Remaining work in this checkpoint is accelerated multi-world/load verification
 and production operator admission for whichever credentials are actually enabled.
+
+The first executable resource layer is implemented as a canonical provisional artifact
+bound to the origin, fauna population, and body-profile digests. It gives every founder
+species positive energy and hydration routes through cited D-glucose and water
+identities while marking availability, renewal, and response values as engineering
+assumptions. Atomic PostgreSQL genesis, same-tick shared withdrawal ordering, lazy
+renewal, replay, private observer handling, and an accelerated replay-verified
+tick-1,183 survival gate are covered. Local flora, hydrology, toxicity, and trophic
+replacement remain the later
+scientific-validation pass; a live world will never have its committed bridge edited.
 
 ### 4. Evidence observatory
 

@@ -11,6 +11,7 @@ mod origin_environment;
 mod physiology;
 mod provisional;
 mod provisional_body_profiles;
+mod provisional_material_resources;
 mod scalar_field;
 mod seasonal_field;
 mod soil;
@@ -84,6 +85,12 @@ pub use provisional_body_profiles::{
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, ProvisionalOrganismBodyProfileEntry,
     ProvisionalOrganismBodyProfilePlan, ProvisionalOrganismBodyProfilePlanError,
+};
+pub use provisional_material_resources::{
+    PROVISIONAL_MATERIAL_RESOURCE_PLAN_MEDIA_TYPE,
+    PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION, PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS,
+    ProvisionalMaterialResourcePlan, ProvisionalMaterialResourcePlanError,
+    ProvisionalMaterialResourceSource,
 };
 
 pub use scalar_field::{

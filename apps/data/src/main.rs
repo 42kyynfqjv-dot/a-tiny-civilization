@@ -28,11 +28,13 @@ use world_data::{
     LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
+    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION,
+    PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, PackedBooleanFieldTile,
     PackedLandCoverEvidenceTile, PackedScalarFieldTile, PackedScalarTerrainTile,
     PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection,
+    ProvisionalMaterialResourcePlan, ProvisionalMaterialResourceSource,
     ProvisionalOrganismBodyProfileEntry, ProvisionalOrganismBodyProfilePlan,
     ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
     SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
@@ -47,8 +49,10 @@ use world_data_filesystem::{
 use world_domain::{
     BirthCategory, CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
     GeographicCoordinateHalfArcsecond, HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
-    HeritableDispositionProfile, MAX_S2_LEVEL, METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
-    MetabolicRateCommitment, OffspringCategoryWeight,
+    HeritableDispositionProfile, MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION, MAX_S2_LEVEL,
+    METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, MaterialIdentity, MaterialReservoirCommitment,
+    MetabolicRateCommitment, ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION, OffspringCategoryWeight,
+    OralTransferCommitment, OralTransferEvidenceBasis,
     PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis,
     PhysiologicalRegulationCommitment, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
     REPRODUCTIVE_PROBABILITY_SCALE, ReproductiveCategoryPair, ReproductivePhysiologyCommitment,
@@ -547,6 +551,22 @@ enum DeriveCommand {
         metabolic_rate_plan: Option<PathBuf>,
         #[arg(long, default_value_t = 300)]
         tick_duration_seconds: u32,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Construct two bounded real-material reservoirs with explicit provisional
+    /// availability and species-response assumptions for the complete founder plan.
+    ProvisionalMaterialResourcePlan {
+        #[arg(long)]
+        population_plan: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
+        #[arg(long)]
+        organism_body_profile_plan: PathBuf,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1131,6 +1151,23 @@ async fn main() -> Result<()> {
                 metabolic_profiles.as_deref(),
                 metabolic_rate_plan.as_deref(),
                 tick_duration_seconds,
+                &output,
+            ),
+            DeriveCommand::ProvisionalMaterialResourcePlan {
+                population_plan,
+                candidates,
+                selection,
+                origin_environment,
+                organism_body_profile_plan,
+                output,
+            } => derive_provisional_material_resource_plan(
+                PopulationPlanInputPaths {
+                    population_plan: &population_plan,
+                    candidates: &candidates,
+                    selection: &selection,
+                    origin_environment: &origin_environment,
+                },
+                &organism_body_profile_plan,
                 &output,
             ),
             DeriveCommand::EtopoGrid {
@@ -2359,6 +2396,234 @@ fn derive_provisional_organism_body_profile_plan(
                 "initiation_probability_millionths": REPRODUCTIVE_PROBABILITY_SCALE,
             },
             "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna metabolic rates are exact observations only when both optional metabolic artifacts are supplied, otherwise explicit engineering assumptions",
+        }))?
+    );
+    Ok(())
+}
+
+fn provisional_oral_transfer_profiles(
+    material: &MaterialIdentity,
+    body_profiles: &ProvisionalOrganismBodyProfilePlan,
+    transfer_mass_milligrams: u64,
+    recoverable_energy_joules: u64,
+    hydration_recovery_seconds: u64,
+) -> Vec<OralTransferCommitment> {
+    body_profiles
+        .entries
+        .iter()
+        .map(|entry| {
+            let profile_id = format!(
+                "{}-{}-{}-oral-v1",
+                material
+                    .canonical_name
+                    .to_ascii_lowercase()
+                    .replace(|character: char| !character.is_ascii_alphanumeric(), "-"),
+                entry.species.catalog,
+                entry.species.identifier
+            );
+            let profile_digest = Digest::sha256(
+                format!(
+                    "a-tiny-civilization/provisional-oral-transfer/v1/{}/{}/{}/{}/{}/{}/{}",
+                    material.catalog,
+                    material.identifier,
+                    entry.species.catalog,
+                    entry.species.identifier,
+                    transfer_mass_milligrams,
+                    recoverable_energy_joules,
+                    hydration_recovery_seconds
+                )
+                .as_bytes(),
+            );
+            OralTransferCommitment {
+                commitment_schema_version: ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+                profile_id,
+                profile_digest,
+                material: material.clone(),
+                species: entry.species.clone(),
+                evidence_basis: OralTransferEvidenceBasis::EngineeringAssumption,
+                transfer_mass_milligrams,
+                recoverable_energy_joules,
+                hydration_recovery_seconds,
+            }
+        })
+        .collect()
+}
+
+struct ProvisionalMaterialSourceSpec {
+    source_id: &'static str,
+    initial_mass_milligrams: u64,
+    maximum_mass_milligrams: u64,
+    replenishment_mass_milligrams_per_tick: u64,
+    transfer_mass_milligrams: u64,
+    recoverable_energy_joules: u64,
+    hydration_recovery_seconds: u64,
+}
+
+fn provisional_material_source(
+    material: MaterialIdentity,
+    anchor_patch: S2CellId,
+    coverage_patch: S2CellId,
+    spec: ProvisionalMaterialSourceSpec,
+    body_profiles: &ProvisionalOrganismBodyProfilePlan,
+) -> ProvisionalMaterialResourceSource {
+    let profile_digest = Digest::sha256(
+        format!(
+            "a-tiny-civilization/provisional-material-reservoir/v1/{}/{}/{}/{}/{}/{}/{}",
+            material.catalog,
+            material.identifier,
+            coverage_patch,
+            spec.initial_mass_milligrams,
+            spec.maximum_mass_milligrams,
+            spec.replenishment_mass_milligrams_per_tick,
+            spec.source_id
+        )
+        .as_bytes(),
+    );
+    let oral_transfer_profiles = provisional_oral_transfer_profiles(
+        &material,
+        body_profiles,
+        spec.transfer_mass_milligrams,
+        spec.recoverable_energy_joules,
+        spec.hydration_recovery_seconds,
+    );
+    ProvisionalMaterialResourceSource {
+        source_id: spec.source_id.to_owned(),
+        material: material.clone(),
+        anchor_patch,
+        initial_mass_milligrams: spec.initial_mass_milligrams,
+        reservoir: MaterialReservoirCommitment {
+            commitment_schema_version: MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+            profile_id: format!("{}-v1", spec.source_id),
+            profile_digest,
+            material,
+            evidence_basis: OralTransferEvidenceBasis::EngineeringAssumption,
+            coverage_patch,
+            maximum_mass_milligrams: spec.maximum_mass_milligrams,
+            replenishment_mass_milligrams_per_tick: spec.replenishment_mass_milligrams_per_tick,
+        },
+        oral_transfer_profiles,
+    }
+}
+
+fn derive_provisional_material_resource_plan(
+    inputs: PopulationPlanInputPaths<'_>,
+    body_profile_plan_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let (_, _, environment, population) = load_population_plan_inputs(
+        inputs.candidates,
+        inputs.selection,
+        inputs.origin_environment,
+        inputs.population_plan,
+    )?;
+    let population_bytes = fs::read(inputs.population_plan).with_context(|| {
+        format!(
+            "read fauna population plan {}",
+            inputs.population_plan.display()
+        )
+    })?;
+    let environment_bytes = fs::read(inputs.origin_environment).with_context(|| {
+        format!(
+            "read origin environment {}",
+            inputs.origin_environment.display()
+        )
+    })?;
+    let body_profile_bytes = fs::read(body_profile_plan_path).with_context(|| {
+        format!(
+            "read organism body-profile plan {}",
+            body_profile_plan_path.display()
+        )
+    })?;
+    let body_profiles =
+        ProvisionalOrganismBodyProfilePlan::from_canonical_slice(&body_profile_bytes)
+            .context("validate organism body-profile plan")?;
+    let expected_species_count = population.entries.len() + 1;
+    if body_profiles.entries.len() != expected_species_count {
+        bail!(
+            "organism body-profile plan must cover Homo sapiens plus every planned fauna species"
+        );
+    }
+
+    let glucose = MaterialIdentity::new(
+        "pubchem",
+        "5793",
+        "D-glucose",
+        "https://pubchem.ncbi.nlm.nih.gov/compound/5793",
+    )?;
+    let water = MaterialIdentity::new(
+        "pubchem",
+        "962",
+        "water",
+        "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+    )?;
+    let mut sources = vec![
+        provisional_material_source(
+            glucose,
+            environment.selected_embodied_patch,
+            environment.selected_l10_patch,
+            ProvisionalMaterialSourceSpec {
+                source_id: "pubchem-5793-reservoir",
+                initial_mass_milligrams: 10_000_000_000,
+                maximum_mass_milligrams: 100_000_000_000,
+                replenishment_mass_milligrams_per_tick: 5_000_000,
+                transfer_mass_milligrams: 100_000,
+                recoverable_energy_joules: 1_600_000,
+                hydration_recovery_seconds: 0,
+            },
+            &body_profiles,
+        ),
+        provisional_material_source(
+            water,
+            environment.selected_embodied_patch,
+            environment.selected_l10_patch,
+            ProvisionalMaterialSourceSpec {
+                source_id: "pubchem-962-reservoir",
+                initial_mass_milligrams: 100_000_000_000,
+                maximum_mass_milligrams: 1_000_000_000_000,
+                replenishment_mass_milligrams_per_tick: 50_000_000,
+                transfer_mass_milligrams: 250_000,
+                recoverable_energy_joules: 0,
+                hydration_recovery_seconds: 21_600,
+            },
+            &body_profiles,
+        ),
+    ];
+    sources.sort_by(|left, right| {
+        (
+            &left.material.catalog,
+            &left.material.identifier,
+            &left.source_id,
+        )
+            .cmp(&(
+                &right.material.catalog,
+                &right.material.identifier,
+                &right.source_id,
+            ))
+    });
+    let plan = ProvisionalMaterialResourcePlan {
+        plan_schema_version: PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION,
+        status: PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS.to_owned(),
+        world_seed: population.world_seed,
+        tick_duration_seconds: body_profiles.tick_duration_seconds,
+        origin_environment_digest: Digest::sha256(&environment_bytes),
+        fauna_population_plan_digest: Digest::sha256(&population_bytes),
+        organism_body_profile_plan_digest: Digest::sha256(&body_profile_bytes),
+        embodied_patch: environment.selected_embodied_patch,
+        sources,
+    };
+    let bytes = plan
+        .canonical_bytes(&body_profiles)
+        .context("encode provisional material-resource plan")?;
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "source_count": plan.sources.len(),
+            "species_count": body_profiles.entries.len(),
+            "coverage_patch": environment.selected_l10_patch,
+            "status": plan.status,
+            "policy": "real PubChem material identities; regional availability, replenishment, and species responses are explicit engineering assumptions",
         }))?
     );
     Ok(())
