@@ -379,12 +379,16 @@ fn bounded_action_schema() -> Value {
     json!({"oneOf": variants})
 }
 
-fn request_seed(request: &ModelCognitionRequest) -> u64 {
+fn request_seed(request: &ModelCognitionRequest) -> u32 {
     let bytes = request.request_id.as_bytes();
-    let first: [u8; 8] = bytes[..8]
+    let first: [u8; 4] = bytes[..4]
         .try_into()
         .expect("UUID always contains sixteen bytes");
-    u64::from_be_bytes(first).max(1)
+    // OpenAI-compatible servers disagree on whether `seed` accepts an unsigned
+    // 64-bit JSON integer. Ollama decodes it into Go's signed `int`, so UUIDs
+    // whose high bit is set otherwise fail before inference. Keep one portable,
+    // deterministic positive 31-bit domain across every route.
+    (u32::from_be_bytes(first) & 0x7fff_ffff).max(1)
 }
 
 #[derive(Deserialize)]
@@ -707,6 +711,17 @@ mod tests {
         )
         .expect("valid adapter");
         (adapter, seen)
+    }
+
+    #[test]
+    fn request_seed_is_deterministic_and_portable_to_signed_integer_decoders() {
+        let mut high = request();
+        high.request_id = Uuid::from_u128(u128::MAX);
+        assert_eq!(request_seed(&high), i32::MAX as u32);
+
+        let mut zero = request();
+        zero.request_id = Uuid::nil();
+        assert_eq!(request_seed(&zero), 1);
     }
 
     #[tokio::test]
