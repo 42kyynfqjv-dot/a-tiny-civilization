@@ -10,8 +10,8 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence, OrganismRole,
-    SimTick, SpeciesIdentity, WorldId, WorldStatus,
+    BirthCategory, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence,
+    MaterialIdentity, OrganismRole, SimTick, SpeciesIdentity, WorldId, WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -34,6 +34,8 @@ pub const PUBLIC_ORGANISM_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ORGANISM_PROJECTION_NAME: &str = "public-organism-v1";
 pub const PUBLIC_FINDING_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_FINDING_PROJECTION_NAME: &str = "public-finding-v1";
+pub const PUBLIC_ARTIFACT_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_ARTIFACT_PROJECTION_NAME: &str = "public-artifact-v1";
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -138,6 +140,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::MaterialReservoirCommitted { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
                 | DomainEvent::MaterialInstanceReleased { .. }
+                | DomainEvent::MaterialSurfaceTraceChanged { .. }
                 | DomainEvent::MaterialOralPortionTransferred { .. }
                 | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
@@ -251,10 +254,12 @@ pub struct PublicWorldTelemetry {
     pub organism_index_through_sequence: EventSequence,
     pub findings_through_sequence: EventSequence,
     pub telemetry_through_sequence: EventSequence,
+    pub artifacts_through_sequence: EventSequence,
     pub timeline_lag_batches: u64,
     pub organism_index_lag_batches: u64,
     pub findings_lag_batches: u64,
     pub telemetry_lag_batches: u64,
+    pub artifacts_lag_batches: u64,
     pub living_people: u64,
     pub living_fauna: u64,
 }
@@ -348,6 +353,44 @@ pub trait ObserverFindingStore: Send + Sync {
     ) -> Result<Vec<PublicFinding>, ObserverProjectionStoreError>;
 }
 
+/// An observer-side index of a real material object whose canonical history contains
+/// at least one force-caused surface trace. "Artifact" is the observatory's filing
+/// category, never a fact or concept available inside the world.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicArtifact {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub object_id: EntityId,
+    pub material: MaterialIdentity,
+    pub provenance: ClaimProvenance,
+    pub first_trace_event_id: EventId,
+    pub first_trace_sequence: EventSequence,
+    pub first_trace_tick: SimTick,
+    pub latest_trace_event_id: EventId,
+    pub latest_trace_sequence: EventSequence,
+    pub latest_trace_tick: SimTick,
+    pub surface_trace_units: u32,
+}
+
+#[async_trait]
+pub trait ObserverArtifactStore: Send + Sync {
+    async fn apply_public_artifact_batch(
+        &self,
+        batch: &EventBatch,
+    ) -> Result<bool, ObserverProjectionStoreError>;
+
+    async fn public_artifact_cursor(
+        &self,
+        world_id: WorldId,
+    ) -> Result<EventSequence, ObserverProjectionStoreError>;
+
+    async fn list_public_artifacts(
+        &self,
+        world_id: WorldId,
+        limit: u16,
+    ) -> Result<Vec<PublicArtifact>, ObserverProjectionStoreError>;
+}
+
 /// One restrained observer-facing life record. This is an index over committed facts,
 /// not a name or an identity visible inside the world.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -405,6 +448,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::MaterialReservoirCommitted { .. }
             | DomainEvent::MaterialInstanceHeld { .. }
             | DomainEvent::MaterialInstanceReleased { .. }
+            | DomainEvent::MaterialSurfaceTraceChanged { .. }
             | DomainEvent::MaterialOralPortionTransferred { .. }
             | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
             | DomainEvent::TickAdvanced { .. }
@@ -1003,6 +1047,30 @@ mod tests {
             Digest::sha256(b"private oral transfer state"),
         )
         .expect("valid internal oral-transfer event");
+        assert!(project_public_timeline(&batch).is_empty());
+        assert!(project_public_organisms(&batch).is_empty());
+    }
+
+    #[test]
+    fn material_surface_trace_is_only_exposed_by_the_dedicated_artifact_projection() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(341));
+        let batch = EventBatch::new(
+            world_domain::MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
+            world_id,
+            EventSequence::new(5),
+            SimTick::new(4),
+            19,
+            Digest::ZERO,
+            vec![DomainEvent::MaterialSurfaceTraceChanged {
+                object_id: EntityId::from_uuid(Uuid::from_u128(342)),
+                organism_id: EntityId::from_uuid(Uuid::from_u128(343)),
+                from_trace_units: 0,
+                applied_force_units: 7,
+                to_trace_units: 7,
+            }],
+            Digest::sha256(b"private surface trace state"),
+        )
+        .expect("valid internal surface trace event");
         assert!(project_public_timeline(&batch).is_empty());
         assert!(project_public_organisms(&batch).is_empty());
     }

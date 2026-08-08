@@ -40,6 +40,7 @@ struct TelemetryRow {
     organism_sequence: i64,
     findings_sequence: i64,
     telemetry_sequence: i64,
+    artifact_sequence: i64,
     living_people: i64,
     living_fauna: i64,
 }
@@ -191,6 +192,7 @@ impl ObserverWorldStore for PostgresStore {
                    COALESCE(latest.appended_at, w.created_at) AS last_committed_at,
                    projections.timeline_sequence, projections.organism_sequence,
                    projections.findings_sequence, projections.telemetry_sequence,
+                   projections.artifact_sequence,
                    lives.living_people, lives.living_fauna
             FROM worlds w
             LEFT JOIN observer_world_telemetry telemetry
@@ -203,7 +205,8 @@ impl ObserverWorldStore for PostgresStore {
                 SELECT COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-timeline-v1'), 0)::BIGINT AS timeline_sequence,
                        COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-organism-v1'), 0)::BIGINT AS organism_sequence,
                        COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-finding-v1'), 0)::BIGINT AS findings_sequence,
-                       COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-world-telemetry-v1'), 0)::BIGINT AS telemetry_sequence
+                       COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-world-telemetry-v1'), 0)::BIGINT AS telemetry_sequence,
+                       COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-artifact-v1'), 0)::BIGINT AS artifact_sequence
                 FROM projection_offsets p WHERE p.world_id = w.id
             ) projections
             CROSS JOIN LATERAL (
@@ -234,6 +237,7 @@ fn parse_telemetry(
     let organisms = nonnegative(row.organism_sequence, "organism sequence")?;
     let findings = nonnegative(row.findings_sequence, "finding sequence")?;
     let telemetry = nonnegative(row.telemetry_sequence, "telemetry sequence")?;
+    let artifacts = nonnegative(row.artifact_sequence, "artifact sequence")?;
     Ok(PublicWorldTelemetry {
         world_id: WorldId::from_uuid(row.id),
         through_sequence: EventSequence::new(sequence),
@@ -249,10 +253,12 @@ fn parse_telemetry(
         organism_index_through_sequence: EventSequence::new(organisms),
         findings_through_sequence: EventSequence::new(findings),
         telemetry_through_sequence: EventSequence::new(telemetry),
+        artifacts_through_sequence: EventSequence::new(artifacts),
         timeline_lag_batches: sequence.saturating_sub(timeline),
         organism_index_lag_batches: sequence.saturating_sub(organisms),
         findings_lag_batches: sequence.saturating_sub(findings),
         telemetry_lag_batches: sequence.saturating_sub(telemetry),
+        artifacts_lag_batches: sequence.saturating_sub(artifacts),
         living_people: nonnegative(row.living_people, "living people")?,
         living_fauna: nonnegative(row.living_fauna, "living fauna")?,
     })

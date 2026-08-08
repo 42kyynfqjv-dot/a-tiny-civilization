@@ -13,7 +13,7 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
   exit 0
 fi
 if [[ " $* " == *" exec -T db "* ]]; then
-  echo "${FAKE_BACKEND_DATA_STATUS:-4|1|4|0|0|0}"
+  echo "${FAKE_BACKEND_DATA_STATUS:-4|1|5|0|0|0}"
 fi
 exit 0
 EOF
@@ -42,21 +42,21 @@ if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='3|1|4|0|0
   exit 1
 fi
 
-if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|4|101|0|0' \
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|5|101|0|0' \
   "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
   >"${temporary_directory}/projection.txt" 2>&1; then
   echo "backend status accepted excessive projection lag" >&2
   exit 1
 fi
 
-if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|4|0|1|0' \
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|5|0|1|0' \
   "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
   >"${temporary_directory}/memory.txt" 2>&1; then
   echo "backend status accepted stale memory delivery" >&2
   exit 1
 fi
 
-if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|4|0|0|1' \
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|5|0|0|1' \
   "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
   >"${temporary_directory}/cognition.txt" 2>&1; then
   echo "backend status accepted a stuck cognition dispatch" >&2

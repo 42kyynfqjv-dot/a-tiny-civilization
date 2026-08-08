@@ -17,9 +17,10 @@ use observer_auth::{
     ObserverSession, SessionSecrets,
 };
 use observer_projection::{
-    ObserverFindingStore, ObserverHistoryCommitmentStore, ObserverOrganismStore,
-    ObserverTimelineStore, ObserverWorldStore, PublicFinding, PublicHistoryCommitmentPage,
-    PublicOrganism, PublicTimelineItem, PublicWorld, PublicWorldTelemetry,
+    ObserverArtifactStore, ObserverFindingStore, ObserverHistoryCommitmentStore,
+    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicArtifact,
+    PublicFinding, PublicHistoryCommitmentPage, PublicOrganism, PublicTimelineItem, PublicWorld,
+    PublicWorldTelemetry,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -46,6 +47,7 @@ pub trait ObserverReadStore:
     + ObserverOrganismStore
     + ObserverWorldStore
     + ObserverFindingStore
+    + ObserverArtifactStore
     + ObserverHistoryCommitmentStore
 {
 }
@@ -56,6 +58,7 @@ impl<T> ObserverReadStore for T where
         + ObserverOrganismStore
         + ObserverWorldStore
         + ObserverFindingStore
+        + ObserverArtifactStore
         + ObserverHistoryCommitmentStore
 {
 }
@@ -178,6 +181,7 @@ pub fn router(state: ApiState) -> Router {
             get(public_history_commitments),
         )
         .route("/api/v1/worlds/{world_id}/findings", get(public_findings))
+        .route("/api/v1/worlds/{world_id}/artifacts", get(public_artifacts))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
@@ -993,6 +997,31 @@ struct TimelineResponse {
 struct FindingsResponse {
     projection_version: u16,
     findings: Vec<PublicFinding>,
+}
+
+#[derive(Serialize)]
+struct ArtifactsResponse {
+    projection_version: u16,
+    artifacts: Vec<PublicArtifact>,
+}
+
+async fn public_artifacts(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<ArtifactsResponse>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let artifacts = state
+        .store
+        .list_public_artifacts(world_id, query.limit.unwrap_or(50))
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(ArtifactsResponse {
+        projection_version: observer_projection::PUBLIC_ARTIFACT_PROJECTION_VERSION,
+        artifacts,
+    }))
 }
 
 async fn public_findings(

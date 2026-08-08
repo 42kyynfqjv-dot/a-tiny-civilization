@@ -525,3 +525,12 @@ production-preflight tests enforce ADR 0087 before any private cognition payload
 ADR 0088 adds a database-free, fixed synthetic OpenRouter probe. The dynamic free endpoint passed
 the production schema and zero-cost checks without reading world or Hindsight data; live cognition
 export remains separately gated.
+
+Ruleset 19 now supplies the first use-neutral durable transformation substrate. Applying primitive
+force to an object already held by the actor accumulates a bounded scalar surface trace, and the
+changed trace is immediately available only through direct touch perception. Canonical history has
+no artifact, tool, mark, symbol, writing, or intended-use category. A fifth append-only observer
+projection may file traced real-material objects as artifacts with exact provenance; it has no
+dependency path back to the runner. The next provisional genesis and fail-closed qualification now
+default to ruleset 19, while existing ruleset-18 evidence remains immutable and independently
+verifiable.

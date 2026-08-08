@@ -199,6 +199,7 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::MaterialReservoirCommitted { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
                 | DomainEvent::MaterialInstanceReleased { .. }
+                | DomainEvent::MaterialSurfaceTraceChanged { .. }
                 | DomainEvent::MaterialOralPortionTransferred { .. }
                 | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
@@ -417,6 +418,7 @@ async fn apply_finding_events(
             | DomainEvent::MaterialReservoirCommitted { .. }
             | DomainEvent::MaterialInstanceHeld { .. }
             | DomainEvent::MaterialInstanceReleased { .. }
+            | DomainEvent::MaterialSurfaceTraceChanged { .. }
             | DomainEvent::MaterialOralPortionTransferred { .. }
             | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
             | DomainEvent::TickAdvanced { .. }

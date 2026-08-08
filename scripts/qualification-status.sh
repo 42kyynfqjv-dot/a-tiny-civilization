@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-18}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-19}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -117,13 +117,15 @@ WITH selected_world AS (
     SELECT COUNT(*) FILTER (
                WHERE projection_name IN (
                    'public-timeline-v1', 'public-organism-v1',
-                   'public-finding-v1', 'public-world-telemetry-v1'
+                   'public-finding-v1', 'public-world-telemetry-v1',
+                   'public-artifact-v1'
                )
            )::BIGINT AS required_count,
            COUNT(*) FILTER (
                WHERE projection_name IN (
                    'public-timeline-v1', 'public-organism-v1',
-                   'public-finding-v1', 'public-world-telemetry-v1'
+                   'public-finding-v1', 'public-world-telemetry-v1',
+                   'public-artifact-v1'
                ) AND through_sequence = (SELECT current_sequence FROM selected_world)
            )::BIGINT AS current_count
     FROM projection_offsets WHERE world_id = :'world_id'::UUID
@@ -181,7 +183,7 @@ WITH selected_world AS (
              AND maximum_tick = current_tick AS contiguous_history,
            snapshot_count > 0 AND newest_sequence <= current_sequence
              AND newest_tick <= current_tick AS snapshots_present,
-           projection_required_count = 4 AND projection_current_count = 4 AS projections_current,
+           projection_required_count = 5 AND projection_current_count = 5 AS projections_current,
            memory_total > 0 AND memory_pending = 0 AND memory_errors = 0 AS memory_delivered,
            requests > 0 AND due > 0 AND due_without_latch = 0
              AND due_without_consumption = 0 AS cognition_deadlines_complete,

@@ -31,10 +31,10 @@ use world_domain::{
     HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
-    MAX_COGNITION_SELECTION_READINGS, MaterialIdentity, MaterialReservoirCommitment,
-    MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
-    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
-    PrimitiveAction, PrimitiveActionKind, PropertyReading,
+    MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION, MAX_COGNITION_SELECTION_READINGS,
+    MaterialIdentity, MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
+    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel,
+    PhysiologicalRegulationCommitment, PrimitiveAction, PrimitiveActionKind, PropertyReading,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
@@ -98,6 +98,9 @@ pub const MATERIAL_RESERVOIR_RULESET_VERSION: u32 = 17;
 /// Ruleset eighteen lets one organism directly witness at most one co-located
 /// organism's label-free primitive action per tick and retain a bounded tendency.
 pub const SOCIAL_LEARNING_RULESET_VERSION: u32 = 18;
+/// Ruleset nineteen lets primitive force leave a bounded, directly perceptible trace
+/// on a held object without assigning it an artifact, symbol, tool, or use label.
+pub const MATERIAL_SURFACE_TRACE_RULESET_VERSION: u32 = 19;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -119,6 +122,7 @@ pub const HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 18;
 pub const COGNITION_SNAPSHOT_SCHEMA_VERSION: u16 = 19;
 pub const MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION: u16 = 20;
 pub const SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 21;
+pub const MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION: u16 = 22;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -154,6 +158,8 @@ const HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION: u16 = 18;
 const COGNITION_STATE_HASH_SCHEMA_VERSION: u16 = 19;
 const MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION: u16 = 20;
 const SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 21;
+const MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION: u16 = 22;
+const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -180,6 +186,10 @@ fn normal_year_phase(tick: SimTick, tick_duration_seconds: u32) -> usize {
     const NORMAL_PHASE_SECONDS: u64 = 30 * 86_400;
     let elapsed_seconds = tick.get().saturating_mul(u64::from(tick_duration_seconds));
     ((elapsed_seconds / NORMAL_PHASE_SECONDS) % 12) as usize
+}
+
+const fn is_zero_u32(value: &u32) -> bool {
+    *value == 0
 }
 
 fn normalized_pressure_intensity(load: u64, capacity: u64) -> Result<u16, EngineError> {
@@ -525,6 +535,8 @@ pub struct MaterialInstanceState {
     held_by: Option<EntityId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     remaining_mass_milligrams: Option<u64>,
+    #[serde(default, skip_serializing_if = "is_zero_u32")]
+    surface_trace_units: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     oral_transfer_profiles: Vec<OralTransferCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -577,6 +589,11 @@ impl MaterialInstanceState {
     #[must_use]
     pub const fn remaining_mass_milligrams(&self) -> Option<u64> {
         self.remaining_mass_milligrams
+    }
+
+    #[must_use]
+    pub const fn surface_trace_units(&self) -> u32 {
+        self.surface_trace_units
     }
 
     #[must_use]
@@ -1375,6 +1392,40 @@ impl EngineState {
                         holder_id: organism_id,
                         embodied_patch,
                     });
+                }
+                PrimitiveActionKind::ApplyForce
+                    if self.uses_material_surface_trace_driver()
+                        && action.target_id.is_some_and(|object_id| {
+                            self.material_instances
+                                .get(&object_id)
+                                .is_some_and(|instance| instance.held_by == Some(organism_id))
+                        }) =>
+                {
+                    let object_id = action.target_id.expect("guarded material target");
+                    if let Some((from_trace_units, to_trace_units)) =
+                        self.next_material_surface_trace(organism_id, object_id, action.intensity)?
+                    {
+                        events.push(DomainEvent::MaterialSurfaceTraceChanged {
+                            object_id,
+                            organism_id,
+                            from_trace_units,
+                            applied_force_units: action.intensity,
+                            to_trace_units,
+                        });
+                        events.push(DomainEvent::OrganismPerceived {
+                            organism_id,
+                            perception: SituatedPerception {
+                                subject_id: Some(object_id),
+                                readings: vec![PropertyReading {
+                                    channel: PerceptionChannel::Touch,
+                                    property_code: "surface_trace".to_owned(),
+                                    quantized_value: i32::try_from(to_trace_units)
+                                        .expect("surface trace is bounded to i32"),
+                                    uncertainty: 0,
+                                }],
+                            },
+                        });
+                    }
                 }
                 _ => {}
             }
@@ -3262,6 +3313,10 @@ impl EngineState {
         self.manifest.ruleset_version >= SOCIAL_LEARNING_RULESET_VERSION
     }
 
+    fn uses_material_surface_trace_driver(&self) -> bool {
+        self.manifest.ruleset_version >= MATERIAL_SURFACE_TRACE_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -3326,6 +3381,11 @@ impl EngineState {
                 .or_else(|| resulting_state.organisms.get(holder_id))
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::MaterialInstanceReleased { embodied_patch, .. } => Some(*embodied_patch),
+            DomainEvent::MaterialSurfaceTraceChanged { organism_id, .. } => self
+                .organisms
+                .get(organism_id)
+                .or_else(|| resulting_state.organisms.get(organism_id))
+                .and_then(|organism| organism.embodied_patch),
             DomainEvent::MaterialOralPortionTransferred { organism_id, .. } => self
                 .organisms
                 .get(organism_id)
@@ -3483,6 +3543,84 @@ impl EngineState {
             )
         }) {
             return Err(EngineError::MaterialReservoirUnsupported);
+        }
+        if self.uses_material_surface_trace_driver() {
+            let mut expected_traces = Vec::new();
+            let mut expected_perceptions = Vec::new();
+            for event in events {
+                let DomainEvent::OrganismActed {
+                    organism_id,
+                    action,
+                } = event
+                else {
+                    continue;
+                };
+                if action.kind != PrimitiveActionKind::ApplyForce {
+                    continue;
+                }
+                let Some(object_id) = action.target_id else {
+                    continue;
+                };
+                if !self
+                    .material_instances
+                    .get(&object_id)
+                    .is_some_and(|instance| instance.held_by == Some(*organism_id))
+                {
+                    continue;
+                }
+                if let Some((from_trace_units, to_trace_units)) = self
+                    .next_material_surface_trace(*organism_id, object_id, action.intensity)?
+                {
+                    expected_traces.push(DomainEvent::MaterialSurfaceTraceChanged {
+                        object_id,
+                        organism_id: *organism_id,
+                        from_trace_units,
+                        applied_force_units: action.intensity,
+                        to_trace_units,
+                    });
+                    expected_perceptions.push(DomainEvent::OrganismPerceived {
+                        organism_id: *organism_id,
+                        perception: SituatedPerception {
+                            subject_id: Some(object_id),
+                            readings: vec![PropertyReading {
+                                channel: PerceptionChannel::Touch,
+                                property_code: "surface_trace".to_owned(),
+                                quantized_value: i32::try_from(to_trace_units)
+                                    .expect("surface trace is bounded to i32"),
+                                uncertainty: 0,
+                            }],
+                        },
+                    });
+                }
+            }
+            let actual_traces = events
+                .iter()
+                .filter(|event| matches!(event, DomainEvent::MaterialSurfaceTraceChanged { .. }))
+                .cloned()
+                .collect::<Vec<_>>();
+            let actual_perceptions = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::OrganismPerceived { perception, .. }
+                            if perception.readings.iter().any(|reading| reading.property_code == "surface_trace")
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if actual_traces != expected_traces || actual_perceptions != expected_perceptions {
+                return Err(EngineError::InvalidMaterialSurfaceTraceEventSet);
+            }
+        } else if events.iter().any(|event| {
+            matches!(event, DomainEvent::MaterialSurfaceTraceChanged { .. })
+                || matches!(
+                    event,
+                    DomainEvent::OrganismPerceived { perception, .. }
+                        if perception.readings.iter().any(|reading| reading.property_code == "surface_trace")
+                )
+        }) {
+            return Err(EngineError::MaterialSurfaceTraceUnsupported);
         }
         for (index, event) in events.iter().enumerate() {
             let (DomainEvent::MaterialOralPortionTransferred {
@@ -3853,7 +3991,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_social_learning_driver() {
+        if self.uses_material_surface_trace_driver() {
+            MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
+        } else if self.uses_social_learning_driver() {
             SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
         } else if self.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
@@ -3922,7 +4062,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_social_learning_driver() {
+        if self.uses_material_surface_trace_driver() {
+            MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_social_learning_driver() {
             SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION
@@ -4151,6 +4293,7 @@ impl EngineState {
                             embodied_patch: *embodied_patch,
                             held_by: None,
                             remaining_mass_milligrams: *initial_mass_milligrams,
+                            surface_trace_units: 0,
                             oral_transfer_profiles: oral_transfer_profiles.clone(),
                             reservoir: None,
                             reservoir_settled_at: None,
@@ -4215,6 +4358,33 @@ impl EngineState {
                     .expect("validated material instance");
                 instance.held_by = None;
                 instance.embodied_patch = *embodied_patch;
+            }
+            DomainEvent::MaterialSurfaceTraceChanged {
+                object_id,
+                organism_id,
+                from_trace_units,
+                applied_force_units,
+                to_trace_units,
+            } => {
+                if !self.uses_material_surface_trace_driver() {
+                    return Err(EngineError::MaterialSurfaceTraceUnsupported);
+                }
+                self.require_living_organism(*organism_id)?;
+                let instance = self
+                    .material_instances
+                    .get_mut(object_id)
+                    .ok_or(EngineError::UnknownMaterialInstance(*object_id))?;
+                let expected_to = from_trace_units
+                    .checked_add(u32::from(*applied_force_units))
+                    .filter(|to| *to <= MAX_MATERIAL_SURFACE_TRACE_UNITS)
+                    .ok_or(EngineError::InvalidMaterialSurfaceTrace(*object_id))?;
+                if instance.held_by != Some(*organism_id)
+                    || instance.surface_trace_units != *from_trace_units
+                    || expected_to != *to_trace_units
+                {
+                    return Err(EngineError::InvalidMaterialSurfaceTrace(*object_id));
+                }
+                instance.surface_trace_units = *to_trace_units;
             }
             DomainEvent::MaterialOralPortionTransferred {
                 object_id,
@@ -5245,6 +5415,29 @@ impl EngineState {
         Ok(holder_patch)
     }
 
+    fn next_material_surface_trace(
+        &self,
+        organism_id: EntityId,
+        object_id: EntityId,
+        applied_force_units: u16,
+    ) -> Result<Option<(u32, u32)>, EngineError> {
+        let instance = self
+            .material_instances
+            .get(&object_id)
+            .ok_or(EngineError::UnknownMaterialInstance(object_id))?;
+        if instance.held_by != Some(organism_id) {
+            return Err(EngineError::MaterialInstanceNotHeldByActor(object_id));
+        }
+        let from = instance.surface_trace_units;
+        let Some(to) = from
+            .checked_add(u32::from(applied_force_units))
+            .filter(|to| *to <= MAX_MATERIAL_SURFACE_TRACE_UNITS)
+        else {
+            return Ok(None);
+        };
+        Ok(Some((from, to)))
+    }
+
     fn resolve_oral_transfer(
         &self,
         organism_id: EntityId,
@@ -5708,6 +5901,11 @@ impl EngineState {
             if instance.remaining_mass_milligrams == Some(0) && instance.held_by.is_some() {
                 return Err(EngineError::MaterialInstanceDepleted(*id));
             }
+            if (!self.uses_material_surface_trace_driver() && instance.surface_trace_units != 0)
+                || instance.surface_trace_units > MAX_MATERIAL_SURFACE_TRACE_UNITS
+            {
+                return Err(EngineError::InvalidMaterialSurfaceTrace(*id));
+            }
             match (&instance.reservoir, instance.reservoir_settled_at) {
                 (None, None) => {}
                 (Some(reservoir), Some(settled_at)) => {
@@ -5832,7 +6030,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_social_learning_driver() {
+        let snapshot_schema_version = if state.uses_material_surface_trace_driver() {
+            MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_social_learning_driver() {
             SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
@@ -5918,12 +6118,15 @@ impl Snapshot {
                 | COGNITION_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
                 | SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
+                | MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_social_learning_driver() {
+        let expected_schema_version = if self.state.uses_material_surface_trace_driver() {
+            MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_social_learning_driver() {
             SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
@@ -6114,7 +6317,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_social_learning_driver() {
+        let expected_schema = if state.uses_material_surface_trace_driver() {
+            MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
+        } else if state.uses_social_learning_driver() {
             SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
         } else if state.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
@@ -6171,7 +6376,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
+        } else if expected_schema == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
         } else if expected_schema == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
@@ -6346,6 +6553,12 @@ pub enum EngineError {
     InvalidMaterialReservoir(EntityId),
     #[error("material reservoir {0} cannot be held")]
     MaterialReservoirCannotBeHeld(EntityId),
+    #[error("material surface traces are unsupported by this ruleset")]
+    MaterialSurfaceTraceUnsupported,
+    #[error("material instance {0} has an invalid surface-trace transition")]
+    InvalidMaterialSurfaceTrace(EntityId),
+    #[error("material surface-trace events do not exactly match primitive force and perception")]
+    InvalidMaterialSurfaceTraceEventSet,
     #[error("material-reservoir transfer events do not match ordered action resolution")]
     InvalidMaterialReservoirEventSet,
     #[error("organism map key {0} does not match its value")]
@@ -9732,6 +9945,179 @@ mod tests {
                 .expect("reservoir replay")
                 .state,
             after_tick
+        );
+    }
+
+    #[test]
+    fn ruleset_nineteen_leaves_only_force_caused_perceptible_surface_traces() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x124));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478595),
+            MATERIAL_SURFACE_TRACE_RULESET_VERSION,
+        );
+        let mut founder =
+            regulated_full_earth_person(world_id, 0x731, 10_000_000_000, 1_000_000_000);
+        founder.birth_category = BirthCategory::new("female").expect("category");
+        founder.reproductive_physiology =
+            Some(reproductive_fixture_profile(founder.species.clone()));
+        founder.heritable_disposition_profile =
+            Some(heritable_fixture_profile(founder.species.clone()));
+        let organism_id = founder.organism_id;
+        let patch = founder.embodied_patch.expect("founder patch");
+
+        let water = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("real water identity");
+        let water_profile = OralTransferCommitment {
+            commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "surface-trace-water-fixture-v1".to_owned(),
+            profile_digest: Digest::sha256(b"surface trace water response"),
+            material: water.clone(),
+            species: human(),
+            evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+            transfer_mass_milligrams: 10_000,
+            recoverable_energy_joules: 100,
+            hydration_recovery_seconds: 200,
+        };
+        let reservoir_id = EntityId::deterministic(world_id, b"surface-trace-water-reservoir");
+        let reservoir = InitialMaterialInstance {
+            object_id: reservoir_id,
+            material: water.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000),
+            oral_transfer_profiles: vec![water_profile],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "surface-trace-water-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"surface trace reservoir"),
+                material: water,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("L10 coverage"),
+                maximum_mass_milligrams: 1_000_000,
+                replenishment_mass_milligrams_per_tick: 10_000,
+            }),
+        };
+        let object_id = EntityId::deterministic(world_id, b"surface-trace-quartz-object");
+        let quartz = InitialMaterialInstance {
+            object_id,
+            material: MaterialIdentity::new(
+                "pubchem",
+                "24261",
+                "silicon dioxide",
+                "https://pubchem.ncbi.nlm.nih.gov/compound/24261",
+            )
+            .expect("real silicon-dioxide identity"),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(100_000),
+            oral_transfer_profiles: Vec::new(),
+            reservoir: None,
+        };
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![founder],
+                vec![reservoir, quartz],
+            )
+            .expect("surface-trace genesis plan");
+        let (mut state, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("surface-trace genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
+        );
+        let mut batches = vec![genesis];
+        let mut traced_transition = None;
+        for tick in 1..=2_000_u64 {
+            let celestial = CelestialState::new(
+                TdbSecondsSinceJ2000::new(i128::from(tick * 300)),
+                CartesianMillimetres::new(i128::from(tick), 2, 3),
+                CartesianMillimetres::new(4, i128::from(tick) + 5, 6),
+            );
+            let events = state
+                .plan_next_tick_with_celestial_and_cognition(celestial, &[])
+                .expect("surface-trace tick plan");
+            let has_trace = events.iter().any(|event| {
+                matches!(
+                    event,
+                    DomainEvent::MaterialSurfaceTraceChanged {
+                        object_id: event_object,
+                        organism_id: event_organism,
+                        ..
+                    } if *event_object == object_id && *event_organism == organism_id
+                )
+            });
+            let sequence =
+                EventSequence::new(u64::try_from(batches.len()).expect("bounded history") + 1);
+            let previous_hash = batches.last().expect("genesis exists").batch_hash;
+            let before = state.clone();
+            let (next, batch) = state
+                .commit(sequence, previous_hash, events.clone())
+                .expect("surface-trace tick commit");
+            state = next;
+            batches.push(batch);
+            if has_trace {
+                traced_transition = Some((before, sequence, previous_hash, events));
+                break;
+            }
+        }
+        let (before_trace, trace_sequence, previous_hash, trace_events) =
+            traced_transition.expect("seeded freeform policy eventually applies force to quartz");
+        let instance = state
+            .material_instances
+            .get(&object_id)
+            .expect("traced object remains present");
+        assert!(instance.surface_trace_units() > 0);
+        let memory = &state
+            .organisms
+            .get(&organism_id)
+            .expect("founder")
+            .perception_memory;
+        assert!(memory.iter().any(|entry| {
+            entry.subject_id == Some(object_id)
+                && entry.channel == PerceptionChannel::Touch
+                && entry.property_code == "surface_trace"
+                && entry.quantized_value
+                    == i32::try_from(instance.surface_trace_units()).expect("bounded trace")
+        }));
+
+        let mut missing_perception = trace_events;
+        missing_perception.retain(|event| {
+            !matches!(
+                event,
+                DomainEvent::OrganismPerceived { perception, .. }
+                    if perception.subject_id == Some(object_id)
+                        && perception.readings.iter().any(|reading| reading.property_code == "surface_trace")
+            )
+        });
+        assert!(matches!(
+            before_trace.commit(trace_sequence, previous_hash, missing_perception),
+            Err(EngineError::InvalidMaterialSurfaceTraceEventSet)
+        ));
+
+        let snapshot = Snapshot::new(
+            state.clone(),
+            batches.last().expect("trace batch").sequence,
+            batches.last().expect("trace batch").batch_hash,
+        )
+        .expect("surface-trace snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("surface-trace replay")
+                .state,
+            state
         );
     }
 

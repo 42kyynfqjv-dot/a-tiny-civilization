@@ -69,14 +69,14 @@ check_once() {
       ), projection AS (
         SELECT COUNT(projection_offset.*) FILTER (WHERE projection_offset.projection_name IN (
                  'public-timeline-v1','public-organism-v1',
-                 'public-finding-v1','public-world-telemetry-v1'
+                 'public-finding-v1','public-world-telemetry-v1','public-artifact-v1'
                ))::BIGINT AS required_count,
                COALESCE(MAX(ABS(world.current_sequence - projection_offset.through_sequence)),0)::BIGINT AS maximum_lag
         FROM active_world world
         LEFT JOIN projection_offsets projection_offset ON projection_offset.world_id=world.id
           AND projection_offset.projection_name IN (
             'public-timeline-v1','public-organism-v1',
-            'public-finding-v1','public-world-telemetry-v1'
+            'public-finding-v1','public-world-telemetry-v1','public-artifact-v1'
           )
       )
       SELECT
@@ -107,7 +107,7 @@ check_once() {
   [[ "$heartbeat_count" == "4" ]] || return 1
   [[ "$active_world_count" == "0" || "$active_world_count" == "1" ]] || return 1
   if [[ "$active_world_count" == "1" ]]; then
-    [[ "$projection_count" == "4" ]] || return 1
+    [[ "$projection_count" == "5" ]] || return 1
     ((projection_lag <= maximum_projection_lag)) || return 1
     [[ "$stale_memory_count" == "0" ]] || return 1
     [[ "$stuck_cognition_count" == "0" ]] || return 1

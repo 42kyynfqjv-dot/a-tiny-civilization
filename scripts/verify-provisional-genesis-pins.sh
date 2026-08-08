@@ -53,4 +53,5 @@ if grep -qF 'full-earth-breadth-first-0.1.0.json' \
   exit 1
 fi
 
-echo "Ruleset-18 provisional genesis pins one verified composition and artifact revision."
+grep -q -- '--ruleset-version 19' scripts/initialize-provisional-world.sh
+echo "Ruleset-19 provisional genesis pins one verified composition and artifact revision."

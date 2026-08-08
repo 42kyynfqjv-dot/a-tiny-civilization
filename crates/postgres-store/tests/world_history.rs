@@ -20,9 +20,9 @@ use observer_auth::{
     ObserverSessionStore, SessionSecrets, VerifiedExternalIdentity,
 };
 use observer_projection::{
-    CommittedBirth, ObserverFindingStore, ObserverHistoryCommitmentStore, ObserverOrganismStore,
-    ObserverTimelineStore, ObserverWorldStore, PublicWorldInputStatus, ReservationRequest,
-    ReservationState, ReservationTarget, SupporterReservationStore,
+    CommittedBirth, ObserverArtifactStore, ObserverFindingStore, ObserverHistoryCommitmentStore,
+    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicWorldInputStatus,
+    ReservationRequest, ReservationState, ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{
@@ -863,6 +863,7 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
         store.apply_public_world_telemetry_batches(&batches).await?,
         2
     );
+    assert_eq!(store.apply_public_artifact_batches(&batches).await?, 2);
     assert_eq!(store.apply_public_timeline_batches(&batches).await?, 0);
     assert_eq!(store.apply_public_organism_batches(&batches).await?, 0);
     assert_eq!(store.apply_public_finding_batches(&batches).await?, 0);
@@ -870,6 +871,7 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
         store.apply_public_world_telemetry_batches(&batches).await?,
         0
     );
+    assert_eq!(store.apply_public_artifact_batches(&batches).await?, 0);
     assert_eq!(
         store.public_timeline_cursor(manifest.world_id).await?,
         EventSequence::new(2)
@@ -881,6 +883,16 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
     assert_eq!(
         store.public_finding_cursor(manifest.world_id).await?,
         EventSequence::new(2)
+    );
+    assert_eq!(
+        store.public_artifact_cursor(manifest.world_id).await?,
+        EventSequence::new(2)
+    );
+    assert!(
+        store
+            .list_public_artifacts(manifest.world_id, 10)
+            .await?
+            .is_empty()
     );
     assert_eq!(
         store
@@ -923,6 +935,7 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
     assert_eq!(telemetry.organism_index_lag_batches, 0);
     assert_eq!(telemetry.findings_lag_batches, 0);
     assert_eq!(telemetry.telemetry_lag_batches, 0);
+    assert_eq!(telemetry.artifacts_lag_batches, 0);
     assert_eq!(telemetry.living_people, 1);
     assert_eq!(telemetry.living_fauna, 0);
     Ok(())
