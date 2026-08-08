@@ -2421,7 +2421,8 @@ fn canonical_metabolic_profile<'a>(
     // The set validator fixes `(species, trait_id, source_record_id)` order. The first
     // matching positive watt observation is therefore a stable, source-addressable rule.
     profiles.profiles.iter().find(|profile| {
-        profile.species == *species
+        profile.species.catalog == species.catalog
+            && profile.species.identifier == species.identifier
             && profile.trait_id == "standardized-metabolic-rate"
             && profile.value.unit == "W"
             && profile.value.value > 0
@@ -2527,27 +2528,25 @@ fn derive_fauna_metabolic_rate_plan(
         population_plan_path,
     )?;
     let (profiles, profile_set_digest) = load_metabolic_profiles(metabolic_profiles_path)?;
-    let selections = population
+    let mut selections = population
         .entries
         .iter()
-        .map(|entry| {
-            let profile =
-                canonical_metabolic_profile(&profiles, &entry.species).with_context(|| {
-                    format!(
-                        "planned species {} lacks positive exact metabolic observation",
-                        entry.species.scientific_name
-                    )
-                })?;
-            Ok(FaunaMetabolicRateSelection {
+        .filter_map(|entry| {
+            let profile = canonical_metabolic_profile(&profiles, &entry.species)?;
+            Some(FaunaMetabolicRateSelection {
                 selection_schema_version: 1,
                 profile_set_digest,
                 species: entry.species.clone(),
                 source_record_id: profile.source_record_id.clone(),
             })
         })
-        .collect::<Result<Vec<_>>>()?;
+        .collect::<Vec<_>>();
+    selections.sort_by(|left, right| {
+        (&left.species.catalog, &left.species.identifier)
+            .cmp(&(&right.species.catalog, &right.species.identifier))
+    });
     let plan = FaunaMetabolicRatePlan {
-        plan_schema_version: 1,
+        plan_schema_version: world_data::FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION,
         selections,
     };
     let bytes = plan
@@ -2563,8 +2562,10 @@ fn derive_fauna_metabolic_rate_plan(
         "{}",
         serde_json::to_string(&serde_json::json!({
             "content_hash": Digest::sha256(&bytes),
-            "species_count": plan.selections.len(),
-            "policy": "first canonical exact positive standardized-metabolic-rate observation per planned species",
+            "planned_species_count": population.entries.len(),
+            "source_measured_species_count": plan.selections.len(),
+            "uncovered_species_count": population.entries.len() - plan.selections.len(),
+            "policy": "first canonical exact positive standardized-metabolic-rate observation for each covered planned species; absence remains explicit and is never estimated as source evidence",
         }))?
     );
     Ok(())
@@ -2808,8 +2809,20 @@ fn derive_provisional_organism_body_profile_plan(
                     || format!("read fauna metabolic-rate plan {}", plan_path.display()),
                 )?)
                 .context("validate fauna metabolic-rate plan")?;
-            if metabolic_plan.selections.len() != population.entries.len() {
-                bail!("fauna metabolic-rate plan does not cover exactly the planned fauna species");
+            for selection in &metabolic_plan.selections {
+                if !population
+                    .entries
+                    .iter()
+                    .any(|entry| entry.species == selection.species)
+                {
+                    bail!(
+                        "fauna metabolic-rate plan contains unplanned species {}",
+                        selection.species.scientific_name
+                    );
+                }
+                selection
+                    .resolve(&profiles)
+                    .context("resolve selected fauna metabolic observation")?;
             }
             Some((profiles, metabolic_plan))
         }
@@ -2832,21 +2845,20 @@ fn derive_provisional_organism_body_profile_plan(
         "homo_sapiens",
     ));
     for fauna in &population.entries {
-        let metabolic_rate = if let Some((profiles, metabolic_plan)) = &sourced_metabolic {
-            let selection = metabolic_plan
-                .selection_for(&fauna.species)
-                .with_context(|| {
-                    format!(
-                        "fauna metabolic-rate plan lacks {}",
-                        fauna.species.scientific_name
-                    )
-                })?;
-            selection
-                .resolve_commitment(profiles)
-                .context("resolve exact fauna metabolic commitment")?
-        } else {
-            engineering_metabolic_commitment(fauna.species.clone())
-        };
+        let metabolic_rate = sourced_metabolic
+            .as_ref()
+            .and_then(|(profiles, metabolic_plan)| {
+                metabolic_plan
+                    .selection_for(&fauna.species)
+                    .map(|selection| (profiles, selection))
+            })
+            .map(|(profiles, selection)| {
+                selection
+                    .resolve_commitment(profiles)
+                    .context("resolve exact fauna metabolic commitment")
+            })
+            .transpose()?
+            .unwrap_or_else(|| engineering_metabolic_commitment(fauna.species.clone()));
         entries.push(engineering_body_profile_entry(
             fauna.species.clone(),
             metabolic_rate,
@@ -2879,10 +2891,10 @@ fn derive_provisional_organism_body_profile_plan(
             "content_hash": Digest::sha256(&bytes),
             "species_count": plan.entries.len(),
             "status": plan.status,
-            "source_measured_fauna_metabolic_count": if sourced_metabolic.is_some() { population.entries.len() } else { 0 },
-            "engineering_assumption_fauna_metabolic_count": if sourced_metabolic.is_some() { 0 } else { population.entries.len() },
+            "source_measured_fauna_metabolic_count": sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
+            "engineering_assumption_fauna_metabolic_count": population.entries.len() - sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
             "provisional_reproduction_pacing": "coarse source-package guardrails expressed in simulation time; Homo sapiens uses a separate human guardrail; all remain engineering assumptions pending species-level evidence admission",
-            "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna life-history pacing is a coarse source-package engineering assumption; fauna metabolic rates are exact observations only when both optional metabolic artifacts are supplied, otherwise explicit engineering assumptions",
+            "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna life-history pacing is a coarse source-package engineering assumption; every selected exact fauna metabolic observation is retained as source evidence and uncovered species remain explicit engineering assumptions",
         }))?
     );
     Ok(())

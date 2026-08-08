@@ -20,7 +20,8 @@ pub const FAUNA_PHYSIOLOGY_PROFILE_CATALOG_MEDIA_TYPE: &str =
 pub const FAUNA_METABOLIC_RATE_SELECTION_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_METABOLIC_RATE_SELECTION_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-metabolic-rate-selection+json";
-pub const FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION: u16 = 2;
 pub const FAUNA_METABOLIC_RATE_PLAN_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-metabolic-rate-plan+json";
 
@@ -77,11 +78,12 @@ pub struct FaunaMetabolicRateSelection {
     pub source_record_id: String,
 }
 
-/// A canonical set of one deliberately selected observed rate per participating taxon.
+/// A canonical set of deliberately selected observed rates for covered participating taxa.
 ///
 /// It is separate from a population plan: it says which measurement is carried by a
 /// species, never how many individuals of it exist or what that measurement means
-/// for survival.
+/// for survival. A missing selection is explicit absence of retained evidence, not
+/// permission to label an estimate as a source measurement.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaMetabolicRatePlan {
     pub plan_schema_version: u16,
@@ -90,11 +92,14 @@ pub struct FaunaMetabolicRatePlan {
 
 impl FaunaMetabolicRatePlan {
     pub fn validate(&self) -> Result<(), FaunaPhysiologyProfileError> {
-        if self.plan_schema_version != FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION {
-            return Err(FaunaPhysiologyProfileError::UnsupportedMetabolicPlanSchema);
-        }
-        if self.selections.is_empty() {
-            return Err(FaunaPhysiologyProfileError::EmptyMetabolicPlan);
+        match self.plan_schema_version {
+            LEGACY_FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION => {
+                if self.selections.is_empty() {
+                    return Err(FaunaPhysiologyProfileError::EmptyMetabolicPlan);
+                }
+            }
+            FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION => {}
+            _ => return Err(FaunaPhysiologyProfileError::UnsupportedMetabolicPlanSchema),
         }
         for pair in self.selections.windows(2) {
             if metabolic_selection_key(&pair[0]) >= metabolic_selection_key(&pair[1]) {
@@ -160,7 +165,7 @@ impl FaunaMetabolicRateSelection {
             .profiles
             .iter()
             .find(|profile| {
-                profile.species == self.species
+                same_catalog_taxon(&profile.species, &self.species)
                     && profile.trait_id == "standardized-metabolic-rate"
                     && profile.source_record_id == self.source_record_id
             })
@@ -184,7 +189,11 @@ impl FaunaMetabolicRateSelection {
             commitment_schema_version: METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
             evidence_basis: world_domain::PhysiologicalEvidenceBasis::SourceMeasurement,
             profile_set_digest: self.profile_set_digest,
-            observed_species: profile.species.clone(),
+            // Source datasets legitimately retain different scientific-name renderings
+            // (for example, with or without taxonomic authority) for the same catalog
+            // identifier. Canonical body state uses the world's selected identity while
+            // the exact source row remains pinned by its digest and record identifier.
+            observed_species: self.species.clone(),
             source_record_id: profile.source_record_id.clone(),
             source_record_digest: profile.source_record_digest,
             measured_power_value: profile.value.value,
@@ -307,6 +316,10 @@ fn profile_key(profile: &FaunaPhysiologyProfile) -> (&str, &str, &str, &str) {
 
 fn metabolic_selection_key(selection: &FaunaMetabolicRateSelection) -> (&str, &str) {
     (&selection.species.catalog, &selection.species.identifier)
+}
+
+fn same_catalog_taxon(left: &SpeciesIdentity, right: &SpeciesIdentity) -> bool {
+    left.catalog == right.catalog && left.identifier == right.identifier
 }
 fn slug(value: &str) -> bool {
     !value.is_empty()
@@ -488,6 +501,81 @@ mod tests {
         assert_eq!(
             missing.resolve(&profiles),
             Err(FaunaPhysiologyProfileError::SelectedMetabolicProfileMissing)
+        );
+    }
+
+    #[test]
+    fn metabolic_selection_joins_catalog_identity_not_name_rendering() {
+        let world_species = SpeciesIdentity::new(
+            "gbif",
+            "9510564",
+            "Turdus migratorius",
+            "https://www.gbif.org/species/9510564",
+        )
+        .expect("world identity");
+        let source_species = SpeciesIdentity::new(
+            "gbif",
+            "9510564",
+            "Turdus migratorius Linnaeus, 1766",
+            "https://www.gbif.org/species/9510564",
+        )
+        .expect("source identity");
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: 1,
+            source_artifact_digest: Digest::sha256(b"source with authority names"),
+            profiles: vec![FaunaPhysiologyProfile {
+                species: source_species,
+                trait_id: "standardized-metabolic-rate".to_owned(),
+                value: ScaledFaunaTraitValue {
+                    value: 944,
+                    decimal_places: 3,
+                    unit: "W".to_owned(),
+                },
+                source: FaunaEvidenceSource::AnimalTraitsV1_0_7,
+                source_field: "metabolic_rate".to_owned(),
+                source_record_id: "animaltraits-observations-line-1".to_owned(),
+                source_record_digest: Digest::sha256(b"exact source row"),
+                evidence_basis: FaunaEvidenceBasis::EmpiricalObservation,
+            }],
+        };
+        let selection = FaunaMetabolicRateSelection {
+            selection_schema_version: 1,
+            profile_set_digest: Digest::sha256(
+                &profiles.canonical_bytes().expect("canonical profiles"),
+            ),
+            species: world_species.clone(),
+            source_record_id: "animaltraits-observations-line-1".to_owned(),
+        };
+        let commitment = selection
+            .resolve_commitment(&profiles)
+            .expect("stable taxon identifier resolves across label rendering");
+        assert_eq!(commitment.observed_species, world_species);
+        assert_eq!(
+            commitment.source_record_digest,
+            Digest::sha256(b"exact source row")
+        );
+    }
+
+    #[test]
+    fn current_metabolic_plan_can_record_complete_source_absence() {
+        let plan = FaunaMetabolicRatePlan {
+            plan_schema_version: FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION,
+            selections: Vec::new(),
+        };
+        let bytes = plan
+            .canonical_bytes()
+            .expect("canonical empty coverage plan");
+        assert_eq!(
+            FaunaMetabolicRatePlan::from_canonical_slice(&bytes),
+            Ok(plan)
+        );
+        let legacy = FaunaMetabolicRatePlan {
+            plan_schema_version: LEGACY_FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION,
+            selections: Vec::new(),
+        };
+        assert_eq!(
+            legacy.validate(),
+            Err(FaunaPhysiologyProfileError::EmptyMetabolicPlan)
         );
     }
 }

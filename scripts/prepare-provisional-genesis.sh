@@ -35,6 +35,7 @@ origin_environment="${output_directory}/origin-environment.json"
 fauna_candidates="${output_directory}/fauna-candidates.json"
 fauna_selection="${output_directory}/fauna-selection.json"
 fauna_population="${output_directory}/fauna-population-plan.json"
+fauna_metabolic_rates="${output_directory}/fauna-metabolic-rate-plan.json"
 body_profiles="${output_directory}/organism-body-profile-plan.json"
 material_resources="${output_directory}/material-resource-plan.json"
 
@@ -76,11 +77,21 @@ python3 scripts/query-inaturalist-range-candidates.py \
   --origin-environment "${origin_environment}" \
   --output "${fauna_population}"
 
+"${data_executable}" derive fauna-metabolic-rate-plan \
+  --population-plan "${fauna_population}" \
+  --candidates "${fauna_candidates}" \
+  --selection "${fauna_selection}" \
+  --origin-environment "${origin_environment}" \
+  --metabolic-profiles data/derived-cache/animaltraits-metabolic-rate-v1.json \
+  --output "${fauna_metabolic_rates}"
+
 "${data_executable}" derive provisional-organism-body-profile-plan \
   --population-plan "${fauna_population}" \
   --candidates "${fauna_candidates}" \
   --selection "${fauna_selection}" \
   --origin-environment "${origin_environment}" \
+  --metabolic-profiles data/derived-cache/animaltraits-metabolic-rate-v1.json \
+  --metabolic-rate-plan "${fauna_metabolic_rates}" \
   --tick-duration-seconds 300 \
   --output "${body_profiles}"
 
