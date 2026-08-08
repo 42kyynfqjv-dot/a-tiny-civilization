@@ -195,6 +195,8 @@ pub trait ObserverTimelineStore: Send + Sync {
 
 #[derive(Debug, Error)]
 pub enum ObserverProjectionStoreError {
+    #[error("observer projection resource was not found: {0}")]
+    NotFound(String),
     #[error("observer projection storage is unavailable: {0}")]
     Unavailable(String),
     #[error("observer projection data is corrupt: {0}")]
@@ -257,6 +259,31 @@ pub struct PublicWorldTelemetry {
     pub living_fauna: u64,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHistoryCommitment {
+    pub sequence: EventSequence,
+    pub tick: SimTick,
+    pub event_schema_version: u16,
+    pub ruleset_version: u32,
+    pub event_count: u32,
+    pub previous_event_hash: Digest,
+    pub batch_hash: Digest,
+    pub post_state_hash: Digest,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHistoryCommitmentPage {
+    pub world_id: WorldId,
+    pub manifest: world_domain::WorldManifest,
+    pub manifest_hash: Digest,
+    pub head_sequence: EventSequence,
+    pub head_event_hash: Digest,
+    pub head_state_hash: Digest,
+    pub after_sequence: EventSequence,
+    pub commitments: Vec<PublicHistoryCommitment>,
+    pub next_after_sequence: Option<EventSequence>,
+}
+
 #[async_trait]
 pub trait ObserverWorldStore: Send + Sync {
     async fn list_public_worlds(&self) -> Result<Vec<PublicWorld>, ObserverProjectionStoreError>;
@@ -264,6 +291,17 @@ pub trait ObserverWorldStore: Send + Sync {
         &self,
         world_id: WorldId,
     ) -> Result<Option<PublicWorldTelemetry>, ObserverProjectionStoreError>;
+}
+
+/// Read-only, payload-free canonical commitments for public audit tooling.
+#[async_trait]
+pub trait ObserverHistoryCommitmentStore: Send + Sync {
+    async fn public_history_commitments(
+        &self,
+        world_id: WorldId,
+        after_sequence: EventSequence,
+        limit: u16,
+    ) -> Result<PublicHistoryCommitmentPage, ObserverProjectionStoreError>;
 }
 
 /// A deterministic observer finding. It points to evidence rather than narrating a

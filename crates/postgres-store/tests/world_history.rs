@@ -20,9 +20,9 @@ use observer_auth::{
     ObserverSessionStore, SessionSecrets, VerifiedExternalIdentity,
 };
 use observer_projection::{
-    CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
-    ObserverWorldStore, PublicWorldInputStatus, ReservationRequest, ReservationState,
-    ReservationTarget, SupporterReservationStore,
+    CommittedBirth, ObserverFindingStore, ObserverHistoryCommitmentStore, ObserverOrganismStore,
+    ObserverTimelineStore, ObserverWorldStore, PublicWorldInputStatus, ReservationRequest,
+    ReservationState, ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{
@@ -966,6 +966,30 @@ async fn runtime_replays_and_resumes_at_the_exact_next_sequence(pool: PgPool) ->
             EventSequence::new(3)
         ]
     );
+    let first_page = store
+        .public_history_commitments(manifest.world_id, EventSequence::ZERO, 2)
+        .await?;
+    assert_eq!(first_page.manifest, manifest);
+    assert_eq!(first_page.manifest_hash, Digest::canonical(&manifest)?);
+    assert_eq!(first_page.head_sequence, EventSequence::new(3));
+    assert_eq!(first_page.commitments.len(), 2);
+    assert_eq!(first_page.next_after_sequence, Some(EventSequence::new(2)));
+    for (commitment, batch) in first_page.commitments.iter().zip(&batches) {
+        assert_eq!(commitment.sequence, batch.sequence);
+        assert_eq!(commitment.previous_event_hash, batch.previous_hash);
+        assert_eq!(commitment.batch_hash, batch.batch_hash);
+        assert_eq!(commitment.post_state_hash, batch.post_state_hash);
+        assert_eq!(usize::try_from(commitment.event_count)?, batch.events.len());
+    }
+    let tail = store
+        .public_history_commitments(manifest.world_id, EventSequence::new(2), 2)
+        .await?;
+    assert_eq!(tail.commitments.len(), 1);
+    assert_eq!(
+        tail.commitments[0].previous_event_hash,
+        batches[1].batch_hash
+    );
+    assert_eq!(tail.next_after_sequence, None);
     Ok(())
 }
 

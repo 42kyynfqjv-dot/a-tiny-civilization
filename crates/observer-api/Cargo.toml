@@ -27,6 +27,7 @@ world-domain = { path = "../world-domain" }
 anyhow.workspace = true
 async-trait.workspace = true
 postgres-store = { path = "../postgres-store" }
+sim-engine = { path = "../sim-engine" }
 sqlx.workspace = true
 tokio.workspace = true
 tower.workspace = true

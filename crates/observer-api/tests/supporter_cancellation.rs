@@ -4,7 +4,7 @@ use std::sync::{
 };
 
 use anyhow::Result;
-use application::WorldStore;
+use application::initialize_or_resume_world;
 use async_trait::async_trait;
 use axum::{
     body::{Body, to_bytes},
@@ -17,6 +17,7 @@ use observer_auth::{
 };
 use observer_projection::{ReservationRequest, ReservationTarget, SupporterReservationStore};
 use postgres_store::PostgresStore;
+use sim_engine::{InitialOrganism, RULESET_VERSION};
 use sqlx::PgPool;
 use stripe_adapter::{
     PreparedStripeRefund, StripeRefundError, StripeRefundGateway, StripeWebhookDisposition,
@@ -25,7 +26,10 @@ use stripe_adapter::{
 use supporter_application::SupporterCancellationService;
 use tower::ServiceExt;
 use uuid::Uuid;
-use world_domain::{BirthCategory, Digest, WorldId, WorldManifest, WorldSeed};
+use world_domain::{
+    BirthCategory, Digest, EntityId, OrganismRole, SpeciesIdentity, WorldId, WorldManifest,
+    WorldSeed,
+};
 
 struct FakeRefund {
     calls: AtomicUsize,
@@ -48,9 +52,31 @@ async fn cancellation_route_requires_account_session_and_csrf_and_refunds_once(
 ) -> Result<()> {
     let store = Arc::new(PostgresStore::from_pool(pool));
     let world_id = WorldId::from_uuid(Uuid::new_v4());
-    store
-        .create_world(&WorldManifest::new(world_id, WorldSeed::new(88), 18), None)
-        .await?;
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(88), RULESET_VERSION);
+    initialize_or_resume_world(
+        store.as_ref(),
+        manifest.clone(),
+        None,
+        vec![InitialOrganism {
+            organism_id: EntityId::deterministic(world_id, b"observer-http-person"),
+            species: SpeciesIdentity::new(
+                "gbif",
+                "2436436",
+                "Homo sapiens",
+                "https://www.gbif.org/species/2436436",
+            )?,
+            role: OrganismRole::Person,
+            birth_category: BirthCategory::new("female")?,
+            initial_age_ticks: 0,
+            location_id: None,
+            embodied_patch: None,
+            metabolic_rate: None,
+            physiological_regulation: None,
+            reproductive_physiology: None,
+            heritable_disposition_profile: None,
+        }],
+    )
+    .await?;
 
     let now = Utc::now();
     let secrets = SessionSecrets::generate()?;
@@ -110,6 +136,36 @@ async fn cancellation_route_requires_account_session_and_csrf_and_refunds_once(
             refund.clone(),
         ));
     let app = observer_api::router(state);
+    let history = app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/v1/worlds/{world_id}/history-commitments?after_sequence=0&limit=1"
+            ))
+            .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(history.status(), StatusCode::OK);
+    let history_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(history.into_body(), 32_768).await?)?;
+    assert_eq!(history_body["world_id"], world_id.to_string());
+    assert_eq!(history_body["manifest"]["seed"], "88");
+    assert_eq!(
+        history_body["commitments"].as_array().map(Vec::len),
+        Some(1)
+    );
+    assert!(history_body["commitments"][0].get("events").is_none());
+    assert!(history_body.get("events").is_none());
+    let invalid_history = app
+        .clone()
+        .oneshot(
+            Request::get(format!(
+                "/api/v1/worlds/{world_id}/history-commitments?limit=0"
+            ))
+            .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(invalid_history.status(), StatusCode::BAD_REQUEST);
     let path = format!("/api/v1/supporters/{reservation_id}/cancel");
     let cookie = format!(
         "atiny_session={}; atiny_csrf={}",

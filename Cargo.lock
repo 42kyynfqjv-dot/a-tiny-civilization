@@ -1660,6 +1660,7 @@ dependencies = [
  "postgres-store",
  "serde",
  "serde_json",
+ "sim-engine",
  "sqlx",
  "stripe-adapter",
  "supporter-application",

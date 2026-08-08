@@ -17,8 +17,9 @@ use observer_auth::{
     ObserverSession, SessionSecrets,
 };
 use observer_projection::{
-    ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
-    PublicFinding, PublicOrganism, PublicTimelineItem, PublicWorld, PublicWorldTelemetry,
+    ObserverFindingStore, ObserverHistoryCommitmentStore, ObserverOrganismStore,
+    ObserverTimelineStore, ObserverWorldStore, PublicFinding, PublicHistoryCommitmentPage,
+    PublicOrganism, PublicTimelineItem, PublicWorld, PublicWorldTelemetry,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -33,7 +34,7 @@ use supporter_application::{
 };
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
-use world_domain::{BirthCategory, Digest, EntityId, WorldId};
+use world_domain::{BirthCategory, Digest, EntityId, EventSequence, WorldId};
 
 const OAUTH_ATTEMPT_MINUTES: i64 = 10;
 const OBSERVER_SESSION_DAYS: i64 = 30;
@@ -45,6 +46,7 @@ pub trait ObserverReadStore:
     + ObserverOrganismStore
     + ObserverWorldStore
     + ObserverFindingStore
+    + ObserverHistoryCommitmentStore
 {
 }
 
@@ -54,6 +56,7 @@ impl<T> ObserverReadStore for T where
         + ObserverOrganismStore
         + ObserverWorldStore
         + ObserverFindingStore
+        + ObserverHistoryCommitmentStore
 {
 }
 
@@ -170,6 +173,10 @@ pub fn router(state: ApiState) -> Router {
             get(public_world_telemetry),
         )
         .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
+        .route(
+            "/api/v1/worlds/{world_id}/history-commitments",
+            get(public_history_commitments),
+        )
         .route("/api/v1/worlds/{world_id}/findings", get(public_findings))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route(
@@ -944,6 +951,32 @@ struct TimelineQuery {
     limit: Option<u16>,
 }
 
+#[derive(Debug, Deserialize)]
+struct HistoryCommitmentQuery {
+    after_sequence: Option<u64>,
+    limit: Option<u16>,
+}
+
+async fn public_history_commitments(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<HistoryCommitmentQuery>,
+) -> Result<Json<PublicHistoryCommitmentPage>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let page = state
+        .store
+        .public_history_commitments(
+            world_id,
+            EventSequence::new(query.after_sequence.unwrap_or(0)),
+            query.limit.unwrap_or(100),
+        )
+        .await
+        .map_err(map_history_commitment_error)?;
+    Ok(Json(page))
+}
+
 #[derive(Serialize)]
 struct TimelineResponse {
     projection_version: u16,
@@ -1044,6 +1077,21 @@ async fn public_organism(
 fn log_observer_error(error: observer_projection::ObserverProjectionStoreError) -> ApiError {
     tracing::error!(%error, "observer projection read failed");
     ApiError::Unavailable
+}
+
+fn map_history_commitment_error(
+    error: observer_projection::ObserverProjectionStoreError,
+) -> ApiError {
+    match error {
+        observer_projection::ObserverProjectionStoreError::NotFound(_) => ApiError::NotFound,
+        observer_projection::ObserverProjectionStoreError::Corrupt(message)
+            if message.starts_with("history commitment limit")
+                || message.starts_with("history commitment cursor") =>
+        {
+            ApiError::BadRequest("invalid_history_range", "invalid history commitment range")
+        }
+        other => log_observer_error(other),
+    }
 }
 
 async fn not_found() -> ApiError {

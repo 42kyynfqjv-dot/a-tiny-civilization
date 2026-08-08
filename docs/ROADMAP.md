@@ -92,6 +92,8 @@ are integrated.
   extinction, archive, and explicitly authorized successor creation;
 - full replay and snapshot-plus-tail replay with matching hashes;
 - a downloadable verification bundle and a five-minute verification command;
+- bounded public commitment ranges for comparing manifest, batch-chain, and state-head hashes
+  without publishing private canonical event payloads;
 - restart/resume and tamper-detection tests against PostgreSQL.
 
 The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction transition,

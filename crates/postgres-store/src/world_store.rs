@@ -31,7 +31,7 @@ struct WorldRow {
 }
 
 #[derive(FromRow)]
-struct EventBatchRow {
+pub(crate) struct EventBatchRow {
     world_id: Uuid,
     sequence: i64,
     tick: i64,
@@ -833,7 +833,7 @@ fn parse_world(row: WorldRow) -> Result<StoredWorld, StoreError> {
     })
 }
 
-fn parse_event_batch(row: EventBatchRow) -> Result<EventBatch, StoreError> {
+pub(crate) fn parse_event_batch(row: EventBatchRow) -> Result<EventBatch, StoreError> {
     let batch: EventBatch = serde_json::from_value(row.payload).map_err(corrupt)?;
     batch.verify_integrity().map_err(corrupt)?;
     if batch.world_id.as_uuid() != row.world_id

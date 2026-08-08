@@ -17,5 +17,6 @@ aids grounded in cited events, not invented dialogue, motives, feelings, or dram
 The inhabitants are bounded computational agents. The project does not claim consciousness,
 sentience, human-equivalent experience, or moral personhood. It also does not use that disclaimer to
 justify gratuitous presentation: public outputs remain restrained, factual, and suitable for a broad
-audience. Mechanisms needed for audit stay available in technical verification material without
-being turned into explicit public spectacle.
+audience. Public audit endpoints expose payload-free commitments. Any more detailed technical
+verification material must pass the same presentation review and must not turn private mechanisms
+into explicit public spectacle.
