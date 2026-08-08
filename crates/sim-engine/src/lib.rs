@@ -38,9 +38,9 @@ use world_domain::{
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
-    SequenceOverflow, SimTick, SituatedPerception, SpeciesIdentity, SpeciesIdentityError,
-    TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldStatus,
-    s2_edge_neighbors,
+    SOCIAL_LEARNING_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
+    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -95,6 +95,9 @@ pub const COGNITION_RULESET_VERSION: u32 = 16;
 /// Ruleset seventeen adds bounded, spatially anchored real-material reservoirs,
 /// ordered shared transfers, and deterministic replenishment.
 pub const MATERIAL_RESERVOIR_RULESET_VERSION: u32 = 17;
+/// Ruleset eighteen lets one organism directly witness at most one co-located
+/// organism's label-free primitive action per tick and retain a bounded tendency.
+pub const SOCIAL_LEARNING_RULESET_VERSION: u32 = 18;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -115,6 +118,7 @@ pub const REPRODUCTIVE_PHYSIOLOGY_SNAPSHOT_SCHEMA_VERSION: u16 = 17;
 pub const HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 18;
 pub const COGNITION_SNAPSHOT_SCHEMA_VERSION: u16 = 19;
 pub const MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION: u16 = 20;
+pub const SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 21;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -149,6 +153,7 @@ const REPRODUCTIVE_PHYSIOLOGY_STATE_HASH_SCHEMA_VERSION: u16 = 17;
 const HERITABLE_DISPOSITION_STATE_HASH_SCHEMA_VERSION: u16 = 18;
 const COGNITION_STATE_HASH_SCHEMA_VERSION: u16 = 19;
 const MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION: u16 = 20;
+const SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 21;
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
@@ -270,6 +275,15 @@ struct PolicyActionDraw<'a> {
     age_ticks: u64,
     bodily_needs: BodilyNeedState,
     candidates: &'a [PolicyCandidate],
+}
+
+#[derive(Serialize)]
+struct SocialAttentionDraw {
+    social_attention_version: u16,
+    world_seed: u64,
+    observer_id: EntityId,
+    tick: SimTick,
+    co_located_actor_digest: Digest,
 }
 
 #[derive(Serialize)]
@@ -481,6 +495,10 @@ pub struct OrganismState {
     action_values: Vec<ActionValueState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     action_values_updated_at: Option<SimTick>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    social_action_values: Vec<ActionValueState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    social_action_values_updated_at: Option<SimTick>,
     death: Option<DeathRecord>,
 }
 
@@ -651,6 +669,13 @@ impl OrganismState {
             .binary_search_by_key(&action_kind, |entry| entry.action_kind)
             .ok()
             .map(|index| self.action_values[index])
+    }
+
+    fn social_action_value(&self, action_kind: PrimitiveActionKind) -> Option<ActionValueState> {
+        self.social_action_values
+            .binary_search_by_key(&action_kind, |entry| entry.action_kind)
+            .ok()
+            .map(|index| self.social_action_values[index])
     }
 
     fn age_ticks(&self) -> Option<u64> {
@@ -1641,6 +1666,15 @@ impl EngineState {
             }
         }
 
+        if self.uses_social_learning_driver() {
+            for candidate in &mut candidates {
+                candidate.weight = learned_candidate_weight(
+                    candidate.weight,
+                    organism.social_action_value(candidate.action.kind),
+                );
+            }
+        }
+
         if let Some(cognition_action_kind) = cognition_action_kind {
             for candidate in &mut candidates {
                 if candidate.action.kind == cognition_action_kind {
@@ -1678,7 +1712,9 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_cognition_driver() {
+            policy_version: if self.uses_social_learning_driver() {
+                5
+            } else if self.uses_cognition_driver() {
                 4
             } else if self.uses_heritable_disposition_driver() {
                 3
@@ -1742,6 +1778,72 @@ impl EngineState {
             value: i16::try_from(value).expect("bounded action value fits i16"),
         };
         Ok((prior, next))
+    }
+
+    fn next_social_action_value(
+        &self,
+        organism: &OrganismState,
+        action_kind: PrimitiveActionKind,
+    ) -> Result<(Option<ActionValueState>, ActionValueState), EngineError> {
+        let prior = organism.social_action_value(action_kind);
+        let observations =
+            prior.map_or(Ok(1), |prior| {
+                prior.observations.checked_add(1).ok_or(
+                    EngineError::ActionValueObservationOverflow(organism.organism_id),
+                )
+            })?;
+        let value = prior
+            .map_or(1_i16, |prior| prior.value.saturating_add(1))
+            .min(ACTION_VALUE_MAX);
+        Ok((
+            prior,
+            ActionValueState {
+                value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind,
+                observations,
+                value,
+            },
+        ))
+    }
+
+    fn social_observations(
+        &self,
+        actions: &BTreeMap<EntityId, PrimitiveAction>,
+    ) -> Result<BTreeMap<EntityId, EntityId>, EngineError> {
+        let mut by_patch = BTreeMap::<S2CellId, Vec<EntityId>>::new();
+        for organism in self.organisms.values().filter(|organism| {
+            organism.is_alive()
+                && organism.embodied_patch.is_some()
+                && actions.contains_key(&organism.organism_id)
+        }) {
+            by_patch
+                .entry(organism.embodied_patch.expect("filtered embodied patch"))
+                .or_default()
+                .push(organism.organism_id);
+        }
+        let mut observations = BTreeMap::new();
+        for co_located in by_patch.values().filter(|group| group.len() > 1) {
+            let co_located_actor_digest = Digest::canonical(co_located)?;
+            for (observer_index, observer_id) in co_located.iter().enumerate() {
+                let digest = Digest::canonical(&SocialAttentionDraw {
+                    social_attention_version: 1,
+                    world_seed: self.manifest.seed.get(),
+                    observer_id: *observer_id,
+                    tick: self.tick.checked_next()?,
+                    co_located_actor_digest,
+                })?;
+                let mut actor_index = usize::try_from(
+                    first_digest_u64(digest)
+                        % u64::try_from(co_located.len() - 1).expect("length fits"),
+                )
+                .expect("bounded actor index fits usize");
+                if actor_index >= observer_index {
+                    actor_index += 1;
+                }
+                observations.insert(*observer_id, co_located[actor_index]);
+            }
+        }
+        Ok(observations)
     }
 
     fn reproductive_pair(
@@ -2986,6 +3088,24 @@ impl EngineState {
                     });
                 }
             }
+            if self.uses_social_learning_driver() {
+                for (observer_id, actor_id) in self.social_observations(&actions)? {
+                    let observer = self
+                        .organisms
+                        .get(&observer_id)
+                        .expect("social observer is a living organism");
+                    let action = actions
+                        .get(&actor_id)
+                        .expect("selected social actor has a scheduled action");
+                    let (from, to) = self.next_social_action_value(observer, action.kind)?;
+                    events.push(DomainEvent::OrganismSocialActionValueChanged {
+                        observer_id,
+                        actor_id,
+                        from,
+                        to,
+                    });
+                }
+            }
             events.extend(deaths);
         }
         Ok(events)
@@ -3138,6 +3258,10 @@ impl EngineState {
         self.manifest.ruleset_version >= MATERIAL_RESERVOIR_RULESET_VERSION
     }
 
+    fn uses_social_learning_driver(&self) -> bool {
+        self.manifest.ruleset_version >= SOCIAL_LEARNING_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -3222,6 +3346,11 @@ impl EngineState {
                 .organisms
                 .get(organism_id)
                 .or_else(|| resulting_state.organisms.get(organism_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::OrganismSocialActionValueChanged { observer_id, .. } => self
+                .organisms
+                .get(observer_id)
+                .or_else(|| resulting_state.organisms.get(observer_id))
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::CognitionRequestSelected { selection } => self
                 .organisms
@@ -3490,6 +3619,76 @@ impl EngineState {
                 }
             }
         }
+        if self.uses_social_learning_driver() && tick_advanced {
+            let actions = events
+                .iter()
+                .filter_map(|event| match event {
+                    DomainEvent::OrganismActed {
+                        organism_id,
+                        action,
+                    } => Some((*organism_id, action.clone())),
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            let expected_observations = self.social_observations(&actions)?;
+            for observer in self
+                .organisms
+                .values()
+                .filter(|organism| organism.is_alive())
+            {
+                let expected_actor = expected_observations.get(&observer.organism_id).copied();
+                let matches = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, event)| match event {
+                        DomainEvent::OrganismSocialActionValueChanged {
+                            observer_id,
+                            actor_id,
+                            from,
+                            to,
+                        } if *observer_id == observer.organism_id => {
+                            Some((index, *actor_id, from, to))
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                match (expected_actor, matches.as_slice()) {
+                    (None, []) => {}
+                    (Some(actor_id), [(social_index, actual_actor, from, to)])
+                        if actor_id == *actual_actor =>
+                    {
+                        let action_index = events
+                            .iter()
+                            .position(|event| {
+                                matches!(event, DomainEvent::OrganismActed { organism_id, .. } if *organism_id == actor_id)
+                            })
+                            .ok_or(EngineError::InvalidSocialActionValueTransition(
+                                observer.organism_id,
+                            ))?;
+                        let action = actions.get(&actor_id).expect("selected action exists");
+                        let expected = self.next_social_action_value(observer, action.kind)?;
+                        if action_index >= *social_index
+                            || expected.0 != **from
+                            || expected.1 != **to
+                        {
+                            return Err(EngineError::InvalidSocialActionValueTransition(
+                                observer.organism_id,
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(EngineError::InvalidSocialActionValueTransition(
+                            observer.organism_id,
+                        ));
+                    }
+                }
+            }
+        } else if events
+            .iter()
+            .any(|event| matches!(event, DomainEvent::OrganismSocialActionValueChanged { .. }))
+        {
+            return Err(EngineError::SocialLearningUnsupported);
+        }
         if self.uses_reproductive_physiology_driver() {
             let is_reproductive_event = |event: &DomainEvent| {
                 matches!(
@@ -3654,7 +3853,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_material_reservoir_driver() {
+        if self.uses_social_learning_driver() {
+            SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
+        } else if self.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
         } else if self.uses_cognition_driver() {
             COGNITION_EVENT_SCHEMA_VERSION
@@ -3721,7 +3922,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_material_reservoir_driver() {
+        if self.uses_social_learning_driver() {
+            SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_cognition_driver() {
             COGNITION_STATE_HASH_SCHEMA_VERSION
@@ -3920,6 +4123,8 @@ impl EngineState {
                     perception_memory: Vec::new(),
                     action_values: Vec::new(),
                     action_values_updated_at: None,
+                    social_action_values: Vec::new(),
+                    social_action_values_updated_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -4450,6 +4655,8 @@ impl EngineState {
                     perception_memory: Vec::new(),
                     action_values: Vec::new(),
                     action_values_updated_at: None,
+                    social_action_values: Vec::new(),
+                    social_action_values_updated_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -4635,6 +4842,52 @@ impl EngineState {
                     Err(index) => organism.action_values.insert(index, *to),
                 }
                 organism.action_values_updated_at = Some(self.tick);
+            }
+            DomainEvent::OrganismSocialActionValueChanged {
+                observer_id,
+                actor_id,
+                from,
+                to,
+            } => {
+                if !self.uses_social_learning_driver() || observer_id == actor_id {
+                    return Err(EngineError::InvalidSocialActionValueTransition(
+                        *observer_id,
+                    ));
+                }
+                self.require_living_organism(*observer_id)?;
+                self.require_living_organism(*actor_id)?;
+                to.validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                let observer = self
+                    .organisms
+                    .get_mut(observer_id)
+                    .expect("living observer presence checked");
+                let expected_observations = from.map_or(Ok(1), |from| {
+                    from.observations
+                        .checked_add(1)
+                        .ok_or(EngineError::ActionValueObservationOverflow(*observer_id))
+                })?;
+                let expected_value = from
+                    .map_or(1_i16, |from| from.value.saturating_add(1))
+                    .min(ACTION_VALUE_MAX);
+                if observer.social_action_values_updated_at == Some(self.tick)
+                    || observer.social_action_value(to.action_kind) != *from
+                    || to.observations != expected_observations
+                    || to.value != expected_value
+                    || from.is_some_and(|from| from.action_kind != to.action_kind)
+                {
+                    return Err(EngineError::InvalidSocialActionValueTransition(
+                        *observer_id,
+                    ));
+                }
+                match observer
+                    .social_action_values
+                    .binary_search_by_key(&to.action_kind, |entry| entry.action_kind)
+                {
+                    Ok(index) => observer.social_action_values[index] = *to,
+                    Err(index) => observer.social_action_values.insert(index, *to),
+                }
+                observer.social_action_values_updated_at = Some(self.tick);
             }
             DomainEvent::CognitionRequestSelected { selection } => {
                 if !self.uses_cognition_driver() {
@@ -5264,6 +5517,28 @@ impl EngineState {
             {
                 return Err(EngineError::ActionLearningUnsupported);
             }
+            if self.uses_social_learning_driver() {
+                if organism
+                    .social_action_values
+                    .windows(2)
+                    .any(|pair| pair[0].action_kind >= pair[1].action_kind)
+                    || organism
+                        .social_action_values
+                        .iter()
+                        .any(|entry| entry.validate().is_err() || entry.value <= 0)
+                    || organism
+                        .social_action_values_updated_at
+                        .is_some_and(|updated_at| updated_at > self.tick)
+                {
+                    return Err(EngineError::InvalidSocialActionValueState(
+                        organism.organism_id,
+                    ));
+                }
+            } else if !organism.social_action_values.is_empty()
+                || organism.social_action_values_updated_at.is_some()
+            {
+                return Err(EngineError::SocialLearningUnsupported);
+            }
             if organism
                 .parent_ids
                 .windows(2)
@@ -5557,7 +5832,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_material_reservoir_driver() {
+        let snapshot_schema_version = if state.uses_social_learning_driver() {
+            SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_cognition_driver() {
             COGNITION_SNAPSHOT_SCHEMA_VERSION
@@ -5640,12 +5917,15 @@ impl Snapshot {
                 | HERITABLE_DISPOSITION_SNAPSHOT_SCHEMA_VERSION
                 | COGNITION_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
+                | SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_material_reservoir_driver() {
+        let expected_schema_version = if self.state.uses_social_learning_driver() {
+            SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_cognition_driver() {
             COGNITION_SNAPSHOT_SCHEMA_VERSION
@@ -5834,7 +6114,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_material_reservoir_driver() {
+        let expected_schema = if state.uses_social_learning_driver() {
+            SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
+        } else if state.uses_material_reservoir_driver() {
             MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
         } else if state.uses_cognition_driver() {
             COGNITION_EVENT_SCHEMA_VERSION
@@ -5889,7 +6171,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
         } else if expected_schema == COGNITION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == COGNITION_EVENT_SCHEMA_VERSION
@@ -6116,6 +6400,12 @@ pub enum EngineError {
     MissingActionValueTransition(EntityId),
     #[error("organism {0} action-value observation count overflowed")]
     ActionValueObservationOverflow(EntityId),
+    #[error("social learning is unsupported by this ruleset")]
+    SocialLearningUnsupported,
+    #[error("organism {0} has an invalid social-action-value state")]
+    InvalidSocialActionValueState(EntityId),
+    #[error("organism {0} has an invalid social-action-value transition")]
+    InvalidSocialActionValueTransition(EntityId),
     #[error("external cognition is unsupported by this ruleset")]
     CognitionUnsupported,
     #[error("cognition request selection is invalid: {0}")]
@@ -9236,12 +9526,12 @@ mod tests {
     }
 
     #[test]
-    fn ruleset_seventeen_orders_shared_reservoir_transfers_and_replays_lazy_renewal() {
+    fn ruleset_eighteen_retains_bounded_social_learning_and_shared_resources() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x123));
         let manifest = WorldManifest::new(
             world_id,
             WorldSeed::new(13503953896175478594),
-            MATERIAL_RESERVOIR_RULESET_VERSION,
+            SOCIAL_LEARNING_RULESET_VERSION,
         );
         let mut first = regulated_full_earth_person(world_id, 0x721, 10_000_000, 1_000_000);
         let mut second = regulated_full_earth_person(world_id, 0x722, 10_000_000, 1_000_000);
@@ -9334,11 +9624,11 @@ mod tests {
             .expect("reservoir genesis commit");
         assert_eq!(
             genesis.event_schema_version,
-            MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+            SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
         );
         assert_eq!(
             running.state_hash_schema_version(),
-            MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION
+            SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION
         );
 
         let tick_events = running
@@ -9359,6 +9649,26 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(transfers.len(), 2);
+        let social = tick_events
+            .iter()
+            .filter(|event| matches!(event, DomainEvent::OrganismSocialActionValueChanged { .. }))
+            .count();
+        assert_eq!(
+            social, 2,
+            "each co-located founder attends to one other actor"
+        );
+        let mut missing_social = tick_events.clone();
+        let social_index = missing_social
+            .iter()
+            .position(|event| matches!(event, DomainEvent::OrganismSocialActionValueChanged { .. }))
+            .expect("social event index");
+        missing_social.remove(social_index);
+        assert!(matches!(
+            running
+                .clone()
+                .commit(EventSequence::new(2), genesis.batch_hash, missing_social,),
+            Err(EngineError::InvalidSocialActionValueTransition(_))
+        ));
         assert!(matches!(
             transfers[0],
             DomainEvent::MaterialReservoirOralPortionTransferred {
@@ -9415,7 +9725,7 @@ mod tests {
             .expect("reservoir snapshot");
         assert_eq!(
             snapshot.snapshot_schema_version,
-            MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
+            SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
         );
         assert_eq!(
             replay(manifest, &[genesis, tick])

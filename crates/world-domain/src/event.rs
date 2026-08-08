@@ -57,6 +57,9 @@ pub const COGNITION_EVENT_SCHEMA_VERSION: u16 = 18;
 /// Adds spatially anchored, bounded real-material reservoirs and deterministic
 /// replenishment transitions. Quantitative ecology remains evidence-labelled.
 pub const MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION: u16 = 19;
+/// Adds one bounded, direct same-patch observation of another organism's neutral
+/// primitive action per observer tick. No inferred purpose or cultural label exists.
+pub const SOCIAL_LEARNING_EVENT_SCHEMA_VERSION: u16 = 20;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -282,6 +285,14 @@ pub enum DomainEvent {
         from: Option<ActionValueState>,
         to: ActionValueState,
     },
+    /// One attention-bounded direct observation of another organism's primitive
+    /// bodily operation. The value is private learning state, not an observer claim.
+    OrganismSocialActionValueChanged {
+        observer_id: EntityId,
+        actor_id: EntityId,
+        from: Option<ActionValueState>,
+        to: ActionValueState,
+    },
     /// One world-total, simulated-time-budgeted optional cognition request. It
     /// contains only body-owned situated inputs and cannot directly change state.
     CognitionRequestSelected {
@@ -450,6 +461,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
             | COGNITION_EVENT_SCHEMA_VERSION
             | MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
+            | SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -639,6 +651,11 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::OrganismSocialActionValueChanged { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             species,
@@ -758,7 +775,8 @@ fn validate_event_for_schema(
                 ));
             }
         }
-        DomainEvent::OrganismActionValueChanged { from, to, .. } => {
+        DomainEvent::OrganismActionValueChanged { from, to, .. }
+        | DomainEvent::OrganismSocialActionValueChanged { from, to, .. } => {
             to.validate()
                 .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
             let expected_observations = match from {
@@ -783,6 +801,21 @@ fn validate_event_for_schema(
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "action-value transition skipped an observation".to_owned(),
                 ));
+            }
+            if let DomainEvent::OrganismSocialActionValueChanged {
+                observer_id,
+                actor_id,
+                ..
+            } = event
+            {
+                let expected_value = from
+                    .map_or(1_i16, |from| from.value.saturating_add(1))
+                    .min(crate::ACTION_VALUE_MAX);
+                if observer_id == actor_id || to.value != expected_value || to.value <= 0 {
+                    return Err(EventBatchError::InvalidEmbodiedEvent(
+                        "invalid social action-value transition".to_owned(),
+                    ));
+                }
             }
         }
         DomainEvent::CognitionRequestSelected { selection } => selection
@@ -1440,6 +1473,73 @@ mod tests {
                 Digest::ZERO,
                 vec![skipped],
                 Digest::sha256(b"skipped action value state"),
+            ),
+            Err(EventBatchError::InvalidEmbodiedEvent(_))
+        ));
+    }
+
+    #[test]
+    fn social_action_values_require_schema_twenty_and_direct_bounded_change() {
+        let manifest = manifest();
+        let observer_id = EntityId::from_uuid(Uuid::from_u128(0x501));
+        let actor_id = EntityId::from_uuid(Uuid::from_u128(0x502));
+        let event = DomainEvent::OrganismSocialActionValueChanged {
+            observer_id,
+            actor_id,
+            from: None,
+            to: ActionValueState {
+                value_schema_version: crate::ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind: crate::PrimitiveActionKind::Rest,
+                observations: 1,
+                value: 1,
+            },
+        };
+        assert!(matches!(
+            EventBatch::new(
+                MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                18,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"social state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::new(1),
+            18,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"social state"),
+        )
+        .expect("schema twenty accepts a direct social observation");
+
+        let self_observation = DomainEvent::OrganismSocialActionValueChanged {
+            observer_id,
+            actor_id: observer_id,
+            from: None,
+            to: ActionValueState {
+                value_schema_version: crate::ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind: crate::PrimitiveActionKind::Rest,
+                observations: 1,
+                value: 1,
+            },
+        };
+        assert!(matches!(
+            EventBatch::new(
+                SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                18,
+                Digest::ZERO,
+                vec![self_observation],
+                Digest::sha256(b"invalid social state"),
             ),
             Err(EventBatchError::InvalidEmbodiedEvent(_))
         ));

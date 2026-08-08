@@ -133,6 +133,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
+                | DomainEvent::OrganismSocialActionValueChanged { .. }
                 | DomainEvent::CognitionRequestSelected { .. }
                 | DomainEvent::CognitionInputRecorded { .. }
                 | DomainEvent::ReproductiveDevelopmentStarted { .. }
@@ -334,6 +335,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismAgeAdvanced { .. }
             | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::OrganismActionValueChanged { .. }
+            | DomainEvent::OrganismSocialActionValueChanged { .. }
             | DomainEvent::CognitionRequestSelected { .. }
             | DomainEvent::CognitionInputRecorded { .. }
             | DomainEvent::ReproductiveDevelopmentStarted { .. }

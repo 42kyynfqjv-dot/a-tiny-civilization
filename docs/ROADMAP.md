@@ -189,8 +189,13 @@ action-to-need answer key, and biases future primitive-action weights without re
 any action below a nonzero exploration floor. Event/action/body/value ordering,
 standalone-action rejection, bounded state, replay, snapshots, schema downgrades, and
 observer privacy are covered. This is broad action-kind reinforcement only;
-target/property generalization, delayed credit, imitation, teaching, beliefs, and
-forgetting remain unimplemented.
+target/property generalization, delayed credit, teaching, beliefs, and forgetting
+remain unimplemented. Ruleset eighteen now supplies the first imitation substrate:
+each organism can attend to at most one co-located organism's directly witnessed,
+label-free primitive action per tick and retain a bounded tendency toward that action.
+Stable patch grouping keeps event growth linear, replay/snapshot schemas isolate the
+new state, and public projections discard it. It does not infer purpose, success,
+words, inventions, or relationships.
 
 Ruleset fourteen makes births a delayed world-caused outcome. Every participating body
 pins a species-bound reproductive commitment; compatible mature organisms at the same
