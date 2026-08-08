@@ -33,3 +33,11 @@ the private actor and mechanism event.
   cursor.
 - The runner has no dependency on observer projection, API, supporter, authentication, or payment
   code.
+
+## Compatibility proof
+
+Migration 22 and `public-artifact-v1` were applied to the preserved ruleset-18 qualification world
+at tick 2,347 and sequence 2,388. The projector consumed every historical batch, produced no
+artifact rows, and advanced its independent cursor to 2,388. Full replay and the fail-closed
+qualification report then passed with five of five projections current. No canonical event,
+snapshot, memory record, cognition record, or world cursor was changed.
