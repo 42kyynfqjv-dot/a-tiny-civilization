@@ -80,16 +80,27 @@ if [[ "${APP_ENV:-production}" != "production" ]]; then
   exit 2
 fi
 
-if [[ -z "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
+if [[ -z "${LOCAL_COGNITION_BASE_URL:-}" \
+      && -z "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
       && -z "${GROQ_API_KEY:-}" \
       && -z "${CEREBRAS_API_KEY:-}" \
       && -z "${OPENROUTER_API_KEY:-}" ]]; then
   echo "production requires at least one configured cognition provider" >&2
   exit 2
 fi
-if [[ "${COGNITION_EXTERNAL_EXPORT_APPROVED:-false}" != "true" ]]; then
-  echo "production cognition providers require COGNITION_EXTERNAL_EXPORT_APPROVED=true" >&2
+if [[ -n "${LOCAL_COGNITION_BASE_URL:-}" \
+      && "${LOCAL_COGNITION_BASE_URL}" != "http://local-cognition:11434/v1" ]]; then
+  echo "production Compose requires LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1" >&2
   exit 2
+fi
+if [[ -n "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
+      || -n "${GROQ_API_KEY:-}" \
+      || -n "${CEREBRAS_API_KEY:-}" \
+      || -n "${OPENROUTER_API_KEY:-}" ]]; then
+  if [[ "${COGNITION_EXTERNAL_EXPORT_APPROVED:-false}" != "true" ]]; then
+    echo "production remote cognition providers require COGNITION_EXTERNAL_EXPORT_APPROVED=true" >&2
+    exit 2
+  fi
 fi
 if [[ -n "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
       && -z "${CLOUDFLARE_WORKERS_AI_BASE_URL:-}" ]] \

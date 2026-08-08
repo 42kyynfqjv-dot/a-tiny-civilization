@@ -56,11 +56,11 @@ requires a screen share or a credential in this repository.
 Required runtime values are:
 
 - `POSTGRES_DB`, `POSTGRES_USER`, and a unique `POSTGRES_PASSWORD`;
-- at least one cognition-provider key: Cloudflare Workers AI, Groq, Cerebras, or
-  OpenRouter. Free routes are attempted first and paid cognition is disabled unless
-  `COGNITION_PAID_ENABLED=true` is explicitly set;
-- `COGNITION_EXTERNAL_EXPORT_APPROVED=true`, set only after approving the chosen provider's receipt
-  of private cognition and recalled-memory context;
+- `LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1` for the standard private CPU model.
+  Remote provider keys are optional; free routes are attempted first and paid cognition is disabled
+  unless `COGNITION_PAID_ENABLED=true` is explicitly set;
+- `COGNITION_EXTERNAL_EXPORT_APPROVED=true` only when a remote provider key is configured, and only
+  after approving that provider's receipt of private cognition and recalled-memory context;
 - `APP_ENV=production`.
 
 The local Hindsight service is keyless inside its private Docker network. Stripe and
@@ -105,6 +105,17 @@ without allowing Compose defaults to recreate its API dependency. It waits for w
 responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
 worker, and cognition worker. It deliberately does **not** configure a tunnel or
 off-site backups; those remain separate operational changes.
+
+Before the first deployment, populate the external local-model volume. The provisioner uses a
+pinned Ollama image, host networking only while downloading, a loopback-bound API, and verifies the
+expected Qwen model digest. Stop any process already listening on loopback port 11434 first.
+
+```bash
+sudo ./scripts/provision-local-cognition.sh
+```
+
+Compose subsequently mounts that external volume into an unexposed `local-cognition` service on the
+private backend network. Runtime cloud access is disabled for that service.
 
 Install the same complete check as a periodic host monitor after deployment:
 
@@ -209,10 +220,10 @@ The evidence command requires a clean committed worktree, verifies the original 
 reruns the qualification report, and atomically creates a checksum-covered directory containing no
 canonical event payloads. It never replaces prior evidence.
 
-For a same-host OpenAI-compatible GPT-OSS 20B service, set
-`LOCAL_COGNITION_BASE_URL=http://127.0.0.1:PORT/v1`. The runner rejects non-loopback URLs and HTTP
-redirects; this route needs no external-export approval because private context never leaves the
-host. See ADR 0103.
+For the standard private Compose Qwen2.5 1.5B service, set
+`LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1`. A host-run worker may use a loopback URL.
+The runner rejects every other host and HTTP redirects; this route needs no external-export approval
+because private context never leaves the host. See ADR 0103.
 
 Provider authentication and response compatibility can be tested separately without a database or
 world-data export. This sends only the fixed synthetic request specified by ADR 0088 and still
@@ -225,8 +236,8 @@ civilization-runner probe-openrouter-free
 A successful synthetic probe does not authorize live cognition export; the long-running cognition
 worker still requires `COGNITION_EXTERNAL_EXPORT_APPROVED=true` whenever any provider is configured.
 
-The static preflight rejects missing core settings, an absent cognition provider or separate
-external-export approval, the
+The static preflight rejects missing core settings, an absent cognition route, remote providers
+without separate external-export approval, the
 documented development password, a non-production environment, partial paid, backup,
 or tunnel configuration, mutable `cloudflared` image references, and invalid Compose
 interpolation. It does not print secrets. The default tunnel image is pinned to the

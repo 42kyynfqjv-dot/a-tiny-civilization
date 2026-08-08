@@ -815,13 +815,13 @@ mod tests {
     async fn loopback_route_uses_the_same_strict_free_receipt() {
         let response = json!({
             "id": "local-1",
-            "model": "gpt-oss-20b",
+            "model": "qwen2.5:1.5b",
             "choices": [{"message": {"content": "{\"action_kind\":\"move\",\"contact_region\":null,\"signal_intensity\":null,\"movement_direction\":2}"}}],
             "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
         });
         let (adapter, _) = adapter_for(CognitionProviderId::local_openai(), response).await;
         let receipt = adapter
-            .infer(&CognitionModelRoute::local_gpt_oss_20b(), &request())
+            .infer(&CognitionModelRoute::local_qwen2_5_1_5b(), &request())
             .await
             .expect("local bounded receipt");
         assert_eq!(receipt.provider, CognitionProviderId::local_openai());
@@ -931,6 +931,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 CognitionRouteAttemptStatus::SkippedUnconfigured,
+                CognitionRouteAttemptStatus::SkippedUnconfigured,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::SkippedCooldown,
@@ -1012,9 +1013,9 @@ mod tests {
             .await
             .expect("bounded result");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(result.attempts.len(), 3);
+        assert_eq!(result.attempts.len(), 4);
         assert_eq!(
-            result.attempts[2].status,
+            result.attempts[3].status,
             CognitionRouteAttemptStatus::StoppedAttemptLimit
         );
     }

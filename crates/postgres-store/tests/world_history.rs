@@ -2758,7 +2758,7 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
     .bind(entry.selection.request_id)
     .fetch_all(&pool)
     .await?;
-    assert_eq!(attempts.len(), 4);
+    assert_eq!(attempts.len(), 5);
     assert_eq!(
         attempts[0],
         (
@@ -2773,7 +2773,7 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
         attempts[1],
         (
             1,
-            "cloudflare_workers_ai".to_owned(),
+            "local_openai".to_owned(),
             "skipped".to_owned(),
             false,
             Some("skipped_unconfigured".to_owned()),
@@ -2793,6 +2793,16 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
         attempts[3],
         (
             3,
+            "cloudflare_workers_ai".to_owned(),
+            "skipped".to_owned(),
+            false,
+            Some("skipped_unconfigured".to_owned()),
+        )
+    );
+    assert_eq!(
+        attempts[4],
+        (
+            4,
             "groq".to_owned(),
             "completed".to_owned(),
             true,
@@ -2836,6 +2846,6 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
             .bind(entry.selection.request_id)
             .fetch_one(&pool)
             .await?;
-    assert_eq!(final_attempt_count, 4);
+    assert_eq!(final_attempt_count, 5);
     Ok(())
 }

@@ -13,16 +13,22 @@ chmod 600 "$environment_file"
   echo 'POSTGRES_DB=civilization'
   echo 'POSTGRES_USER=civilization'
   echo 'POSTGRES_PASSWORD=not-the-development-password'
-  echo 'OPENROUTER_API_KEY=test-only-provider-key'
+  echo 'LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1'
   echo 'COGNITION_PAID_ENABLED=false'
 } > "$environment_file"
+
+"${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" >/dev/null
+
+{
+  echo 'OPENROUTER_API_KEY=test-only-provider-key'
+} >> "$environment_file"
 
 if "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" \
   >"${temporary_directory}/missing-export-approval.txt" 2>&1; then
   echo "production preflight accepted a provider key without external-export approval" >&2
   exit 1
 fi
-if ! grep -q 'COGNITION_EXTERNAL_EXPORT_APPROVED=true' \
+if ! grep -q 'remote cognition providers require COGNITION_EXTERNAL_EXPORT_APPROVED=true' \
   "${temporary_directory}/missing-export-approval.txt"; then
   echo "production preflight rejected missing export approval for the wrong reason" >&2
   exit 1

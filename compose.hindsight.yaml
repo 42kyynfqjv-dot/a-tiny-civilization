@@ -1,4 +1,21 @@
 services:
+  local-cognition:
+    image: ollama/ollama@sha256:b88c73ace3e115f8ec53dc8761ae1c0aabfa675406e3681786b98757ce050f42
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+      OLLAMA_NO_CLOUD: "true"
+    healthcheck:
+      test: ["CMD", "ollama", "show", "qwen2.5:1.5b"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+    volumes:
+      - local-cognition-models:/root/.ollama
+    networks:
+      - backend
+    restart: unless-stopped
+
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:0.8.6
     # Embedded PostgreSQL's vector index builds can request roughly 512 MiB of
@@ -75,6 +92,7 @@ services:
       COGNITION_POLL_MILLISECONDS: ${COGNITION_POLL_MILLISECONDS:-250}
       COGNITION_CLAIM_LEASE_SECONDS: ${COGNITION_CLAIM_LEASE_SECONDS:-60}
       COGNITION_REQUEST_TIMEOUT_SECONDS: ${COGNITION_REQUEST_TIMEOUT_SECONDS:-15}
+      LOCAL_COGNITION_BASE_URL: ${LOCAL_COGNITION_BASE_URL:-http://local-cognition:11434/v1}
       COGNITION_EXTERNAL_EXPORT_APPROVED: ${COGNITION_EXTERNAL_EXPORT_APPROVED:-false}
       CLOUDFLARE_WORKERS_AI_BASE_URL: ${CLOUDFLARE_WORKERS_AI_BASE_URL:-}
       CLOUDFLARE_WORKERS_AI_API_KEY: ${CLOUDFLARE_WORKERS_AI_API_KEY:-}
@@ -87,6 +105,8 @@ services:
         condition: service_healthy
       hindsight:
         condition: service_healthy
+      local-cognition:
+        condition: service_healthy
     networks:
       - backend
     init: true
@@ -95,3 +115,6 @@ services:
 volumes:
   hindsight-data:
   hindsight-model-cache:
+  local-cognition-models:
+    name: atiny-ollama
+    external: true

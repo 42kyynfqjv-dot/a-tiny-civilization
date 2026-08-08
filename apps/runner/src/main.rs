@@ -1630,7 +1630,7 @@ fn cognition_adapters(
 ) -> Result<BTreeMap<CognitionProviderId, Arc<dyn CognitionModel>>> {
     let mut adapters = BTreeMap::<CognitionProviderId, Arc<dyn CognitionModel>>::new();
     if let Some(base_url) = nonempty(local_base_url) {
-        validate_loopback_cognition_base_url(&base_url)?;
+        validate_local_cognition_base_url(&base_url)?;
         insert_cognition_adapter(
             &mut adapters,
             CognitionProviderId::local_openai(),
@@ -1682,19 +1682,21 @@ fn cognition_adapters(
     Ok(adapters)
 }
 
-fn validate_loopback_cognition_base_url(base_url: &str) -> Result<()> {
+fn validate_local_cognition_base_url(base_url: &str) -> Result<()> {
     let url = Url::parse(base_url).context("parse local cognition base URL")?;
+    let host = url.host_str();
+    let loopback = matches!(host, Some("127.0.0.1" | "[::1]" | "::1" | "localhost"));
+    let compose_service = host == Some("local-cognition") && url.port() == Some(11434);
     if url.scheme() != "http"
         || url.username() != ""
         || url.password().is_some()
         || url.query().is_some()
         || url.fragment().is_some()
-        || !matches!(
-            url.host_str(),
-            Some("127.0.0.1" | "[::1]" | "::1" | "localhost")
-        )
+        || (!loopback && !compose_service)
     {
-        anyhow::bail!("LOCAL_COGNITION_BASE_URL must be an uncredentialed loopback HTTP URL");
+        anyhow::bail!(
+            "LOCAL_COGNITION_BASE_URL must be uncredentialed loopback HTTP or the exact private Compose service URL"
+        );
     }
     Ok(())
 }
@@ -2340,21 +2342,24 @@ mod tests {
     }
 
     #[test]
-    fn local_cognition_is_strictly_loopback_and_needs_no_export_approval() {
+    fn local_cognition_is_strictly_same_host_and_needs_no_export_approval() {
         for base_url in [
             "http://127.0.0.1:11434/v1",
             "http://localhost:8080/v1",
             "http://[::1]:11434/v1",
+            "http://local-cognition:11434/v1",
         ] {
-            validate_loopback_cognition_base_url(base_url).expect("loopback URL");
+            validate_local_cognition_base_url(base_url).expect("same-host URL");
         }
         for base_url in [
             "https://127.0.0.1:11434/v1",
             "http://example.com/v1",
             "http://user@localhost:8080/v1",
             "http://localhost:8080/v1?forward=1",
+            "http://local-cognition:11435/v1",
+            "http://local-cognition.example:11434/v1",
         ] {
-            assert!(validate_loopback_cognition_base_url(base_url).is_err());
+            assert!(validate_local_cognition_base_url(base_url).is_err());
         }
         validate_cognition_export_approval(0, false)
             .expect("loopback adapter is excluded from external providers");
