@@ -2,8 +2,8 @@
 
 The exact ruleset-30 candidate for the committed world passes the implementation-facing quality
 gate in ADR 0042. This decision is bound by the adjacent schema-2 canonical JSON record to the
-retained genesis and v18 qualification checksum manifests and to source commit
-`0d9d60619b7d6d762aa55bab86beb97f3eec3d6a`; it does not admit the scientific assumptions and it
+retained genesis and v19 qualification checksum manifests and to source commit
+`3d823f8da34c9ac1bceb543febf7359ac4ad26e3`; it does not admit the scientific assumptions and it
 does not authorize public deployment.
 
 The admitted implementation surface is:
@@ -16,9 +16,9 @@ The admitted implementation surface is:
 - exact replay and snapshot-tail equivalence; and
 - current, nonempty, provenance-linked observer projections with the private-state smoke gate.
 
-Every dimension is backed by accepted architecture decisions and the immutable tick-1,000 v18
+Every dimension is backed by accepted architecture decisions and the immutable tick-1,000 v19
 evidence record. Its `SHA256SUMS` digest is
-`9d6b4736c648fbbb5cb2b37fbd5d79ec23e276fe56cb78fc31c24ddd401e2675`. The JSON is intentionally
+`0ccee506f338d05494834c11ef936e9205676fa14694b2eed3adf5b816a64155`. The JSON is intentionally
 stricter than this explanation: its verifier requires the exact world, ruleset, bundle digests,
 dimension set, passed statuses, existing repository evidence paths, experimental status, and both
 admission/authorization booleans to remain false. It also rejects any committed, staged, unstaged,

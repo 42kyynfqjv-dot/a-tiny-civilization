@@ -217,8 +217,8 @@ fresh same-seed ruleset-30 candidate passed the full 1,000-tick replay, Hindsigh
 projection, mechanics, and observer-smoke gate. Its immutable evidence supersedes, without
 mutating, the ruleset-29 launch evidence. The exact genesis and qualification-manifest digests are
 now bound to a machine-verifiable experimental quality-world admission covering seven required
-dimensions. The exact-current-code v18 evidence supersedes the earlier ruleset-30 qualification
-bundles and binds activation to source commit `0d9d60619b7d6d762aa55bab86beb97f3eec3d6a`. Admission
+dimensions. The exact-current-code v19 evidence supersedes the earlier ruleset-30 qualification
+bundles and binds activation to source commit `3d823f8da34c9ac1bceb543febf7359ac4ad26e3`. Admission
 schema 2 additionally freezes the exercised simulation, schema, canonical-data, and qualification
 paths: any difference requires a fresh qualification before launch. The admission explicitly does
 not claim scientific admission or authorize public deployment; production configuration,
@@ -592,7 +592,7 @@ accepts that deferred state; backup and restore commands still fail closed unles
 complete encrypted offsite configuration is present.
 
 The long-term host now passes the composed read-only public-genesis preflight with its protected
-production configuration, exact v18 evidence, both admissions, and a freshly staged 147,469-file
+production configuration, exact v19 evidence, both admissions, and a freshly staged 147,469-file
 composition-0.1.1 runtime closure. Obsolete generated staging, unused build cache, and unused
 images were reclaimed without touching retained inputs or active volumes, restoring the disk
 reserve above the backend health floor. ADR 0135 makes that complete composed gate a hard

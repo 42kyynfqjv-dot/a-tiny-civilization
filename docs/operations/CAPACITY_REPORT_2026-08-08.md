@@ -60,12 +60,21 @@ host still requires measured release-build sweeps, inactivity-aware next-due
 scheduling, horizontally assigned S2 partitions with canonical barriers, projection
 read replicas or equivalent isolation, and storage lifecycle work.
 
-## Next capacity evidence
+## Release-profile capacity evidence
 
-Before public genesis, run reproducible release-profile sweeps at increasing founder
-counts and active fractions, recording tick latency percentiles, event bytes, database
-growth, memory and cognition rates, projection lag, restart time, and the first clean
-capacity stop. The resumed history must match an uninterrupted reference byte for byte.
+The pre-genesis partition-kernel sweep is now published in
+[the 2026-08-08 release report](PARTITION_CAPACITY_SWEEP_2026-08-08.md). It exercises 66 through
+66,000 durable subjects at 1%, 10%, and 100% active fractions, records exact event bytes and stable
+event/schedule digests, and measures release-build wall throughput. Separate deterministic tests
+prove dense/queued equivalence, rejected-budget atomicity, and identical history under checkpoint
+restart, recomputed retry, reassignment, and changed worker-result arrival order.
+
+The fresh v19 integrated ruleset-30 qualification supplies the real-world-path complement:
+PostgreSQL storage, replay, sparse snapshots, five current projections, 4,000 Hindsight deliveries,
+and local cognition for the actual 66-founder candidate. The synthetic sweep is not extrapolated
+into a full-stack population promise. A later envelope should add end-to-end PostgreSQL sweeps and
+the first measured clean capacity stop before population growth approaches this host's observed
+limits; that is an operational scaling milestone, not a blocker for the bounded initial genesis.
 
 ## Corrected ruleset-18 qualification
 

@@ -9,7 +9,7 @@ The successful host run verified:
 - the root-owned mode-0600 production environment, with local keyless cognition and the explicitly
   deferred offsite-backup state;
 - launch-candidate evidence through tick 1,000 / sequence 1,018 at source commit
-  `0d9d60619b7d6d762aa55bab86beb97f3eec3d6a`;
+  `3d823f8da34c9ac1bceb543febf7359ac4ad26e3`;
 - the seven-dimension experimental quality-world admission;
 - the six-route source-bound public-observatory admission at commit
   `33a129097b37854080daac3884a7527ac27410f4` (superseding the initially verified
