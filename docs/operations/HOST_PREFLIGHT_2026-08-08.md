@@ -38,6 +38,7 @@ preflight then passed again against the replacement observatory admission. About
 free after both image builds.
 
 The remaining external configuration is deliberately outside this evidence: legal operator and
-jurisdiction review, monitored policy mailboxes, and optional Google/Apple/Stripe activation.
-The qualified local Qwen/Hindsight path requires none of those integrations. Deployment and world
-activation remain separate literal-confirmation operations.
+jurisdiction review, monitored policy mailboxes, and optional Google/Apple/Stripe activation. Those
+items gate accounts and payments, not a free anonymous observatory. The qualified local
+Qwen/Hindsight path requires none of those integrations. Deployment and world activation remain
+separate literal-confirmation operations.

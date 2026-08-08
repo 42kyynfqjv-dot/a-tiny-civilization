@@ -29,7 +29,7 @@ retained, fully inventoried, normalized, and independently traversed under its e
 release digests. No CDS credential is needed at runtime. [ADR 0034](../adr/0034-copernicus-land-and-soil-source-composition.md)
 retains the source and licensing decision.
 
-## Required before public genesis
+## Required before public accounts or payments
 
 ### Public policy identity and contacts
 
@@ -39,6 +39,11 @@ and activate monitored `privacy@atinycivilization.com` and
 `support@atinycivilization.com` mailboxes. The technical policy drafts, restrained
 world-presentation rules, and supporter refund conditions are checked in; these owner
 identity/contact steps cannot be inferred by the application.
+
+This is not a blocker for a free, anonymous, read-only genesis. The production preflight accepts
+the entirely unconfigured observer-account/payment surface, and the public panel reports that
+supporter naming is closed. It becomes a hard handoff before either OAuth provider or Stripe is
+enabled.
 
 ### Cognition provider
 
