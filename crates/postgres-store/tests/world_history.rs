@@ -14,6 +14,11 @@ use application::{
     resume_world_from_snapshot,
 };
 use async_trait::async_trait;
+use chrono::{Duration, Utc};
+use observer_auth::{
+    IdentityProvider, NewObserverSession, ObserverSessionStore, SessionSecrets,
+    VerifiedExternalIdentity,
+};
 use observer_projection::{
     CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
     ObserverWorldStore, PublicWorldInputStatus, ReservationRequest, ReservationState,
@@ -64,6 +69,87 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
     drop(held);
     let reacquired = second.acquire_runner_writer_lock().await?;
     drop(reacquired);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn observer_sessions_are_hashed_expiring_revocable_and_noncanonical(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let now = Utc::now();
+    let identity = VerifiedExternalIdentity {
+        provider: IdentityProvider::Google,
+        subject: "google-stable-subject-fixture".to_owned(),
+        email: Some("first@example.test".to_owned()),
+        email_verified: true,
+        authenticated_at: now,
+    };
+    let secrets = SessionSecrets::generate()?;
+    let session_input = NewObserverSession {
+        session_digest: secrets.session_digest(),
+        csrf_digest: secrets.csrf_digest(),
+        created_at: now,
+        expires_at: now + Duration::hours(12),
+    };
+    let admitted = store
+        .admit_verified_identity(&identity, &session_input)
+        .await?;
+    assert_eq!(admitted.subject, identity.subject);
+    assert_eq!(
+        store
+            .authenticate_session(secrets.session_digest(), now + Duration::hours(1))
+            .await?,
+        Some(admitted.clone())
+    );
+    assert!(
+        store
+            .authenticate_session(secrets.session_digest(), session_input.expires_at)
+            .await?
+            .is_none()
+    );
+
+    let next_secrets = SessionSecrets::generate()?;
+    let mut relogin = identity;
+    relogin.email = Some("changed@example.test".to_owned());
+    relogin.authenticated_at = now + Duration::minutes(2);
+    let next = store
+        .admit_verified_identity(
+            &relogin,
+            &NewObserverSession {
+                session_digest: next_secrets.session_digest(),
+                csrf_digest: next_secrets.csrf_digest(),
+                created_at: relogin.authenticated_at,
+                expires_at: relogin.authenticated_at + Duration::hours(12),
+            },
+        )
+        .await?;
+    assert_eq!(
+        next.account_id, admitted.account_id,
+        "email is not identity"
+    );
+    let account_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observer_accounts")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(account_count, 1);
+
+    assert!(store.revoke_session(secrets.session_digest()).await?);
+    assert!(!store.revoke_session(secrets.session_digest()).await?);
+    assert!(
+        store
+            .authenticate_session(secrets.session_digest(), now + Duration::hours(1))
+            .await?
+            .is_none()
+    );
+    let deletion = sqlx::query("DELETE FROM observer_sessions WHERE session_digest=$1")
+        .bind(secrets.session_digest().as_bytes().as_slice())
+        .execute(&pool)
+        .await;
+    assert!(deletion.is_err());
+    let canonical_event_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM event_batches")
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(canonical_event_count, 0);
     Ok(())
 }
 

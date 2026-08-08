@@ -1615,6 +1615,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "observer-auth"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "getrandom 0.4.3",
+ "hex",
+ "sha2",
+ "thiserror",
+ "uuid",
+ "world-domain",
+]
+
+[[package]]
 name = "observer-projection"
 version = "0.1.0"
 dependencies = [
@@ -1751,6 +1765,7 @@ dependencies = [
  "application",
  "async-trait",
  "chrono",
+ "observer-auth",
  "observer-projection",
  "serde_json",
  "sim-engine",

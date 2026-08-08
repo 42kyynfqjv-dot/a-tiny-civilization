@@ -442,7 +442,8 @@ smaller than the former every-transition policy.
 - strict idempotent Stripe webhook verification and its transactional append-only event ledger are
   implemented; the server-side, fixed-Price, reservation-idempotent Checkout client is implemented
   but remains unexposed until account authentication can supply a trusted supporter subject;
-- Apple and Google sign-in, refunds/transfers, and extinction handling.
+- provider-neutral accounts plus hashed, expiring, revocable browser sessions are implemented;
+  Apple/Google authorization-code adapters, refunds/transfers, and extinction handling remain.
 
 ### 6. Public operations
 

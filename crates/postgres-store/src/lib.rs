@@ -11,6 +11,7 @@ use world_domain::{EventBatch, WorldId};
 
 mod cognition_jobs;
 mod memory_outbox;
+mod observer_accounts;
 mod observer_findings;
 mod observer_organisms;
 mod observer_timeline;

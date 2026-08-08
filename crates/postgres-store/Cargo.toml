@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 application = { path = "../application" }
 observer-projection = { path = "../observer-projection" }
+observer-auth = { path = "../observer-auth" }
 async-trait.workspace = true
 chrono.workspace = true
 serde_json.workspace = true

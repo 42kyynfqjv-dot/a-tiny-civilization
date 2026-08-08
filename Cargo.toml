@@ -9,6 +9,7 @@ members = [
     "crates/hindsight-adapter",
     "crates/model-adapter",
     "crates/observer-api",
+    "crates/observer-auth",
     "crates/observer-projection",
     "crates/postgres-store",
     "crates/sim-engine",
@@ -34,6 +35,7 @@ chrono = { version = "0.4.42", features = ["serde"] }
 clap = { version = "4.5.53", features = ["derive", "env"] }
 dotenvy = "0.15.7"
 hex = "0.4.3"
+getrandom = "0.4.3"
 hmac = "0.12.1"
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 rayon = "1.11.0"

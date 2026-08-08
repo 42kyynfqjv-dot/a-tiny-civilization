@@ -51,8 +51,9 @@ world-domain <- sim-engine <- application
   all-or-nothing barrier.
 - `application`: use cases and ports for persistence, memory, cognition, clocks,
   and projections.
-- adapters: PostgreSQL, Hindsight, HTTP, model providers, and isolated Stripe webhook admission;
-  account authentication and Checkout creation remain observer-side additions.
+- adapters: PostgreSQL, Hindsight, HTTP, model providers, isolated Stripe payment admission, and
+  provider-neutral hashed observer sessions; Apple/Google token verification remains an
+  observer-side adapter addition.
 - binaries: configuration and dependency wiring only.
 
 ## Durable event flow
