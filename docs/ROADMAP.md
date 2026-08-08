@@ -440,13 +440,14 @@ smaller than the former every-transition policy.
   payment/match history cannot affect canonical events or runner dependencies;
 - human and enabled-animal birth matching only after a paid reservation is valid;
 - strict idempotent Stripe webhook verification and its transactional append-only event ledger are
-  implemented; the server-side, fixed-Price, reservation-idempotent Checkout client is implemented
-  but remains unexposed until account authentication can supply a trusted supporter subject;
+  implemented; the server-side, fixed-Price, reservation-idempotent Checkout client is exposed only
+  through an authenticated, CSRF-protected account route;
 - provider-neutral accounts plus hashed, expiring, revocable browser sessions are implemented;
-  account-bound reservation/Checkout orchestration is also implemented and retry-safe; Apple/Google
-  login attempts now have hashed state/nonce/PKCE/browser binding, strict expiry, and single-use
-  consumption. Provider token adapters, CSRF-protected HTTP composition, refunds/transfers, and
-  extinction handling remain.
+  account-bound reservation/Checkout orchestration is also implemented and retry-safe. Apple and
+  Google now have strict code/token adapters, browser-bound single-use attempts, hardened cookies,
+  and edge-proxy coverage. A versioned automatic screen rejects obvious abuse before payment and
+  immutable human moderation still gates activation. Refund/transfer operations and the public
+  supporter UI remain.
 
 ### 6. Public operations
 

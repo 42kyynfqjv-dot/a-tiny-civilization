@@ -39,6 +39,13 @@ Contributors should begin with [CONTRIBUTING.md](CONTRIBUTING.md); it explains t
 determinism, scientific-evidence, privacy, and dependency-boundary rules that apply to
 every pull request.
 
+Pre-launch public policies are checked in for [privacy](docs/policies/PRIVACY.md),
+[supporter naming and refunds](docs/policies/SUPPORTER_POLICY.md),
+[world presentation](docs/policies/PRESENTATION_POLICY.md), and
+[service terms](docs/policies/TERMS.md). Accounts and payments stay disabled until the
+operator identity, jurisdiction-specific review, contact mailboxes, moderation queue,
+and tested refund operation are complete.
+
 ## Status
 
 Foundation under active construction. The first vertical slice will include a

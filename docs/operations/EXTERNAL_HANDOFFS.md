@@ -63,6 +63,15 @@ dataset's internal NetCDF format.
 
 ## Required before public genesis
 
+### Public policy identity and contacts
+
+Before accounts or payments are enabled, insert the legal operator identity and
+jurisdiction-specific terms into `docs/policies/`, complete appropriate legal review,
+and activate monitored `privacy@atinycivilization.com` and
+`support@atinycivilization.com` mailboxes. The technical policy drafts, restrained
+world-presentation rules, and supporter refund conditions are checked in; these owner
+identity/contact steps cannot be inferred by the application.
+
 ### Cognition provider
 
 Install at least one supported provider key directly in
@@ -113,13 +122,13 @@ escrow remain owner decisions. The application never creates or prints those sec
 Production preflight accepts no backup settings, but any backup or restore command sets
 a strict requirement and refuses to run without the complete configuration.
 
-## Do later, when the corresponding feature is implemented
+## Owner activation for implemented observer integrations
 
 ### Stripe supporter purchases
 
 The repository now has reservation persistence, strict idempotent webhook admission, and an
 authenticated CSRF-protected Checkout-creation endpoint. The route stays indistinguishable from a
-missing route until Google sign-in, the Stripe webhook, and the fixed Stripe product are all
+missing route until observer sign-in, the Stripe webhook, and the fixed Stripe product are all
 configured. A live payment UI is still intentionally absent. To activate that product, the owner
 will need to:
 
@@ -148,9 +157,9 @@ it. The endpoint must subscribe only to `checkout.session.completed` and
 
 ### Google sign-in
 
-The strict server-side Google OIDC adapter is implemented and contract-tested. The
-browser callback composition is the remaining code-side step; its production return
-path is fixed as `https://atinycivilization.com/api/v1/auth/google/callback`. Create a
+The strict server-side Google OIDC adapter and hardened browser callback are implemented
+and contract-tested. Its production return path is fixed as
+`https://atinycivilization.com/api/v1/auth/google/callback`. Create a
 Google OAuth **Web application** client, add the exact production homepage, JavaScript
 origin, and that redirect URI, and enter the client ID and secret directly in the
 production secret store. The redirect URI must exactly match, including scheme, case,
@@ -174,11 +183,12 @@ registered website/return URLs. See [Configure Sign in with Apple for the web](h
 
 ### LLM and Hindsight
 
-Neither is required for the deterministic simulation, and no current path calls an
-LLM. Leave all corresponding variables empty. If an optional cognition or memory
-adapter is introduced later, its responses and retrieval results must be recorded as
-versioned input events before they can affect a canonical world; its key belongs only
-in the production secret store.
+Both code paths are implemented and required by the owner's launch decision. Hindsight
+runs keylessly on the private application network. The cognition worker has a versioned
+free-first route ladder, immutable request/attempt/result/deadline records, a sixteen-call
+network cap, and replay that never contacts a provider. Configure at least one supported
+provider in the protected production environment; keep `COGNITION_PAID_ENABLED=false`
+unless the bounded paid tail is deliberately authorized.
 
 ## What to report back
 
