@@ -52,6 +52,12 @@ arguments=(
   --max-events-per-partition-transition 10000
   --ruleset-version 25
 )
+if [[ "${ATINY_REFUSE_OTHER_WORLDS:-0}" == "1" ]]; then
+  arguments+=(--refuse-other-worlds)
+elif [[ "${ATINY_REFUSE_OTHER_WORLDS:-0}" != "0" ]]; then
+  echo "ATINY_REFUSE_OTHER_WORLDS must be 0 or 1" >&2
+  exit 2
+fi
 if [[ -n "${predecessor_world_id}" ]]; then
   arguments+=(--predecessor-world-id "${predecessor_world_id}")
 fi

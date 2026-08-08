@@ -162,6 +162,12 @@ enum Command {
         #[arg(long)]
         predecessor_world_id: Option<WorldId>,
 
+        /// Refuse initialization when the store contains any different world.
+        /// Canonical first-genesis wrappers use this to avoid publishing proof or
+        /// qualification histories from a reused database.
+        #[arg(long, default_value_t = false)]
+        refuse_other_worlds: bool,
+
         #[arg(long, default_value_t = 300)]
         tick_duration_seconds: u32,
 
@@ -323,6 +329,7 @@ async fn main() -> Result<()> {
             provisional_organism_profile_plan,
             provisional_material_resource_plan,
             predecessor_world_id,
+            refuse_other_worlds,
             tick_duration_seconds,
             max_events_per_partition_transition,
             ruleset_version,
@@ -345,6 +352,7 @@ async fn main() -> Result<()> {
                 provisional_organism_profile_plan.as_deref(),
                 provisional_material_resource_plan.as_deref(),
                 predecessor_world_id,
+                refuse_other_worlds,
                 tick_duration_seconds,
                 max_events_per_partition_transition,
                 ruleset_version,
@@ -820,10 +828,30 @@ async fn init_provisional_full_earth_world(
     provisional_organism_profile_plan_path: Option<&std::path::Path>,
     provisional_material_resource_plan_path: Option<&std::path::Path>,
     predecessor_world_id: Option<WorldId>,
+    refuse_other_worlds: bool,
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
     ruleset_version: u32,
 ) -> Result<()> {
+    if refuse_other_worlds {
+        let other_worlds = store
+            .list_world_ids()
+            .await
+            .context("list worlds before exclusive initialization")?
+            .into_iter()
+            .filter(|stored_world_id| *stored_world_id != world_id)
+            .collect::<Vec<_>>();
+        if !other_worlds.is_empty() {
+            anyhow::bail!(
+                "exclusive initialization refused a store containing other worlds: {}",
+                other_worlds
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            );
+        }
+    }
     let composition = load_provisional_world_composition(composition_path)
         .context("load canonical provisional full-Earth composition")?;
     let verified = verify_provisional_world_artifacts(&composition, artifact_root)
@@ -2300,15 +2328,19 @@ mod tests {
             "composition.json",
             "--artifact-root",
             "artifacts",
+            "--refuse-other-worlds",
         ])
         .expect("parse provisional command");
         let Some(Command::InitProvisionalFullEarth {
-            ruleset_version, ..
+            ruleset_version,
+            refuse_other_worlds,
+            ..
         }) = cli.command
         else {
             panic!("expected provisional initialization command");
         };
         assert_eq!(ruleset_version, SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION);
+        assert!(refuse_other_worlds);
     }
 
     #[test]

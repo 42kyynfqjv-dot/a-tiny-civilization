@@ -27,6 +27,7 @@ if [[ -n "${extra:-}" \
 fi
 
 ATINY_CIVILIZATION_DATA_EXECUTABLE="$data_executable" \
+ATINY_REFUSE_OTHER_WORLDS=1 \
   "${project_root}/scripts/initialize-provisional-world.sh" \
   "$world_id" "$world_seed" "$genesis_directory"
 

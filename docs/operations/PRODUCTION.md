@@ -192,7 +192,9 @@ read -r WORLD_ID WORLD_SEED < <(
 ```
 
 With `DATABASE_URL` loaded from the root-protected production environment, initialize
-all founders and material reservoirs in one append and immediately replay-verify it:
+all founders and material reservoirs in one append and immediately replay-verify it. The
+canonical wrapper refuses a database containing any different world, so use a fresh production
+database rather than the development/proof database:
 
 ```bash
 ./scripts/initialize-canonical-world.sh \
