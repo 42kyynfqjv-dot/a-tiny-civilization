@@ -172,6 +172,9 @@ paste it into repository files. Set the exact product amount/currency and test/l
 it. The endpoint must subscribe only to `checkout.session.completed` and
 `checkout.session.async_payment_succeeded` for that Checkout product. Signed events are admitted at
 `POST /api/v1/supporters/stripe/webhook`; the endpoint acts as 404 while the secret is absent.
+Production preflight requires live-mode credentials and pins success, cancellation, Google, and
+Apple callbacks to their exact HTTPS routes at `atinycivilization.com`; staging flows belong in a
+non-production environment.
 
 ### Google sign-in
 

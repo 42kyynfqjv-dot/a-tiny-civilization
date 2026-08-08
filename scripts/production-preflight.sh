@@ -148,6 +148,12 @@ if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" && -z "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]
   echo "Google OAuth client ID and secret must be configured together" >&2
   exit 2
 fi
+if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" \
+      && "${GOOGLE_OAUTH_REDIRECT_URI:-https://atinycivilization.com/api/v1/auth/google/callback}" \
+         != "https://atinycivilization.com/api/v1/auth/google/callback" ]]; then
+  echo "Google OAuth production callback must use the exact atinycivilization.com HTTPS route" >&2
+  exit 2
+fi
 
 apple_auth_values=0
 for name in APPLE_CLIENT_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY; do
@@ -157,6 +163,12 @@ for name in APPLE_CLIENT_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY; do
 done
 if [[ "${apple_auth_values}" -gt 0 && "${apple_auth_values}" -ne 4 ]]; then
   echo "Sign in with Apple requires client, team, key ID, and private key together" >&2
+  exit 2
+fi
+if [[ "${apple_auth_values}" -eq 4 \
+      && "${APPLE_REDIRECT_URI:-https://atinycivilization.com/api/v1/auth/apple/callback}" \
+         != "https://atinycivilization.com/api/v1/auth/apple/callback" ]]; then
+  echo "Apple production callback must use the exact atinycivilization.com HTTPS route" >&2
   exit 2
 fi
 
@@ -181,6 +193,28 @@ if [[ "${stripe_checkout_values}" -gt 0 ]]; then
   fi
   if [[ ! "${ATINY_MODERATOR_ID:-}" =~ ^[A-Za-z0-9._:@/-]{1,128}$ ]]; then
     echo "Stripe Checkout requires a stable ATINY_MODERATOR_ID" >&2
+    exit 2
+  fi
+  if [[ ! "${STRIPE_SECRET_KEY}" =~ ^sk_live_[A-Za-z0-9_]+$ \
+        || ! "${STRIPE_WEBHOOK_SECRET}" =~ ^whsec_[A-Za-z0-9_]+$ \
+        || ! "${STRIPE_SUPPORTER_PRICE_ID}" =~ ^price_[A-Za-z0-9_]+$ ]]; then
+    echo "production Stripe Checkout requires structurally valid live key, webhook, and Price IDs" >&2
+    exit 2
+  fi
+  if [[ "${STRIPE_LIVE_MODE:-false}" != "true" ]]; then
+    echo "production Stripe Checkout requires STRIPE_LIVE_MODE=true" >&2
+    exit 2
+  fi
+  if [[ "${STRIPE_SUCCESS_URL:-https://atinycivilization.com/?supporter=success}" \
+        != "https://atinycivilization.com/?supporter=success" \
+        || "${STRIPE_CANCEL_URL:-https://atinycivilization.com/?supporter=cancelled}" \
+        != "https://atinycivilization.com/?supporter=cancelled" ]]; then
+    echo "production Stripe redirects must use the exact atinycivilization.com HTTPS routes" >&2
+    exit 2
+  fi
+  if [[ ! "${STRIPE_SUPPORTER_CURRENCY:-usd}" =~ ^[a-z]{3}$ \
+        || ! "${STRIPE_SUPPORTER_AMOUNT_MINOR:-500}" =~ ^[1-9][0-9]{0,6}$ ]]; then
+    echo "Stripe supporter currency or amount is invalid" >&2
     exit 2
   fi
 fi

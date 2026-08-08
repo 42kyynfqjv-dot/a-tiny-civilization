@@ -556,6 +556,9 @@ smaller than the former every-transition policy.
 Stripe-enabled production preflight now requires an attributable moderator identity, and a
 checked-in systemd timer executes the stale paid-label queue check every fifteen minutes. Enabling
 the timer and routing failed-unit alerts are owner operations; the monitor never approves labels.
+Configured production OAuth and Stripe flows are now additionally pinned to the exact
+`atinycivilization.com` HTTPS callbacks. Stripe configuration must be structurally live-mode, while
+an entirely unconfigured account/payment surface remains valid for a read-only launch.
 
 The production path now pins Cloudflare Tunnel 2026.7.2 by multi-architecture image
 digest and structurally limits it to the web-only edge network. PostgreSQL 17 has a
