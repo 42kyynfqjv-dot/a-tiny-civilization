@@ -277,8 +277,23 @@ pub trait ObserverSessionStore: Send + Sync {
         now: DateTime<Utc>,
     ) -> Result<Option<ObserverSession>, ObserverAuthStoreError>;
 
+    /// Authenticates a state-changing browser request against both independently
+    /// generated session and CSRF secrets in one database query.
+    async fn authenticate_session_with_csrf(
+        &self,
+        session_digest: Digest,
+        csrf_digest: Digest,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ObserverSession>, ObserverAuthStoreError>;
+
     async fn revoke_session(&self, session_digest: Digest) -> Result<bool, ObserverAuthStoreError>;
 }
+
+/// Complete observer-login persistence boundary. This remains observer-side and
+/// cannot be imported by the canonical simulation runner.
+pub trait ObserverAuthStore: OAuthAttemptStore + ObserverSessionStore {}
+
+impl<T> ObserverAuthStore for T where T: OAuthAttemptStore + ObserverSessionStore {}
 
 #[derive(Clone, Copy, Debug, Error, Eq, PartialEq)]
 pub enum ObserverAuthError {

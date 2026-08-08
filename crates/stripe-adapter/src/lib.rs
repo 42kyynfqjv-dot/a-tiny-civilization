@@ -16,6 +16,7 @@ const SUPPORTED_EVENT_TYPES: [&str; 2] = [
     "checkout.session.async_payment_succeeded",
 ];
 const MAX_STRIPE_ERROR_BYTES: usize = 2_048;
+const MAX_STRIPE_RESPONSE_BYTES: usize = 65_536;
 
 #[derive(Clone)]
 pub struct StripeCheckoutClient {
@@ -51,6 +52,17 @@ impl StripeCheckoutClient {
     ) -> Result<Self, StripeCheckoutError> {
         let api_base = Url::parse(api_base_url)
             .map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
+        let local_http = api_base.scheme() == "http"
+            && matches!(api_base.host_str(), Some("localhost") | Some("127.0.0.1"));
+        if (api_base.scheme() != "https" && !local_http)
+            || !api_base.username().is_empty()
+            || api_base.password().is_some()
+            || api_base.fragment().is_some()
+        {
+            return Err(StripeCheckoutError::Configuration(
+                "Stripe API URL must use HTTPS outside localhost".to_owned(),
+            ));
+        }
         let endpoint = api_base
             .join("v1/checkout/sessions")
             .map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
@@ -65,6 +77,7 @@ impl StripeCheckoutClient {
         }
         let client = reqwest::Client::builder()
             .timeout(timeout.max(Duration::from_secs(1)))
+            .redirect(reqwest::redirect::Policy::none())
             .build()
             .map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
         Ok(Self {
@@ -110,13 +123,14 @@ impl StripeCheckoutClient {
             .map_err(|error| StripeCheckoutError::Unavailable(error.to_string()))?;
         if !response.status().is_success() {
             let status = response.status();
-            let mut body = response.text().await.unwrap_or_default();
-            body.truncate(MAX_STRIPE_ERROR_BYTES);
+            let body = bounded_response_bytes(response, MAX_STRIPE_ERROR_BYTES)
+                .await
+                .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
+                .unwrap_or_else(|_| "response body unavailable".to_owned());
             return Err(StripeCheckoutError::Rejected { status, body });
         }
-        let wire: CheckoutSessionWire = response
-            .json()
-            .await
+        let bytes = bounded_response_bytes(response, MAX_STRIPE_RESPONSE_BYTES).await?;
+        let wire: CheckoutSessionWire = serde_json::from_slice(&bytes)
             .map_err(|error| StripeCheckoutError::InvalidResponse(error.to_string()))?;
         if !valid_prefixed_id(&wire.id, "cs_") {
             return Err(StripeCheckoutError::InvalidResponse(
@@ -125,9 +139,14 @@ impl StripeCheckoutClient {
         }
         let checkout_url = Url::parse(&wire.url)
             .map_err(|error| StripeCheckoutError::InvalidResponse(error.to_string()))?;
-        if checkout_url.scheme() != "https" {
+        if checkout_url.scheme() != "https"
+            || checkout_url.host_str() != Some("checkout.stripe.com")
+            || !checkout_url.username().is_empty()
+            || checkout_url.password().is_some()
+            || checkout_url.fragment().is_some()
+        {
             return Err(StripeCheckoutError::InvalidResponse(
-                "Checkout URL must use HTTPS".to_owned(),
+                "Checkout URL must be an HTTPS checkout.stripe.com URL".to_owned(),
             ));
         }
         Ok(StripeCheckoutSession {
@@ -135,6 +154,30 @@ impl StripeCheckoutClient {
             checkout_url,
         })
     }
+}
+
+async fn bounded_response_bytes(
+    response: reqwest::Response,
+    limit: usize,
+) -> Result<Vec<u8>, StripeCheckoutError> {
+    if response
+        .content_length()
+        .is_some_and(|length| length > limit as u64)
+    {
+        return Err(StripeCheckoutError::InvalidResponse(
+            "Stripe response exceeds the configured limit".to_owned(),
+        ));
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|error| StripeCheckoutError::Unavailable(error.to_string()))?;
+    if bytes.len() > limit {
+        return Err(StripeCheckoutError::InvalidResponse(
+            "Stripe response exceeds the configured limit".to_owned(),
+        ));
+    }
+    Ok(bytes.to_vec())
 }
 
 #[async_trait]
@@ -211,9 +254,14 @@ fn checkout_return_url(value: &str) -> Result<Url, StripeCheckoutError> {
         Url::parse(value).map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
     let local_http =
         url.scheme() == "http" && matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"));
-    if url.scheme() != "https" && !local_http {
+    if (url.scheme() != "https" && !local_http)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
         return Err(StripeCheckoutError::Configuration(
-            "Checkout return URLs must use HTTPS outside localhost".to_owned(),
+            "Checkout return URLs must use HTTPS outside localhost and cannot contain credentials or fragments"
+                .to_owned(),
         ));
     }
     Ok(url)

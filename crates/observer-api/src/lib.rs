@@ -7,23 +7,35 @@ use axum::{
     Json, Router,
     body::Bytes,
     extract::{Path, Query, State},
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
 };
 use chrono::{DateTime, Utc};
+use observer_auth::{
+    NewObserverSession, OAuthAttemptSecrets, ObserverAuthStore, ObserverAuthStoreError,
+    ObserverSession, SessionSecrets,
+};
 use observer_projection::{
     ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
     PublicFinding, PublicOrganism, PublicTimelineItem, PublicWorld, PublicWorldTelemetry,
 };
+use oidc_adapter::{GoogleOidcClient, OidcError};
 use serde::Deserialize;
 use serde::Serialize;
 use stripe_adapter::{
     StripeWebhookDisposition, StripeWebhookError, StripeWebhookStore, StripeWebhookStoreError,
     StripeWebhookVerifier,
 };
+use supporter_application::{
+    SupporterCheckoutError, SupporterCheckoutRequest, SupporterCheckoutService,
+};
 use tower_http::trace::TraceLayer;
-use world_domain::{EntityId, WorldId};
+use uuid::Uuid;
+use world_domain::{BirthCategory, Digest, EntityId, WorldId};
+
+const OAUTH_ATTEMPT_MINUTES: i64 = 10;
+const OBSERVER_SESSION_DAYS: i64 = 30;
 
 /// Read-only observer composition. The simulation runner does not import this port.
 pub trait ObserverReadStore:
@@ -50,6 +62,8 @@ pub struct ApiState {
     environment: Arc<str>,
     started_at: Instant,
     stripe: Option<Arc<StripeWebhookRuntime>>,
+    auth: Option<Arc<AuthRuntime>>,
+    supporter_checkout: Option<Arc<SupporterCheckoutService>>,
 }
 
 impl ApiState {
@@ -60,6 +74,8 @@ impl ApiState {
             environment: environment.into(),
             started_at: Instant::now(),
             stripe: None,
+            auth: None,
+            supporter_checkout: None,
         }
     }
 
@@ -72,6 +88,27 @@ impl ApiState {
         self.stripe = Some(Arc::new(StripeWebhookRuntime { verifier, store }));
         self
     }
+
+    #[must_use]
+    pub fn with_google_auth(
+        mut self,
+        client: GoogleOidcClient,
+        store: Arc<dyn ObserverAuthStore>,
+        secure_cookies: bool,
+    ) -> Self {
+        self.auth = Some(Arc::new(AuthRuntime {
+            google: client,
+            store,
+            secure_cookies,
+        }));
+        self
+    }
+
+    #[must_use]
+    pub fn with_supporter_checkout(mut self, service: SupporterCheckoutService) -> Self {
+        self.supporter_checkout = Some(Arc::new(service));
+        self
+    }
 }
 
 struct StripeWebhookRuntime {
@@ -79,11 +116,25 @@ struct StripeWebhookRuntime {
     store: Arc<dyn StripeWebhookStore>,
 }
 
+struct AuthRuntime {
+    google: GoogleOidcClient,
+    store: Arc<dyn ObserverAuthStore>,
+    secure_cookies: bool,
+}
+
 pub fn router(state: ApiState) -> Router {
     Router::new()
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/api/v1/status", get(status))
+        .route("/api/v1/auth/google/start", get(google_auth_start))
+        .route("/api/v1/auth/google/callback", get(google_auth_callback))
+        .route("/api/v1/auth/session", get(auth_session))
+        .route("/api/v1/auth/logout", post(auth_logout))
+        .route(
+            "/api/v1/supporters/checkout",
+            post(supporter_checkout).layer(axum::extract::DefaultBodyLimit::max(16_384)),
+        )
         .route(
             "/api/v1/supporters/stripe/webhook",
             post(stripe_webhook).layer(axum::extract::DefaultBodyLimit::max(65_536)),
@@ -101,8 +152,418 @@ pub fn router(state: ApiState) -> Router {
             get(public_organism),
         )
         .fallback(not_found)
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http().make_span_with(|request: &Request<_>| {
+                tracing::info_span!(
+                    "http_request",
+                    method = %request.method(),
+                    path = %request.uri().path()
+                )
+            }),
+        )
         .with_state(state)
+}
+
+async fn google_auth_start(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    let runtime = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    let now = Utc::now();
+    let secrets = OAuthAttemptSecrets::generate().map_err(|_| ApiError::Unavailable)?;
+    let attempt = secrets.attempt(
+        observer_auth::IdentityProvider::Google,
+        now,
+        now + chrono::Duration::minutes(OAUTH_ATTEMPT_MINUTES),
+    );
+    runtime
+        .store
+        .create_oauth_attempt(&attempt)
+        .await
+        .map_err(map_auth_store_error)?;
+    let mut response = redirect(runtime.google.authorization_url(&secrets).as_str())?;
+    append_cookie(
+        &mut response,
+        &set_cookie(
+            cookie_name(runtime.secure_cookies, "oauth_binding"),
+            &secrets.browser_binding(),
+            OAUTH_ATTEMPT_MINUTES * 60,
+            true,
+            runtime.secure_cookies,
+        ),
+    )?;
+    append_cookie(
+        &mut response,
+        &set_cookie(
+            cookie_name(runtime.secure_cookies, "oauth_pkce"),
+            &secrets.code_verifier(),
+            OAUTH_ATTEMPT_MINUTES * 60,
+            true,
+            runtime.secure_cookies,
+        ),
+    )?;
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct OAuthCallbackQuery {
+    code: Option<String>,
+    state: Option<String>,
+    error: Option<String>,
+}
+
+async fn google_auth_callback(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(query): Query<OAuthCallbackQuery>,
+) -> Result<Response, ApiError> {
+    let runtime = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    if query.error.is_some() {
+        return Err(ApiError::BadRequest(
+            "login_rejected",
+            "Google sign-in was not completed",
+        ));
+    }
+    let code = query
+        .code
+        .filter(|value| !value.is_empty() && value.len() <= 4096)
+        .ok_or(ApiError::Unauthorized)?;
+    let state_secret = query
+        .state
+        .filter(|value| valid_secret(value))
+        .ok_or(ApiError::Unauthorized)?;
+    let binding = cookie_value(
+        &headers,
+        cookie_name(runtime.secure_cookies, "oauth_binding"),
+    )
+    .filter(|value| valid_secret(value))
+    .ok_or(ApiError::Unauthorized)?;
+    let verifier = cookie_value(&headers, cookie_name(runtime.secure_cookies, "oauth_pkce"))
+        .filter(|value| valid_secret(value))
+        .ok_or(ApiError::Unauthorized)?;
+    let state_digest = Digest::sha256(state_secret.as_bytes());
+    let now = Utc::now();
+    let attempt = runtime
+        .store
+        .load_oauth_attempt(state_digest, Digest::sha256(binding.as_bytes()), now)
+        .await
+        .map_err(map_auth_store_error)?
+        .ok_or(ApiError::Unauthorized)?;
+    let identity = runtime
+        .google
+        .complete(&code, &verifier, &attempt, now)
+        .await
+        .map_err(map_oidc_error)?;
+    if !runtime
+        .store
+        .consume_oauth_attempt(state_digest, now)
+        .await
+        .map_err(map_auth_store_error)?
+    {
+        return Err(ApiError::Unauthorized);
+    }
+    let secrets = SessionSecrets::generate().map_err(|_| ApiError::Unavailable)?;
+    let session_input = NewObserverSession {
+        session_digest: secrets.session_digest(),
+        csrf_digest: secrets.csrf_digest(),
+        created_at: now,
+        expires_at: now + chrono::Duration::days(OBSERVER_SESSION_DAYS),
+    };
+    runtime
+        .store
+        .admit_verified_identity(&identity, &session_input)
+        .await
+        .map_err(map_auth_store_error)?;
+    let mut response = redirect("/")?;
+    append_cookie(
+        &mut response,
+        &set_cookie(
+            cookie_name(runtime.secure_cookies, "session"),
+            &secrets.session_token(),
+            OBSERVER_SESSION_DAYS * 86_400,
+            true,
+            runtime.secure_cookies,
+        ),
+    )?;
+    append_cookie(
+        &mut response,
+        &set_cookie(
+            cookie_name(runtime.secure_cookies, "csrf"),
+            &secrets.csrf_token(),
+            OBSERVER_SESSION_DAYS * 86_400,
+            false,
+            runtime.secure_cookies,
+        ),
+    )?;
+    for kind in ["oauth_binding", "oauth_pkce"] {
+        append_cookie(
+            &mut response,
+            &clear_cookie(
+                cookie_name(runtime.secure_cookies, kind),
+                true,
+                runtime.secure_cookies,
+            ),
+        )?;
+    }
+    Ok(response)
+}
+
+#[derive(Serialize)]
+struct AuthSessionResponse {
+    authenticated: bool,
+    account_id: Option<Uuid>,
+}
+
+async fn auth_session(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Json<AuthSessionResponse>, ApiError> {
+    let runtime = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    let session = authenticate(runtime, &headers, false).await?;
+    Ok(Json(AuthSessionResponse {
+        authenticated: session.is_some(),
+        account_id: session.map(|value| value.account_id),
+    }))
+}
+
+async fn auth_logout(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let runtime = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    authenticate(runtime, &headers, true)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let token = session_secret(runtime, &headers)?;
+    runtime
+        .store
+        .revoke_session(secret_digest(&token).ok_or(ApiError::Unauthorized)?)
+        .await
+        .map_err(map_auth_store_error)?;
+    let mut response = StatusCode::NO_CONTENT.into_response();
+    for (kind, http_only) in [("session", true), ("csrf", false)] {
+        append_cookie(
+            &mut response,
+            &clear_cookie(
+                cookie_name(runtime.secure_cookies, kind),
+                http_only,
+                runtime.secure_cookies,
+            ),
+        )?;
+    }
+    Ok(response)
+}
+
+#[derive(Deserialize)]
+struct SupporterCheckoutBody {
+    reservation_id: Uuid,
+    world_id: WorldId,
+    observer_label: String,
+    target: observer_projection::ReservationTarget,
+    birth_category: BirthCategory,
+}
+
+#[derive(Serialize)]
+struct SupporterCheckoutResponse {
+    reservation_id: Uuid,
+    state: observer_projection::ReservationState,
+    checkout_url: String,
+}
+
+async fn supporter_checkout(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Json(body): Json<SupporterCheckoutBody>,
+) -> Result<Json<SupporterCheckoutResponse>, ApiError> {
+    let auth = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    let service = state
+        .supporter_checkout
+        .as_ref()
+        .ok_or(ApiError::NotFound)?;
+    let session = authenticate(auth, &headers, true)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let checkout = service
+        .begin(
+            &session,
+            &SupporterCheckoutRequest {
+                reservation_id: body.reservation_id,
+                world_id: body.world_id,
+                observer_label: body.observer_label,
+                target: body.target,
+                birth_category: body.birth_category,
+            },
+        )
+        .await
+        .map_err(map_supporter_checkout_error)?;
+    Ok(Json(SupporterCheckoutResponse {
+        reservation_id: checkout.reservation.request.reservation_id,
+        state: checkout.reservation.state,
+        checkout_url: checkout.checkout.checkout_url.to_string(),
+    }))
+}
+
+async fn authenticate(
+    runtime: &AuthRuntime,
+    headers: &HeaderMap,
+    require_csrf: bool,
+) -> Result<Option<ObserverSession>, ApiError> {
+    let session = session_secret(runtime, headers)?;
+    let session_digest = secret_digest(&session).ok_or(ApiError::Unauthorized)?;
+    if !require_csrf {
+        return runtime
+            .store
+            .authenticate_session(session_digest, Utc::now())
+            .await
+            .map_err(map_auth_store_error);
+    }
+    let csrf_cookie = cookie_value(headers, cookie_name(runtime.secure_cookies, "csrf"))
+        .filter(|value| valid_secret(value))
+        .ok_or(ApiError::Unauthorized)?;
+    let csrf_header = headers
+        .get("X-CSRF-Token")
+        .and_then(|value| value.to_str().ok())
+        .filter(|value| valid_secret(value) && *value == csrf_cookie)
+        .ok_or(ApiError::Unauthorized)?;
+    runtime
+        .store
+        .authenticate_session_with_csrf(
+            session_digest,
+            secret_digest(csrf_header).ok_or(ApiError::Unauthorized)?,
+            Utc::now(),
+        )
+        .await
+        .map_err(map_auth_store_error)
+}
+
+fn session_secret(runtime: &AuthRuntime, headers: &HeaderMap) -> Result<String, ApiError> {
+    cookie_value(headers, cookie_name(runtime.secure_cookies, "session"))
+        .filter(|value| valid_secret(value))
+        .ok_or(ApiError::Unauthorized)
+}
+
+fn cookie_name(secure: bool, kind: &str) -> String {
+    if secure {
+        format!("__Host-atiny_{kind}")
+    } else {
+        format!("atiny_{kind}")
+    }
+}
+
+fn cookie_value(headers: &HeaderMap, name: String) -> Option<String> {
+    let mut found = None;
+    for header in headers.get_all(header::COOKIE) {
+        let value = header.to_str().ok()?;
+        for pair in value.split(';') {
+            let (key, value) = pair.trim().split_once('=')?;
+            if key == name {
+                if found.is_some() {
+                    return None;
+                }
+                found = Some(value.to_owned());
+            }
+        }
+    }
+    found
+}
+
+fn valid_secret(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn secret_digest(value: &str) -> Option<Digest> {
+    if !valid_secret(value) {
+        return None;
+    }
+    let bytes = hex::decode(value).ok()?;
+    Some(Digest::sha256(&bytes))
+}
+
+fn set_cookie(
+    name: String,
+    value: &str,
+    max_age_seconds: i64,
+    http_only: bool,
+    secure: bool,
+) -> String {
+    let mut cookie = format!("{name}={value}; Path=/; Max-Age={max_age_seconds}; SameSite=Lax");
+    if http_only {
+        cookie.push_str("; HttpOnly");
+    }
+    if secure {
+        cookie.push_str("; Secure");
+    }
+    cookie
+}
+
+fn clear_cookie(name: String, http_only: bool, secure: bool) -> String {
+    set_cookie(name, "", 0, http_only, secure)
+}
+
+fn append_cookie(response: &mut Response, cookie: &str) -> Result<(), ApiError> {
+    let value = HeaderValue::from_str(cookie).map_err(|_| ApiError::Unavailable)?;
+    response.headers_mut().append(header::SET_COOKIE, value);
+    Ok(())
+}
+
+fn redirect(location: &str) -> Result<Response, ApiError> {
+    let location = HeaderValue::from_str(location).map_err(|_| ApiError::Unavailable)?;
+    let mut response = StatusCode::SEE_OTHER.into_response();
+    response.headers_mut().insert(header::LOCATION, location);
+    Ok(response)
+}
+
+fn map_auth_store_error(error: ObserverAuthStoreError) -> ApiError {
+    tracing::error!(error = %error, "observer authentication persistence failed");
+    match error {
+        ObserverAuthStoreError::Validation(_) | ObserverAuthStoreError::Conflict(_) => {
+            ApiError::Unauthorized
+        }
+        ObserverAuthStoreError::Unavailable(_) | ObserverAuthStoreError::Corrupt(_) => {
+            ApiError::Unavailable
+        }
+    }
+}
+
+fn map_oidc_error(error: OidcError) -> ApiError {
+    tracing::warn!(error = %error, "Google OIDC callback rejected");
+    match error {
+        OidcError::Unavailable(_) => ApiError::Unavailable,
+        OidcError::Configuration(_) => ApiError::Unavailable,
+        OidcError::ProviderRejected(_)
+        | OidcError::InvalidTokenResponse
+        | OidcError::InvalidIdToken
+        | OidcError::AttemptMismatch => ApiError::Unauthorized,
+    }
+}
+
+fn map_supporter_checkout_error(error: SupporterCheckoutError) -> ApiError {
+    tracing::warn!(error = %error, "supporter Checkout rejected");
+    match error {
+        SupporterCheckoutError::Reservation(
+            observer_projection::ReservationStoreError::Validation(_),
+        ) => ApiError::BadRequest("invalid_reservation", "supporter reservation is invalid"),
+        SupporterCheckoutError::Conflict(_)
+        | SupporterCheckoutError::Reservation(
+            observer_projection::ReservationStoreError::Conflict(_),
+        )
+        | SupporterCheckoutError::Session(stripe_adapter::StripeCheckoutStoreError::Conflict(_)) => {
+            ApiError::Conflict(
+                "checkout_conflict",
+                "supporter Checkout conflicts with existing evidence",
+            )
+        }
+        SupporterCheckoutError::Reservation(
+            observer_projection::ReservationStoreError::Unavailable(_)
+            | observer_projection::ReservationStoreError::NotFound(_)
+            | observer_projection::ReservationStoreError::Corrupt(_),
+        )
+        | SupporterCheckoutError::Session(
+            stripe_adapter::StripeCheckoutStoreError::Unavailable(_)
+            | stripe_adapter::StripeCheckoutStoreError::Corrupt(_),
+        )
+        | SupporterCheckoutError::Stripe(_) => ApiError::Unavailable,
+    }
 }
 
 #[derive(Serialize)]
@@ -381,6 +842,7 @@ async fn not_found() -> ApiError {
 
 enum ApiError {
     NotFound,
+    Unauthorized,
     BadRequest(&'static str, &'static str),
     Conflict(&'static str, &'static str),
     Unavailable,
@@ -390,6 +852,11 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found", "resource not found"),
+            Self::Unauthorized => (
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "authentication or request proof is invalid",
+            ),
             Self::BadRequest(code, message) => (StatusCode::BAD_REQUEST, code, message),
             Self::Conflict(code, message) => (StatusCode::CONFLICT, code, message),
             Self::Unavailable => (
@@ -443,5 +910,45 @@ mod tests {
         assert_eq!(world["composition_id"], "full-earth-provisional-v1");
         assert_eq!(world["composition_version"], "0.1.0");
         assert_eq!(world["composition_hash"], composition_hash.to_string());
+    }
+
+    #[test]
+    fn browser_session_token_round_trips_to_the_persisted_digest() {
+        let secrets = SessionSecrets::generate().expect("OS entropy");
+        assert_eq!(
+            secret_digest(&secrets.session_token()),
+            Some(secrets.session_digest())
+        );
+        assert_eq!(
+            secret_digest(&secrets.csrf_token()),
+            Some(secrets.csrf_digest())
+        );
+        assert!(secret_digest(&"A".repeat(64)).is_none());
+    }
+
+    #[test]
+    fn cookie_parser_rejects_duplicate_names_and_production_flags_are_strict() {
+        let mut headers = HeaderMap::new();
+        headers.insert(header::COOKIE, HeaderValue::from_static("a=one; b=two"));
+        assert_eq!(
+            cookie_value(&headers, "a".to_owned()).as_deref(),
+            Some("one")
+        );
+        headers.insert(header::COOKIE, HeaderValue::from_static("a=one; a=two"));
+        assert!(cookie_value(&headers, "a".to_owned()).is_none());
+
+        let cookie = set_cookie(
+            cookie_name(true, "session"),
+            &"a".repeat(64),
+            60,
+            true,
+            true,
+        );
+        assert!(cookie.starts_with("__Host-atiny_session="));
+        assert!(cookie.contains("; Path=/"));
+        assert!(cookie.contains("; SameSite=Lax"));
+        assert!(cookie.contains("; HttpOnly"));
+        assert!(cookie.ends_with("; Secure"));
+        assert!(!cookie.contains("Domain="));
     }
 }

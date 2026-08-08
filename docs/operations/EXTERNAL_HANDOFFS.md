@@ -117,15 +117,17 @@ a strict requirement and refuses to run without the complete configuration.
 
 ### Stripe supporter purchases
 
-The repository now has reservation persistence plus strict, idempotent webhook admission, but no
-authenticated Checkout-creation endpoint or live payment UI is enabled. To activate that product,
-the owner will need to:
+The repository now has reservation persistence, strict idempotent webhook admission, and an
+authenticated CSRF-protected Checkout-creation endpoint. The route stays indistinguishable from a
+missing route until Google sign-in, the Stripe webhook, and the fixed Stripe product are all
+configured. A live payment UI is still intentionally absent. To activate that product, the owner
+will need to:
 
 1. Create and verify a Stripe account; decide price, currency, refund/transfer policy,
    tax posture, and the moderation/fulfilment policy before enabling live mode.
 2. Create a restricted live API key and a webhook endpoint secret with only the needed
    permissions. Place them directly in the production secret store as
-   `STRIPE_SECRET_KEY` and `STRIPE_WEBHOOK_SECRET`.
+   `STRIPE_SECRET_KEY`, `STRIPE_WEBHOOK_SECRET`, and `STRIPE_SUPPORTER_PRICE_ID`.
 3. Register every production payment domain and subdomain in Stripe. Stripe handles
    Apple Pay merchant validation, but Apple Pay and Google Pay still require the
    domains to be registered for embedded Elements or Checkout.

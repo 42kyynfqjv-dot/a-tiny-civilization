@@ -104,20 +104,21 @@ impl GoogleOidcClient {
         {
             return Err(OidcError::AttemptMismatch);
         }
+        // Finish the non-Send form serializer before crossing the network await;
+        // Axum requires callback futures to remain Send.
+        let request_body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("code", code)
+            .append_pair("client_id", &self.client_id)
+            .append_pair("client_secret", &self.client_secret)
+            .append_pair("redirect_uri", self.redirect_uri.as_str())
+            .append_pair("grant_type", "authorization_code")
+            .append_pair("code_verifier", code_verifier)
+            .finish();
         let token = self
             .client
             .post(self.token_endpoint.clone())
             .header("Content-Type", "application/x-www-form-urlencoded")
-            .body(
-                url::form_urlencoded::Serializer::new(String::new())
-                    .append_pair("code", code)
-                    .append_pair("client_id", &self.client_id)
-                    .append_pair("client_secret", &self.client_secret)
-                    .append_pair("redirect_uri", self.redirect_uri.as_str())
-                    .append_pair("grant_type", "authorization_code")
-                    .append_pair("code_verifier", code_verifier)
-                    .finish(),
-            )
+            .body(request_body)
             .send()
             .await
             .map_err(network)?;
@@ -271,9 +272,14 @@ fn secure_url(value: &str) -> Result<Url, OidcError> {
     let url = Url::parse(value).map_err(|error| OidcError::Configuration(error.to_string()))?;
     let local =
         url.scheme() == "http" && matches!(url.host_str(), Some("127.0.0.1") | Some("localhost"));
-    if url.scheme() != "https" && !local {
+    if (url.scheme() != "https" && !local)
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
         return Err(OidcError::Configuration(
-            "OIDC URLs must use HTTPS outside localhost".to_owned(),
+            "OIDC URLs must use HTTPS outside localhost and cannot contain credentials or fragments"
+                .to_owned(),
         ));
     }
     Ok(url)

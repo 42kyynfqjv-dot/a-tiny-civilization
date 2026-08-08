@@ -12,8 +12,10 @@ axum.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 observer-api = { path = "../../crates/observer-api" }
+oidc-adapter = { path = "../../crates/oidc-adapter" }
 postgres-store = { path = "../../crates/postgres-store" }
 stripe-adapter = { path = "../../crates/stripe-adapter" }
+supporter-application = { path = "../../crates/supporter-application" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

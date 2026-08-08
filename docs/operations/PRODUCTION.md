@@ -61,9 +61,9 @@ Required runtime values are:
   `COGNITION_PAID_ENABLED=true` is explicitly set;
 - `APP_ENV=production`.
 
-The local Hindsight service is keyless inside its private Docker network. Stripe,
-Google OAuth, and Apple Sign in remain blank until those observer products are
-enabled. This host currently runs Cloudflare Tunnel as a separate system service, so
+The local Hindsight service is keyless inside its private Docker network. Stripe and
+Google OAuth stay disabled unless their complete paired settings are supplied; Apple
+Sign in remains blank until that adapter is enabled. This host currently runs Cloudflare Tunnel as a separate system service, so
 the application environment does not need `CLOUDFLARE_TUNNEL_TOKEN`. A Compose-managed
 tunnel requires it and sets `ATINY_REQUIRE_COMPOSE_TUNNEL=1` during preflight.
 

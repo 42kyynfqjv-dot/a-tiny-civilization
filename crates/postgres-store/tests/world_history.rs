@@ -102,6 +102,26 @@ async fn observer_sessions_are_hashed_expiring_revocable_and_noncanonical(
             .await?,
         Some(admitted.clone())
     );
+    assert_eq!(
+        store
+            .authenticate_session_with_csrf(
+                secrets.session_digest(),
+                secrets.csrf_digest(),
+                now + Duration::hours(1),
+            )
+            .await?,
+        Some(admitted.clone())
+    );
+    assert!(
+        store
+            .authenticate_session_with_csrf(
+                secrets.session_digest(),
+                Digest::sha256(b"wrong csrf"),
+                now + Duration::hours(1),
+            )
+            .await?
+            .is_none()
+    );
     assert!(
         store
             .authenticate_session(secrets.session_digest(), session_input.expires_at)

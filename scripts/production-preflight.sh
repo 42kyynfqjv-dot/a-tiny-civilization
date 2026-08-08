@@ -52,6 +52,33 @@ case "${COGNITION_PAID_ENABLED:-false}" in
     ;;
 esac
 
+if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" && -z "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]] \
+   || [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
+  echo "Google OAuth client ID and secret must be configured together" >&2
+  exit 2
+fi
+
+stripe_checkout_values=0
+for name in STRIPE_SECRET_KEY STRIPE_SUPPORTER_PRICE_ID; do
+  if [[ -n "${!name:-}" ]]; then
+    stripe_checkout_values=$((stripe_checkout_values + 1))
+  fi
+done
+if [[ "${stripe_checkout_values}" -gt 0 ]]; then
+  if [[ "${stripe_checkout_values}" -ne 2 ]]; then
+    echo "Stripe Checkout requires both the secret key and supporter price ID" >&2
+    exit 2
+  fi
+  if [[ -z "${STRIPE_WEBHOOK_SECRET:-}" ]]; then
+    echo "Stripe Checkout requires the signed webhook endpoint" >&2
+    exit 2
+  fi
+  if [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
+    echo "Stripe Checkout requires observer sign-in" >&2
+    exit 2
+  fi
+fi
+
 backup_names=(
   R2_ACCOUNT_ID
   R2_BACKUP_BUCKET

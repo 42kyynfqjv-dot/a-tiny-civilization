@@ -82,6 +82,29 @@ impl ObserverSessionStore for PostgresStore {
         row.map(parse_session).transpose()
     }
 
+    async fn authenticate_session_with_csrf(
+        &self,
+        session_digest: Digest,
+        csrf_digest: Digest,
+        now: DateTime<Utc>,
+    ) -> Result<Option<ObserverSession>, ObserverAuthStoreError> {
+        let row = sqlx::query_as::<_, SessionRow>(
+            r#"
+            SELECT s.account_id,s.provider,s.provider_subject,s.created_at,s.expires_at
+            FROM observer_sessions s JOIN observer_accounts a ON a.id=s.account_id
+            WHERE s.session_digest=$1 AND s.csrf_digest=$2
+              AND s.revoked_at IS NULL AND s.expires_at>$3 AND a.disabled_at IS NULL
+            "#,
+        )
+        .bind(session_digest.as_bytes().as_slice())
+        .bind(csrf_digest.as_bytes().as_slice())
+        .bind(now)
+        .fetch_optional(self.pool())
+        .await
+        .map_err(unavailable)?;
+        row.map(parse_session).transpose()
+    }
+
     async fn revoke_session(&self, session_digest: Digest) -> Result<bool, ObserverAuthStoreError> {
         let result = sqlx::query(
             "UPDATE observer_sessions SET revoked_at=NOW() WHERE session_digest=$1 AND revoked_at IS NULL",

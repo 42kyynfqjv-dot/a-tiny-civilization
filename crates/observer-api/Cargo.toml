@@ -9,13 +9,18 @@ repository.workspace = true
 [dependencies]
 application = { path = "../application" }
 observer-projection = { path = "../observer-projection" }
+observer-auth = { path = "../observer-auth" }
+oidc-adapter = { path = "../oidc-adapter" }
 axum.workspace = true
 chrono.workspace = true
+hex.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 stripe-adapter = { path = "../stripe-adapter" }
+supporter-application = { path = "../supporter-application" }
 tower-http.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 world-domain = { path = "../world-domain" }
 
 [lints]
