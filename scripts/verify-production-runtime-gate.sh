@@ -3,6 +3,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deployment="${project_root}/scripts/deploy-production-app.sh"
+database_preparation="${project_root}/scripts/prepare-production-genesis-database.sh"
 runtime_verifier="${project_root}/scripts/verify-staged-runtime-artifacts.sh"
 
 preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$deployment")"
@@ -49,6 +50,28 @@ for contract in '--genesis-directory' '--evidence-directory' '--runtime-root'; d
     exit 1
   fi
 done
+
+database_preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$database_preparation")"
+database_mutation_line="$(rg -n -m1 'compose_args\[@.*up -d db migrate' "$database_preparation")"
+if ((${database_preflight_line%%:*} >= ${database_mutation_line%%:*})); then
+  echo "private database preparation must run the composed preflight before mutation" >&2
+  exit 1
+fi
+for contract in \
+  'requires the literal --confirm-private-database-preparation argument' \
+  'up -d db migrate' \
+  'migration-ready and empty for qualified activation' \
+  'already contains the exact running qualified world'; do
+  if ! rg -q -- "$contract" "$database_preparation"; then
+    echo "private database preparation lost required contract: $contract" >&2
+    exit 1
+  fi
+done
+if rg -q 'up .*\b(api|projector|runner|web|memory-worker|cognition-worker|cloudflared)\b' \
+  "$database_preparation"; then
+  echo "private database preparation may start only db and migrate" >&2
+  exit 1
+fi
 
 required_contracts=(
   'validate-provisional'

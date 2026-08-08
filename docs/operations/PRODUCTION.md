@@ -124,7 +124,19 @@ The same guard rejects foreign running containers attached to any production dat
 shared `atiny-ollama` model volume. This prevents concurrent local-model writers during cutover.
 
 For a first genesis, stop the legacy development stack during the deliberate cutover, provision the
-production volumes, and start only `db` and `migrate` with the protected environment. Run
+production volumes, and use the private preparation helper to start only `db` and `migrate` with
+the protected environment:
+
+```bash
+sudo ./scripts/prepare-production-genesis-database.sh \
+  --env-file /etc/a-tiny-civilization-production.env \
+  --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
+  --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --confirm-private-database-preparation
+```
+
+It runs the same complete candidate/admission/runtime preflight before changing service state and
+refuses to start any public or canonical process. Run
 `activate-qualified-canonical-world.sh activate` while the database is still private, record its
 tick-zero replay hashes, and only then invoke the deployment helper above. The helper now refuses an
 empty database instead of publishing a pre-genesis shell, and it refuses a different world,
