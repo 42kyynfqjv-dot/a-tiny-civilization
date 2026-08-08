@@ -29,12 +29,6 @@ if ((EUID != 0)); then
   echo "run backend monitor installation as root" >&2
   exit 2
 fi
-if [[ ! "$project_root" =~ ^/[A-Za-z0-9._/-]+$ \
-   || ! "$environment_file" =~ ^/[A-Za-z0-9._/-]+$ ]]; then
-  echo "monitor paths must be absolute and contain only portable path characters" >&2
-  exit 2
-fi
-
 cd "$project_root"
 "${project_root}/scripts/verify-production-checkout.sh"
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" >/dev/null
@@ -47,18 +41,8 @@ temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 override="${temporary_directory}/10-host-paths.conf"
 
-# Reset the template's portable defaults and bind the monitor to the exact clean checkout and
-# protected environment used by the deployment helper. ProtectHome=read-only keeps a checkout
-# under /home visible without granting the oneshot any write access there.
-printf '%s\n' \
-  '[Service]' \
-  "WorkingDirectory=${project_root}" \
-  'EnvironmentFile=' \
-  "EnvironmentFile=${environment_file}" \
-  'ExecStart=' \
-  "ExecStart=/usr/bin/env bash ${project_root}/scripts/backend-status.sh --env-file ${environment_file}" \
-  'ProtectHome=read-only' \
-  >"$override"
+"${project_root}/scripts/render-production-backend-monitor-override.sh" \
+  "$project_root" "$environment_file" "$override"
 
 install -d -m 0755 "$unit_directory" "$drop_in_directory"
 install -m 0644 "${project_root}/ops/systemd/${service_name}" "${unit_directory}/${service_name}"

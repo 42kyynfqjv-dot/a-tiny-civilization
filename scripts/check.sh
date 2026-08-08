@@ -52,6 +52,7 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/prepare-production-genesis-database.sh ./scripts/activate-production-genesis.sh \
   ./scripts/verify-production-checkout.sh \
   ./scripts/install-production-backend-monitor.sh \
+  ./scripts/render-production-backend-monitor-override.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \
   ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh \
   ./scripts/verify-public-edge.sh
