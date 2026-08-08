@@ -717,3 +717,9 @@ local Qwen result passed the fail-closed qualification report at tick 1,680. The
 bundle supersedes candidate v8 for mechanical launch review but does not authorize deployment or
 scientific admission. The qualification also caught and removed a replay-schema allowlist trap
 before evidence was sealed.
+
+The candidate-v9 pacing finding is now encoded as an operations invariant rather than retained as
+tribal knowledge. A cognition-qualified wrapper requires tick 0 / sequence 1, advances one tick,
+waits without moving simulation time for one durable free local receipt, and only then invokes the
+unchanged bounded runner for the exact remainder. Timeout fails the disposable attempt instead of
+moving a cognition deadline or slowing a real world. ADR 0121 records the separation.

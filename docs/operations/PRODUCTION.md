@@ -222,7 +222,10 @@ signal timing. It uses the real writer lock, snapshot resume, cognition scheduli
 driver, but refuses `APP_ENV=production` and cannot change a public world's pace:
 
 ```bash
-./scripts/advance-qualification-world.sh "$QUALIFICATION_WORLD_ID" 1000
+# Start the local memory and cognition workers first. This wrapper advances one
+# tick, waits for the free local result without advancing simulation time, then
+# completes the exact bounded run.
+./scripts/advance-cognition-qualified-world.sh "$QUALIFICATION_WORLD_ID" 1000
 civilization-runner verify-world --world-id "$QUALIFICATION_WORLD_ID"
 civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 ./scripts/qualification-status.sh "$QUALIFICATION_WORLD_ID" > qualification-status.json
@@ -233,6 +236,9 @@ civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 
 Use a separate disposable database and a non-public world ID. The command accepts at most one
 million ticks per invocation and stops early with an error if the world reaches a terminal state.
+The cognition-qualified wrapper requires the exact tick-zero cursor, refuses resume from any other
+cursor, and fails rather than crossing the first fixed deadline without a durable model receipt.
+It does not start workers or alter the simulation clock while waiting.
 The status command is read-only apart from the runner's replay verification reads. It exits nonzero
 unless canonical replay, snapshots, projections, memory delivery, cognition deadlines, one actual
 Hindsight-backed cognition result, and observer content all pass; its single JSON object is suitable
