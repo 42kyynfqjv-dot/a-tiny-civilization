@@ -146,12 +146,13 @@ it. The endpoint must subscribe only to `checkout.session.completed` and
 
 ### Google sign-in
 
-Google sign-in is not implemented yet. Once the account service has a defined HTTPS
-callback path, create a Google OAuth **Web application** client, add the exact
-production homepage, JavaScript origin, and redirect URI, and enter the client ID and
-secret directly in the production secret store. The redirect URI must exactly match
-the configured value, including scheme, case, and trailing slash; do not configure it
-until the application has settled on the callback.
+The strict server-side Google OIDC adapter is implemented and contract-tested. The
+browser callback composition is the remaining code-side step; its production return
+path is fixed as `https://atinycivilization.com/api/v1/auth/google/callback`. Create a
+Google OAuth **Web application** client, add the exact production homepage, JavaScript
+origin, and that redirect URI, and enter the client ID and secret directly in the
+production secret store. The redirect URI must exactly match, including scheme, case,
+and trailing slash.
 
 Google requires a production OAuth app to have a public homepage, terms, and privacy
 policy on an owned domain. See [Google's web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server)

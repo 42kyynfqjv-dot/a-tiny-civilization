@@ -8,6 +8,7 @@ members = [
     "crates/application",
     "crates/hindsight-adapter",
     "crates/model-adapter",
+    "crates/oidc-adapter",
     "crates/observer-api",
     "crates/observer-auth",
     "crates/observer-projection",
@@ -39,6 +40,7 @@ dotenvy = "0.15.7"
 hex = "0.4.3"
 getrandom = "0.4.3"
 hmac = "0.12.1"
+jsonwebtoken = { version = "10.4.0", default-features = false, features = ["aws_lc_rs", "use_pem"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["json", "rustls"] }
 rayon = "1.11.0"
 serde = { version = "1.0.228", features = ["derive"] }

@@ -1,0 +1,25 @@
+[package]
+name = "oidc-adapter"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+chrono.workspace = true
+jsonwebtoken.workspace = true
+observer-auth = { path = "../observer-auth" }
+reqwest.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+url.workspace = true
+world-domain = { path = "../world-domain" }
+
+[dev-dependencies]
+axum.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
