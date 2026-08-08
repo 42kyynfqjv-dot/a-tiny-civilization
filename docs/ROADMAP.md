@@ -98,10 +98,11 @@ are integrated.
 
 The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction transition,
 authorized successor operation, and tamper detection are implemented and covered by
-the full repository checks. The engine-level partition foundation now replays, but
-canonical world initialization remains intentionally blocked on admitted full-Earth
-inputs and source-backed causal effects; the available initialization
-command is visibly non-production and requires an explicit world identifier and seed.
+the full repository checks. The complete provisional full-Earth input closure and its
+source-backed ruleset-25 causal path are now admitted. Canonical preparation and
+initialization wrappers accept only an offline-verified public seed resolution and
+derive the world identifier without operator choice; public launch remains gated on
+resolving the already-published future-beacon commitment and qualifying that exact world.
 
 ### 2. Full Earth, reference tile, and embodied lives
 
@@ -121,9 +122,10 @@ schema v2 requires content-addressed global climate, elevation, bathymetry, coas
 habitat, hydrography, and soil roots plus an explicit counterfactual-baseline policy.
 Legacy bounded schema-v1 bytes remain supported. The engine can now configure, tick,
 snapshot, and replay the full-Earth foundation with a durable ruleset-two per-organism
-body-clock schedule. That is infrastructure, not a launch authorization: no
-source-backed organism process or
-production canonical initializer exists, and no canonical seed has been selected.
+body-clock schedule. Subsequent rulesets add source-backed organisms, ecology,
+materials, memory, learning, and neutral artifact traces. The production canonical
+initializer now exists behind the public-seed verification boundary, and the first
+canonical seed commitment is public but cannot be resolved before its committed round.
 
 Full-Earth organism state now has a schema-v4 durable S2 embodied-patch position and
 conditional movement fact. Full-Earth initialization/birth requires the configured

@@ -180,7 +180,14 @@ iNaturalist range release, and refuses to replace any output.
 
 ```bash
 cargo build --release --locked -p civilization-data -p civilization-runner
-./scripts/prepare-provisional-genesis.sh "$WORLD_SEED" \
+read -r WORLD_ID WORLD_SEED < <(
+  target/release/civilization-data seed verify \
+    --commitment docs/operations/CANONICAL_SEED_COMMITMENT.json \
+    --resolution docs/operations/CANONICAL_SEED_RESOLUTION.json
+)
+./scripts/prepare-canonical-genesis.sh \
+  docs/operations/CANONICAL_SEED_COMMITMENT.json \
+  docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
 ```
 
@@ -188,8 +195,10 @@ With `DATABASE_URL` loaded from the root-protected production environment, initi
 all founders and material reservoirs in one append and immediately replay-verify it:
 
 ```bash
-./scripts/initialize-provisional-world.sh \
-  "$WORLD_ID" "$WORLD_SEED" "/var/lib/a-tiny-civilization/genesis/$WORLD_ID"
+./scripts/initialize-canonical-world.sh \
+  docs/operations/CANONICAL_SEED_COMMITMENT.json \
+  docs/operations/CANONICAL_SEED_RESOLUTION.json \
+  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID"
 ```
 
 The second command is retry-safe only for byte-identical inputs. Do not enable or
@@ -281,9 +290,10 @@ alerting to notify an operator for either failed service.
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
-- a ruleset-25 genesis chain produced by `prepare-provisional-genesis.sh`, verified by
-  `SHA256SUMS`, atomically initialized by `initialize-provisional-world.sh`, and replayed
-  before the long-running runner is enabled;
+- a ruleset-25 genesis chain produced by `prepare-canonical-genesis.sh` from the
+  independently verified public seed resolution, verified by `SHA256SUMS`, atomically
+  initialized by `initialize-canonical-world.sh`, and replayed before the long-running
+  runner is enabled;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is
