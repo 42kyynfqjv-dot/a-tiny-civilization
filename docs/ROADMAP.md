@@ -596,3 +596,10 @@ history. The private CPU model runs behind an exact same-host URL allowlist and 
 service. Adapter schema v5 grammatically closes every action/coordinate pairing while retaining the
 independent Rust receipt validator. The checksum-covered evidence bundle contains no canonical
 event payloads or secrets.
+
+The first publicly committed no-reroll seed is now resolved to world
+`b3ea736d-7a5a-5161-a74b-fa8c4302d333`. Its exact 147,466-reference genesis closure was initialized
+in an exclusive local candidate database and passed the same fail-closed ruleset-25 gate at tick
+1,560, including complete Hindsight delivery and one latched, consumed, replayed local Qwen receipt.
+The retained evidence bundle contains no canonical event payloads. This qualifies the mechanical
+launch path; deployment remains closed for the scientific/assumption and public-observatory reviews.
