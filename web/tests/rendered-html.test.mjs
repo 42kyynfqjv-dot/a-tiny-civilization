@@ -82,3 +82,57 @@ test("proxies only observer API paths when configured", async () => {
     globalThis.fetch = originalFetch;
   }
 });
+
+test("preserves auth POST bodies, cookies, redirects, and response cookies", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("auth-proxy", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const originalFetch = globalThis.fetch;
+  let captured;
+  globalThis.fetch = async (request) => {
+    captured = {
+      url: request.url,
+      method: request.method,
+      cookie: request.headers.get("cookie"),
+      contentType: request.headers.get("content-type"),
+      body: await request.text(),
+    };
+    return new Response(null, {
+      status: 303,
+      headers: {
+        location: "/",
+        "set-cookie": "__Host-atiny_session=fixture; Path=/; Secure; HttpOnly; SameSite=Lax",
+      },
+    });
+  };
+  try {
+    const response = await worker.fetch(
+      new Request("https://atinycivilization.com/api/v1/auth/apple/callback", {
+        method: "POST",
+        headers: {
+          cookie: "__Host-atiny_oauth_binding=browser-fixture",
+          "content-type": "application/x-www-form-urlencoded",
+        },
+        body: "code=single-use&state=state-fixture",
+      }),
+      {
+        ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+        OBSERVER_API_URL: "http://observer.internal:8080/",
+      },
+      { waitUntil() {}, passThroughOnException() {} },
+    );
+    assert.deepEqual(captured, {
+      url: "http://observer.internal:8080/api/v1/auth/apple/callback",
+      method: "POST",
+      cookie: "__Host-atiny_oauth_binding=browser-fixture",
+      contentType: "application/x-www-form-urlencoded",
+      body: "code=single-use&state=state-fixture",
+    });
+    assert.equal(response.status, 303);
+    assert.equal(response.headers.get("location"), "/");
+    assert.match(response.headers.get("set-cookie") ?? "", /__Host-atiny_session=fixture/);
+    assert.equal(response.headers.get("cache-control"), "no-store");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});

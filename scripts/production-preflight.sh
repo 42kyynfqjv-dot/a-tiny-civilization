@@ -58,6 +58,17 @@ if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" && -z "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]
   exit 2
 fi
 
+apple_auth_values=0
+for name in APPLE_CLIENT_ID APPLE_TEAM_ID APPLE_KEY_ID APPLE_PRIVATE_KEY; do
+  if [[ -n "${!name:-}" ]]; then
+    apple_auth_values=$((apple_auth_values + 1))
+  fi
+done
+if [[ "${apple_auth_values}" -gt 0 && "${apple_auth_values}" -ne 4 ]]; then
+  echo "Sign in with Apple requires client, team, key ID, and private key together" >&2
+  exit 2
+fi
+
 stripe_checkout_values=0
 for name in STRIPE_SECRET_KEY STRIPE_SUPPORTER_PRICE_ID; do
   if [[ -n "${!name:-}" ]]; then
@@ -73,7 +84,7 @@ if [[ "${stripe_checkout_values}" -gt 0 ]]; then
     echo "Stripe Checkout requires the signed webhook endpoint" >&2
     exit 2
   fi
-  if [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" ]]; then
+  if [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" && "${apple_auth_values}" -ne 4 ]]; then
     echo "Stripe Checkout requires observer sign-in" >&2
     exit 2
   fi

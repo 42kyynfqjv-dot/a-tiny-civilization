@@ -3,7 +3,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use observer_api::ApiState;
-use oidc_adapter::GoogleOidcClient;
+use oidc_adapter::{AppleOidcClient, GoogleOidcClient};
 use postgres_store::PostgresStore;
 use stripe_adapter::{StripeCheckoutClient, StripeWebhookVerifier};
 use supporter_application::SupporterCheckoutService;
@@ -69,6 +69,20 @@ enum Command {
             default_value = "https://atinycivilization.com/api/v1/auth/google/callback"
         )]
         google_oauth_redirect_uri: String,
+        #[arg(long, env = "APPLE_CLIENT_ID")]
+        apple_client_id: Option<String>,
+        #[arg(long, env = "APPLE_TEAM_ID")]
+        apple_team_id: Option<String>,
+        #[arg(long, env = "APPLE_KEY_ID")]
+        apple_key_id: Option<String>,
+        #[arg(long, env = "APPLE_PRIVATE_KEY", hide_env_values = true)]
+        apple_private_key: Option<String>,
+        #[arg(
+            long,
+            env = "APPLE_REDIRECT_URI",
+            default_value = "https://atinycivilization.com/api/v1/auth/apple/callback"
+        )]
+        apple_redirect_uri: String,
     },
 }
 
@@ -99,6 +113,11 @@ async fn main() -> Result<()> {
         google_oauth_client_secret: None,
         google_oauth_redirect_uri: "https://atinycivilization.com/api/v1/auth/google/callback"
             .to_owned(),
+        apple_client_id: None,
+        apple_team_id: None,
+        apple_key_id: None,
+        apple_private_key: None,
+        apple_redirect_uri: "https://atinycivilization.com/api/v1/auth/apple/callback".to_owned(),
     }) {
         Command::Migrate => {
             store.migrate().await.context("apply database migrations")?;
@@ -119,6 +138,11 @@ async fn main() -> Result<()> {
             google_oauth_client_id,
             google_oauth_client_secret,
             google_oauth_redirect_uri,
+            apple_client_id,
+            apple_team_id,
+            apple_key_id,
+            apple_private_key,
+            apple_redirect_uri,
         } => {
             let secure_cookies = environment == "production";
             let mut state = ApiState::new(Arc::new(store.clone()), environment);
@@ -127,9 +151,9 @@ async fn main() -> Result<()> {
             let stripe_supporter_price_id = nonempty(stripe_supporter_price_id);
             let google_oauth_client_id = nonempty(google_oauth_client_id);
             let google_oauth_client_secret = nonempty(google_oauth_client_secret);
-            let auth_configured = match (google_oauth_client_id, google_oauth_client_secret) {
+            let google = match (google_oauth_client_id, google_oauth_client_secret) {
                 (Some(client_id), Some(client_secret)) => {
-                    let google = GoogleOidcClient::new(
+                    let client = GoogleOidcClient::new(
                         "https://accounts.google.com/o/oauth2/v2/auth",
                         "https://oauth2.googleapis.com/token",
                         "https://www.googleapis.com/oauth2/v3/certs",
@@ -139,18 +163,58 @@ async fn main() -> Result<()> {
                         Duration::from_secs(10),
                     )
                     .context("configure Google OIDC")?;
-                    state = state.with_google_auth(google, Arc::new(store.clone()), secure_cookies);
                     tracing::info!("Google observer sign-in enabled");
-                    true
+                    Some(client)
                 }
                 (None, None) => {
                     tracing::info!(
                         "Google observer sign-in disabled because credentials are absent"
                     );
-                    false
+                    None
                 }
                 _ => anyhow::bail!("Google OAuth client ID and secret must be configured together"),
             };
+            let apple = match (
+                nonempty(apple_client_id),
+                nonempty(apple_team_id),
+                nonempty(apple_key_id),
+                nonempty(apple_private_key),
+            ) {
+                (Some(client_id), Some(team_id), Some(key_id), Some(private_key)) => {
+                    let client = AppleOidcClient::new(
+                        "https://appleid.apple.com/auth/authorize",
+                        "https://appleid.apple.com/auth/token",
+                        "https://appleid.apple.com/auth/keys",
+                        client_id,
+                        team_id,
+                        key_id,
+                        private_key,
+                        &apple_redirect_uri,
+                        Duration::from_secs(10),
+                    )
+                    .context("configure Sign in with Apple")?;
+                    tracing::info!("Apple observer sign-in enabled");
+                    Some(client)
+                }
+                (None, None, None, None) => {
+                    tracing::info!(
+                        "Apple observer sign-in disabled because credentials are absent"
+                    );
+                    None
+                }
+                _ => anyhow::bail!(
+                    "Apple client ID, team ID, key ID, and private key must be configured together"
+                ),
+            };
+            let auth_configured = google.is_some() || apple.is_some();
+            if auth_configured {
+                state = state.with_observer_auth(
+                    google,
+                    apple,
+                    Arc::new(store.clone()),
+                    secure_cookies,
+                );
+            }
             if let Some(secret) = stripe_webhook_secret.as_ref() {
                 let verifier = StripeWebhookVerifier::new(
                     secret.as_bytes(),
@@ -189,7 +253,7 @@ async fn main() -> Result<()> {
                     "supporter Checkout disabled because Stripe product configuration is absent"
                 ),
                 (Some(_), Some(_)) => anyhow::bail!(
-                    "supporter Checkout requires Google sign-in and the Stripe webhook endpoint"
+                    "supporter Checkout requires observer sign-in and the Stripe webhook endpoint"
                 ),
                 _ => anyhow::bail!(
                     "Stripe secret key and supporter price ID must be configured together"

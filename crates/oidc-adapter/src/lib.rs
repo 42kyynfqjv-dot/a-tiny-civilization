@@ -3,7 +3,9 @@
 use std::{fmt, time::Duration};
 
 use chrono::{DateTime, TimeZone, Utc};
-use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode, decode_header};
+use jsonwebtoken::{
+    Algorithm, DecodingKey, EncodingKey, Header, Validation, decode, decode_header, encode,
+};
 use observer_auth::{
     IdentityProvider, OAuthAttempt, OAuthAttemptSecrets, VerifiedExternalIdentity,
 };
@@ -13,6 +15,7 @@ use url::Url;
 use world_domain::Digest;
 
 const MAX_PROVIDER_BODY_BYTES: usize = 1_048_576;
+const APPLE_ISSUER: &str = "https://appleid.apple.com";
 
 #[derive(Clone)]
 pub struct GoogleOidcClient {
@@ -199,6 +202,227 @@ impl GoogleOidcClient {
     }
 }
 
+#[derive(Clone)]
+pub struct AppleOidcClient {
+    client: reqwest::Client,
+    authorization_endpoint: Url,
+    token_endpoint: Url,
+    jwks_uri: Url,
+    client_id: String,
+    team_id: String,
+    key_id: String,
+    private_key_pem: String,
+    redirect_uri: Url,
+}
+
+impl fmt::Debug for AppleOidcClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("AppleOidcClient")
+            .field("authorization_endpoint", &self.authorization_endpoint)
+            .field("token_endpoint", &self.token_endpoint)
+            .field("jwks_uri", &self.jwks_uri)
+            .field("client_id", &self.client_id)
+            .field("team_id", &self.team_id)
+            .field("key_id", &self.key_id)
+            .field("has_private_key", &true)
+            .field("redirect_uri", &self.redirect_uri)
+            .finish()
+    }
+}
+
+impl AppleOidcClient {
+    #[allow(clippy::too_many_arguments)]
+    pub fn new(
+        authorization_endpoint: &str,
+        token_endpoint: &str,
+        jwks_uri: &str,
+        client_id: impl Into<String>,
+        team_id: impl Into<String>,
+        key_id: impl Into<String>,
+        private_key_pem: impl Into<String>,
+        redirect_uri: &str,
+        timeout: Duration,
+    ) -> Result<Self, OidcError> {
+        let authorization_endpoint = secure_url(authorization_endpoint)?;
+        let token_endpoint = secure_url(token_endpoint)?;
+        let jwks_uri = secure_url(jwks_uri)?;
+        let redirect_uri = secure_url(redirect_uri)?;
+        let client_id = client_id.into();
+        let team_id = team_id.into();
+        let key_id = key_id.into();
+        let private_key_pem = private_key_pem.into();
+        for (name, value) in [
+            ("client ID", client_id.as_str()),
+            ("team ID", team_id.as_str()),
+            ("key ID", key_id.as_str()),
+        ] {
+            if value.is_empty()
+                || value.len() > 255
+                || !value.bytes().all(|byte| byte.is_ascii_graphic())
+            {
+                return Err(OidcError::Configuration(format!("Apple {name} is invalid")));
+            }
+        }
+        EncodingKey::from_ec_pem(private_key_pem.as_bytes()).map_err(|_| {
+            OidcError::Configuration("Apple private key is not a valid EC key".to_owned())
+        })?;
+        let client = reqwest::Client::builder()
+            .timeout(timeout.max(Duration::from_secs(1)))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| OidcError::Configuration(error.to_string()))?;
+        Ok(Self {
+            client,
+            authorization_endpoint,
+            token_endpoint,
+            jwks_uri,
+            client_id,
+            team_id,
+            key_id,
+            private_key_pem,
+            redirect_uri,
+        })
+    }
+
+    #[must_use]
+    pub fn authorization_url(&self, secrets: &OAuthAttemptSecrets) -> Url {
+        let mut url = self.authorization_endpoint.clone();
+        url.query_pairs_mut()
+            .append_pair("client_id", &self.client_id)
+            .append_pair("response_type", "code")
+            .append_pair("response_mode", "form_post")
+            .append_pair("scope", "email")
+            .append_pair("redirect_uri", self.redirect_uri.as_str())
+            .append_pair("state", &secrets.state())
+            .append_pair("nonce", &secrets.nonce());
+        url
+    }
+
+    pub async fn complete(
+        &self,
+        code: &str,
+        attempt: &OAuthAttempt,
+        now: DateTime<Utc>,
+    ) -> Result<VerifiedExternalIdentity, OidcError> {
+        if attempt.provider != IdentityProvider::Apple || code.is_empty() || code.len() > 4096 {
+            return Err(OidcError::AttemptMismatch);
+        }
+        let client_secret = self.client_secret(now)?;
+        let request_body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("code", code)
+            .append_pair("client_id", &self.client_id)
+            .append_pair("client_secret", &client_secret)
+            .append_pair("redirect_uri", self.redirect_uri.as_str())
+            .append_pair("grant_type", "authorization_code")
+            .finish();
+        let response = self
+            .client
+            .post(self.token_endpoint.clone())
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(request_body)
+            .send()
+            .await
+            .map_err(network)?;
+        let token: TokenResponse = checked_json(response).await?;
+        if !token.token_type.eq_ignore_ascii_case("bearer") || token.id_token.len() > 32_768 {
+            return Err(OidcError::InvalidTokenResponse);
+        }
+        let response = self
+            .client
+            .get(self.jwks_uri.clone())
+            .send()
+            .await
+            .map_err(network)?;
+        let jwks: JwkSet = checked_json(response).await?;
+        verify_apple_id_token(&token.id_token, &jwks, &self.client_id, attempt, now)
+    }
+
+    fn client_secret(&self, now: DateTime<Utc>) -> Result<String, OidcError> {
+        #[derive(serde::Serialize)]
+        struct Claims<'a> {
+            iss: &'a str,
+            iat: i64,
+            exp: i64,
+            aud: &'static str,
+            sub: &'a str,
+        }
+        let mut header = Header::new(Algorithm::ES256);
+        header.kid = Some(self.key_id.clone());
+        encode(
+            &header,
+            &Claims {
+                iss: &self.team_id,
+                iat: now.timestamp(),
+                exp: (now + chrono::Duration::minutes(5)).timestamp(),
+                aud: APPLE_ISSUER,
+                sub: &self.client_id,
+            },
+            &EncodingKey::from_ec_pem(self.private_key_pem.as_bytes())
+                .map_err(|_| OidcError::Configuration("Apple private key is invalid".to_owned()))?,
+        )
+        .map_err(|_| OidcError::Configuration("Apple client secret signing failed".to_owned()))
+    }
+}
+
+fn verify_apple_id_token(
+    token: &str,
+    jwks: &JwkSet,
+    client_id: &str,
+    attempt: &OAuthAttempt,
+    now: DateTime<Utc>,
+) -> Result<VerifiedExternalIdentity, OidcError> {
+    let header = decode_header(token).map_err(|_| OidcError::InvalidIdToken)?;
+    if header.alg != Algorithm::RS256 {
+        return Err(OidcError::InvalidIdToken);
+    }
+    let kid = header.kid.ok_or(OidcError::InvalidIdToken)?;
+    let candidates = jwks
+        .keys
+        .iter()
+        .filter(|key| key.kid == kid && key.kty == "RSA" && key.alg.as_deref() == Some("RS256"))
+        .collect::<Vec<_>>();
+    if candidates.len() != 1 {
+        return Err(OidcError::InvalidIdToken);
+    }
+    let key = DecodingKey::from_rsa_components(&candidates[0].n, &candidates[0].e)
+        .map_err(|_| OidcError::InvalidIdToken)?;
+    let mut validation = Validation::new(Algorithm::RS256);
+    validation.set_audience(&[client_id]);
+    validation.set_issuer(&[APPLE_ISSUER]);
+    validation.set_required_spec_claims(&["exp", "iat", "iss", "aud", "sub"]);
+    validation.validate_exp = false;
+    validation.leeway = 0;
+    let claims = decode::<AppleClaims>(token, &key, &validation)
+        .map_err(|_| OidcError::InvalidIdToken)?
+        .claims;
+    let now_seconds = now.timestamp();
+    if claims.exp <= now_seconds
+        || claims.iat > now_seconds.saturating_add(60)
+        || claims.iat > claims.exp
+        || claims
+            .nonce
+            .as_deref()
+            .map(|nonce| Digest::sha256(nonce.as_bytes()))
+            != Some(attempt.nonce_digest)
+    {
+        return Err(OidcError::InvalidIdToken);
+    }
+    let authenticated_at = Utc
+        .timestamp_opt(claims.iat, 0)
+        .single()
+        .ok_or(OidcError::InvalidIdToken)?;
+    let identity = VerifiedExternalIdentity {
+        provider: IdentityProvider::Apple,
+        subject: claims.sub,
+        email: claims.email,
+        email_verified: claims.email_verified.unwrap_or(false),
+        authenticated_at,
+    };
+    identity.validate().map_err(|_| OidcError::InvalidIdToken)?;
+    Ok(identity)
+}
+
 #[derive(Deserialize)]
 struct TokenResponse {
     id_token: String,
@@ -226,6 +450,17 @@ struct GoogleClaims {
     iat: i64,
     nonce: Option<String>,
     azp: Option<String>,
+    email: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_optional_bool")]
+    email_verified: Option<bool>,
+}
+
+#[derive(Deserialize)]
+struct AppleClaims {
+    sub: String,
+    exp: i64,
+    iat: i64,
+    nonce: Option<String>,
     email: Option<String>,
     #[serde(default, deserialize_with = "deserialize_optional_bool")]
     email_verified: Option<bool>,
@@ -354,6 +589,16 @@ N9gkk74GBRZHoxvny+EoHvUP2W2dNSlOu5UdAxdBAoGAdLTfIRXJk+morkS3ZBkQ
 heIhZRnKiUQT2FZZLknSOahdNbGzLDFTr5WOqdqBsFpEmlemA33N/W4Ypx/eSoqB
 paXmFb3rA4aS2+/7Q60jjnM=
 -----END PRIVATE KEY-----"#;
+    const TEST_APPLE_PRIVATE_KEY: &str = r#"-----BEGIN PRIVATE KEY-----
+MIGHAgEAMBMGByqGSM49AgEGCCqGSM49AwEHBG0wawIBAQQgMvWvcJ8Sbt6KcKv1
+9fSy4AvlHkD3BVJZMMHSwtutlo6hRANCAATqrsbOd1J898k1o6XXJsY42ZfP923F
+xwe4Q8AlDTMYXIxBeJIrKCjzd/XpO6hXLpT18oD639HN4F9l5p5qUToY
+-----END PRIVATE KEY-----"#;
+    const TEST_APPLE_PUBLIC_KEY: &str = r#"-----BEGIN PUBLIC KEY-----
+MFkwEwYHKoZIzj0CAQYIKoZIzj0DAQcDQgAE6q7GzndSfPfJNaOl1ybGONmXz/dt
+xccHuEPAJQ0zGFyMQXiSKygo83f16TuoVy6U9fKA+t/RzeBfZeaealE6GA==
+-----END PUBLIC KEY-----"#;
+    const APPLE_CLIENT_ID: &str = "com.example.atiny.web";
 
     #[derive(Clone, Serialize)]
     struct TestClaims {
@@ -385,6 +630,21 @@ paXmFb3rA4aS2+/7Q60jjnM=
             Duration::from_secs(5),
         )
         .expect("client")
+    }
+
+    fn apple_client(base: &str) -> AppleOidcClient {
+        AppleOidcClient::new(
+            &format!("{base}/authorize"),
+            &format!("{base}/token"),
+            &format!("{base}/jwks"),
+            APPLE_CLIENT_ID,
+            "TEAMID1234",
+            "KEYID12345",
+            TEST_APPLE_PRIVATE_KEY,
+            "http://localhost/apple-callback",
+            Duration::from_secs(5),
+        )
+        .expect("Apple client")
     }
 
     fn claims(now: DateTime<Utc>, nonce: String) -> TestClaims {
@@ -580,5 +840,79 @@ paXmFb3rA4aS2+/7Q60jjnM=
             .await
             .expect_err("must reject locally");
         assert!(matches!(error, OidcError::AttemptMismatch));
+    }
+
+    #[tokio::test]
+    async fn apple_form_post_code_exchange_signs_client_secret_and_verifies_identity() {
+        let now = Utc::now();
+        let secrets = OAuthAttemptSecrets::generate().expect("secrets");
+        let attempt = secrets.attempt(
+            IdentityProvider::Apple,
+            now - ChronoDuration::seconds(1),
+            now + ChronoDuration::minutes(10),
+        );
+        let mut apple_claims = claims(now, secrets.nonce());
+        apple_claims.iss = APPLE_ISSUER.to_owned();
+        apple_claims.aud = APPLE_CLIENT_ID.to_owned();
+        apple_claims.azp = APPLE_CLIENT_ID.to_owned();
+        apple_claims.sub = "apple-team-stable-subject".to_owned();
+        let state = ProviderState {
+            id_token: signed(&apple_claims, Algorithm::RS256),
+            token_requests: Arc::new(Mutex::new(Vec::new())),
+        };
+        let app = Router::new()
+            .route("/token", post(token_endpoint))
+            .route("/jwks", get(jwks_endpoint))
+            .with_state(state.clone());
+        let listener = TcpListener::bind("127.0.0.1:0").await.expect("listener");
+        let base = format!("http://{}", listener.local_addr().expect("address"));
+        tokio::spawn(async move { axum::serve(listener, app).await.expect("provider") });
+        let client = apple_client(&base);
+
+        let authorization_url = client.authorization_url(&secrets);
+        let parameters = authorization_url
+            .query_pairs()
+            .into_owned()
+            .collect::<HashMap<_, _>>();
+        assert_eq!(
+            parameters.get("response_mode").map(String::as_str),
+            Some("form_post")
+        );
+        assert_eq!(parameters.get("scope").map(String::as_str), Some("email"));
+        assert!(!parameters.contains_key("code_challenge"));
+
+        let identity = client
+            .complete("apple-single-use-code", &attempt, now)
+            .await
+            .expect("verified Apple identity");
+        assert_eq!(identity.provider, IdentityProvider::Apple);
+        assert_eq!(identity.subject, "apple-team-stable-subject");
+
+        let requests = state.token_requests.lock().await;
+        let request = &requests[0];
+        assert_eq!(
+            request.get("client_id").map(String::as_str),
+            Some(APPLE_CLIENT_ID)
+        );
+        assert_eq!(
+            request.get("grant_type").map(String::as_str),
+            Some("authorization_code")
+        );
+        let client_secret = request.get("client_secret").expect("signed client secret");
+        let header = decode_header(client_secret).expect("client-secret header");
+        assert_eq!(header.alg, Algorithm::ES256);
+        assert_eq!(header.kid.as_deref(), Some("KEYID12345"));
+        let mut validation = Validation::new(Algorithm::ES256);
+        validation.set_audience(&[APPLE_ISSUER]);
+        validation.validate_exp = false;
+        let value = decode::<Value>(
+            client_secret,
+            &DecodingKey::from_ec_pem(TEST_APPLE_PUBLIC_KEY.as_bytes()).expect("public key"),
+            &validation,
+        )
+        .expect("valid client secret")
+        .claims;
+        assert_eq!(value["iss"], "TEAMID1234");
+        assert_eq!(value["sub"], APPLE_CLIENT_ID);
     }
 }

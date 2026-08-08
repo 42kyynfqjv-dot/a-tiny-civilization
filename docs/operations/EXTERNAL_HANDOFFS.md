@@ -162,11 +162,12 @@ and [OAuth policy](https://developers.google.com/identity/protocols/oauth2/polic
 
 ### Sign in with Apple
 
-Sign in with Apple is not implemented yet. It needs an Apple Developer account with an
-eligible primary App ID, a Services ID associated with that App ID, the intended domain
-and exact return URL, and a signing key. Create those only after the HTTPS callback
-path is defined. Store the Services ID, team ID, key ID, and private key in the
-production secret store; never commit the private key.
+The strict server-side Sign in with Apple adapter and form-POST callback are implemented
+and contract-tested. It needs an Apple Developer account with an eligible primary App ID,
+a Services ID associated with that App ID, the domain `atinycivilization.com`, the exact
+return URL `https://atinycivilization.com/api/v1/auth/apple/callback`, and a signing key.
+Store the Services ID, team ID, key ID, and PKCS#8 private key in the production secret
+store; never commit the private key.
 
 Apple's web configuration requires a Services ID associated with a primary App ID and
 registered website/return URLs. See [Configure Sign in with Apple for the web](https://developer.apple.com/help/account/capabilities/configure-sign-in-with-apple-for-the-web).

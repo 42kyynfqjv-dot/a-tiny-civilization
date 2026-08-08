@@ -6,7 +6,7 @@ use application::FoundationStore;
 use axum::{
     Json, Router,
     body::Bytes,
-    extract::{Path, Query, State},
+    extract::{Form, Path, Query, State},
     http::{HeaderMap, HeaderValue, Request, StatusCode, header},
     response::{IntoResponse, Response},
     routing::{get, post},
@@ -20,7 +20,7 @@ use observer_projection::{
     ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
     PublicFinding, PublicOrganism, PublicTimelineItem, PublicWorld, PublicWorldTelemetry,
 };
-use oidc_adapter::{GoogleOidcClient, OidcError};
+use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
 use serde::Serialize;
 use stripe_adapter::{
@@ -90,14 +90,16 @@ impl ApiState {
     }
 
     #[must_use]
-    pub fn with_google_auth(
+    pub fn with_observer_auth(
         mut self,
-        client: GoogleOidcClient,
+        google: Option<GoogleOidcClient>,
+        apple: Option<AppleOidcClient>,
         store: Arc<dyn ObserverAuthStore>,
         secure_cookies: bool,
     ) -> Self {
         self.auth = Some(Arc::new(AuthRuntime {
-            google: client,
+            google,
+            apple,
             store,
             secure_cookies,
         }));
@@ -117,7 +119,8 @@ struct StripeWebhookRuntime {
 }
 
 struct AuthRuntime {
-    google: GoogleOidcClient,
+    google: Option<GoogleOidcClient>,
+    apple: Option<AppleOidcClient>,
     store: Arc<dyn ObserverAuthStore>,
     secure_cookies: bool,
 }
@@ -129,6 +132,11 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/status", get(status))
         .route("/api/v1/auth/google/start", get(google_auth_start))
         .route("/api/v1/auth/google/callback", get(google_auth_callback))
+        .route("/api/v1/auth/apple/start", get(apple_auth_start))
+        .route(
+            "/api/v1/auth/apple/callback",
+            post(apple_auth_callback).layer(axum::extract::DefaultBodyLimit::max(16_384)),
+        )
         .route("/api/v1/auth/session", get(auth_session))
         .route("/api/v1/auth/logout", post(auth_logout))
         .route(
@@ -165,11 +173,22 @@ pub fn router(state: ApiState) -> Router {
 }
 
 async fn google_auth_start(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    auth_start(state, observer_auth::IdentityProvider::Google).await
+}
+
+async fn apple_auth_start(State(state): State<ApiState>) -> Result<Response, ApiError> {
+    auth_start(state, observer_auth::IdentityProvider::Apple).await
+}
+
+async fn auth_start(
+    state: ApiState,
+    provider: observer_auth::IdentityProvider,
+) -> Result<Response, ApiError> {
     let runtime = state.auth.as_ref().ok_or(ApiError::NotFound)?;
     let now = Utc::now();
     let secrets = OAuthAttemptSecrets::generate().map_err(|_| ApiError::Unavailable)?;
     let attempt = secrets.attempt(
-        observer_auth::IdentityProvider::Google,
+        provider,
         now,
         now + chrono::Duration::minutes(OAUTH_ATTEMPT_MINUTES),
     );
@@ -178,7 +197,19 @@ async fn google_auth_start(State(state): State<ApiState>) -> Result<Response, Ap
         .create_oauth_attempt(&attempt)
         .await
         .map_err(map_auth_store_error)?;
-    let mut response = redirect(runtime.google.authorization_url(&secrets).as_str())?;
+    let authorization_url = match provider {
+        observer_auth::IdentityProvider::Google => runtime
+            .google
+            .as_ref()
+            .ok_or(ApiError::NotFound)?
+            .authorization_url(&secrets),
+        observer_auth::IdentityProvider::Apple => runtime
+            .apple
+            .as_ref()
+            .ok_or(ApiError::NotFound)?
+            .authorization_url(&secrets),
+    };
+    let mut response = redirect(authorization_url.as_str())?;
     append_cookie(
         &mut response,
         &set_cookie(
@@ -214,7 +245,45 @@ async fn google_auth_callback(
     headers: HeaderMap,
     Query(query): Query<OAuthCallbackQuery>,
 ) -> Result<Response, ApiError> {
+    auth_callback(
+        state,
+        headers,
+        query,
+        observer_auth::IdentityProvider::Google,
+    )
+    .await
+}
+
+async fn apple_auth_callback(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Form(query): Form<OAuthCallbackQuery>,
+) -> Result<Response, ApiError> {
+    auth_callback(
+        state,
+        headers,
+        query,
+        observer_auth::IdentityProvider::Apple,
+    )
+    .await
+}
+
+async fn auth_callback(
+    state: ApiState,
+    headers: HeaderMap,
+    query: OAuthCallbackQuery,
+    provider: observer_auth::IdentityProvider,
+) -> Result<Response, ApiError> {
     let runtime = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    match provider {
+        observer_auth::IdentityProvider::Google if runtime.google.is_none() => {
+            return Err(ApiError::NotFound);
+        }
+        observer_auth::IdentityProvider::Apple if runtime.apple.is_none() => {
+            return Err(ApiError::NotFound);
+        }
+        _ => {}
+    }
     if query.error.is_some() {
         return Err(ApiError::BadRequest(
             "login_rejected",
@@ -246,11 +315,28 @@ async fn google_auth_callback(
         .await
         .map_err(map_auth_store_error)?
         .ok_or(ApiError::Unauthorized)?;
-    let identity = runtime
-        .google
-        .complete(&code, &verifier, &attempt, now)
-        .await
-        .map_err(map_oidc_error)?;
+    if attempt.provider != provider {
+        return Err(ApiError::Unauthorized);
+    }
+    let identity = match provider {
+        observer_auth::IdentityProvider::Google => {
+            runtime
+                .google
+                .as_ref()
+                .ok_or(ApiError::NotFound)?
+                .complete(&code, &verifier, &attempt, now)
+                .await
+        }
+        observer_auth::IdentityProvider::Apple => {
+            runtime
+                .apple
+                .as_ref()
+                .ok_or(ApiError::NotFound)?
+                .complete(&code, &attempt, now)
+                .await
+        }
+    }
+    .map_err(map_oidc_error)?;
     if !runtime
         .store
         .consume_oauth_attempt(state_digest, now)
