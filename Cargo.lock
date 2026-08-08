@@ -381,6 +381,7 @@ dependencies = [
  "clap",
  "drand-verify",
  "hex",
+ "libm",
  "netcdf-reader",
  "rayon",
  "reqwest",

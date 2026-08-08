@@ -822,3 +822,11 @@ that independent set before falling back to Amniote. Source-informed coverage at
 origin rises from five to 24 of 32 fauna taxa without merging publications or making mass causal.
 Composition 0.1.2 and ADR 0117 pin the correction; it requires a fresh genesis and qualification
 before it can supersede the existing immutable candidate.
+
+Ruleset 31 makes that retained mass causal at the first bounded scale. FmrBT's published 293 K
+endotherm/ectotherm mass fits replace the universal 100 W placeholder; usable energy reserve is
+seven simulation days of the resulting power, while glucose and water transfers are 1% of adult
+mass. Weakest-evidence propagation keeps nine mass-derived metabolic values classified as
+engineering assumptions and 24 as literature approximations. The compiler emits pinned integer
+microwatts, so replay performs no floating-point allometry. ADR 0136 records the remaining
+assumptions and the distinct event, state-hash, and snapshot schema boundary.

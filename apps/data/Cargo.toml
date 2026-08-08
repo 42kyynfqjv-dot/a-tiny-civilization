@@ -11,6 +11,7 @@ anyhow.workspace = true
 clap.workspace = true
 drand-verify.workspace = true
 hex.workspace = true
+libm.workspace = true
 netcdf-reader = "0.9.1"
 rayon.workspace = true
 reqwest.workspace = true

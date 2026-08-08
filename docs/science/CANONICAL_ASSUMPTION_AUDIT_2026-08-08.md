@@ -60,3 +60,9 @@ species: `Junco phaeonotus` and `Melanerpes formicivorus`. That makes FmrBT vali
 evidence, not a complete solution. It must be content-addressed, parsed by a portable deterministic
 pipeline, unit-normalized, and distinguished from basal or standard metabolic measurements before
 it can affect a future ruleset.
+
+Implementation update: ADR 0136 and ruleset 31 now use the paper's published endotherm/ectotherm
+mass fits at the neutral 293 K reference temperature. The resulting integer-microwatt commitments
+are literature approximations, not direct FmrBT observations; values derived from assumed masses
+remain engineering assumptions. Direct dataset ingestion and ambient-temperature coupling remain
+open validation work.

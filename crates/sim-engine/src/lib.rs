@@ -31,12 +31,13 @@ use world_domain::{
     HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
     HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION, LOCAL_WEATHER_EVENT_SCHEMA_VERSION,
-    MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
-    MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
-    MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
-    MAX_COGNITION_SELECTION_READINGS, MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION,
-    MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION, MaterialIdentity, MaterialReservoirCommitment,
-    MetabolicRateCommitment, MovementDirectionValueState, OralTransferCommitment, OrganismRole,
+    MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
+    MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION,
+    MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION,
+    MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION, MAX_COGNITION_SELECTION_READINGS,
+    MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION, MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION,
+    MaterialIdentity, MaterialReservoirCommitment, MetabolicRateCommitment,
+    MovementDirectionValueState, OralTransferCommitment, OrganismRole,
     PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
     PrimitiveAction, PrimitiveActionKind, PropertyReading,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
@@ -143,6 +144,9 @@ pub const TERRAIN_MOVEMENT_RULESET_VERSION: u32 = 29;
 /// Ruleset thirty additionally applies the source-bound topsoil coarse-fragment
 /// median to private movement fatigue without exposing a soil or surface label.
 pub const TOPSOIL_MOVEMENT_RULESET_VERSION: u32 = 30;
+/// Ruleset thirty-one replaces universal organism energy quantities with
+/// body-mass-scaled, source-addressed commitments fixed at genesis.
+pub const MASS_SCALED_METABOLISM_RULESET_VERSION: u32 = 31;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -173,6 +177,7 @@ pub const LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION: u16 = 27;
 pub const LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION: u16 = 28;
 pub const TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 29;
 pub const TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 30;
+pub const MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION: u16 = 31;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -215,6 +220,7 @@ const LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION: u16 = 27;
 const LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION: u16 = 28;
 const TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 29;
 const TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 30;
+const MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION: u16 = 31;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
@@ -991,6 +997,10 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    fn uses_mass_scaled_metabolism_driver(&self) -> bool {
+        self.manifest.ruleset_version >= MASS_SCALED_METABOLISM_RULESET_VERSION
+    }
+
     fn uses_local_weather_driver(&self) -> bool {
         self.manifest.ruleset_version >= LOCAL_WEATHER_RULESET_VERSION
     }
@@ -5137,7 +5147,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_topsoil_movement_driver() {
+        if self.uses_mass_scaled_metabolism_driver() {
+            MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
+        } else if self.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
         } else if self.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
@@ -5226,7 +5238,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_topsoil_movement_driver() {
+        if self.uses_mass_scaled_metabolism_driver() {
+            MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION
@@ -7503,7 +7517,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_topsoil_movement_driver() {
+        let snapshot_schema_version = if state.uses_mass_scaled_metabolism_driver() {
+            MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
@@ -7616,12 +7632,15 @@ impl Snapshot {
                 | LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
                 | TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
                 | TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+                | MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_topsoil_movement_driver() {
+        let expected_schema_version = if self.state.uses_mass_scaled_metabolism_driver() {
+            MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
@@ -7759,7 +7778,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_topsoil_movement_driver() {
+    if state.uses_mass_scaled_metabolism_driver() {
+        Some(MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION)
+    } else if state.uses_topsoil_movement_driver() {
         Some(TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION)
     } else if state.uses_terrain_movement_driver() {
         Some(TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION)
@@ -13666,5 +13687,35 @@ mod tests {
         snapshot
             .verify_integrity()
             .expect("topsoil snapshot integrity");
+    }
+
+    #[test]
+    fn mass_scaled_metabolism_ruleset_has_distinct_replay_schemas() {
+        let state = EngineState::new(WorldManifest::new(
+            WorldId::from_uuid(Uuid::from_u128(0x31)),
+            WorldSeed::new(0x31),
+            MASS_SCALED_METABOLISM_RULESET_VERSION,
+        ));
+        assert_eq!(
+            state.event_schema_version(),
+            MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            state.state_hash_schema_version(),
+            MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&state),
+            Some(MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION)
+        );
+        let snapshot = Snapshot::new(state, EventSequence::ZERO, Digest::ZERO)
+            .expect("mass-scaled metabolism snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("mass-scaled metabolism snapshot integrity");
     }
 }

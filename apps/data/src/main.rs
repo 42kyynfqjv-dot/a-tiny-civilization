@@ -3244,7 +3244,7 @@ fn provisional_life_history(range_package: &str) -> ProvisionalLifeHistory {
             opportunity_interval_seconds: days(14),
             initiation_probability_millionths: 250_000,
         },
-        "aves_1" => ProvisionalLifeHistory {
+        value if value.starts_with("aves_") => ProvisionalLifeHistory {
             initial_age_seconds: years(2),
             maturity_age_seconds: years(1),
             development_seconds: days(30),
@@ -3289,7 +3289,7 @@ fn provisional_life_history(range_package: &str) -> ProvisionalLifeHistory {
 
 fn engineering_body_profile_entry(
     species: SpeciesIdentity,
-    metabolic_rate: MetabolicRateCommitment,
+    measured_metabolic_rate: Option<MetabolicRateCommitment>,
     tick_duration_seconds: u32,
     range_package: &str,
     life_history_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
@@ -3352,11 +3352,6 @@ fn engineering_body_profile_entry(
             }
         })
         .collect::<Vec<_>>();
-    let reproductive_profile_digest = Digest::sha256(
-        serde_json::to_vec(&category_maturity)
-            .expect("category maturity commitments serialize")
-            .as_slice(),
-    );
     let selected_mass = sourced_body_mass
         .and_then(|evidence| {
             evidence
@@ -3412,17 +3407,37 @@ fn engineering_body_profile_entry(
     adult_body_mass
         .validate()
         .context("validate provisional adult-body-mass commitment")?;
+    let metabolic_rate = measured_metabolic_rate.map_or_else(
+        || fmrbt_reference_metabolic_commitment(&adult_body_mass, range_package),
+        Ok,
+    )?;
+    let usable_energy_reserve_joules = metabolic_energy_for_seconds(&metabolic_rate, 604_800)?;
+    let regulation_profile_digest = Digest::sha256(
+        format!(
+            "a-tiny-civilization/provisional-engineering-regulation/v2/{}/{}/{}/{}/{}/{}/{}/{}/{}",
+            species.catalog,
+            species.identifier,
+            metabolic_rate.source_record_digest,
+            usable_energy_reserve_joules,
+            604_800,
+            57_600,
+            28_800,
+            86_400_000,
+            28_800
+        )
+        .as_bytes(),
+    );
     Ok(ProvisionalOrganismBodyProfileEntry {
         species: species.clone(),
         initial_age_ticks: duration_ticks(life_history.initial_age_seconds, tick_duration_seconds),
         metabolic_rate,
         physiological_regulation: PhysiologicalRegulationCommitment {
             commitment_schema_version: PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
-            profile_id: "provisional-engineering-regulation-v1".to_owned(),
-            profile_digest: reproductive_profile_digest,
+            profile_id: "provisional-engineering-regulation-v2".to_owned(),
+            profile_digest: regulation_profile_digest,
             species: species.clone(),
             evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
-            usable_energy_reserve_joules: 10_000_000,
+            usable_energy_reserve_joules,
             hydration_failure_seconds: 604_800,
             fatigue_failure_seconds: 57_600,
             fatigue_recovery_seconds: 28_800,
@@ -3490,31 +3505,103 @@ fn provisional_adult_body_mass_grams(range_package: &str) -> i64 {
     match range_package {
         "homo_sapiens" => 70_000,
         "mammalia" => 10_000,
-        "aves_1" => 500,
+        value if value.starts_with("aves_") => 500,
         "reptilia" => 1_000,
         "amphibia" => 100,
         _ => 1_000,
     }
 }
 
-fn engineering_metabolic_commitment(species: SpeciesIdentity) -> MetabolicRateCommitment {
-    let assumption_digest = Digest::sha256(
+const FMRBT_REFERENCE_MODEL: &str = concat!(
+    "fmrbt-arrhenius-reference-temperature-allometry-v1;",
+    "doi=10.1038/s41597-025-05868-y;",
+    "reference-temperature-k=293;",
+    "endotherm-ln-intercept=1.94;endotherm-mass-exponent=0.674;",
+    "ectotherm-ln-intercept=-2.11;ectotherm-mass-exponent=0.844;",
+    "source-output=kJ/individual/day;commitment-output=W;rounding=microW-nearest"
+);
+
+fn fmrbt_reference_metabolic_commitment(
+    body_mass: &AdultBodyMassCommitment,
+    range_package: &str,
+) -> Result<MetabolicRateCommitment> {
+    body_mass
+        .validate()
+        .context("validate adult mass before metabolic allometry")?;
+    let divisor = 10_u64.pow(u32::from(body_mass.mass_grams_decimal_places));
+    let mass_grams = body_mass.mass_grams_value as f64 / divisor as f64;
+    let (ln_intercept, exponent, thermal_strategy) =
+        if matches!(range_package, "homo_sapiens" | "mammalia")
+            || range_package.starts_with("aves_")
+        {
+            (1.94, 0.674, "endotherm")
+        } else {
+            (-2.11, 0.844, "ectotherm")
+        };
+    let field_metabolic_rate_kilojoules_per_day =
+        libm::exp(ln_intercept) * libm::pow(mass_grams, exponent);
+    let power_microwatts =
+        libm::round(field_metabolic_rate_kilojoules_per_day * 1_000.0 / 86_400.0 * 1_000_000.0);
+    if !power_microwatts.is_finite() || power_microwatts < 1.0 || power_microwatts > i64::MAX as f64
+    {
+        bail!("FmrBT reference-temperature metabolic estimate is out of range");
+    }
+    #[allow(clippy::cast_possible_truncation)]
+    let measured_power_value = power_microwatts as i64;
+    let model_digest = Digest::sha256(FMRBT_REFERENCE_MODEL.as_bytes());
+    let source_record_digest = Digest::sha256(
         format!(
-            "a-tiny-civilization/provisional-metabolic-assumption/v1/{}/{}",
-            species.catalog, species.identifier
+            "{model_digest}/{thermal_strategy}/{}/{}/{}/{}/{}",
+            body_mass.species.catalog,
+            body_mass.species.identifier,
+            body_mass.profile_set_digest,
+            body_mass.source_record_digest,
+            body_mass.mass_grams_value
         )
         .as_bytes(),
     );
-    MetabolicRateCommitment {
+    let evidence_basis = match body_mass.evidence_basis {
+        PhysiologicalEvidenceBasis::EngineeringAssumption => {
+            PhysiologicalEvidenceBasis::EngineeringAssumption
+        }
+        PhysiologicalEvidenceBasis::SourceMeasurement
+        | PhysiologicalEvidenceBasis::LiteratureApproximation => {
+            PhysiologicalEvidenceBasis::LiteratureApproximation
+        }
+    };
+    let commitment = MetabolicRateCommitment {
         commitment_schema_version: METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
-        evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
-        profile_set_digest: assumption_digest,
-        observed_species: species,
-        source_record_id: "engineering-assumption-metabolic-v1".to_owned(),
-        source_record_digest: assumption_digest,
-        measured_power_value: 100,
-        measured_power_decimal_places: 0,
-    }
+        evidence_basis,
+        profile_set_digest: model_digest,
+        observed_species: body_mass.species.clone(),
+        source_record_id: format!("fmrbt-reference-{thermal_strategy}-allometry-v1"),
+        source_record_digest,
+        measured_power_value,
+        measured_power_decimal_places: 6,
+    };
+    commitment
+        .validate()
+        .context("validate FmrBT reference-temperature metabolic commitment")?;
+    Ok(commitment)
+}
+
+fn metabolic_energy_for_seconds(
+    metabolic_rate: &MetabolicRateCommitment,
+    duration_seconds: u64,
+) -> Result<u64> {
+    metabolic_rate
+        .validate()
+        .context("validate metabolic commitment before reserve scaling")?;
+    let scale = 10_u128.pow(u32::from(metabolic_rate.measured_power_decimal_places));
+    let numerator = u128::try_from(metabolic_rate.measured_power_value)
+        .context("metabolic power must be positive")?
+        .checked_mul(u128::from(duration_seconds))
+        .context("metabolic reserve multiplication overflowed")?;
+    let rounded_up = numerator
+        .checked_add(scale - 1)
+        .context("metabolic reserve rounding overflowed")?
+        / scale;
+    u64::try_from(rounded_up).context("metabolic reserve exceeds u64")
 }
 
 struct PopulationPlanInputPaths<'a> {
@@ -3653,7 +3740,7 @@ fn derive_provisional_organism_body_profile_plan(
     .expect("static valid Homo sapiens identity");
     entries.push(engineering_body_profile_entry(
         human.clone(),
-        engineering_metabolic_commitment(human),
+        None,
         tick_duration_seconds,
         "homo_sapiens",
         None,
@@ -3672,8 +3759,7 @@ fn derive_provisional_organism_body_profile_plan(
                     .resolve_commitment(profiles)
                     .context("resolve exact fauna metabolic commitment")
             })
-            .transpose()?
-            .unwrap_or_else(|| engineering_metabolic_commitment(fauna.species.clone()));
+            .transpose()?;
         entries.push(engineering_body_profile_entry(
             fauna.species.clone(),
             metabolic_rate,
@@ -3708,14 +3794,15 @@ fn derive_provisional_organism_body_profile_plan(
             "content_hash": Digest::sha256(&bytes),
             "species_count": plan.entries.len(),
             "status": plan.status,
-            "source_measured_fauna_metabolic_count": sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
-            "engineering_assumption_fauna_metabolic_count": population.entries.len() - sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
+            "source_measured_metabolic_count": plan.entries.iter().filter(|entry| entry.metabolic_rate.evidence_basis == PhysiologicalEvidenceBasis::SourceMeasurement).count(),
+            "literature_approximation_metabolic_count": plan.entries.iter().filter(|entry| entry.metabolic_rate.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
+            "engineering_assumption_metabolic_count": plan.entries.iter().filter(|entry| entry.metabolic_rate.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
             "source_informed_category_maturity_count": plan.entries.iter().flat_map(|entry| &entry.reproductive_physiology.category_maturity).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
             "engineering_assumption_category_maturity_count": plan.entries.iter().flat_map(|entry| &entry.reproductive_physiology.category_maturity).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
             "source_informed_adult_body_mass_count": plan.entries.iter().filter_map(|entry| entry.adult_body_mass.as_ref()).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
             "engineering_assumption_adult_body_mass_count": plan.entries.iter().filter_map(|entry| entry.adult_body_mass.as_ref()).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
             "provisional_reproduction_pacing": "each female and male category uses its exact retained species maturity aggregate when present; every missing category falls back independently to a coarse simulation-time engineering guardrail",
-            "policy": "human metabolism, regulation, reproduction, body mass, and heredity remain engineering assumptions; retained maturity and independently source-pinned adult-body-mass aggregates are source-addressed literature approximations, never raw observations; every uncovered category, mass, and metabolic rate remains an explicit engineering assumption",
+            "policy": "direct standardized metabolic measurements remain source measurements; otherwise the published FmrBT reference-temperature endotherm or ectotherm mass model produces a pinned microW estimate, classified by the weakest adult-mass evidence; usable energy reserve is an explicit seven-simulation-day engineering guardrail; regulation, reproduction, and heredity remain engineering assumptions",
         }))?
     );
     Ok(())
@@ -3724,16 +3811,25 @@ fn derive_provisional_organism_body_profile_plan(
 fn provisional_oral_transfer_profiles(
     material: &MaterialIdentity,
     body_profiles: &ProvisionalOrganismBodyProfilePlan,
-    transfer_mass_milligrams: u64,
-    recoverable_energy_joules: u64,
+    transfer_body_mass_millionths: u64,
+    recoverable_energy_joules_per_milligram: u64,
     hydration_recovery_seconds: u64,
-) -> Vec<OralTransferCommitment> {
+) -> Result<Vec<OralTransferCommitment>> {
     body_profiles
         .entries
         .iter()
         .map(|entry| {
+            let body_mass = entry
+                .adult_body_mass
+                .as_ref()
+                .context("oral transfer scaling requires adult body mass")?;
+            let (transfer_mass_milligrams, recoverable_energy_joules) = scaled_oral_transfer(
+                body_mass,
+                transfer_body_mass_millionths,
+                recoverable_energy_joules_per_milligram,
+            )?;
             let profile_id = format!(
-                "{}-{}-{}-oral-v1",
+                "{}-{}-{}-oral-v2",
                 material
                     .canonical_name
                     .to_ascii_lowercase()
@@ -3743,18 +3839,19 @@ fn provisional_oral_transfer_profiles(
             );
             let profile_digest = Digest::sha256(
                 format!(
-                    "a-tiny-civilization/provisional-oral-transfer/v1/{}/{}/{}/{}/{}/{}/{}",
+                    "a-tiny-civilization/provisional-oral-transfer/v2/{}/{}/{}/{}/{}/{}/{}/{}",
                     material.catalog,
                     material.identifier,
                     entry.species.catalog,
                     entry.species.identifier,
+                    transfer_body_mass_millionths,
                     transfer_mass_milligrams,
                     recoverable_energy_joules,
                     hydration_recovery_seconds
                 )
                 .as_bytes(),
             );
-            OralTransferCommitment {
+            Ok(OralTransferCommitment {
                 commitment_schema_version: ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
                 profile_id,
                 profile_digest,
@@ -3764,9 +3861,43 @@ fn provisional_oral_transfer_profiles(
                 transfer_mass_milligrams,
                 recoverable_energy_joules,
                 hydration_recovery_seconds,
-            }
+            })
         })
         .collect()
+}
+
+fn scaled_oral_transfer(
+    body_mass: &AdultBodyMassCommitment,
+    transfer_body_mass_millionths: u64,
+    recoverable_energy_joules_per_milligram: u64,
+) -> Result<(u64, u64)> {
+    body_mass
+        .validate()
+        .context("validate adult mass before oral transfer scaling")?;
+    if transfer_body_mass_millionths == 0 || transfer_body_mass_millionths > 1_000_000 {
+        bail!("oral transfer body-mass fraction must be within one through one million");
+    }
+    let body_mass_scale = 10_u128.pow(u32::from(body_mass.mass_grams_decimal_places));
+    let transfer_numerator = u128::try_from(body_mass.mass_grams_value)
+        .context("adult mass must be positive")?
+        .checked_mul(1_000)
+        .and_then(|value| value.checked_mul(u128::from(transfer_body_mass_millionths)))
+        .context("oral transfer mass scaling overflowed")?;
+    let transfer_denominator = body_mass_scale
+        .checked_mul(1_000_000)
+        .context("oral transfer mass scale overflowed")?;
+    let transfer_mass_milligrams = u64::try_from(
+        transfer_numerator
+            .checked_add(transfer_denominator - 1)
+            .context("oral transfer rounding overflowed")?
+            / transfer_denominator,
+    )
+    .context("oral transfer mass exceeds u64")?
+    .max(1);
+    let recoverable_energy_joules = transfer_mass_milligrams
+        .checked_mul(recoverable_energy_joules_per_milligram)
+        .context("oral transfer energy overflowed")?;
+    Ok((transfer_mass_milligrams, recoverable_energy_joules))
 }
 
 struct ProvisionalMaterialSourceSpec {
@@ -3774,8 +3905,8 @@ struct ProvisionalMaterialSourceSpec {
     initial_mass_milligrams: u64,
     maximum_mass_milligrams: u64,
     replenishment_mass_milligrams_per_tick: u64,
-    transfer_mass_milligrams: u64,
-    recoverable_energy_joules: u64,
+    transfer_body_mass_millionths: u64,
+    recoverable_energy_joules_per_milligram: u64,
     hydration_recovery_seconds: u64,
 }
 
@@ -3785,7 +3916,7 @@ fn provisional_material_source(
     coverage_patch: S2CellId,
     spec: ProvisionalMaterialSourceSpec,
     body_profiles: &ProvisionalOrganismBodyProfilePlan,
-) -> ProvisionalMaterialResourceSource {
+) -> Result<ProvisionalMaterialResourceSource> {
     let profile_digest = Digest::sha256(
         format!(
             "a-tiny-civilization/provisional-material-reservoir/v1/{}/{}/{}/{}/{}/{}/{}",
@@ -3802,11 +3933,11 @@ fn provisional_material_source(
     let oral_transfer_profiles = provisional_oral_transfer_profiles(
         &material,
         body_profiles,
-        spec.transfer_mass_milligrams,
-        spec.recoverable_energy_joules,
+        spec.transfer_body_mass_millionths,
+        spec.recoverable_energy_joules_per_milligram,
         spec.hydration_recovery_seconds,
-    );
-    ProvisionalMaterialResourceSource {
+    )?;
+    Ok(ProvisionalMaterialResourceSource {
         source_id: spec.source_id.to_owned(),
         material: material.clone(),
         anchor_patch,
@@ -3822,7 +3953,7 @@ fn provisional_material_source(
             replenishment_mass_milligrams_per_tick: spec.replenishment_mass_milligrams_per_tick,
         }),
         oral_transfer_profiles,
-    }
+    })
 }
 
 fn provisional_material_object(
@@ -3914,12 +4045,12 @@ fn derive_provisional_material_resource_plan(
                 initial_mass_milligrams: 10_000_000_000,
                 maximum_mass_milligrams: 100_000_000_000,
                 replenishment_mass_milligrams_per_tick: 5_000_000,
-                transfer_mass_milligrams: 100_000,
-                recoverable_energy_joules: 1_600_000,
+                transfer_body_mass_millionths: 10_000,
+                recoverable_energy_joules_per_milligram: 16,
                 hydration_recovery_seconds: 0,
             },
             &body_profiles,
-        ),
+        )?,
         provisional_material_source(
             water,
             environment.selected_embodied_patch,
@@ -3929,12 +4060,12 @@ fn derive_provisional_material_resource_plan(
                 initial_mass_milligrams: 100_000_000_000,
                 maximum_mass_milligrams: 1_000_000_000_000,
                 replenishment_mass_milligrams_per_tick: 50_000_000,
-                transfer_mass_milligrams: 250_000,
-                recoverable_energy_joules: 0,
+                transfer_body_mass_millionths: 10_000,
+                recoverable_energy_joules_per_milligram: 0,
                 hydration_recovery_seconds: 21_600,
             },
             &body_profiles,
-        ),
+        )?,
     ];
     sources.sort_by(|left, right| {
         (
@@ -15452,7 +15583,7 @@ mod tests {
     }
 
     #[test]
-    fn unsourced_body_metabolism_is_structurally_an_engineering_assumption() {
+    fn reference_allometry_uses_the_weakest_mass_evidence_and_pinned_microwatts() {
         let species = SpeciesIdentity::new(
             "gbif",
             "2436436",
@@ -15460,13 +15591,48 @@ mod tests {
             "https://www.gbif.org/species/2436436",
         )
         .expect("test species");
-        let commitment = engineering_metabolic_commitment(species.clone());
+        let mass_digest = Digest::sha256(b"assumed human mass");
+        let body_mass = AdultBodyMassCommitment {
+            commitment_schema_version: ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+            species: species.clone(),
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            profile_set_digest: mass_digest,
+            source_record_id: "engineering-assumption-adult-body-mass-v1".to_owned(),
+            source_record_digest: mass_digest,
+            mass_grams_value: 70_000,
+            mass_grams_decimal_places: 0,
+        };
+        let commitment = fmrbt_reference_metabolic_commitment(&body_mass, "homo_sapiens")
+            .expect("deterministic allometry");
         assert_eq!(
             commitment.evidence_basis,
             PhysiologicalEvidenceBasis::EngineeringAssumption
         );
         assert_eq!(commitment.observed_species, species);
+        assert_eq!(commitment.measured_power_value, 148_461_427);
+        assert_eq!(commitment.measured_power_decimal_places, 6);
         commitment.validate().expect("valid explicit assumption");
+        assert_eq!(
+            scaled_oral_transfer(&body_mass, 10_000, 16).expect("one-percent glucose transfer"),
+            (700_000, 11_200_000)
+        );
+        let mut hummingbird_mass = body_mass;
+        hummingbird_mass.mass_grams_value = 350;
+        hummingbird_mass.mass_grams_decimal_places = 2;
+        assert_eq!(
+            scaled_oral_transfer(&hummingbird_mass, 10_000, 16)
+                .expect("one-percent hummingbird transfer"),
+            (35, 560)
+        );
+        hummingbird_mass.mass_grams_value = 2_040;
+        hummingbird_mass.mass_grams_decimal_places = 2;
+        let bird_commitment = fmrbt_reference_metabolic_commitment(&hummingbird_mass, "aves_2")
+            .expect("every Aves range shard is endothermic");
+        assert_eq!(bird_commitment.measured_power_value, 614_764);
+        assert_eq!(
+            bird_commitment.source_record_id,
+            "fmrbt-reference-endotherm-allometry-v1"
+        );
     }
 
     #[test]
@@ -15484,6 +15650,10 @@ mod tests {
 
         let insect = provisional_life_history("insecta_4");
         assert_eq!(duration_ticks(insect.development_seconds, 300), 4_032);
+        assert_eq!(
+            provisional_life_history("aves_2"),
+            provisional_life_history("aves_1")
+        );
         assert_eq!(duration_ticks(301, 300), 2);
     }
 
@@ -15519,7 +15689,7 @@ mod tests {
         let profile_set_digest = Digest::canonical(&profiles).expect("profile set digest");
         let entry = engineering_body_profile_entry(
             species.clone(),
-            engineering_metabolic_commitment(species),
+            None,
             300,
             "homo_sapiens",
             Some(&(profiles, profile_set_digest)),
@@ -15557,7 +15727,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_body_profiles_retain_exact_taxon_body_mass_without_making_it_causal() {
+    fn provisional_body_profiles_make_exact_taxon_mass_causal_through_allometry() {
         let species = SpeciesIdentity::new(
             "gbif",
             "2436436",
@@ -15602,7 +15772,7 @@ mod tests {
         };
         let entry = engineering_body_profile_entry(
             species.clone(),
-            engineering_metabolic_commitment(species),
+            None,
             300,
             "homo_sapiens",
             None,
@@ -15619,6 +15789,15 @@ mod tests {
             PhysiologicalEvidenceBasis::LiteratureApproximation
         );
         mass.validate().expect("valid retained body mass");
+        assert_eq!(
+            entry.metabolic_rate.evidence_basis,
+            PhysiologicalEvidenceBasis::LiteratureApproximation
+        );
+        assert_eq!(entry.metabolic_rate.measured_power_value, 148_461_427);
+        assert_eq!(
+            entry.physiological_regulation.usable_energy_reserve_joules,
+            89_789_472
+        );
     }
 
     #[test]
