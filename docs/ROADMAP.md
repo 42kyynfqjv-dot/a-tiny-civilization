@@ -217,9 +217,12 @@ fresh same-seed ruleset-30 candidate passed the full 1,000-tick replay, Hindsigh
 projection, mechanics, and observer-smoke gate. Its immutable evidence supersedes, without
 mutating, the ruleset-29 launch evidence. The exact genesis and qualification-manifest digests are
 now bound to a machine-verifiable experimental quality-world admission covering seven required
-dimensions. That admission explicitly does not claim scientific admission or authorize public
-deployment; production configuration, activation, live verification, and deployment remain
-separate operations.
+dimensions. The exact-current-code v17 evidence supersedes the earlier ruleset-30 qualification
+bundle and binds activation to source commit `9c773be13d372bfe06710b2eb50b68c0b21cc791`. Admission
+schema 2 additionally freezes the exercised simulation, schema, canonical-data, and qualification
+paths: any difference requires a fresh qualification before launch. The admission explicitly does
+not claim scientific admission or authorize public deployment; production configuration,
+activation, live verification, and deployment remain separate operations.
 
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate

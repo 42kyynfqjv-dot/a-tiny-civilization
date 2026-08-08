@@ -8,6 +8,7 @@ import json
 import os
 import pathlib
 import re
+import subprocess
 import sys
 
 
@@ -22,6 +23,23 @@ EXPECTED_DIMENSIONS = {
 }
 HEX64 = re.compile(r"^[0-9a-f]{64}$")
 UUID = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+QUALIFIED_PATHS = [
+    "Cargo.lock",
+    "Cargo.toml",
+    "Dockerfile",
+    "apps",
+    "crates",
+    "data",
+    "db",
+    "rust-toolchain.toml",
+    "rustfmt.toml",
+    "scripts/advance-cognition-qualified-world.sh",
+    "scripts/advance-qualification-world.sh",
+    "scripts/create-qualification-evidence.sh",
+    "scripts/initialize-canonical-world.sh",
+    "scripts/initialize-provisional-world.sh",
+    "scripts/qualification-status.sh",
+]
 
 
 def fail(message: str) -> None:
@@ -50,10 +68,11 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         "schema_version", "world_id", "ruleset_version", "genesis_sha256s_sha256",
         "evidence_sha256s_sha256", "quality_gate_adr", "experimental_science_policy_adr",
         "status", "scientific_admission", "public_deployment_authorized", "dimensions",
+        "qualified_source_commit", "qualified_paths",
     }
     if set(admission) != expected_keys:
-        fail("admission fields differ from schema version 1")
-    if admission["schema_version"] != 1:
+        fail("admission fields differ from schema version 2")
+    if admission["schema_version"] != 2:
         fail("unsupported admission schema")
     if not isinstance(admission["world_id"], str) or not UUID.fullmatch(admission["world_id"]):
         fail("world identity is invalid")
@@ -74,6 +93,15 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         fail("experimental quality admission cannot claim scientific admission")
     if admission["public_deployment_authorized"] is not False:
         fail("quality admission cannot authorize deployment")
+    qualified_source_commit = admission["qualified_source_commit"]
+    if (
+        not isinstance(qualified_source_commit, str)
+        or not re.fullmatch(r"[0-9a-f]{40}", qualified_source_commit)
+        or qualified_source_commit != args.qualified_source_commit
+    ):
+        fail("quality admission is not bound to the evidence source commit")
+    if admission["qualified_paths"] != QUALIFIED_PATHS:
+        fail("qualified source paths differ from the frozen launch boundary")
 
     expected_policy_paths = {
         "quality_gate_adr": "docs/adr/0042-quality-gate-before-public-genesis.md",
@@ -116,6 +144,23 @@ def verify(args: argparse.Namespace) -> dict[str, object]:
         if not resolved.is_file() or resolved.is_symlink():
             fail(f"evidence path is absent or unsafe: {relative}")
 
+    git_checks = (
+        ["git", "diff", "--quiet", qualified_source_commit, "HEAD", "--", *QUALIFIED_PATHS],
+        ["git", "diff", "--quiet", "--", *QUALIFIED_PATHS],
+        ["git", "diff", "--cached", "--quiet", "--", *QUALIFIED_PATHS],
+    )
+    for command in git_checks:
+        result = subprocess.run(command, cwd=project_root, check=False)
+        if result.returncode != 0:
+            fail("qualified source boundary differs from the exercised candidate")
+    untracked = subprocess.check_output(
+        ["git", "ls-files", "--others", "--exclude-standard", "--", *QUALIFIED_PATHS],
+        cwd=project_root,
+        text=True,
+    ).strip()
+    if untracked:
+        fail("qualified source boundary contains untracked files")
+
     return {
         "status": "experimental-quality-world-admission-passed",
         "world_id": admission["world_id"],
@@ -134,10 +179,11 @@ def main() -> int:
     parser.add_argument("--expected-ruleset", required=True, type=int)
     parser.add_argument("--genesis-sha256s-sha256", required=True)
     parser.add_argument("--evidence-sha256s-sha256", required=True)
+    parser.add_argument("--qualified-source-commit", required=True)
     args = parser.parse_args()
     try:
         result = verify(args)
-    except (OSError, json.JSONDecodeError, ValueError) as error:
+    except (OSError, json.JSONDecodeError, ValueError, subprocess.CalledProcessError) as error:
         print(f"quality-world admission rejected: {error}", file=sys.stderr)
         return 1
     print(json.dumps(result, separators=(",", ":"), sort_keys=True))

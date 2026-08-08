@@ -36,6 +36,8 @@ jobs:
           --health-retries 20
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Install repository verification tools
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - uses: dtolnay/rust-toolchain@6c977a6ca4077a0ceb28ffbe03f59d46e9ac8772
@@ -75,6 +77,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
       - name: Install repository verification tools
         run: sudo apt-get update && sudo apt-get install --yes ripgrep
       - run: docker compose -f compose.yaml config --quiet
@@ -91,6 +95,8 @@ jobs:
       - run: ./scripts/verify-production-runtime-gate.sh
       - run: ./scripts/verify-public-genesis-preflight.sh
       - run: ./scripts/verify-live-genesis-gate.sh
+      - run: python3 scripts/test_verify_launch_candidate_evidence.py
+      - run: python3 scripts/test_verify_quality_world_admission.py
       - run: bash -n scripts/*.sh
       - run: >-
           APP_ENV=production

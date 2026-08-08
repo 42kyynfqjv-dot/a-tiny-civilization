@@ -52,6 +52,16 @@ fi
   --expected-ruleset "$expected_ruleset" \
   --minimum-tick 1000
 
+evidence_source_commit="$(python3 -c '
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    value = json.load(source).get("source_commit")
+if not isinstance(value, str):
+    raise SystemExit("evidence source commit is absent")
+print(value)
+' "${evidence_directory}/evidence.json")"
+
 genesis_manifest_digest="$(sha256sum -- "${genesis_directory}/SHA256SUMS")"
 genesis_manifest_digest="${genesis_manifest_digest%% *}"
 evidence_manifest_digest="$(sha256sum -- "${evidence_directory}/SHA256SUMS")"
@@ -66,7 +76,8 @@ fi
   --world-id "$world_id" \
   --expected-ruleset "$expected_ruleset" \
   --genesis-sha256s-sha256 "$genesis_manifest_digest" \
-  --evidence-sha256s-sha256 "$evidence_manifest_digest"
+  --evidence-sha256s-sha256 "$evidence_manifest_digest" \
+  --qualified-source-commit "$evidence_source_commit"
 
 if [[ "$mode" == "verify" ]]; then
   echo "Qualified canonical world ${world_id} is ready for a separate deliberate activation."
