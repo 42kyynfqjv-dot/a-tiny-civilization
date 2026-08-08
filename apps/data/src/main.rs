@@ -554,8 +554,8 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Construct two bounded real-material reservoirs with explicit provisional
-    /// availability and species-response assumptions for the complete founder plan.
+    /// Construct bounded real-material reservoirs and a neutral transformable object
+    /// with explicit provisional availability assumptions for the founder plan.
     ProvisionalMaterialResourcePlan {
         #[arg(long)]
         population_plan: PathBuf,
@@ -2605,7 +2605,7 @@ fn provisional_material_source(
         material: material.clone(),
         anchor_patch,
         initial_mass_milligrams: spec.initial_mass_milligrams,
-        reservoir: MaterialReservoirCommitment {
+        reservoir: Some(MaterialReservoirCommitment {
             commitment_schema_version: MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
             profile_id: format!("{}-v1", spec.source_id),
             profile_digest,
@@ -2614,8 +2614,24 @@ fn provisional_material_source(
             coverage_patch,
             maximum_mass_milligrams: spec.maximum_mass_milligrams,
             replenishment_mass_milligrams_per_tick: spec.replenishment_mass_milligrams_per_tick,
-        },
+        }),
         oral_transfer_profiles,
+    }
+}
+
+fn provisional_material_object(
+    material: MaterialIdentity,
+    anchor_patch: S2CellId,
+    source_id: &'static str,
+    initial_mass_milligrams: u64,
+) -> ProvisionalMaterialResourceSource {
+    ProvisionalMaterialResourceSource {
+        source_id: source_id.to_owned(),
+        material,
+        anchor_patch,
+        initial_mass_milligrams,
+        reservoir: None,
+        oral_transfer_profiles: Vec::new(),
     }
 }
 
@@ -2670,7 +2686,19 @@ fn derive_provisional_material_resource_plan(
         "water",
         "https://pubchem.ncbi.nlm.nih.gov/compound/962",
     )?;
+    let silicon_dioxide = MaterialIdentity::new(
+        "pubchem",
+        "24261",
+        "silicon dioxide",
+        "https://pubchem.ncbi.nlm.nih.gov/compound/24261",
+    )?;
     let mut sources = vec![
+        provisional_material_object(
+            silicon_dioxide,
+            environment.selected_embodied_patch,
+            "pubchem-24261-object",
+            100_000,
+        ),
         provisional_material_source(
             glucose,
             environment.selected_embodied_patch,

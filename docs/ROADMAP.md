@@ -534,3 +534,9 @@ projection may file traced real-material objects as artifacts with exact provena
 dependency path back to the runner. The next provisional genesis and fail-closed qualification now
 default to ruleset 19, while existing ruleset-18 evidence remains immutable and independently
 verifiable.
+
+The first ruleset-19 qualification pass also proved that two survival reservoirs alone do not expose
+the neutral material-handling path: 1,000 ticks produced no grasp or surface-trace event because
+reservoir transfer bypasses held objects. Provisional material-resource schema 2 now adds one finite,
+cited silicon-dioxide object with no oral response, affordance, or use label. ADR 0094 records the
+negative qualification and requires a fresh corrected history rather than changing it in place.

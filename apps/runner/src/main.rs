@@ -1503,7 +1503,7 @@ fn load_provisional_material_resources(
             embodied_patch: source.anchor_patch,
             initial_mass_milligrams: Some(source.initial_mass_milligrams),
             oral_transfer_profiles: source.oral_transfer_profiles,
-            reservoir: Some(source.reservoir),
+            reservoir: source.reservoir,
         })
         .collect();
     Ok((Some(Digest::sha256(&resource_bytes)), initial_materials))

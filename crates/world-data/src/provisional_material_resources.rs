@@ -13,7 +13,7 @@ use world_domain::{
 
 use crate::ProvisionalOrganismBodyProfilePlan;
 
-pub const PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION: u16 = 2;
 pub const PROVISIONAL_MATERIAL_RESOURCE_PLAN_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.provisional-material-resource-plan+json";
 pub const PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS: &str =
@@ -26,7 +26,8 @@ pub struct ProvisionalMaterialResourceSource {
     pub material: MaterialIdentity,
     pub anchor_patch: S2CellId,
     pub initial_mass_milligrams: u64,
-    pub reservoir: MaterialReservoirCommitment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reservoir: Option<MaterialReservoirCommitment>,
     /// Strictly ordered by `(catalog, identifier)` with one profile per species.
     pub oral_transfer_profiles: Vec<OralTransferCommitment>,
 }
@@ -51,7 +52,10 @@ impl ProvisionalMaterialResourcePlan {
         &self,
         body_profiles: &ProvisionalOrganismBodyProfilePlan,
     ) -> Result<(), ProvisionalMaterialResourcePlanError> {
-        if self.plan_schema_version != PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION {
+        if !matches!(
+            self.plan_schema_version,
+            1 | PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION
+        ) {
             return Err(ProvisionalMaterialResourcePlanError::UnsupportedSchema(
                 self.plan_schema_version,
             ));
@@ -94,22 +98,35 @@ impl ProvisionalMaterialResourcePlan {
             source.material.validate().map_err(|error| {
                 ProvisionalMaterialResourcePlanError::InvalidMaterial(error.to_string())
             })?;
-            source.reservoir.validate().map_err(|error| {
-                ProvisionalMaterialResourcePlanError::InvalidReservoir(error.to_string())
-            })?;
             if !technical_slug(&source.source_id)
                 || source.initial_mass_milligrams == 0
-                || source.initial_mass_milligrams > source.reservoir.maximum_mass_milligrams
-                || source.material != source.reservoir.material
                 || source.anchor_patch != self.embodied_patch
-                || !source
-                    .reservoir
-                    .coverage_patch
-                    .contains(source.anchor_patch)
             {
                 return Err(ProvisionalMaterialResourcePlanError::InvalidSource(
                     source.source_id.clone(),
                 ));
+            }
+            match &source.reservoir {
+                Some(reservoir) => {
+                    reservoir.validate().map_err(|error| {
+                        ProvisionalMaterialResourcePlanError::InvalidReservoir(error.to_string())
+                    })?;
+                    if source.initial_mass_milligrams > reservoir.maximum_mass_milligrams
+                        || source.material != reservoir.material
+                        || !reservoir.coverage_patch.contains(source.anchor_patch)
+                    {
+                        return Err(ProvisionalMaterialResourcePlanError::InvalidSource(
+                            source.source_id.clone(),
+                        ));
+                    }
+                }
+                None => {
+                    if self.plan_schema_version < 2 || !source.oral_transfer_profiles.is_empty() {
+                        return Err(ProvisionalMaterialResourcePlanError::InvalidSource(
+                            source.source_id.clone(),
+                        ));
+                    }
+                }
             }
             let source_key = (
                 source.material.catalog.as_str(),
@@ -121,7 +138,9 @@ impl ProvisionalMaterialResourcePlan {
             }
             previous_source_key = Some(source_key);
 
-            if source.oral_transfer_profiles.len() != expected_species.len() {
+            if source.reservoir.is_some()
+                && source.oral_transfer_profiles.len() != expected_species.len()
+            {
                 return Err(
                     ProvisionalMaterialResourcePlanError::IncompleteSpeciesCoverage(
                         source.source_id.clone(),
