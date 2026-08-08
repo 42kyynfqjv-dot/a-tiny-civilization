@@ -33,7 +33,8 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-backend-status.sh
 ./scripts/verify-hindsight-runtime.sh
 ./scripts/verify-qualification-status.sh
-bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qualified-world.sh
+bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qualified-world.sh \
+  ./scripts/observer-candidate-smoke.sh
 ./scripts/verify-create-qualification-evidence.sh
 ./scripts/verify-provisional-genesis-pins.sh
 python3 scripts/verify-runtime-artifact-listing.py

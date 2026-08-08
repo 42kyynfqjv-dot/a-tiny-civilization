@@ -236,6 +236,8 @@ civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 ./scripts/create-qualification-evidence.sh \
   "$QUALIFICATION_WORLD_ID" "$QUALIFICATION_GENESIS_DIRECTORY" \
   "$QUALIFICATION_EVIDENCE_DIRECTORY"
+./scripts/observer-candidate-smoke.sh \
+  http://127.0.0.1:8080 "$QUALIFICATION_WORLD_ID" 1018
 ```
 
 Use a separate disposable database and a non-public world ID. The command accepts at most one
@@ -256,6 +258,10 @@ for the retained launch-evidence bundle.
 The evidence command requires a clean committed worktree, verifies the original genesis checksums,
 reruns the qualification report, and atomically creates a checksum-covered directory containing no
 canonical event payloads. It never replaces prior evidence.
+The observer smoke command independently requires a running disclosed world, zero lag across all
+five projections, nonempty timeline/finding/organism/artifact/wiki views, hash-only audit
+commitments, and no private or explicit mechanism vocabulary in the public payloads. Supply the
+actual expected sequence for each retained candidate rather than copying the example cursor.
 
 For the standard private Compose Qwen2.5 1.5B service, set
 `LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1`. A host-run worker may use a loopback URL.
