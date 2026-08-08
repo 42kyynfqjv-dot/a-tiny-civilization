@@ -7,6 +7,8 @@ preflight="${project_root}/scripts/public-genesis-preflight.sh"
 required=(
   'production-preflight\.sh.*--env-file'
   'activate-qualified-canonical-world\.sh.*verify'
+  'verify-public-observatory-admission\.py'
+  'PUBLIC_OBSERVATORY_ADMISSION'
   'CANONICAL_SEED_COMMITMENT\.json'
   'CANONICAL_SEED_RESOLUTION\.json'
   'verify-staged-runtime-artifacts\.sh'

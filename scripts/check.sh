@@ -60,6 +60,7 @@ python3 -m py_compile scripts/verify-public-edge-headers.py
 python3 scripts/test_verify_public_edge_headers.py
 python3 -m py_compile scripts/verify-web-dependency-licenses.py
 python3 scripts/test_verify_quality_world_admission.py
+python3 scripts/test_verify_public_observatory_admission.py
 ./scripts/verify-demo.sh
 
 cd web

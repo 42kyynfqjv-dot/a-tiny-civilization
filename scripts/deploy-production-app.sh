@@ -52,6 +52,11 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
 
+# Deployment is a separate explicit authorization, but it may only package the exact observer
+# surface that passed the public review. This check is read-only and source-bound.
+"${project_root}/scripts/verify-public-observatory-admission.py" \
+  --admission "${project_root}/docs/operations/PUBLIC_OBSERVATORY_ADMISSION_2026-08-08.json"
+
 # Validate the exact file that Compose will consume. Keeping one validator prevents the
 # deployment helper and documented/manual preflight from silently accepting different setups.
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file"

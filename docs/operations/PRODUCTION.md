@@ -427,8 +427,9 @@ alerting to notify an operator for either failed service.
 ## Required gates before public genesis
 
 Run the composed read-only gate as root before either canonical activation or deployment. It reads
-the protected environment, verifies the exact candidate and experimental quality admission, and
-streams the staged runtime inputs without creating a world or changing a service:
+the protected environment, verifies the exact candidate, experimental quality admission, and
+source-bound public-observatory admission, then streams the staged runtime inputs without creating
+a world or changing a service:
 
 ```bash
 sudo ./scripts/public-genesis-preflight.sh \
@@ -450,6 +451,8 @@ sudo ./scripts/public-genesis-preflight.sh \
 - the exact ruleset-30 genesis and qualification manifest digests admitted by
   `QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json`; that experimental quality admission does not
   by itself authorize deployment or claim scientific admission;
+- the exact reviewed web and policy trees admitted by
+  `PUBLIC_OBSERVATORY_ADMISSION_2026-08-08.json`; that review also cannot authorize deployment;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is

@@ -525,6 +525,12 @@ smaller than the former every-transition policy.
   established directly by tick and life events, without inferring customs or intentions;
 - downloadable event ranges and visible state-hash verification.
 
+The public observatory review is now a source-bound machine gate rather than a prose sign-off.
+Its schema-1 admission freezes the exact web and policy trees, required public routes, edge-security
+tests, supporter isolation, provenance, and presentation review against the experimental quality
+world. Both public-genesis preflight and deployment reject drift, while the admission is structurally
+unable to authorize deployment.
+
 ### 5. Supporter participation
 
 - isolated observer accounts, moderated reservations, eligibility queues, and aliases;
