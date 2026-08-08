@@ -55,10 +55,10 @@ use world_domain::{
     OralTransferCommitment, OralTransferEvidenceBasis,
     PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis,
     PhysiologicalRegulationCommitment, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
-    REPRODUCTIVE_PROBABILITY_SCALE, ReproductiveCategoryPair, ReproductivePhysiologyCommitment,
-    S2CellId, S2FaceUv, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldSeed,
-    decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2, s2_face_ij_center_uv,
-    s2_face_ij_vertex_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
+    ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2FaceUv,
+    SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldSeed, decode_s2_face_ij,
+    route_geographic_to_s2, route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv,
+    s2_face_uv_to_ray, s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -2197,15 +2197,115 @@ fn derive_fauna_metabolic_rate_plan(
     Ok(())
 }
 
+const SECONDS_PER_DAY: u64 = 86_400;
+const DAYS_PER_YEAR: u64 = 365;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct ProvisionalLifeHistory {
+    initial_age_seconds: u64,
+    maturity_age_seconds: u64,
+    development_seconds: u64,
+    recovery_seconds: u64,
+    opportunity_interval_seconds: u64,
+    initiation_probability_millionths: u32,
+}
+
+fn days(value: u64) -> u64 {
+    value.checked_mul(SECONDS_PER_DAY).expect("bounded days")
+}
+
+fn years(value: u64) -> u64 {
+    days(value.checked_mul(DAYS_PER_YEAR).expect("bounded years"))
+}
+
+fn duration_ticks(seconds: u64, tick_duration_seconds: u32) -> u64 {
+    seconds.div_ceil(u64::from(tick_duration_seconds))
+}
+
+fn provisional_life_history(range_package: &str) -> ProvisionalLifeHistory {
+    // These are deliberately conservative, coarse engineering guardrails, not
+    // species-level scientific claims. They keep a five-minute world from
+    // producing minute-scale maturity or development while the cited life-history
+    // evidence pipeline is still provisional.
+    match range_package {
+        "homo_sapiens" => ProvisionalLifeHistory {
+            initial_age_seconds: years(20),
+            maturity_age_seconds: years(15),
+            development_seconds: days(280),
+            recovery_seconds: years(1),
+            opportunity_interval_seconds: days(28),
+            initiation_probability_millionths: 200_000,
+        },
+        package if package.starts_with("insecta_") => ProvisionalLifeHistory {
+            initial_age_seconds: days(180),
+            maturity_age_seconds: days(30),
+            development_seconds: days(14),
+            recovery_seconds: days(14),
+            opportunity_interval_seconds: days(7),
+            initiation_probability_millionths: 250_000,
+        },
+        "arachnida" => ProvisionalLifeHistory {
+            initial_age_seconds: years(1),
+            maturity_age_seconds: days(180),
+            development_seconds: days(30),
+            recovery_seconds: days(30),
+            opportunity_interval_seconds: days(14),
+            initiation_probability_millionths: 250_000,
+        },
+        "aves_1" => ProvisionalLifeHistory {
+            initial_age_seconds: years(2),
+            maturity_age_seconds: years(1),
+            development_seconds: days(30),
+            recovery_seconds: days(90),
+            opportunity_interval_seconds: days(30),
+            initiation_probability_millionths: 200_000,
+        },
+        "mammalia" => ProvisionalLifeHistory {
+            initial_age_seconds: years(4),
+            maturity_age_seconds: years(2),
+            development_seconds: days(120),
+            recovery_seconds: days(180),
+            opportunity_interval_seconds: days(30),
+            initiation_probability_millionths: 200_000,
+        },
+        "reptilia" => ProvisionalLifeHistory {
+            initial_age_seconds: years(5),
+            maturity_age_seconds: years(3),
+            development_seconds: days(60),
+            recovery_seconds: days(120),
+            opportunity_interval_seconds: days(30),
+            initiation_probability_millionths: 200_000,
+        },
+        "amphibia" | "actinopterygii" | "mollusca" | "otheranimalia" => ProvisionalLifeHistory {
+            initial_age_seconds: years(1),
+            maturity_age_seconds: days(180),
+            development_seconds: days(14),
+            recovery_seconds: days(30),
+            opportunity_interval_seconds: days(14),
+            initiation_probability_millionths: 200_000,
+        },
+        _ => ProvisionalLifeHistory {
+            initial_age_seconds: years(1),
+            maturity_age_seconds: days(180),
+            development_seconds: days(30),
+            recovery_seconds: days(60),
+            opportunity_interval_seconds: days(30),
+            initiation_probability_millionths: 100_000,
+        },
+    }
+}
+
 fn engineering_body_profile_entry(
     species: SpeciesIdentity,
     metabolic_rate: MetabolicRateCommitment,
     tick_duration_seconds: u32,
+    range_package: &str,
 ) -> ProvisionalOrganismBodyProfileEntry {
+    let life_history = provisional_life_history(range_package);
     let profile_digest = Digest::sha256(
         format!(
-            "a-tiny-civilization/provisional-body-assumptions/v1/{}/{}",
-            species.catalog, species.identifier
+            "a-tiny-civilization/provisional-body-assumptions/v2/{}/{}/{}",
+            range_package, species.catalog, species.identifier
         )
         .as_bytes(),
     );
@@ -2213,7 +2313,7 @@ fn engineering_body_profile_entry(
     let male = BirthCategory::new("male").expect("static valid birth category");
     ProvisionalOrganismBodyProfileEntry {
         species: species.clone(),
-        initial_age_ticks: 1,
+        initial_age_ticks: duration_ticks(life_history.initial_age_seconds, tick_duration_seconds),
         metabolic_rate,
         physiological_regulation: PhysiologicalRegulationCommitment {
             commitment_schema_version: PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
@@ -2232,16 +2332,25 @@ fn engineering_body_profile_entry(
         },
         reproductive_physiology: ReproductivePhysiologyCommitment {
             commitment_schema_version: REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
-            profile_id: "provisional-engineering-reproduction-v1".to_owned(),
+            profile_id: "provisional-engineering-reproduction-v2".to_owned(),
             profile_digest,
             species: species.clone(),
             evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
             tick_duration_seconds,
-            maturity_age_ticks: 1,
-            development_ticks: 12,
-            recovery_ticks: 120,
-            opportunity_interval_ticks: 60,
-            initiation_probability_millionths: REPRODUCTIVE_PROBABILITY_SCALE,
+            maturity_age_ticks: duration_ticks(
+                life_history.maturity_age_seconds,
+                tick_duration_seconds,
+            ),
+            development_ticks: duration_ticks(
+                life_history.development_seconds,
+                tick_duration_seconds,
+            ),
+            recovery_ticks: duration_ticks(life_history.recovery_seconds, tick_duration_seconds),
+            opportunity_interval_ticks: duration_ticks(
+                life_history.opportunity_interval_seconds,
+                tick_duration_seconds,
+            ),
+            initiation_probability_millionths: life_history.initiation_probability_millionths,
             compatible_pairs: vec![ReproductiveCategoryPair {
                 first: female.clone(),
                 second: male.clone(),
@@ -2308,7 +2417,10 @@ fn derive_provisional_organism_body_profile_plan(
     tick_duration_seconds: u32,
     output_path: &Path,
 ) -> Result<()> {
-    let (_, _, _, population) = load_population_plan_inputs(
+    if tick_duration_seconds == 0 {
+        bail!("tick duration must be positive");
+    }
+    let (_, selection, _, population) = load_population_plan_inputs(
         inputs.candidates,
         inputs.selection,
         inputs.origin_environment,
@@ -2344,6 +2456,7 @@ fn derive_provisional_organism_body_profile_plan(
         human.clone(),
         engineering_metabolic_commitment(human),
         tick_duration_seconds,
+        "homo_sapiens",
     ));
     for fauna in &population.entries {
         let metabolic_rate = if let Some((profiles, metabolic_plan)) = &sourced_metabolic {
@@ -2365,6 +2478,12 @@ fn derive_provisional_organism_body_profile_plan(
             fauna.species.clone(),
             metabolic_rate,
             tick_duration_seconds,
+            &selection
+                .selected_candidates
+                .iter()
+                .find(|candidate| candidate.species == fauna.species)
+                .expect("validated population species belongs to its seeded selection")
+                .range_package,
         ));
     }
     entries.sort_by(|left, right| {
@@ -2389,13 +2508,8 @@ fn derive_provisional_organism_body_profile_plan(
             "status": plan.status,
             "source_measured_fauna_metabolic_count": if sourced_metabolic.is_some() { population.entries.len() } else { 0 },
             "engineering_assumption_fauna_metabolic_count": if sourced_metabolic.is_some() { 0 } else { population.entries.len() },
-            "provisional_reproduction_pacing": {
-                "development_ticks": 12,
-                "recovery_ticks": 120,
-                "opportunity_interval_ticks": 60,
-                "initiation_probability_millionths": REPRODUCTIVE_PROBABILITY_SCALE,
-            },
-            "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna metabolic rates are exact observations only when both optional metabolic artifacts are supplied, otherwise explicit engineering assumptions",
+            "provisional_reproduction_pacing": "coarse source-package guardrails expressed in simulation time; Homo sapiens uses a separate human guardrail; all remain engineering assumptions pending species-level evidence admission",
+            "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna life-history pacing is a coarse source-package engineering assumption; fauna metabolic rates are exact observations only when both optional metabolic artifacts are supplied, otherwise explicit engineering assumptions",
         }))?
     );
     Ok(())
@@ -13547,5 +13661,23 @@ mod tests {
         );
         assert_eq!(commitment.observed_species, species);
         commitment.validate().expect("valid explicit assumption");
+    }
+
+    #[test]
+    fn provisional_life_history_uses_simulation_time_not_arbitrary_tick_counts() {
+        let human = provisional_life_history("homo_sapiens");
+        assert_eq!(duration_ticks(human.initial_age_seconds, 300), 2_102_400);
+        assert_eq!(duration_ticks(human.maturity_age_seconds, 300), 1_576_800);
+        assert_eq!(duration_ticks(human.development_seconds, 300), 80_640);
+        assert_eq!(duration_ticks(human.recovery_seconds, 300), 105_120);
+        assert_eq!(
+            duration_ticks(human.opportunity_interval_seconds, 300),
+            8_064
+        );
+        assert_eq!(human.initiation_probability_millionths, 200_000);
+
+        let insect = provisional_life_history("insecta_4");
+        assert_eq!(duration_ticks(insect.development_seconds, 300), 4_032);
+        assert_eq!(duration_ticks(301, 300), 2);
     }
 }

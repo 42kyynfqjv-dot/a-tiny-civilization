@@ -509,3 +509,9 @@ The first public vertical slice is done only when a fresh clone can:
    affect a canonical tick.
 10. run the same local history through dense and partitioned scheduling to identical
     bytes, and stop/resume a capacity boundary without changing them.
+
+The first real-input ruleset-18 qualification now covers initialization against all 147,466 pinned
+provisional references, DE441-driven canonical advancement, stop/restart at the exact stored
+cursor, genesis and snapshot-plus-tail replay, and complete observer projection. It also caught and
+removed arbitrary tick-count life-history placeholders before any public genesis; ADR 0085 records
+the corrected simulation-time guardrails and the 1,271-tick regression run.
