@@ -66,6 +66,10 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
 
+# Production mutations must use one exact committed checkout. The source-bound admissions protect
+# their qualified trees; this closes the remaining path through dirty operations or Compose files.
+"${project_root}/scripts/verify-production-checkout.sh"
+
 # Refuse a half-deployment when the legacy development stack still owns one of the exact host
 # ports. Existing containers from this production Compose project are safe for an in-place update.
 "${project_root}/scripts/production-port-preflight.sh"

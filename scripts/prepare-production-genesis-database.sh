@@ -59,6 +59,7 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
 
+"${project_root}/scripts/verify-production-checkout.sh"
 "${project_root}/scripts/production-port-preflight.sh"
 "${project_root}/scripts/public-genesis-preflight.sh" \
   --env-file "$environment_file" \

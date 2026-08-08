@@ -6,8 +6,10 @@ deployment="${project_root}/scripts/deploy-production-app.sh"
 database_preparation="${project_root}/scripts/prepare-production-genesis-database.sh"
 production_activation="${project_root}/scripts/activate-production-genesis.sh"
 runtime_verifier="${project_root}/scripts/verify-staged-runtime-artifacts.sh"
+checkout_verifier="${project_root}/scripts/verify-production-checkout.sh"
 
 preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$deployment")"
+checkout_line="$(rg -n -m1 'verify-production-checkout\.sh' "$deployment")"
 mutation_line="$(rg -n -m1 'compose_args\[@.*build migrate' "$deployment")"
 public_edge_line="$(rg -n -m1 'verify-public-edge\.sh.*https://atinycivilization\.com' "$deployment")"
 live_genesis_line="$(rg -n -m1 'verify-live-genesis\.sh' "$deployment")"
@@ -15,6 +17,7 @@ private_foundation_line="$(rg -n -m1 'up -d db migrate local-cognition hindsight
 world_guard_line="$(rg -n -m1 'public deployment requires exactly one privately activated qualified world' "$deployment")"
 canonical_start_line="$(rg -n -m1 '^  api projector runner memory-worker cognition-worker' "$deployment")"
 preflight_number="${preflight_line%%:*}"
+checkout_number="${checkout_line%%:*}"
 mutation_number="${mutation_line%%:*}"
 public_edge_number="${public_edge_line%%:*}"
 live_genesis_number="${live_genesis_line%%:*}"
@@ -23,6 +26,10 @@ world_guard_number="${world_guard_line%%:*}"
 canonical_start_number="${canonical_start_line%%:*}"
 if ((preflight_number >= mutation_number)); then
   echo "composed public-genesis preflight must precede every Compose mutation" >&2
+  exit 1
+fi
+if ((checkout_number >= mutation_number)); then
+  echo "production deployment must reject checkout drift before mutation" >&2
   exit 1
 fi
 if ((public_edge_number <= mutation_number)); then
@@ -65,9 +72,14 @@ for contract in '--genesis-directory' '--evidence-directory' '--runtime-root'; d
 done
 
 database_preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$database_preparation")"
+database_checkout_line="$(rg -n -m1 'verify-production-checkout\.sh' "$database_preparation")"
 database_mutation_line="$(rg -n -m1 'compose_args\[@.*up -d db migrate' "$database_preparation")"
 if ((${database_preflight_line%%:*} >= ${database_mutation_line%%:*})); then
   echo "private database preparation must run the composed preflight before mutation" >&2
+  exit 1
+fi
+if ((${database_checkout_line%%:*} >= ${database_mutation_line%%:*})); then
+  echo "private database preparation must reject checkout drift before mutation" >&2
   exit 1
 fi
 for contract in \
@@ -87,9 +99,14 @@ if rg -q 'up .*\b(api|projector|runner|web|memory-worker|cognition-worker|cloudf
 fi
 
 activation_preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$production_activation")"
+activation_checkout_line="$(rg -n -m1 'verify-production-checkout\.sh' "$production_activation")"
 activation_mutation_line="$(rg -n -m1 'activate-qualified-canonical-world\.sh.*activate' "$production_activation")"
 if ((${activation_preflight_line%%:*} >= ${activation_mutation_line%%:*})); then
   echo "production activation must run the composed preflight before tick-zero mutation" >&2
+  exit 1
+fi
+if ((${activation_checkout_line%%:*} >= ${activation_mutation_line%%:*})); then
+  echo "production activation must reject checkout drift before tick-zero mutation" >&2
   exit 1
 fi
 for contract in \
@@ -108,6 +125,16 @@ if rg -q '\b(docker|cloudflared)\b.*\b(up|run|start|deploy|route)\b|deploy-produ
   echo "production activation may not deploy or start services" >&2
   exit 1
 fi
+
+for contract in \
+  'git rev-parse --verify HEAD' \
+  'git diff --quiet --ignore-submodules=none HEAD' \
+  'git ls-files --others --exclude-standard'; do
+  if ! rg -q -- "$contract" "$checkout_verifier"; then
+    echo "production checkout verifier lost required contract: $contract" >&2
+    exit 1
+  fi
+done
 
 required_contracts=(
   'validate-provisional'

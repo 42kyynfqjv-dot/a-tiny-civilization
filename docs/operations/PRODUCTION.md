@@ -118,6 +118,9 @@ privacy-safe projections, and replay exactly from canonical history. It delibera
 off-site backups; those remain separate operational changes.
 The literal confirmation argument is required even for root and has no environment-variable
 equivalent, preventing a copied preflight command from becoming a deployment by implication.
+Every production mutation helper also requires a clean Git checkout with no staged, unstaged, or
+untracked files and reports its exact 40-character commit before proceeding. Reviewed source-tree
+admissions and operational scripts therefore cannot be mixed with local uncommitted changes.
 The helper also refuses to mutate Compose when ports 3000, 5432, or 8080 are held by any container
 outside the `a-tiny-civilization` production project. On the long-term host this intentionally
 requires the legacy development stack to be stopped during the deliberate cutover; its separate
