@@ -113,6 +113,18 @@ WITH selected_world AS (
            COALESCE(MAX(through_sequence), 0)::BIGINT AS newest_sequence,
            COALESCE(MAX(tick), 0)::BIGINT AS newest_tick
     FROM snapshots WHERE world_id = :'world_id'::UUID
+), canonical_feature_state AS (
+    SELECT COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_signal_action_association_changed'
+           )::BIGINT AS signal_action_associations,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_acted'
+                 AND event -> 'event' -> 'data' -> 'action' ->> 'kind' = 'emit_signal'
+                 AND (event -> 'event' -> 'data' -> 'action' ->> 'intensity')::INTEGER > 1
+           )::BIGINT AS varied_signals
+    FROM event_batches batch
+    CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
+    WHERE batch.world_id = :'world_id'::UUID
 ), projection_state AS (
     SELECT COUNT(*) FILTER (
                WHERE projection_name IN (
@@ -165,7 +177,7 @@ WITH selected_world AS (
       (SELECT COUNT(*) FROM observer_artifact_traces WHERE world_id = :'world_id'::UUID
          AND contact_region IS NOT NULL)::BIGINT AS regional_artifact_traces
 ), facts AS (
-    SELECT world.*, event_state.*, snapshot_state.*,
+    SELECT world.*, event_state.*, snapshot_state.*, canonical_feature_state.*,
            projection_state.required_count AS projection_required_count,
            projection_state.current_count AS projection_current_count,
            memory_state.total AS memory_total,
@@ -175,6 +187,7 @@ WITH selected_world AS (
     FROM selected_world world
     CROSS JOIN event_state
     CROSS JOIN snapshot_state
+    CROSS JOIN canonical_feature_state
     CROSS JOIN projection_state
     CROSS JOIN memory_state
     CROSS JOIN cognition_state
@@ -198,6 +211,9 @@ WITH selected_world AS (
            organisms > 0 AND timeline_items > 0 AND findings > 0 AS observer_content_present,
            (ruleset_version < 19 OR artifact_traces > 0) AS material_transformation_exercised,
            (ruleset_version < 20 OR regional_artifact_traces > 0) AS surface_arrangement_exercised
+           , (ruleset_version < 21 OR varied_signals > 0) AS acoustic_variation_exercised
+           , (ruleset_version < 22 OR signal_action_associations > 0)
+               AS signal_action_association_exercised
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -207,7 +223,8 @@ SELECT jsonb_build_object(
       AND contiguous_history AND snapshots_present AND projections_current
       AND memory_delivered AND cognition_deadlines_complete
       AND hindsight_cognition_exercised AND observer_content_present
-      AND material_transformation_exercised AND surface_arrangement_exercised,
+      AND material_transformation_exercised AND surface_arrangement_exercised
+      AND acoustic_variation_exercised AND signal_action_association_exercised,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -236,6 +253,10 @@ SELECT jsonb_build_object(
       'artifact_traces', artifact_traces,
       'regional_artifact_traces', regional_artifact_traces
     ),
+    'canonical_features', jsonb_build_object(
+      'varied_signals', varied_signals,
+      'signal_action_associations', signal_action_associations
+    ),
     'checks', jsonb_build_object(
       'running', running, 'expected_ruleset', expected_ruleset,
       'sufficient_history', sufficient_history,
@@ -248,6 +269,8 @@ SELECT jsonb_build_object(
       'observer_content_present', observer_content_present,
       'material_transformation_exercised', material_transformation_exercised,
       'surface_arrangement_exercised', surface_arrangement_exercised
+      , 'acoustic_variation_exercised', acoustic_variation_exercised
+      , 'signal_action_association_exercised', signal_action_association_exercised
     )
 )::TEXT
 FROM checks;

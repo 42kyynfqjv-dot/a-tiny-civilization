@@ -38,6 +38,8 @@ Planning and commit independently reconstruct the selected actor, preceding dire
 association address, arithmetic, and at-most-one update. Missing, duplicate, self-directed,
 nonlocal, wrong-amplitude, wrong-action, reordered, or fabricated updates fail before commit.
 Replay consumes only recorded events. Observer projections explicitly discard the private update.
+The state space is explicitly capped at 88 addresses per organism: eight amplitudes times the
+eleven closed primitive actions. No lifetime can grow it beyond that fixed bound.
 
 ## Consequences
 

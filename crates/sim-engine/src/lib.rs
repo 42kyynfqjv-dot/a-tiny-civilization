@@ -176,6 +176,7 @@ const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
 const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
+const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
@@ -5577,7 +5578,14 @@ impl EngineState {
                     .binary_search_by_key(&key, |entry| (entry.signal_intensity, entry.action_kind))
                 {
                     Ok(index) => observer.signal_action_associations[index] = *to,
-                    Err(index) => observer.signal_action_associations.insert(index, *to),
+                    Err(index) => {
+                        if observer.signal_action_associations.len()
+                            >= MAX_SIGNAL_ACTION_ASSOCIATIONS
+                        {
+                            return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                        }
+                        observer.signal_action_associations.insert(index, *to);
+                    }
                 }
                 observer.signal_action_associations_updated_at = Some(self.tick);
             }
@@ -6293,13 +6301,15 @@ impl EngineState {
                 return Err(EngineError::SocialLearningUnsupported);
             }
             if self.uses_signal_action_association_driver() {
-                if organism.signal_action_associations.windows(2).any(|pair| {
-                    (pair[0].signal_intensity, pair[0].action_kind)
-                        >= (pair[1].signal_intensity, pair[1].action_kind)
-                }) || organism
-                    .signal_action_associations
-                    .iter()
-                    .any(|entry| entry.validate().is_err())
+                if organism.signal_action_associations.len() > MAX_SIGNAL_ACTION_ASSOCIATIONS
+                    || organism.signal_action_associations.windows(2).any(|pair| {
+                        (pair[0].signal_intensity, pair[0].action_kind)
+                            >= (pair[1].signal_intensity, pair[1].action_kind)
+                    })
+                    || organism
+                        .signal_action_associations
+                        .iter()
+                        .any(|entry| entry.validate().is_err())
                     || organism
                         .signal_action_associations_updated_at
                         .is_some_and(|updated_at| updated_at > self.tick)
