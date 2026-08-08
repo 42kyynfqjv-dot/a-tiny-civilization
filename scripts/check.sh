@@ -30,6 +30,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/check-boundaries.sh
 ./scripts/verify-supporter-production-policy.sh
 ./scripts/verify-production-env-file.sh
+./scripts/verify-backend-status.sh
 ./scripts/verify-demo.sh
 
 cd web

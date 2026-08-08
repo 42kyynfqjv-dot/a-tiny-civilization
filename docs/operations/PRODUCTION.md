@@ -104,6 +104,21 @@ responses, Hindsight health, and fresh durable heartbeats from the runner, proje
 worker, and cognition worker. It deliberately does **not** configure a tunnel or
 off-site backups; those remain separate operational changes.
 
+Install the same complete check as a periodic host monitor after deployment:
+
+```bash
+sudo install -m 0644 ops/systemd/a-tiny-civilization-backend-status.service /etc/systemd/system/
+sudo install -m 0644 ops/systemd/a-tiny-civilization-backend-status.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now a-tiny-civilization-backend-status.timer
+sudo systemctl start a-tiny-civilization-backend-status.service
+systemctl status a-tiny-civilization-backend-status.service
+```
+
+It fails when the web edge, API, or Hindsight is unreachable, or when any required Rust-service
+heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). Configure
+host alerting for the failed unit before genesis.
+
 The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second
 runner refuses startup instead of racing the canonical cursor; process or connection
 loss releases the lock automatically so the configured restart policy can recover.

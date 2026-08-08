@@ -1,0 +1,18 @@
+[Unit]
+Description=A Tiny Civilization complete backend health check
+Documentation=https://github.com/42kyynfqjv-dot/a-tiny-civilization/blob/main/docs/operations/PRODUCTION.md
+Wants=network-online.target
+After=network-online.target docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/a-tiny-civilization
+EnvironmentFile=/etc/a-tiny-civilization-production.env
+ExecStart=/usr/bin/env bash ./scripts/backend-status.sh --env-file /etc/a-tiny-civilization-production.env
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=full
+ReadWritePaths=/var/lib/docker

@@ -52,20 +52,4 @@ cd "$project_root"
 # managed tunnel may span more than one Compose profile.
 "${compose_command[@]}" "${compose_args[@]}" up --no-deps -d web
 
-for _ in {1..60}; do
-  if "${compose_command[@]}" "${compose_args[@]}" exec -T api \
-    curl --fail --silent http://localhost:8080/health/ready >/dev/null \
-    && "${compose_command[@]}" "${compose_args[@]}" exec -T web \
-      node -e "fetch('http://localhost:3000').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" \
-    && "${compose_command[@]}" "${compose_args[@]}" exec -T hindsight \
-      curl --fail --silent http://127.0.0.1:8888/health >/dev/null \
-    && [[ "$("${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
-      "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"SELECT COUNT(DISTINCT service_name) FROM service_heartbeats WHERE service_name IN ('simulation-runner','observer-projector','memory-worker','cognition-worker') AND last_seen_at >= NOW() - INTERVAL '60 seconds'\"")" == "4" ]]; then
-      echo "Production application deployment is ready: web, API, Hindsight, runner, projector, memory, and cognition are live."
-      exit 0
-  fi
-  sleep 1
-done
-
-echo "application containers started but the complete backend service set did not become ready within 60 seconds" >&2
-exit 1
+"${project_root}/scripts/backend-status.sh" --env-file "$environment_file" --wait-seconds 60

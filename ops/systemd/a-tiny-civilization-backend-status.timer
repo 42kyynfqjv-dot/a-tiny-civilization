@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic A Tiny Civilization complete backend health check
+
+[Timer]
+OnCalendar=*:0/2
+RandomizedDelaySec=15s
+Persistent=true
+Unit=a-tiny-civilization-backend-status.service
+
+[Install]
+WantedBy=timers.target
