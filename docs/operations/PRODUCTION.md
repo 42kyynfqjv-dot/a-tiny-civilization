@@ -491,8 +491,9 @@ systemctl list-timers 'a-tiny-civilization-*'
 
 The base backup runs daily with a bounded random delay; freshness and WAL archival are
 checked hourly. A failed unit is intentionally visible in `systemctl` and the journal
-rather than being silently retried as if the backup were current. Configure host-level
-alerting to notify an operator for either failed service.
+rather than being silently retried as if the backup were current. Both services route failure to
+the same rate-limited operations-alert unit installed with the backend monitor; configure its HTTPS
+receiver before relying on unattended backups.
 
 ## Required gates before public genesis
 
@@ -555,5 +556,5 @@ systemctl status a-tiny-civilization-moderation-status.service
 The service uses `/etc/a-tiny-civilization-production.env` and assumes the repository is deployed at
 `/opt/a-tiny-civilization`, matching the current host deployment helper. Change both paths in the
 copied unit if the host differs. Configure host alerting for a failed service before accepting a
-purchase; failure means the API/container is unavailable or at least one paid label exceeded the
-review threshold.
+purchase; this service is already wired to the shared rate-limited operations-alert unit. Failure
+means the API/container is unavailable or at least one paid label exceeded the review threshold.

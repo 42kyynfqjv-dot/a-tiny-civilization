@@ -103,6 +103,17 @@ if ! grep -Fxq "EnvironmentFile=-${canonical_environment}" \
   echo "operations alert unit does not use the canonical optional production environment file" >&2
   exit 1
 fi
+for monitored_unit in \
+  ops/systemd/a-tiny-civilization-backend-status.service \
+  ops/systemd/a-tiny-civilization-backup.service \
+  ops/systemd/a-tiny-civilization-backup-status.service \
+  ops/systemd/a-tiny-civilization-moderation-status.service; do
+  if ! grep -Fxq 'OnFailure=a-tiny-civilization-operations-alert@%n.service' \
+    "$monitored_unit"; then
+    echo "$monitored_unit does not route failures to the operator alert unit" >&2
+    exit 1
+  fi
+done
 if rg -q '/etc/a-tiny-civilization/production\.env' ops docs scripts; then
   echo "legacy split production environment path remains in the repository" >&2
   exit 1

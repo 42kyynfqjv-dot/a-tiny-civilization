@@ -4,6 +4,8 @@ Documentation=https://github.com/42kyynfqjv-dot/a-tiny-civilization/blob/main/do
 Wants=network-online.target
 After=network-online.target docker.service
 Requires=docker.service
+OnFailure=a-tiny-civilization-operations-alert@%n.service
+OnFailureJobMode=replace
 
 [Service]
 Type=oneshot
