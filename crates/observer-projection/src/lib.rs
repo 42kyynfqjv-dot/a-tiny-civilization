@@ -153,6 +153,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
                 | DomainEvent::OrganismSocialActionValueChanged { .. }
+                | DomainEvent::OrganismSignalActionAssociationChanged { .. }
                 | DomainEvent::CognitionRequestSelected { .. }
                 | DomainEvent::CognitionInputRecorded { .. }
                 | DomainEvent::ReproductiveDevelopmentStarted { .. }
@@ -619,6 +620,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::OrganismActionValueChanged { .. }
             | DomainEvent::OrganismSocialActionValueChanged { .. }
+            | DomainEvent::OrganismSignalActionAssociationChanged { .. }
             | DomainEvent::CognitionRequestSelected { .. }
             | DomainEvent::CognitionInputRecorded { .. }
             | DomainEvent::ReproductiveDevelopmentStarted { .. }

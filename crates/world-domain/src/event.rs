@@ -7,8 +7,8 @@ use crate::{
     HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
     MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
     PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
-    ReproductivePhysiologyCommitment, S2CellId, SimTick, SituatedPerception, SpeciesIdentity,
-    WorldConfiguration, WorldId, WorldManifest,
+    ReproductivePhysiologyCommitment, S2CellId, SignalActionAssociationState, SimTick,
+    SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -65,6 +65,9 @@ pub const SOCIAL_LEARNING_EVENT_SCHEMA_VERSION: u16 = 20;
 pub const MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION: u16 = 21;
 /// Schema twenty-two adds spatially distinct, label-free surface contact regions.
 pub const MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION: u16 = 22;
+/// Adds private associations between a directly heard amplitude and a subsequently
+/// witnessed primitive action. No signal meaning is committed.
+pub const SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION: u16 = 23;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -320,6 +323,14 @@ pub enum DomainEvent {
         from: Option<ActionValueState>,
         to: ActionValueState,
     },
+    /// One direct, private temporal association: the observer heard this actor's
+    /// physical signal on the preceding tick and directly witnessed its action now.
+    OrganismSignalActionAssociationChanged {
+        observer_id: EntityId,
+        actor_id: EntityId,
+        from: Option<SignalActionAssociationState>,
+        to: SignalActionAssociationState,
+    },
     /// One world-total, simulated-time-budgeted optional cognition request. It
     /// contains only body-owned situated inputs and cannot directly change state.
     CognitionRequestSelected {
@@ -491,6 +502,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
             | MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
             | MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
+            | SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -695,6 +707,14 @@ fn validate_event_for_schema(
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
+    if event_schema_version < SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismSignalActionAssociationChanged { .. }
+        )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
     match event {
         DomainEvent::OrganismInitialized {
             species,
@@ -894,6 +914,48 @@ fn validate_event_for_schema(
                         "invalid social action-value transition".to_owned(),
                     ));
                 }
+            }
+        }
+        DomainEvent::OrganismSignalActionAssociationChanged {
+            observer_id,
+            actor_id,
+            from,
+            to,
+        } => {
+            to.validate()
+                .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            if observer_id == actor_id {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "signal-action association cannot observe self".to_owned(),
+                ));
+            }
+            let expected_observations = match from {
+                Some(from) => {
+                    from.validate().map_err(|error| {
+                        EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                    })?;
+                    if from.signal_intensity != to.signal_intensity
+                        || from.action_kind != to.action_kind
+                    {
+                        return Err(EventBatchError::InvalidEmbodiedEvent(
+                            "signal-action association changed its address".to_owned(),
+                        ));
+                    }
+                    from.observations.checked_add(1).ok_or_else(|| {
+                        EventBatchError::InvalidEmbodiedEvent(
+                            "signal-action observation count overflowed".to_owned(),
+                        )
+                    })?
+                }
+                None => 1,
+            };
+            let expected_value = from
+                .map_or(1_i16, |from| from.value.saturating_add(1))
+                .min(crate::ACTION_VALUE_MAX);
+            if to.observations != expected_observations || to.value != expected_value {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "invalid signal-action association transition".to_owned(),
+                ));
             }
         }
         DomainEvent::CognitionRequestSelected { selection } => selection

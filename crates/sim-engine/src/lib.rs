@@ -38,9 +38,10 @@ use world_domain::{
     PrimitiveAction, PrimitiveActionKind, PropertyReading,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
-    SOCIAL_LEARNING_EVENT_SCHEMA_VERSION, SequenceOverflow, SimTick, SituatedPerception,
-    SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION,
+    SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    SOCIAL_LEARNING_EVENT_SCHEMA_VERSION, SequenceOverflow, SignalActionAssociationState, SimTick,
+    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
@@ -108,6 +109,9 @@ pub const MATERIAL_SURFACE_REGIONS_RULESET_VERSION: u32 = 20;
 /// Ruleset twenty-one gives neutral local sound eight selectable physical
 /// intensities. The values carry no token, word, meaning, or purpose.
 pub const ACOUSTIC_VARIATION_RULESET_VERSION: u32 = 21;
+/// Ruleset twenty-two lets an organism privately associate a sound amplitude heard
+/// from another organism with that organism's directly witnessed next action.
+pub const SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION: u32 = 22;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -131,6 +135,7 @@ pub const MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION: u16 = 20;
 pub const SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 21;
 pub const MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION: u16 = 22;
 pub const MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION: u16 = 23;
+pub const SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 24;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -168,6 +173,7 @@ const MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION: u16 = 20;
 const SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 21;
 const MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION: u16 = 22;
 const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
+const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
@@ -424,6 +430,12 @@ fn learned_candidate_weight(base: u32, value: Option<ActionValueState>) -> u32 {
     }
 }
 
+fn associated_candidate_weight(base: u32, value: Option<SignalActionAssociationState>) -> u32 {
+    value.map_or(base, |value| {
+        base.saturating_add(u32::from(value.value.unsigned_abs()).div_ceil(8))
+    })
+}
+
 fn inherited_candidate_weight(
     base: u32,
     disposition: &HeritableDisposition,
@@ -551,6 +563,10 @@ pub struct OrganismState {
     social_action_values: Vec<ActionValueState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     social_action_values_updated_at: Option<SimTick>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    signal_action_associations: Vec<SignalActionAssociationState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    signal_action_associations_updated_at: Option<SimTick>,
     death: Option<DeathRecord>,
 }
 
@@ -742,6 +758,45 @@ impl OrganismState {
             .binary_search_by_key(&action_kind, |entry| entry.action_kind)
             .ok()
             .map(|index| self.social_action_values[index])
+    }
+
+    fn signal_action_association(
+        &self,
+        signal_intensity: u8,
+        action_kind: PrimitiveActionKind,
+    ) -> Option<SignalActionAssociationState> {
+        self.signal_action_associations
+            .binary_search_by_key(&(signal_intensity, action_kind), |entry| {
+                (entry.signal_intensity, entry.action_kind)
+            })
+            .ok()
+            .map(|index| self.signal_action_associations[index])
+    }
+
+    fn recent_signal_from(&self, actor_id: EntityId, at_tick: SimTick) -> Option<u8> {
+        self.perception_memory
+            .iter()
+            .find(|entry| {
+                entry.subject_id == Some(actor_id)
+                    && entry.channel == PerceptionChannel::Sound
+                    && entry.property_code == "signal_amplitude"
+                    && entry.observed_at == at_tick
+            })
+            .and_then(|entry| u8::try_from(entry.quantized_value).ok())
+            .filter(|intensity| (1..=8).contains(intensity))
+    }
+
+    fn recent_signal(&self, at_tick: SimTick) -> Option<u8> {
+        self.perception_memory
+            .iter()
+            .find(|entry| {
+                entry.subject_id.is_some()
+                    && entry.channel == PerceptionChannel::Sound
+                    && entry.property_code == "signal_amplitude"
+                    && entry.observed_at == at_tick
+            })
+            .and_then(|entry| u8::try_from(entry.quantized_value).ok())
+            .filter(|intensity| (1..=8).contains(intensity))
     }
 
     fn age_ticks(&self) -> Option<u64> {
@@ -1846,6 +1901,17 @@ impl EngineState {
             }
         }
 
+        if self.uses_signal_action_association_driver()
+            && let Some(signal_intensity) = organism.recent_signal(self.tick)
+        {
+            for candidate in &mut candidates {
+                candidate.weight = associated_candidate_weight(
+                    candidate.weight,
+                    organism.signal_action_association(signal_intensity, candidate.action.kind),
+                );
+            }
+        }
+
         if let Some((cognition_action_kind, cognition_contact_region, cognition_signal_intensity)) =
             cognition_preference
         {
@@ -1890,7 +1956,9 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_acoustic_variation_driver() {
+            policy_version: if self.uses_signal_action_association_driver() {
+                7
+            } else if self.uses_acoustic_variation_driver() {
                 6
             } else if self.uses_social_learning_driver() {
                 5
@@ -1979,6 +2047,40 @@ impl EngineState {
             prior,
             ActionValueState {
                 value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind,
+                observations,
+                value,
+            },
+        ))
+    }
+
+    fn next_signal_action_association(
+        &self,
+        organism: &OrganismState,
+        signal_intensity: u8,
+        action_kind: PrimitiveActionKind,
+    ) -> Result<
+        (
+            Option<SignalActionAssociationState>,
+            SignalActionAssociationState,
+        ),
+        EngineError,
+    > {
+        let prior = organism.signal_action_association(signal_intensity, action_kind);
+        let observations =
+            prior.map_or(Ok(1), |prior| {
+                prior.observations.checked_add(1).ok_or(
+                    EngineError::ActionValueObservationOverflow(organism.organism_id),
+                )
+            })?;
+        let value = prior
+            .map_or(1_i16, |prior| prior.value.saturating_add(1))
+            .min(ACTION_VALUE_MAX);
+        Ok((
+            prior,
+            SignalActionAssociationState {
+                association_schema_version: SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+                signal_intensity,
                 action_kind,
                 observations,
                 value,
@@ -3289,6 +3391,22 @@ impl EngineState {
                         from,
                         to,
                     });
+                    if self.uses_signal_action_association_driver()
+                        && let Some(signal_intensity) =
+                            observer.recent_signal_from(actor_id, self.tick)
+                    {
+                        let (from, to) = self.next_signal_action_association(
+                            observer,
+                            signal_intensity,
+                            action.kind,
+                        )?;
+                        events.push(DomainEvent::OrganismSignalActionAssociationChanged {
+                            observer_id,
+                            actor_id,
+                            from,
+                            to,
+                        });
+                    }
                 }
             }
             events.extend(deaths);
@@ -3459,6 +3577,10 @@ impl EngineState {
         self.manifest.ruleset_version >= ACOUSTIC_VARIATION_RULESET_VERSION
     }
 
+    fn uses_signal_action_association_driver(&self) -> bool {
+        self.manifest.ruleset_version >= SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -3551,6 +3673,11 @@ impl EngineState {
                 .or_else(|| resulting_state.organisms.get(organism_id))
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::OrganismSocialActionValueChanged { observer_id, .. } => self
+                .organisms
+                .get(observer_id)
+                .or_else(|| resulting_state.organisms.get(observer_id))
+                .and_then(|organism| organism.embodied_patch),
+            DomainEvent::OrganismSignalActionAssociationChanged { observer_id, .. } => self
                 .organisms
                 .get(observer_id)
                 .or_else(|| resulting_state.organisms.get(observer_id))
@@ -4057,6 +4184,72 @@ impl EngineState {
         {
             return Err(EngineError::SocialLearningUnsupported);
         }
+        if self.uses_signal_action_association_driver() && tick_advanced {
+            let actions = events
+                .iter()
+                .filter_map(|event| match event {
+                    DomainEvent::OrganismActed {
+                        organism_id,
+                        action,
+                    } => Some((*organism_id, action.clone())),
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            let expected_observations = self.social_observations(&actions)?;
+            for observer in self
+                .organisms
+                .values()
+                .filter(|organism| organism.is_alive())
+            {
+                let expected =
+                    expected_observations
+                        .get(&observer.organism_id)
+                        .and_then(|actor_id| {
+                            observer
+                                .recent_signal_from(*actor_id, self.tick)
+                                .map(|intensity| (*actor_id, intensity))
+                        });
+                let matches = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        DomainEvent::OrganismSignalActionAssociationChanged {
+                            observer_id,
+                            actor_id,
+                            from,
+                            to,
+                        } if *observer_id == observer.organism_id => Some((*actor_id, *from, *to)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                match (expected, matches.as_slice()) {
+                    (None, []) => {}
+                    (Some((actor_id, intensity)), [(actual_actor, from, to)])
+                        if actor_id == *actual_actor =>
+                    {
+                        let action = actions.get(&actor_id).expect("selected action exists");
+                        let expected =
+                            self.next_signal_action_association(observer, intensity, action.kind)?;
+                        if expected.0 != *from || expected.1 != *to {
+                            return Err(EngineError::InvalidSignalActionAssociation(
+                                observer.organism_id,
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(EngineError::InvalidSignalActionAssociation(
+                            observer.organism_id,
+                        ));
+                    }
+                }
+            }
+        } else if events.iter().any(|event| {
+            matches!(
+                event,
+                DomainEvent::OrganismSignalActionAssociationChanged { .. }
+            )
+        }) {
+            return Err(EngineError::SignalActionAssociationUnsupported);
+        }
         if self.uses_reproductive_physiology_driver() {
             let is_reproductive_event = |event: &DomainEvent| {
                 matches!(
@@ -4221,7 +4414,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_material_surface_regions_driver() {
+        if self.uses_signal_action_association_driver() {
+            SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+        } else if self.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
         } else if self.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
@@ -4294,7 +4489,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_material_surface_regions_driver() {
+        if self.uses_signal_action_association_driver() {
+            SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION
@@ -4501,6 +4698,8 @@ impl EngineState {
                     action_values_updated_at: None,
                     social_action_values: Vec::new(),
                     social_action_values_updated_at: None,
+                    signal_action_associations: Vec::new(),
+                    signal_action_associations_updated_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -5105,6 +5304,8 @@ impl EngineState {
                     action_values_updated_at: None,
                     social_action_values: Vec::new(),
                     social_action_values_updated_at: None,
+                    signal_action_associations: Vec::new(),
+                    signal_action_associations_updated_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -5336,6 +5537,49 @@ impl EngineState {
                     Err(index) => observer.social_action_values.insert(index, *to),
                 }
                 observer.social_action_values_updated_at = Some(self.tick);
+            }
+            DomainEvent::OrganismSignalActionAssociationChanged {
+                observer_id,
+                actor_id,
+                from,
+                to,
+            } => {
+                if !self.uses_signal_action_association_driver() || observer_id == actor_id {
+                    return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                }
+                self.require_living_organism(*observer_id)?;
+                self.require_living_organism(*actor_id)?;
+                to.validate()
+                    .map_err(|_| EngineError::InvalidSignalActionAssociation(*observer_id))?;
+                let observer = self
+                    .organisms
+                    .get_mut(observer_id)
+                    .expect("living observer presence checked");
+                let expected_observations = from.map_or(Ok(1), |from| {
+                    from.observations
+                        .checked_add(1)
+                        .ok_or(EngineError::ActionValueObservationOverflow(*observer_id))
+                })?;
+                let expected_value = from
+                    .map_or(1_i16, |from| from.value.saturating_add(1))
+                    .min(ACTION_VALUE_MAX);
+                if observer.signal_action_associations_updated_at == Some(self.tick)
+                    || observer.signal_action_association(to.signal_intensity, to.action_kind)
+                        != *from
+                    || to.observations != expected_observations
+                    || to.value != expected_value
+                {
+                    return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                }
+                let key = (to.signal_intensity, to.action_kind);
+                match observer
+                    .signal_action_associations
+                    .binary_search_by_key(&key, |entry| (entry.signal_intensity, entry.action_kind))
+                {
+                    Ok(index) => observer.signal_action_associations[index] = *to,
+                    Err(index) => observer.signal_action_associations.insert(index, *to),
+                }
+                observer.signal_action_associations_updated_at = Some(self.tick);
             }
             DomainEvent::CognitionRequestSelected { selection } => {
                 if !self.uses_cognition_driver() {
@@ -6048,6 +6292,27 @@ impl EngineState {
             {
                 return Err(EngineError::SocialLearningUnsupported);
             }
+            if self.uses_signal_action_association_driver() {
+                if organism.signal_action_associations.windows(2).any(|pair| {
+                    (pair[0].signal_intensity, pair[0].action_kind)
+                        >= (pair[1].signal_intensity, pair[1].action_kind)
+                }) || organism
+                    .signal_action_associations
+                    .iter()
+                    .any(|entry| entry.validate().is_err())
+                    || organism
+                        .signal_action_associations_updated_at
+                        .is_some_and(|updated_at| updated_at > self.tick)
+                {
+                    return Err(EngineError::InvalidSignalActionAssociation(
+                        organism.organism_id,
+                    ));
+                }
+            } else if !organism.signal_action_associations.is_empty()
+                || organism.signal_action_associations_updated_at.is_some()
+            {
+                return Err(EngineError::SignalActionAssociationUnsupported);
+            }
             if organism
                 .parent_ids
                 .windows(2)
@@ -6364,7 +6629,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_material_surface_regions_driver() {
+        let snapshot_schema_version = if state.uses_signal_action_association_driver() {
+            SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
@@ -6456,12 +6723,15 @@ impl Snapshot {
                 | SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
+                | SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_material_surface_regions_driver() {
+        let expected_schema_version = if self.state.uses_signal_action_association_driver() {
+            SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
@@ -6656,7 +6926,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_material_surface_regions_driver() {
+        let expected_schema = if state.uses_signal_action_association_driver() {
+            SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+        } else if state.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
         } else if state.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
@@ -6717,7 +6989,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
         } else if expected_schema == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
@@ -6970,6 +7244,10 @@ pub enum EngineError {
     InvalidSocialActionValueState(EntityId),
     #[error("organism {0} has an invalid social-action-value transition")]
     InvalidSocialActionValueTransition(EntityId),
+    #[error("signal-action association is unsupported by this ruleset")]
+    SignalActionAssociationUnsupported,
+    #[error("organism {0} has an invalid signal-action association")]
+    InvalidSignalActionAssociation(EntityId),
     #[error("external cognition is unsupported by this ruleset")]
     CognitionUnsupported,
     #[error("cognition request selection is invalid: {0}")]
@@ -10303,6 +10581,177 @@ mod tests {
                 .expect("reservoir replay")
                 .state,
             after_tick
+        );
+    }
+
+    #[test]
+    fn ruleset_twenty_two_associates_heard_amplitude_with_the_next_witnessed_action() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x126));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13_503_953_896_175_478_597),
+            SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION,
+        );
+        let mut first = regulated_full_earth_person(world_id, 0x741, 10_000_000, 1_000_000);
+        let mut second = regulated_full_earth_person(world_id, 0x742, 10_000_000, 1_000_000);
+        first.birth_category = BirthCategory::new("female").expect("category");
+        second.birth_category = BirthCategory::new("male").expect("category");
+        for founder in [&mut first, &mut second] {
+            founder.reproductive_physiology =
+                Some(reproductive_fixture_profile(founder.species.clone()));
+            founder.heritable_disposition_profile =
+                Some(heritable_fixture_profile(founder.species.clone()));
+        }
+        let patch = first.embodied_patch.expect("founder patch");
+        let water = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("water identity");
+        let reservoir = InitialMaterialInstance {
+            object_id: EntityId::deterministic(world_id, b"association-water"),
+            material: water.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000),
+            oral_transfer_profiles: vec![OralTransferCommitment {
+                commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "association-water-v1".to_owned(),
+                profile_digest: Digest::sha256(b"association water response"),
+                material: water.clone(),
+                species: human(),
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                transfer_mass_milligrams: 10_000,
+                recoverable_energy_joules: 100,
+                hydration_recovery_seconds: 200,
+            }],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "association-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"association reservoir"),
+                material: water,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("L10 coverage"),
+                maximum_mass_milligrams: 1_000_000,
+                replenishment_mass_milligrams_per_tick: 10_000,
+            }),
+        };
+
+        let probe_initial = EngineState::new(manifest.clone());
+        let probe_events = probe_initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![first.clone(), second.clone()],
+                vec![reservoir.clone()],
+            )
+            .expect("association probe genesis");
+        let (probe, _) = probe_initial
+            .commit(EventSequence::new(1), Digest::ZERO, probe_events)
+            .expect("association probe");
+        for founder in [&mut first, &mut second] {
+            let organism = probe.organisms.get(&founder.organism_id).expect("founder");
+            let signal_age = (1..=10_000)
+                .find(|age_ticks| {
+                    probe
+                        .deterministic_policy_action(organism, *age_ticks)
+                        .is_ok_and(|action| action.kind == PrimitiveActionKind::EmitSignal)
+                })
+                .expect("policy eventually emits a signal");
+            founder.initial_age_ticks = signal_age - 1;
+        }
+
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![first, second],
+                vec![reservoir],
+            )
+            .expect("association genesis");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("association genesis commit");
+        assert_eq!(
+            genesis.event_schema_version,
+            SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+        );
+        let first_events = running
+            .plan_next_tick_with_celestial_and_cognition(
+                CelestialState::new(
+                    TdbSecondsSinceJ2000::new(300),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ),
+                &[],
+            )
+            .expect("signal tick");
+        assert_eq!(
+            first_events
+                .iter()
+                .filter(|event| matches!(event, DomainEvent::OrganismActed { action, .. } if action.kind == PrimitiveActionKind::EmitSignal))
+                .count(),
+            2
+        );
+        let (after_signal, first_tick) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, first_events)
+            .expect("signal tick commit");
+        let second_events = after_signal
+            .plan_next_tick_with_celestial_and_cognition(
+                CelestialState::new(
+                    TdbSecondsSinceJ2000::new(600),
+                    CartesianMillimetres::new(2, 3, 4),
+                    CartesianMillimetres::new(5, 6, 7),
+                ),
+                &[],
+            )
+            .expect("association tick");
+        assert_eq!(
+            second_events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    DomainEvent::OrganismSignalActionAssociationChanged { .. }
+                ))
+                .count(),
+            2
+        );
+        let mut missing = second_events.clone();
+        missing.retain(|event| {
+            !matches!(
+                event,
+                DomainEvent::OrganismSignalActionAssociationChanged { .. }
+            )
+        });
+        assert!(matches!(
+            after_signal
+                .clone()
+                .commit(EventSequence::new(3), first_tick.batch_hash, missing),
+            Err(EngineError::InvalidSignalActionAssociation(_))
+        ));
+        let (associated, second_tick) = after_signal
+            .commit(EventSequence::new(3), first_tick.batch_hash, second_events)
+            .expect("association tick commit");
+        assert!(associated.organisms.values().all(|organism| {
+            organism.signal_action_associations.len() == 1
+                && organism.signal_action_associations[0].observations == 1
+        }));
+        let snapshot = Snapshot::new(
+            associated.clone(),
+            second_tick.sequence,
+            second_tick.batch_hash,
+        )
+        .expect("association snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, first_tick, second_tick])
+                .expect("association replay")
+                .state,
+            associated
         );
     }
 

@@ -210,6 +210,7 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
                 | DomainEvent::OrganismSocialActionValueChanged { .. }
+                | DomainEvent::OrganismSignalActionAssociationChanged { .. }
                 | DomainEvent::CognitionRequestSelected { .. }
                 | DomainEvent::CognitionInputRecorded { .. }
                 | DomainEvent::ReproductiveDevelopmentStarted { .. }
@@ -430,6 +431,7 @@ async fn apply_finding_events(
             | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::OrganismActionValueChanged { .. }
             | DomainEvent::OrganismSocialActionValueChanged { .. }
+            | DomainEvent::OrganismSignalActionAssociationChanged { .. }
             | DomainEvent::CognitionRequestSelected { .. }
             | DomainEvent::CognitionInputRecorded { .. }
             | DomainEvent::ReproductiveDevelopmentStarted { .. }

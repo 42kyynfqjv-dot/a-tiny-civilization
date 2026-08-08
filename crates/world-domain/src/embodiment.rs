@@ -344,6 +344,35 @@ pub struct ActionValueState {
     pub value: i16,
 }
 
+pub const SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION: u16 = 1;
+
+/// A private, bounded association between one directly heard physical amplitude
+/// and one subsequently witnessed primitive action. It contains no inferred
+/// message, word, intention, or observer label.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct SignalActionAssociationState {
+    pub association_schema_version: u16,
+    pub signal_intensity: u8,
+    pub action_kind: PrimitiveActionKind,
+    pub observations: u32,
+    pub value: i16,
+}
+
+impl SignalActionAssociationState {
+    pub fn validate(self) -> Result<(), EmbodimentError> {
+        if self.association_schema_version != SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION {
+            return Err(EmbodimentError::UnsupportedSignalActionAssociationSchema);
+        }
+        if !(1..=8).contains(&self.signal_intensity)
+            || self.observations == 0
+            || !(1..=ACTION_VALUE_MAX).contains(&self.value)
+        {
+            return Err(EmbodimentError::InvalidSignalActionAssociation);
+        }
+        Ok(())
+    }
+}
+
 impl ActionValueState {
     pub fn validate(self) -> Result<(), EmbodimentError> {
         if self.value_schema_version != ACTION_VALUE_STATE_SCHEMA_VERSION {
@@ -412,6 +441,10 @@ pub enum EmbodimentError {
     UnsupportedActionValueSchema,
     #[error("invalid action-value state")]
     InvalidActionValueState,
+    #[error("unsupported signal-action association schema")]
+    UnsupportedSignalActionAssociationSchema,
+    #[error("invalid signal-action association")]
+    InvalidSignalActionAssociation,
     #[error("need signal intensity must be greater than zero")]
     ZeroNeedIntensity,
     #[error("perception property code {0:?} is invalid")]

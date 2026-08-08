@@ -560,3 +560,10 @@ eight selectable physical intensities instead of one invariant amplitude. The va
 word, message, or meaning, but direct source-bound sound memories and bounded cognition can
 distinguish them. The next provisional world and qualification default to ruleset 21; ruleset-20
 history remains byte-identical. ADR 0098 records the policy and model-contract boundary.
+
+Ruleset 22 closes the first learning loop without supplying meaning. An organism may privately
+associate a directly heard amplitude with the same source's next directly witnessed primitive
+action, then weakly bias its response when that amplitude is heard again. Association events and
+state never enter public projections, newborns inherit none of them, and the engine contains no
+message or vocabulary. Fresh genesis and qualification now default to ruleset 22; ADR 0099 records
+the temporal and privacy invariants.

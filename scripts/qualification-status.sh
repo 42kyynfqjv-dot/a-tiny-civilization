@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-21}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-22}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2

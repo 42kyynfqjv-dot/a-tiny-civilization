@@ -46,7 +46,8 @@ pub use embodiment::{
     MetabolicRateCommitment, NeedKind, NeedSignal,
     PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PerceptionChannel,
     PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment, PrimitiveAction,
-    PrimitiveActionKind, PropertyReading, SituatedPerception,
+    PrimitiveActionKind, PropertyReading, SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+    SignalActionAssociationState, SituatedPerception,
 };
 pub use environment::{
     LocalEnvironmentError, NORMAL_YEAR_PHASE_COUNT, ProvisionalLocalEnvironmentBaseline,
@@ -63,7 +64,8 @@ pub use event::{
     MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
     OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION,
-    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
+    SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
+    SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
