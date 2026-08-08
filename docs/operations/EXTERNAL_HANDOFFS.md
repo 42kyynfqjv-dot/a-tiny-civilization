@@ -137,6 +137,8 @@ refund ID. Newly admitted payments retain signed PaymentIntent evidence; older r
 closed for manual review. The operator-only moderation queue and immutable decision ledger are
 implemented. Before enabling payments, choose a stable non-secret `ATINY_MODERATOR_ID`, schedule
 the queue command in monitoring, and establish who responds to a stale-queue alert.
+The repository includes a fifteen-minute systemd timer for this check, and production preflight now
+refuses a Stripe-enabled configuration without the moderator identity.
 
 ```bash
 civilization-api moderation-queue --limit 100 --max-age-minutes 60

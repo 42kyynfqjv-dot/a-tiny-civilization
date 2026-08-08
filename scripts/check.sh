@@ -28,6 +28,7 @@ python3 -m py_compile ./scripts/query-inaturalist-range-candidates.py
 python3 ./scripts/acquire-jpl-de441.py >/dev/null
 python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/check-boundaries.sh
+./scripts/verify-supporter-production-policy.sh
 ./scripts/verify-demo.sh
 
 cd web

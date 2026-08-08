@@ -88,6 +88,10 @@ if [[ "${stripe_checkout_values}" -gt 0 ]]; then
     echo "Stripe Checkout requires observer sign-in" >&2
     exit 2
   fi
+  if [[ ! "${ATINY_MODERATOR_ID:-}" =~ ^[A-Za-z0-9._:@/-]{1,128}$ ]]; then
+    echo "Stripe Checkout requires a stable ATINY_MODERATOR_ID" >&2
+    exit 2
+  fi
 fi
 
 backup_names=(

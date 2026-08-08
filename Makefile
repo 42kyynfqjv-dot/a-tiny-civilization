@@ -1,7 +1,7 @@
 COMPOSE ?= docker-compose
 COMPOSE_FILES := -f compose.yaml
 
-.PHONY: up down logs ps smoke check proof-world hindsight-up production-preflight backup backup-status restore-drill
+.PHONY: up down logs ps smoke check proof-world hindsight-up production-preflight backup backup-status moderation-status restore-drill
 
 up:
 	$(COMPOSE) $(COMPOSE_FILES) up --build -d
@@ -37,6 +37,9 @@ backup:
 
 backup-status:
 	./scripts/backup-status.sh
+
+moderation-status:
+	./scripts/moderation-status.sh
 
 restore-drill:
 	./scripts/restore-drill.sh

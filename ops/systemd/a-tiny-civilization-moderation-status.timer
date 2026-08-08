@@ -1,0 +1,11 @@
+[Unit]
+Description=Periodic A Tiny Civilization paid-label moderation queue check
+
+[Timer]
+OnCalendar=*:0/15
+RandomizedDelaySec=2m
+Persistent=true
+Unit=a-tiny-civilization-moderation-status.service
+
+[Install]
+WantedBy=timers.target

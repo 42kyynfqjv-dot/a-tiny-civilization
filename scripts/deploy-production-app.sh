@@ -70,6 +70,11 @@ if grep -qE '^COGNITION_PAID_ENABLED=' "$environment_file" \
   echo "COGNITION_PAID_ENABLED must be true or false" >&2
   exit 2
 fi
+if grep -qE '^STRIPE_SECRET_KEY=.+$' "$environment_file" \
+   && ! grep -qE '^ATINY_MODERATOR_ID=[A-Za-z0-9._:@/-]{1,128}$' "$environment_file"; then
+  echo "Stripe Checkout requires a stable ATINY_MODERATOR_ID" >&2
+  exit 2
+fi
 
 compose_command=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then

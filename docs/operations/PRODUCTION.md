@@ -206,3 +206,25 @@ alerting to notify an operator for either failed service.
   and rotation procedures.
 
 Until those gates pass, this runbook can operate only an internal or proof observatory.
+
+## Moderation monitoring before enabling payments
+
+Stripe-enabled preflight requires `ATINY_MODERATOR_ID`, using a stable operator identifier made only
+from letters, digits, `.`, `_`, `:`, `@`, `/`, or `-`. It is audit identity, not a credential. Set
+`MODERATION_MAX_AGE_MINUTES` if the default 60-minute review threshold is unsuitable, then install
+and start the checked-in queue timer:
+
+```bash
+sudo install -m 0644 ops/systemd/a-tiny-civilization-moderation-status.service /etc/systemd/system/
+sudo install -m 0644 ops/systemd/a-tiny-civilization-moderation-status.timer /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now a-tiny-civilization-moderation-status.timer
+sudo systemctl start a-tiny-civilization-moderation-status.service
+systemctl status a-tiny-civilization-moderation-status.service
+```
+
+The service uses `/etc/a-tiny-civilization-production.env` and assumes the repository is deployed at
+`/opt/a-tiny-civilization`, matching the current host deployment helper. Change both paths in the
+copied unit if the host differs. Configure host alerting for a failed service before accepting a
+purchase; failure means the API/container is unavailable or at least one paid label exceeded the
+review threshold.
