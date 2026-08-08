@@ -88,6 +88,13 @@ instead requires `CLOUDFLARE_TUNNEL_TOKEN` and
 `ATINY_REQUIRE_COMPOSE_TUNNEL=1`. In either form, do not route PostgreSQL, the runner,
 migrations, Hindsight, cognition workers, or the observer API publicly.
 
+Enable **Always Use HTTPS** for the `atinycivilization.com` zone before public activation. The
+release verifier requires the plaintext endpoint to redirect to the exact canonical HTTPS URL.
+The application also returns a method-preserving 308 for plaintext requests to the canonical host,
+so a later zone-setting regression does not silently serve a released observatory over HTTP. The
+tunnel credential is intentionally insufficient to edit zone settings; this one reversible toggle
+must therefore be made with a zone-scoped API token or in **SSL/TLS → Edge Certificates**.
+
 Keep DNS and the site owner-only until the genesis gates in
 [Production](PRODUCTION.md) pass. Add Cloudflare Access before exposing any future
 administration route.

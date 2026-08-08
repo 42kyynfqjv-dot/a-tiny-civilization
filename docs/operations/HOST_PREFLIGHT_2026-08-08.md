@@ -12,9 +12,9 @@ The successful host run verified:
   `0d9d60619b7d6d762aa55bab86beb97f3eec3d6a`;
 - the seven-dimension experimental quality-world admission;
 - the six-route source-bound public-observatory admission at commit
-  `d5e1c209fe1b490c040b509d90287137c311f9c9` (superseding the initially verified
-  `cf5f045be50d71efb223c58a877682febe7cd866` tree after explicit non-root container ownership was
-  added);
+  `33a129097b37854080daac3884a7527ac27410f4` (superseding the initially verified
+  `cf5f045be50d71efb223c58a877682febe7cd866` tree after explicit non-root container ownership and
+  a canonical-host HTTPS safeguard were added);
 - a fresh composition-0.1.1 runtime tree containing 147,469 listed files, owned by root and the
   runner service group with no group/world write access; and
 - complete full-Earth composition validation plus exact length and SHA-256 verification of both

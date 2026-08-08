@@ -1,7 +1,7 @@
 # Public observatory admission — 2026-08-08
 
 The observer-facing surface at source commit
-`d5e1c209fe1b490c040b509d90287137c311f9c9` passes the pre-deployment observatory review.
+`33a129097b37854080daac3884a7527ac27410f4` passes the pre-deployment observatory review.
 The adjacent canonical JSON record binds the review to the exact `web/` and
 `docs/policies/` trees and to quality-world admission SHA-256
 `ba8c5abc0e3e005bbf0e21e4d473d33ce1902fda2a9ee6649e4427912b279dde` for world
@@ -13,8 +13,9 @@ The reviewed surface includes:
 - a separate read-only observer wiki;
 - public privacy, terms, supporter-naming, and restrained-presentation routes;
 - a supporter panel that remains closed when integrations are absent and cannot affect births;
-- same-origin API proxying, hardened response headers, and no-store authenticated responses; and
-- eight individually reported server-render and proxy contract tests under Node 24.19.0.
+- same-origin API proxying, hardened response headers, no-store authenticated responses, and a
+  canonical-host 308 HTTPS safeguard that preserves path, query, and request method; and
+- nine individually reported server-render, redirect, and proxy contract tests under Node 24.19.0.
 
 The reviewed Dockerfile assigns the site tree to the non-root runtime user explicitly. This closes
 the host-only failure mode where an owner-private checkout is copied with mode 0600 even though a
