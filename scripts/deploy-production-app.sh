@@ -53,3 +53,31 @@ cd "$project_root"
 "${compose_command[@]}" "${compose_args[@]}" up --no-deps -d web
 
 "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" --wait-seconds 60
+
+# A service-level health check cannot prove that the public read model is current,
+# nonempty, and privacy-safe. If this deployment contains a running world, resolve
+# its committed cursor from PostgreSQL and exercise the public API contract through
+# the loopback-only host binding before reporting success.
+running_world_rows="$(
+  "${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
+    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \
+      \"SELECT id::text,current_sequence::text FROM worlds WHERE status='running' ORDER BY id\""
+)"
+running_worlds=()
+if [[ -n "$running_world_rows" ]]; then
+  mapfile -t running_worlds <<<"$running_world_rows"
+fi
+if ((${#running_worlds[@]} > 1)); then
+  echo "deployment contains more than one running world" >&2
+  exit 1
+fi
+if ((${#running_worlds[@]} == 1)); then
+  IFS='|' read -r running_world_id running_world_sequence <<<"${running_worlds[0]}"
+  api_origin="$("${compose_command[@]}" "${compose_args[@]}" port api 8080)"
+  if [[ ! "$api_origin" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then
+    echo "observer API must publish exactly one IPv4 loopback port, found: ${api_origin:-none}" >&2
+    exit 1
+  fi
+  "${project_root}/scripts/observer-candidate-smoke.sh" \
+    "http://${api_origin}" "$running_world_id" "$running_world_sequence"
+fi

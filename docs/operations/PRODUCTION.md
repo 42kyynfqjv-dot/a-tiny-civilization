@@ -296,6 +296,13 @@ for incomplete memory delivery or a stuck cognition dispatch. Override those onl
 `BACKEND_PROJECTION_MAX_LAG_SEQUENCES` and `BACKEND_ASYNC_MAX_AGE_SECONDS` values in the monitor
 environment; changing them does not alter canonical history.
 
+The deployment helper additionally resolves the committed cursor for any running world and runs
+the full observer-candidate smoke gate through the API's loopback binding. A deploy fails if more
+than one world is running, the API is not bound only to IPv4 loopback, a projection is behind or
+empty, private/explicit mechanism data appears publicly, or the audit endpoint exposes event
+payloads rather than commitments. A pre-genesis deployment with no running world skips only this
+world-specific check.
+
 ## Deferred offsite backup checks
 
 After the first successful encrypted base backup, install the checked-in systemd units
