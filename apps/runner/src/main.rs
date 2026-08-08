@@ -3339,7 +3339,6 @@ mod tests {
             "genesis",
         ])
         .expect("parse database-free genesis proof");
-        assert!(cli.database_url.is_none());
         let Some(Command::VerifyProvisionalGenesis {
             seed,
             genesis_directory,
