@@ -30,12 +30,14 @@ Free filesystem capacity rose above the checked-in 10 GiB backend health floor.
 The corrected candidate images were then built locally without changing any running service. The
 backend image ID is `sha256:183ad1363f901234766456aa8ad18dc285af995c3849b0a5c0a932842fcd8e0f`
 and declares runtime user `civilization`; the observatory image ID is
-`sha256:81982273b92dbe6eade352704d4a8384dc7159aa40b643ac0e110379c1cec700` and declares runtime user
+`sha256:cc90433db19c8911705ccf028e5daa1fc7078e29ae8ffae1e8e82211a8281f6a` and declares runtime user
 `node`. Both passed the checked-in smoke test with a read-only root filesystem, all capabilities
 dropped, no-new-privileges, and only a temporary loopback port for the web process. The smoke caught
-and corrected owner-private checkout modes before admission was renewed. The final full host
-preflight then passed again against the replacement observatory admission. About 23 GB remained
-free after both image builds.
+and corrected owner-private checkout modes before admission was renewed. The observatory image was
+rebuilt and the pair was smoked again after the canonical-host HTTPS safeguard was admitted at
+`33a129097b37854080daac3884a7527ac27410f4`; the Rust image remained byte-identical. The final full
+host preflight then passed against the replacement observatory admission. About 23 GB remained free
+after both image builds.
 
 The remaining external configuration is deliberately outside this evidence: legal operator and
 jurisdiction review, monitored policy mailboxes, and optional Google/Apple/Stripe activation. Those
