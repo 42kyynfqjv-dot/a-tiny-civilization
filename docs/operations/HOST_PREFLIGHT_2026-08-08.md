@@ -53,3 +53,9 @@ loopback ports 3000, 5432, and 8080; the deployment helper now rejects that stat
 and requires a deliberate service cutover without deleting the legacy volume.
 It also rejects the legacy local-cognition container while that container holds the shared
 `atiny-ollama` model volume, preventing two Ollama processes from sharing its writable state.
+
+After the HTTPS-aware admission and rebuilt image pair were recorded, the complete host
+`public-genesis-preflight.sh` passed again against the protected environment, retained genesis,
+tick-1,000 evidence, and staged runtime closure. The repository-wide `scripts/check.sh` also passed
+against the dedicated quality PostgreSQL instance, including all Rust tests, 28 durable-history
+integrations, replay/tamper checks, production policy verifiers, and all nine observatory tests.
