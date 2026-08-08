@@ -636,7 +636,9 @@ Its checksum-covered evidence supersedes candidate v2 for launch review while le
 immutable. Deployment remains closed pending the scientific/assumption and observatory admission
 reviews.
 
-The next same-identity candidate additionally derives category-specific maturity timing from the
-pinned Amniote Life-History aggregates where exact taxon/category records exist. Missing values
-remain independently addressable assumptions; this is a provenance improvement rather than
-scientific admission.
+Canonical candidate v4 additionally derives category-specific maturity timing from the pinned
+Amniote Life-History aggregates where exact taxon/category records exist. Missing values remain
+independently addressable assumptions. The same-identity candidate passed at tick 1,680 with exact
+replay, current projections, complete Hindsight delivery, and one fixed-deadline local Qwen receipt.
+Its immutable evidence supersedes candidate v3 for launch review; this remains a provenance and
+mechanical improvement rather than scientific admission or deployment approval.
