@@ -681,3 +681,10 @@ passed at tick 1,680 with exact genesis and snapshot-tail replay, all five proje
 consumed with paid dispatch disabled. Its immutable evidence supersedes candidate v5 for launch
 review. The evidence changes provenance coverage only and does not authorize deployment, causal
 ecology, or scientific admission.
+
+Canonical candidate v7 additionally carries the complete point-scoped ERA5 normal-period evidence
+into the same-identity manifest. Preparation and initialization independently produced identical
+2,160-value artifacts before the fresh candidate passed at tick 1,680 with exact replay, complete
+Hindsight delivery, current projections, and one consumed local Qwen receipt. Its immutable
+evidence supersedes candidate v6 for launch review. ERA5 remains noncausal source evidence and does
+not authorize weather mechanics, scientific admission, or deployment.
