@@ -709,3 +709,11 @@ that changing temperature without exposing weather, month, season, or survival l
 precipitation remain pinned but noncausal until their temporal distributions and covariance are
 defined. Fresh genesis and qualification default to ruleset 27; ruleset-26 history remains
 byte-compatible. ADR 0120 records the provisional boundary.
+
+Canonical candidate v9 carries that boundary into a fresh same-identity genesis. Its exact
+ruleset-27 event chain, schema-5 weather binding, snapshot-plus-tail replay, all five projections,
+3,939 error-free Hindsight deliveries, person-only cognition deadlines, and one consumed zero-cost
+local Qwen result passed the fail-closed qualification report at tick 1,680. The immutable evidence
+bundle supersedes candidate v8 for mechanical launch review but does not authorize deployment or
+scientific admission. The qualification also caught and removed a replay-schema allowlist trap
+before evidence was sealed.
