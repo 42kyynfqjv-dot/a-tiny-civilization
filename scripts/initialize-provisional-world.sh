@@ -38,7 +38,7 @@ arguments=(
   init-provisional-full-earth
   --world-id "${world_id}"
   --seed "${world_seed}"
-  --composition data/provisional/full-earth-breadth-first-0.1.0.json
+  --composition data/provisional/full-earth-breadth-first-0.1.1.json
   --artifact-root .
   --provisional-land-origin-selection "${genesis_directory}/origin-selection.json"
   --provisional-origin-environment "${genesis_directory}/origin-environment.json"

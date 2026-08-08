@@ -46,7 +46,7 @@ material_resources="${output_directory}/material-resource-plan.json"
 
 "${data_executable}" derive provisional-origin-environment \
   --origin-selection "${origin_selection}" \
-  --composition data/provisional/full-earth-breadth-first-0.1.0.json \
+  --composition data/provisional/full-earth-breadth-first-0.1.1.json \
   --artifact-root . \
   --output "${origin_environment}"
 

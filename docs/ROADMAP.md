@@ -244,6 +244,12 @@ verify against local bytes and commit under SHA-256
 The manifest openly carries six coupled-validation gaps; completing this manifest does
 not clear any of them.
 
+The active ruleset-18 genesis path now pins its append-only successor,
+`data/provisional/full-earth-breadth-first-0.1.1.json`, whose fourth world component is the
+normalized, independently source-pinned fauna physiology v2 catalog. Preparation, initialization,
+runner defaults, and root-owned runtime staging all select the same 0.1.1 bytes and artifact set;
+the earlier 0.1.0 composition remains immutable evidence for histories that already reference it.
+
 Six upstream snapshots are now committed independently of any world bundle. They pin
 Natural Earth v5.1.2 generalized land polygons, NOAA ETOPO 2022 v1 bedrock relief, two
 CHELSA-BIOCLIM+ temperature products, the complete 1981–2010 ERA5 monthly normal-period
