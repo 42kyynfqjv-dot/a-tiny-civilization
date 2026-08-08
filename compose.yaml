@@ -21,6 +21,13 @@ x-rust-service: &rust-service
   init: true
   logging: *local-logging
   stop_grace_period: 60s
+  read_only: true
+  tmpfs:
+    - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
 
 services:
   db:
@@ -169,6 +176,13 @@ services:
     restart: unless-stopped
     logging: *local-logging
     stop_grace_period: 30s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   postgres-data:

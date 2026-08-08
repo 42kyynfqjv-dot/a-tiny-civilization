@@ -89,6 +89,13 @@ services:
     restart: unless-stopped
     logging: *local-logging
     stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
   cognition-worker:
     image: a-tiny-civilization-app:local
@@ -123,6 +130,13 @@ services:
     restart: unless-stopped
     logging: *local-logging
     stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
 
 volumes:
   hindsight-data:

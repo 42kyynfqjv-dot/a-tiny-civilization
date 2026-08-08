@@ -162,6 +162,12 @@ a 60-second shutdown grace period. An in-flight database transaction is therefor
 commit or roll back cleanly before the container runtime may force termination. CI verifies both
 the signal handlers and the composed grace periods.
 
+Every first-party runtime process uses an unprivileged image account, drops all Linux capabilities,
+forbids privilege escalation, and runs with a read-only root filesystem. A bounded, non-executable
+`/tmp` tmpfs is the only general scratch space. The web runtime directs Wrangler/Miniflare scratch
+state there; the runner's staged Earth inputs remain a separate read-only mount. CI verifies the
+fully composed service policy rather than trusting Dockerfile intent alone.
+
 ### Docker tunnel and backup profile
 
 From the repository checkout, load the protected environment file into the current
