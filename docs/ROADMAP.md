@@ -448,7 +448,9 @@ smaller than the former every-transition policy.
   and edge-proxy coverage. A versioned automatic screen rejects obvious abuse before payment and
   immutable human moderation still gates activation. A full-refund operator command now durably
   prepares terminal refunds, uses Stripe idempotency, and immutably records completion; transfers
-  are prohibited by policy. The monitored moderation workflow and public supporter UI remain.
+  are prohibited by policy. An operator-only queue now reports paid labels oldest-first, fails a
+  monitor check when review age exceeds its threshold, and stores immutable moderator decisions;
+  rejection resumes the refund automatically. The public supporter UI remains.
 
 ### 6. Public operations
 

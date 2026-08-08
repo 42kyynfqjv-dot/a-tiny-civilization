@@ -134,8 +134,19 @@ configured. A live payment UI is still intentionally absent.
 The repository also includes an operator-only, durable full-refund command. It prepares immutable
 intent before Stripe is called, uses a reservation-scoped idempotency key, and records the returned
 refund ID. Newly admitted payments retain signed PaymentIntent evidence; older rows without it fail
-closed for manual review. A monitored moderation queue and live credentials are still required
-before payments are enabled.
+closed for manual review. The operator-only moderation queue and immutable decision ledger are
+implemented. Before enabling payments, choose a stable non-secret `ATINY_MODERATOR_ID`, schedule
+the queue command in monitoring, and establish who responds to a stale-queue alert.
+
+```bash
+civilization-api moderation-queue --limit 100 --max-age-minutes 60
+civilization-api moderate --reservation-id UUID --decision approve
+civilization-api moderate --reservation-id UUID --decision reject
+```
+
+The queue command exits nonzero when any paid item has exceeded the age threshold. Approval needs
+no Stripe credential. Rejection records immutable evidence first and then requires
+`STRIPE_SECRET_KEY` to complete or resume the idempotent full refund.
 
 To activate that product, the owner will need to:
 

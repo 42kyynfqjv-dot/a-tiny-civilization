@@ -28,6 +28,7 @@ struct ReservationRow {
     birth_category: String,
     state: String,
     payment_reference: Option<String>,
+    payment_verified_at: Option<DateTime<Utc>>,
     created_at: DateTime<Utc>,
     activated_at: Option<DateTime<Utc>>,
     matched_birth_event_id: Option<Uuid>,
@@ -55,7 +56,7 @@ impl SupporterReservationStore for PostgresStore {
             ON CONFLICT (id) DO NOTHING
             RETURNING id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
-                birth_category, state, payment_reference, created_at, activated_at,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
                 matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
             "#,
         )
@@ -105,7 +106,7 @@ impl SupporterReservationStore for PostgresStore {
               AND state = 'pending_payment'
             RETURNING id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
-                birth_category, state, payment_reference, created_at, activated_at,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
                 matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
             "#,
         )
@@ -123,22 +124,45 @@ impl SupporterReservationStore for PostgresStore {
     async fn approve_reservation(
         &self,
         reservation_id: Uuid,
+        moderator_subject: &str,
     ) -> Result<SupporterReservation, ReservationStoreError> {
-        transition_reservation(self, reservation_id, "pending_moderation", "active", true).await
+        moderate_reservation(self, reservation_id, moderator_subject, "approved").await
     }
 
     async fn reject_reservation(
         &self,
         reservation_id: Uuid,
+        moderator_subject: &str,
     ) -> Result<SupporterReservation, ReservationStoreError> {
-        transition_reservation(
-            self,
-            reservation_id,
-            "pending_moderation",
-            "rejected",
-            false,
+        moderate_reservation(self, reservation_id, moderator_subject, "rejected").await
+    }
+
+    async fn list_pending_moderation(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<SupporterReservation>, ReservationStoreError> {
+        if limit == 0 || limit > 1_000 {
+            return Err(ReservationStoreError::Conflict(
+                "moderation queue limit must be between 1 and 1000".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, ReservationRow>(
+            r#"
+            SELECT id, world_id, supporter_subject, observer_label, target_role,
+                species_catalog, species_identifier, species_scientific_name, species_source_url,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
+                matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
+            FROM supporter_reservations
+            WHERE state='pending_moderation' AND payment_reference IS NOT NULL
+            ORDER BY created_at ASC,id ASC
+            LIMIT $1
+            "#,
         )
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
         .await
+        .map_err(operation_error)?;
+        rows.into_iter().map(parse_reservation).collect()
     }
 
     async fn match_committed_birth(
@@ -155,7 +179,7 @@ impl SupporterReservationStore for PostgresStore {
             r#"
             SELECT id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
-                birth_category, state, payment_reference, created_at, activated_at,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
                 matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
             FROM supporter_reservations
             WHERE world_id = $1
@@ -195,7 +219,7 @@ impl SupporterReservationStore for PostgresStore {
             WHERE id = $1
             RETURNING id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
-                birth_category, state, payment_reference, created_at, activated_at,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
                 matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
             "#,
         )
@@ -226,38 +250,127 @@ impl SupporterReservationStore for PostgresStore {
     }
 }
 
-async fn transition_reservation(
+#[derive(FromRow)]
+struct ModerationLockRow {
+    state: String,
+    automatic_policy_version: i16,
+}
+
+#[derive(FromRow)]
+struct ExistingModerationRow {
+    decision: String,
+    moderator_subject: String,
+}
+
+async fn moderate_reservation(
     store: &PostgresStore,
     reservation_id: Uuid,
-    expected: &str,
-    next: &str,
-    set_activated_at: bool,
+    moderator_subject: &str,
+    decision: &str,
 ) -> Result<SupporterReservation, ReservationStoreError> {
+    if moderator_subject.trim().is_empty()
+        || moderator_subject != moderator_subject.trim()
+        || moderator_subject.len() > 256
+        || moderator_subject.chars().any(char::is_control)
+    {
+        return Err(ReservationStoreError::Conflict(
+            "moderator subject must be trimmed, non-empty, control-free, and at most 256 bytes"
+                .to_owned(),
+        ));
+    }
+    let (next, activate) = match decision {
+        "approved" => ("active", true),
+        "rejected" => ("rejected", false),
+        _ => {
+            return Err(ReservationStoreError::Corrupt(
+                "unknown moderation decision".to_owned(),
+            ));
+        }
+    };
+    let mut transaction = store.pool().begin().await.map_err(operation_error)?;
+    let locked = sqlx::query_as::<_, ModerationLockRow>(
+        "SELECT state,automatic_policy_version FROM supporter_reservations WHERE id=$1 FOR UPDATE",
+    )
+    .bind(reservation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(operation_error)?
+    .ok_or(ReservationStoreError::NotFound(reservation_id))?;
+    let existing = sqlx::query_as::<_, ExistingModerationRow>(
+        "SELECT decision,moderator_subject FROM supporter_moderation_decisions WHERE reservation_id=$1",
+    )
+    .bind(reservation_id)
+    .fetch_optional(&mut *transaction)
+    .await
+    .map_err(operation_error)?;
+    if let Some(existing) = existing {
+        if existing.decision != decision || existing.moderator_subject != moderator_subject {
+            return Err(ReservationStoreError::Conflict(format!(
+                "reservation {reservation_id} already has different moderation evidence"
+            )));
+        }
+        let row = load_reservation_in_transaction(&mut transaction, reservation_id).await?;
+        transaction.commit().await.map_err(operation_error)?;
+        return parse_reservation(row);
+    }
+    if locked.state != "pending_moderation" {
+        return Err(ReservationStoreError::Conflict(format!(
+            "reservation {reservation_id} is not pending_moderation"
+        )));
+    }
     let row = sqlx::query_as::<_, ReservationRow>(
         r#"
         UPDATE supporter_reservations
-        SET state = $3,
-            activated_at = CASE WHEN $4 THEN NOW() ELSE activated_at END
-        WHERE id = $1 AND state = $2
+        SET state = $2,
+            activated_at = CASE WHEN $3 THEN NOW() ELSE activated_at END
+        WHERE id = $1 AND state = 'pending_moderation'
         RETURNING id, world_id, supporter_subject, observer_label, target_role,
             species_catalog, species_identifier, species_scientific_name, species_source_url,
-            birth_category, state, payment_reference, created_at, activated_at,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
             matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
         "#,
     )
     .bind(reservation_id)
-    .bind(expected)
     .bind(next)
-    .bind(set_activated_at)
-    .fetch_optional(store.pool())
+    .bind(activate)
+    .fetch_one(&mut *transaction)
     .await
     .map_err(operation_error)?;
-    match row {
-        Some(row) => parse_reservation(row),
-        None => Err(ReservationStoreError::Conflict(format!(
-            "reservation {reservation_id} is not {expected}"
-        ))),
-    }
+    sqlx::query(
+        r#"
+        INSERT INTO supporter_moderation_decisions (
+            reservation_id,decision,moderator_subject,automatic_policy_version
+        ) VALUES ($1,$2,$3,$4)
+        "#,
+    )
+    .bind(reservation_id)
+    .bind(decision)
+    .bind(moderator_subject)
+    .bind(locked.automatic_policy_version)
+    .execute(&mut *transaction)
+    .await
+    .map_err(operation_error)?;
+    transaction.commit().await.map_err(operation_error)?;
+    parse_reservation(row)
+}
+
+async fn load_reservation_in_transaction(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    reservation_id: Uuid,
+) -> Result<ReservationRow, ReservationStoreError> {
+    sqlx::query_as::<_, ReservationRow>(
+        r#"
+        SELECT id, world_id, supporter_subject, observer_label, target_role,
+            species_catalog, species_identifier, species_scientific_name, species_source_url,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
+            matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
+        FROM supporter_reservations WHERE id=$1
+        "#,
+    )
+    .bind(reservation_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(operation_error)
 }
 
 async fn load_or_idempotent_payment(
@@ -289,7 +402,7 @@ async fn load_reservation(
         r#"
         SELECT id, world_id, supporter_subject, observer_label, target_role,
             species_catalog, species_identifier, species_scientific_name, species_source_url,
-            birth_category, state, payment_reference, created_at, activated_at,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
             matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
         FROM supporter_reservations WHERE id = $1
         "#,
@@ -379,6 +492,7 @@ fn parse_reservation(row: ReservationRow) -> Result<SupporterReservation, Reserv
         request,
         state,
         payment_reference: row.payment_reference,
+        payment_verified_at: row.payment_verified_at,
         created_at: row.created_at,
         activated_at: row.activated_at,
         matched_birth,

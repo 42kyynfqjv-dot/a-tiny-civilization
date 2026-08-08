@@ -323,9 +323,11 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "chrono",
  "clap",
  "dotenvy",
  "observer-api",
+ "observer-projection",
  "oidc-adapter",
  "postgres-store",
  "stripe-adapter",

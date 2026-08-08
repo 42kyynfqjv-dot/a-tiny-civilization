@@ -44,8 +44,8 @@ Pre-launch public policies are checked in for [privacy](docs/policies/PRIVACY.md
 [world presentation](docs/policies/PRESENTATION_POLICY.md), and
 [service terms](docs/policies/TERMS.md). Accounts and payments stay disabled until the
 operator identity, jurisdiction-specific review, contact mailboxes, moderation queue,
-and live payment credentials are complete. The refund operation itself is implemented
-and tested.
+and live payment credentials are complete. The moderation and refund operations themselves are
+implemented and tested.
 
 ## Status
 

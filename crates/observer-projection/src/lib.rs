@@ -528,6 +528,8 @@ pub struct SupporterReservation {
     pub request: ReservationRequest,
     pub state: ReservationState,
     pub payment_reference: Option<String>,
+    #[serde(default)]
+    pub payment_verified_at: Option<DateTime<Utc>>,
     pub created_at: DateTime<Utc>,
     pub activated_at: Option<DateTime<Utc>>,
     pub matched_birth: Option<MatchedBirth>,
@@ -595,12 +597,20 @@ pub trait SupporterReservationStore: Send + Sync {
     async fn approve_reservation(
         &self,
         reservation_id: Uuid,
+        moderator_subject: &str,
     ) -> Result<SupporterReservation, ReservationStoreError>;
 
     async fn reject_reservation(
         &self,
         reservation_id: Uuid,
+        moderator_subject: &str,
     ) -> Result<SupporterReservation, ReservationStoreError>;
+
+    /// Returns paid labels awaiting human review in stable oldest-first order.
+    async fn list_pending_moderation(
+        &self,
+        limit: u32,
+    ) -> Result<Vec<SupporterReservation>, ReservationStoreError>;
 
     /// Observer-side matching for a birth that has already committed in canonical history.
     async fn match_committed_birth(
@@ -725,6 +735,7 @@ mod tests {
             request,
             state: ReservationState::Active,
             payment_reference: Some("stripe-event-1".to_owned()),
+            payment_verified_at: Some(Utc::now()),
             created_at: Utc::now(),
             activated_at: Some(Utc::now()),
             matched_birth: None,

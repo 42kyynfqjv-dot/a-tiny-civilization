@@ -9,9 +9,11 @@ repository.workspace = true
 [dependencies]
 anyhow.workspace = true
 axum.workspace = true
+chrono.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
 observer-api = { path = "../../crates/observer-api" }
+observer-projection = { path = "../../crates/observer-projection" }
 oidc-adapter = { path = "../../crates/oidc-adapter" }
 postgres-store = { path = "../../crates/postgres-store" }
 stripe-adapter = { path = "../../crates/stripe-adapter" }

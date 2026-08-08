@@ -1393,8 +1393,16 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
     assert_eq!(awaiting_review.state, ReservationState::PendingModeration);
     assert!(store.match_committed_birth(&birth).await?.is_none());
 
-    let active = store.approve_reservation(reservation_id).await?;
+    let active = store
+        .approve_reservation(reservation_id, "moderator-fixture")
+        .await?;
     assert_eq!(active.state, ReservationState::Active);
+    assert_eq!(
+        store
+            .approve_reservation(reservation_id, "moderator-fixture")
+            .await?,
+        active
+    );
     let matched = store
         .match_committed_birth(&birth)
         .await?
@@ -1419,7 +1427,9 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
     store
         .record_verified_payment(active_expiry_id, "stripe_webhook_event_2")
         .await?;
-    store.approve_reservation(active_expiry_id).await?;
+    store
+        .approve_reservation(active_expiry_id, "moderator-fixture")
+        .await?;
 
     let event_count: i64 =
         sqlx::query_scalar("SELECT COUNT(*) FROM event_batches WHERE world_id = $1")
@@ -1539,13 +1549,39 @@ async fn verified_stripe_events_are_atomic_append_only_and_idempotent(pool: PgPo
         .fetch_one(&pool)
         .await?;
     assert_eq!(state, "pending_moderation");
+    let moderation_queue = store.list_pending_moderation(100).await?;
+    assert_eq!(moderation_queue.len(), 1);
+    assert_eq!(moderation_queue[0].request.reservation_id, reservation_id);
     assert!(matches!(
         store
             .prepare_stripe_refund(reservation_id, StripeRefundReason::ModerationRejection)
             .await,
         Err(StripeRefundStoreError::Ineligible(id)) if id == reservation_id
     ));
-    store.reject_reservation(reservation_id).await?;
+    let rejected = store
+        .reject_reservation(reservation_id, "moderator-fixture")
+        .await?;
+    assert_eq!(
+        store
+            .reject_reservation(reservation_id, "moderator-fixture")
+            .await?,
+        rejected
+    );
+    assert!(matches!(
+        store
+            .reject_reservation(reservation_id, "different-moderator")
+            .await,
+        Err(observer_projection::ReservationStoreError::Conflict(_))
+    ));
+    assert!(
+        sqlx::query("DELETE FROM supporter_moderation_decisions WHERE reservation_id=$1")
+            .bind(reservation_id)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "moderation evidence is append-only"
+    );
+    assert!(store.list_pending_moderation(100).await?.is_empty());
     let prepared = store
         .prepare_stripe_refund(reservation_id, StripeRefundReason::ModerationRejection)
         .await?;

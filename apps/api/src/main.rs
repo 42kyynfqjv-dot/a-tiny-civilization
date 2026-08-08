@@ -1,8 +1,10 @@
 use std::{net::SocketAddr, sync::Arc, time::Duration};
 
 use anyhow::{Context, Result};
+use chrono::Utc;
 use clap::{Parser, Subcommand};
 use observer_api::ApiState;
+use observer_projection::SupporterReservationStore;
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient};
 use postgres_store::PostgresStore;
 use stripe_adapter::{
@@ -45,6 +47,30 @@ enum Command {
         reason: String,
         #[arg(long, env = "STRIPE_SECRET_KEY", hide_env_values = true)]
         stripe_secret_key: String,
+        #[arg(
+            long,
+            env = "STRIPE_API_BASE_URL",
+            default_value = "https://api.stripe.com/"
+        )]
+        stripe_api_base_url: String,
+    },
+    /// List paid labels awaiting review and fail when the queue is stale.
+    ModerationQueue {
+        #[arg(long, default_value_t = 100)]
+        limit: u32,
+        #[arg(long, default_value_t = 60)]
+        max_age_minutes: i64,
+    },
+    /// Approve or reject one paid label; rejection is followed by an idempotent refund.
+    Moderate {
+        #[arg(long)]
+        reservation_id: Uuid,
+        #[arg(long, value_parser = ["approve", "reject"])]
+        decision: String,
+        #[arg(long, env = "ATINY_MODERATOR_ID")]
+        moderator_id: String,
+        #[arg(long, env = "STRIPE_SECRET_KEY", hide_env_values = true)]
+        stripe_secret_key: Option<String>,
         #[arg(
             long,
             env = "STRIPE_API_BASE_URL",
@@ -181,6 +207,102 @@ async fn main() -> Result<()> {
                 tracing::info!(%reservation_id, %refund_id, "supporter refund complete");
             }
         }
+        Command::ModerationQueue {
+            limit,
+            max_age_minutes,
+        } => {
+            if max_age_minutes <= 0 {
+                anyhow::bail!("max-age-minutes must be positive");
+            }
+            let reservations = store
+                .list_pending_moderation(limit)
+                .await
+                .context("load supporter moderation queue")?;
+            let now = Utc::now();
+            let mut stale = 0_u32;
+            for reservation in &reservations {
+                let payment_verified_at = reservation
+                    .payment_verified_at
+                    .context("pending moderation reservation has no verified-payment timestamp")?;
+                let age_minutes = (now - payment_verified_at).num_minutes().max(0);
+                if age_minutes >= max_age_minutes {
+                    stale = stale.saturating_add(1);
+                }
+                tracing::info!(
+                    reservation_id = %reservation.request.reservation_id,
+                    world_id = %reservation.request.world_id,
+                    observer_label = %reservation.request.observer_label,
+                    target = ?reservation.request.target,
+                    birth_category = %reservation.request.birth_category.as_str(),
+                    age_minutes,
+                    "paid supporter label awaiting review"
+                );
+            }
+            tracing::info!(
+                pending = reservations.len(),
+                stale,
+                "moderation queue inspected"
+            );
+            if stale > 0 {
+                anyhow::bail!(
+                    "{stale} moderation item(s) exceeded the {max_age_minutes}-minute threshold"
+                );
+            }
+        }
+        Command::Moderate {
+            reservation_id,
+            decision,
+            moderator_id,
+            stripe_secret_key,
+            stripe_api_base_url,
+        } => match decision.as_str() {
+            "approve" => {
+                let reservation = store
+                    .approve_reservation(reservation_id, &moderator_id)
+                    .await
+                    .context("approve supporter reservation")?;
+                tracing::info!(
+                    %reservation_id,
+                    state = ?reservation.state,
+                    "supporter label approved"
+                );
+            }
+            "reject" => {
+                store
+                    .reject_reservation(reservation_id, &moderator_id)
+                    .await
+                    .context("reject supporter reservation")?;
+                let prepared = store
+                    .prepare_stripe_refund(reservation_id, StripeRefundReason::ModerationRejection)
+                    .await
+                    .context("durably prepare rejected-label refund")?;
+                if let Some(refund_id) = prepared.stripe_refund_id.as_deref() {
+                    tracing::info!(%reservation_id, %refund_id, "rejection refund was already complete");
+                } else {
+                    let secret_key = stripe_secret_key
+                        .filter(|value| !value.is_empty())
+                        .context(
+                            "STRIPE_SECRET_KEY is required to reject and refund a paid label",
+                        )?;
+                    let gateway = StripeRefundClient::new(
+                        &stripe_api_base_url,
+                        secret_key,
+                        Duration::from_secs(10),
+                    )
+                    .context("configure Stripe refund client")?;
+                    let refund_id = gateway
+                        .create_refund(&prepared)
+                        .await
+                        .context("request idempotent rejected-label refund")?;
+                    store
+                        .complete_stripe_refund(reservation_id, &refund_id)
+                        .await
+                        .context("record rejected-label refund completion")?;
+                    tracing::info!(%reservation_id, %refund_id, "supporter label rejected and refunded");
+                }
+            }
+            _ => unreachable!("clap validates moderation decision"),
+        },
         Command::Serve {
             bind,
             environment,
