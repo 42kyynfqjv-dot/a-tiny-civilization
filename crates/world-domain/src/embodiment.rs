@@ -344,6 +344,33 @@ pub struct ActionValueState {
     pub value: i16,
 }
 
+pub const MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION: u16 = 1;
+
+/// Bounded experience retained for one of the four adjacent movement motor
+/// coordinates. It contains no destination, place, compass heading, or map.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+pub struct MovementDirectionValueState {
+    pub value_schema_version: u16,
+    pub movement_direction: u8,
+    pub observations: u32,
+    pub value: i16,
+}
+
+impl MovementDirectionValueState {
+    pub fn validate(self) -> Result<(), EmbodimentError> {
+        if self.value_schema_version != MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION {
+            return Err(EmbodimentError::UnsupportedMovementDirectionValueSchema);
+        }
+        if self.movement_direction >= 4
+            || self.observations == 0
+            || !(ACTION_VALUE_MIN..=ACTION_VALUE_MAX).contains(&self.value)
+        {
+            return Err(EmbodimentError::InvalidMovementDirectionValueState);
+        }
+        Ok(())
+    }
+}
+
 pub const SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION: u16 = 1;
 
 /// A private, bounded association between one directly heard physical amplitude
@@ -452,6 +479,10 @@ pub enum EmbodimentError {
     UnsupportedActionValueSchema,
     #[error("invalid action-value state")]
     InvalidActionValueState,
+    #[error("unsupported movement-direction value schema")]
+    UnsupportedMovementDirectionValueSchema,
+    #[error("invalid movement-direction value state")]
+    InvalidMovementDirectionValueState,
     #[error("unsupported signal-action association schema")]
     UnsupportedSignalActionAssociationSchema,
     #[error("invalid signal-action association")]
@@ -563,6 +594,24 @@ mod tests {
             }
             .validate(),
             Err(EmbodimentError::InvalidActionValueState)
+        ));
+        MovementDirectionValueState {
+            value_schema_version: MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION,
+            movement_direction: 3,
+            observations: 1,
+            value: -2,
+        }
+        .validate()
+        .expect("bounded label-free movement experience");
+        assert!(matches!(
+            MovementDirectionValueState {
+                value_schema_version: MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION,
+                movement_direction: 4,
+                observations: 1,
+                value: 0,
+            }
+            .validate(),
+            Err(EmbodimentError::InvalidMovementDirectionValueState)
         ));
     }
 

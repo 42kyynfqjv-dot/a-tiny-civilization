@@ -264,7 +264,7 @@ alerting to notify an operator for either failed service.
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
-- a ruleset-23 genesis chain produced by `prepare-provisional-genesis.sh`, verified by
+- a ruleset-24 genesis chain produced by `prepare-provisional-genesis.sh`, verified by
   `SHA256SUMS`, atomically initialized by `initialize-provisional-world.sh`, and replayed
   before the long-running runner is enabled;
 - accelerated replay, restart, cognition-deadline, provider-failure,

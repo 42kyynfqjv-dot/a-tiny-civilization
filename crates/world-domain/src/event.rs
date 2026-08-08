@@ -5,10 +5,11 @@ use crate::{
     ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState,
     CognitionDeadlineInput, CognitionRequestSelection, Digest, EntityId, EventId, EventSequence,
     HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
-    MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
-    PhysiologicalRegulationCommitment, PrimitiveAction, ReproductiveDevelopmentEnd,
-    ReproductivePhysiologyCommitment, S2CellId, SignalActionAssociationState, SimTick,
-    SituatedPerception, SpeciesIdentity, WorldConfiguration, WorldId, WorldManifest,
+    MaterialReservoirCommitment, MetabolicRateCommitment, MovementDirectionValueState,
+    OralTransferCommitment, PhysiologicalRegulationCommitment, PrimitiveAction,
+    ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId,
+    SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration,
+    WorldId, WorldManifest,
 };
 
 pub const LEGACY_EVENT_SCHEMA_VERSION: u16 = 1;
@@ -71,6 +72,9 @@ pub const SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION: u16 = 23;
 /// Schema twenty-four admits a bounded movement-direction motor coordinate on
 /// primitive move actions. No destination or map concept is added.
 pub const SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 24;
+/// Schema twenty-five adds private, bounded outcome values for the four movement
+/// motor coordinates. These values do not encode destinations or map knowledge.
+pub const MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION: u16 = 25;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -318,6 +322,13 @@ pub enum DomainEvent {
         from: Option<ActionValueState>,
         to: ActionValueState,
     },
+    /// One bounded update derived from a selected movement motor coordinate and
+    /// total bodily-pressure change. It contains no place or destination label.
+    OrganismMovementDirectionValueChanged {
+        organism_id: EntityId,
+        from: Option<MovementDirectionValueState>,
+        to: MovementDirectionValueState,
+    },
     /// One attention-bounded direct observation of another organism's primitive
     /// bodily operation. The value is private learning state, not an observer claim.
     OrganismSocialActionValueChanged {
@@ -507,6 +518,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
             | SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
             | SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+            | MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -638,6 +650,14 @@ fn validate_event_for_schema(
     }
     if event_schema_version < ACTION_LEARNING_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::OrganismActionValueChanged { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
+        && matches!(
+            event,
+            DomainEvent::OrganismMovementDirectionValueChanged { .. }
+        )
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
@@ -930,6 +950,34 @@ fn validate_event_for_schema(
                         "invalid social action-value transition".to_owned(),
                     ));
                 }
+            }
+        }
+        DomainEvent::OrganismMovementDirectionValueChanged { from, to, .. } => {
+            to.validate()
+                .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            let expected_observations = match from {
+                Some(from) => {
+                    from.validate().map_err(|error| {
+                        EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                    })?;
+                    if from.movement_direction != to.movement_direction {
+                        return Err(EventBatchError::InvalidEmbodiedEvent(
+                            "movement-direction value transition changed its motor coordinate"
+                                .to_owned(),
+                        ));
+                    }
+                    from.observations.checked_add(1).ok_or_else(|| {
+                        EventBatchError::InvalidEmbodiedEvent(
+                            "movement-direction observation count overflowed".to_owned(),
+                        )
+                    })?
+                }
+                None => 1,
+            };
+            if to.observations != expected_observations {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "movement-direction value transition skipped an observation".to_owned(),
+                ));
             }
         }
         DomainEvent::OrganismSignalActionAssociationChanged {

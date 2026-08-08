@@ -573,3 +573,9 @@ label-free adjacent motor coordinates can be explored or weakly selected by cogn
 action-to-relocation coupling rejects teleportation and direction tampering. No map, place name,
 route, or destination enters the world. Fresh genesis and qualification default to ruleset 23;
 ADR 0100 records the boundary and the corrected preservation of selected signal intensity.
+
+Ruleset 24 closes that motor loop without supplying navigation. Each organism privately retains a
+bounded bodily-outcome value for each of the four adjacent movement coordinates, and that experience
+weakly adjusts only the matching future direction. Values are life-local, non-heritable, omitted
+from every public projection, and replay-checked against the exact move and bodily transition. Fresh
+genesis and qualification default to ruleset 24; ADR 0101 records the boundary.

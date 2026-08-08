@@ -32,8 +32,9 @@ use world_domain::{
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
     MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
-    MAX_COGNITION_SELECTION_READINGS, MaterialIdentity, MaterialReservoirCommitment,
-    MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
+    MAX_COGNITION_SELECTION_READINGS, MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION,
+    MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION, MaterialIdentity, MaterialReservoirCommitment,
+    MetabolicRateCommitment, MovementDirectionValueState, OralTransferCommitment, OrganismRole,
     PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
     PrimitiveAction, PrimitiveActionKind, PropertyReading,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
@@ -116,6 +117,9 @@ pub const SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION: u32 = 22;
 /// Ruleset twenty-three makes the four adjacent movement motor directions
 /// selectable without exposing a map, place, or destination label.
 pub const SELECTABLE_MOVEMENT_RULESET_VERSION: u32 = 23;
+/// Ruleset twenty-four lets an organism retain bounded bodily-outcome experience
+/// independently for each adjacent movement motor coordinate.
+pub const MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION: u32 = 24;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -140,6 +144,7 @@ pub const SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 21;
 pub const MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION: u16 = 22;
 pub const MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION: u16 = 23;
 pub const SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 24;
+pub const MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 25;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -573,6 +578,10 @@ pub struct OrganismState {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     action_values_updated_at: Option<SimTick>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    movement_direction_values: Vec<MovementDirectionValueState>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    movement_direction_values_updated_at: Option<SimTick>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     social_action_values: Vec<ActionValueState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     social_action_values_updated_at: Option<SimTick>,
@@ -771,6 +780,16 @@ impl OrganismState {
             .binary_search_by_key(&action_kind, |entry| entry.action_kind)
             .ok()
             .map(|index| self.social_action_values[index])
+    }
+
+    fn movement_direction_value(
+        &self,
+        movement_direction: u8,
+    ) -> Option<MovementDirectionValueState> {
+        self.movement_direction_values
+            .binary_search_by_key(&movement_direction, |entry| entry.movement_direction)
+            .ok()
+            .map(|index| self.movement_direction_values[index])
     }
 
     fn signal_action_association(
@@ -1933,6 +1952,24 @@ impl EngineState {
             }
         }
 
+        if self.uses_movement_direction_learning_driver() {
+            for candidate in &mut candidates {
+                if let Some(direction) = candidate.action.movement_direction {
+                    candidate.weight = learned_candidate_weight(
+                        candidate.weight,
+                        organism.movement_direction_value(direction).map(|entry| {
+                            ActionValueState {
+                                value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                                action_kind: PrimitiveActionKind::Move,
+                                observations: entry.observations,
+                                value: entry.value,
+                            }
+                        }),
+                    );
+                }
+            }
+        }
+
         if self.uses_social_learning_driver() {
             for candidate in &mut candidates {
                 candidate.weight = learned_candidate_weight(
@@ -2076,6 +2113,40 @@ impl EngineState {
             value: i16::try_from(value).expect("bounded action value fits i16"),
         };
         Ok((prior, next))
+    }
+
+    fn next_movement_direction_value(
+        &self,
+        organism: &OrganismState,
+        movement_direction: u8,
+        from: BodilyNeedState,
+        to: BodilyNeedState,
+    ) -> Result<
+        (
+            Option<MovementDirectionValueState>,
+            MovementDirectionValueState,
+        ),
+        EngineError,
+    > {
+        let prior = organism.movement_direction_value(movement_direction);
+        let observations = prior.map_or(Ok(1), |prior| {
+            prior.observations.checked_add(1).ok_or(
+                EngineError::MovementDirectionValueObservationOverflow(organism.organism_id),
+            )
+        })?;
+        let prior_value = prior.map_or(0_i32, |prior| i32::from(prior.value));
+        let value = prior_value
+            .saturating_add(i32::from(action_outcome_reward(from, to)))
+            .clamp(i32::from(ACTION_VALUE_MIN), i32::from(ACTION_VALUE_MAX));
+        Ok((
+            prior,
+            MovementDirectionValueState {
+                value_schema_version: MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION,
+                movement_direction,
+                observations,
+                value: i16::try_from(value).expect("bounded direction value fits i16"),
+            },
+        ))
     }
 
     fn next_social_action_value(
@@ -3432,6 +3503,24 @@ impl EngineState {
                         to: to_value,
                     });
                 }
+                if self.uses_movement_direction_learning_driver()
+                    && action.kind == PrimitiveActionKind::Move
+                {
+                    let direction = action
+                        .movement_direction
+                        .ok_or(EngineError::MissingMovementDirection)?;
+                    let (from, to_value) = self.next_movement_direction_value(
+                        organism,
+                        direction,
+                        organism.bodily_regulation.needs,
+                        to.needs,
+                    )?;
+                    events.push(DomainEvent::OrganismMovementDirectionValueChanged {
+                        organism_id: organism.organism_id,
+                        from,
+                        to: to_value,
+                    });
+                }
                 if let Some(cause) = Self::regulation_death_cause(to.needs) {
                     deaths.push(DomainEvent::OrganismDied {
                         organism_id: organism.organism_id,
@@ -3649,6 +3738,10 @@ impl EngineState {
         self.manifest.ruleset_version >= SELECTABLE_MOVEMENT_RULESET_VERSION
     }
 
+    fn uses_movement_direction_learning_driver(&self) -> bool {
+        self.manifest.ruleset_version >= MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -3734,6 +3827,7 @@ impl EngineState {
             | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
             | DomainEvent::OrganismNeedsChanged { organism_id, .. }
             | DomainEvent::OrganismActionValueChanged { organism_id, .. }
+            | DomainEvent::OrganismMovementDirectionValueChanged { organism_id, .. }
             | DomainEvent::OrganismPerceived { organism_id, .. }
             | DomainEvent::OrganismActed { organism_id, .. } => self
                 .organisms
@@ -4182,6 +4276,117 @@ impl EngineState {
                 }
             }
         }
+        for (index, event) in events.iter().enumerate() {
+            if let DomainEvent::OrganismMovementDirectionValueChanged {
+                organism_id,
+                from,
+                to,
+            } = event
+            {
+                if !self.uses_movement_direction_learning_driver() || !tick_advanced {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                }
+                let matching_actions = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(prior_index, prior)| match prior {
+                        DomainEvent::OrganismActed {
+                            organism_id: actor_id,
+                            action,
+                        } if actor_id == organism_id
+                            && action.kind == PrimitiveActionKind::Move
+                            && action.movement_direction == Some(to.movement_direction) =>
+                        {
+                            Some(prior_index)
+                        }
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                let matching_needs = events
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(prior_index, prior)| {
+                        matches!(
+                            prior,
+                            DomainEvent::OrganismNeedsChanged { organism_id: actor_id, .. }
+                                if actor_id == organism_id
+                        )
+                        .then_some(prior_index)
+                    })
+                    .collect::<Vec<_>>();
+                if matching_actions.len() != 1 || matching_needs.len() != 1 {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                }
+                let action_index = matching_actions[0];
+                let needs_index = matching_needs[0];
+                let Some(tick_index) = tick_advance_index else {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                };
+                if !(tick_index < action_index && action_index < needs_index && needs_index < index)
+                {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                }
+                let DomainEvent::OrganismNeedsChanged {
+                    from: body_from,
+                    to: body_to,
+                    ..
+                } = &events[needs_index]
+                else {
+                    unreachable!("need index was selected from bodily transitions")
+                };
+                let organism = self
+                    .organisms
+                    .get(organism_id)
+                    .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                let expected = self.next_movement_direction_value(
+                    organism,
+                    to.movement_direction,
+                    body_from.needs,
+                    body_to.needs,
+                )?;
+                if expected.0 != *from || expected.1 != *to {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                }
+            }
+            if self.uses_movement_direction_learning_driver()
+                && tick_advanced
+                && let DomainEvent::OrganismActed {
+                    organism_id,
+                    action,
+                } = event
+                && action.kind == PrimitiveActionKind::Move
+            {
+                let matching_updates = events[index + 1..]
+                    .iter()
+                    .filter(|later| {
+                        matches!(
+                            later,
+                            DomainEvent::OrganismMovementDirectionValueChanged {
+                                organism_id: actor_id,
+                                to,
+                                ..
+                            } if actor_id == organism_id
+                                && Some(to.movement_direction) == action.movement_direction
+                        )
+                    })
+                    .count();
+                if matching_updates != 1 {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                }
+            }
+        }
         if self.uses_selectable_movement_driver() && tick_advanced {
             let moves = events
                 .iter()
@@ -4534,7 +4739,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_selectable_movement_driver() {
+        if self.uses_movement_direction_learning_driver() {
+            MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
+        } else if self.uses_selectable_movement_driver() {
             SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
         } else if self.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
@@ -4818,6 +5025,8 @@ impl EngineState {
                     perception_memory: Vec::new(),
                     action_values: Vec::new(),
                     action_values_updated_at: None,
+                    movement_direction_values: Vec::new(),
+                    movement_direction_values_updated_at: None,
                     social_action_values: Vec::new(),
                     social_action_values_updated_at: None,
                     signal_action_associations: Vec::new(),
@@ -5424,6 +5633,8 @@ impl EngineState {
                     perception_memory: Vec::new(),
                     action_values: Vec::new(),
                     action_values_updated_at: None,
+                    movement_direction_values: Vec::new(),
+                    movement_direction_values_updated_at: None,
                     social_action_values: Vec::new(),
                     social_action_values_updated_at: None,
                     signal_action_associations: Vec::new(),
@@ -5613,6 +5824,45 @@ impl EngineState {
                     Err(index) => organism.action_values.insert(index, *to),
                 }
                 organism.action_values_updated_at = Some(self.tick);
+            }
+            DomainEvent::OrganismMovementDirectionValueChanged {
+                organism_id,
+                from,
+                to,
+            } => {
+                if !self.uses_movement_direction_learning_driver() {
+                    return Err(EngineError::MovementDirectionLearningUnsupported);
+                }
+                self.require_living_organism(*organism_id)?;
+                to.validate().map_err(|_| {
+                    EngineError::InvalidMovementDirectionValueTransition(*organism_id)
+                })?;
+                let organism = self
+                    .organisms
+                    .get_mut(organism_id)
+                    .expect("living organism presence checked");
+                let expected_observations = from.map_or(Ok(1), |from| {
+                    from.observations.checked_add(1).ok_or(
+                        EngineError::MovementDirectionValueObservationOverflow(*organism_id),
+                    )
+                })?;
+                if organism.movement_direction_values_updated_at == Some(self.tick)
+                    || organism.movement_direction_value(to.movement_direction) != *from
+                    || to.observations != expected_observations
+                    || from.is_some_and(|from| from.movement_direction != to.movement_direction)
+                {
+                    return Err(EngineError::InvalidMovementDirectionValueTransition(
+                        *organism_id,
+                    ));
+                }
+                match organism
+                    .movement_direction_values
+                    .binary_search_by_key(&to.movement_direction, |entry| entry.movement_direction)
+                {
+                    Ok(index) => organism.movement_direction_values[index] = *to,
+                    Err(index) => organism.movement_direction_values.insert(index, *to),
+                }
+                organism.movement_direction_values_updated_at = Some(self.tick);
             }
             DomainEvent::OrganismSocialActionValueChanged {
                 observer_id,
@@ -6399,6 +6649,29 @@ impl EngineState {
             {
                 return Err(EngineError::ActionLearningUnsupported);
             }
+            if self.uses_movement_direction_learning_driver() {
+                if organism.movement_direction_values.len() > 4
+                    || organism
+                        .movement_direction_values
+                        .windows(2)
+                        .any(|pair| pair[0].movement_direction >= pair[1].movement_direction)
+                    || organism
+                        .movement_direction_values
+                        .iter()
+                        .any(|entry| entry.validate().is_err())
+                    || organism
+                        .movement_direction_values_updated_at
+                        .is_some_and(|updated_at| updated_at > self.tick)
+                {
+                    return Err(EngineError::InvalidMovementDirectionValueState(
+                        organism.organism_id,
+                    ));
+                }
+            } else if !organism.movement_direction_values.is_empty()
+                || organism.movement_direction_values_updated_at.is_some()
+            {
+                return Err(EngineError::MovementDirectionLearningUnsupported);
+            }
             if self.uses_social_learning_driver() {
                 if organism
                     .social_action_values
@@ -6760,7 +7033,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_signal_action_association_driver() {
+        let snapshot_schema_version = if state.uses_movement_direction_learning_driver() {
+            MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
@@ -6855,12 +7130,15 @@ impl Snapshot {
                 | MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
                 | SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+                | MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_signal_action_association_driver() {
+        let expected_schema_version = if self.state.uses_movement_direction_learning_driver() {
+            MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
@@ -7057,7 +7335,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_selectable_movement_driver() {
+        let expected_schema = if state.uses_movement_direction_learning_driver() {
+            MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
+        } else if state.uses_selectable_movement_driver() {
             SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
         } else if state.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
@@ -7122,7 +7402,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
+        } else if expected_schema == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
         } else if expected_schema == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
@@ -7377,6 +7659,14 @@ pub enum EngineError {
     MissingActionValueTransition(EntityId),
     #[error("organism {0} action-value observation count overflowed")]
     ActionValueObservationOverflow(EntityId),
+    #[error("movement-direction learning is unsupported by this ruleset")]
+    MovementDirectionLearningUnsupported,
+    #[error("organism {0} has an invalid movement-direction value state")]
+    InvalidMovementDirectionValueState(EntityId),
+    #[error("organism {0} has an invalid movement-direction value transition")]
+    InvalidMovementDirectionValueTransition(EntityId),
+    #[error("organism {0} movement-direction observation count overflowed")]
+    MovementDirectionValueObservationOverflow(EntityId),
     #[error("social learning is unsupported by this ruleset")]
     SocialLearningUnsupported,
     #[error("organism {0} has an invalid social-action-value state")]
@@ -10731,12 +11021,12 @@ mod tests {
     }
 
     #[test]
-    fn ruleset_twenty_three_associates_signals_and_selects_movement_direction() {
+    fn ruleset_twenty_four_associates_signals_and_learns_movement_direction() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x126));
         let manifest = WorldManifest::new(
             world_id,
             WorldSeed::new(13_503_953_896_175_478_597),
-            SELECTABLE_MOVEMENT_RULESET_VERSION,
+            MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION,
         );
         let mut first = regulated_full_earth_person(world_id, 0x741, 10_000_000, 1_000_000);
         let mut second = regulated_full_earth_person(world_id, 0x742, 10_000_000, 1_000_000);
@@ -10821,7 +11111,7 @@ mod tests {
             .expect("association genesis commit");
         assert_eq!(
             genesis.event_schema_version,
-            SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+            MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
         );
         let founder = running.organisms.values().next().expect("founder");
         let movement_base = running
@@ -10863,6 +11153,30 @@ mod tests {
                         0
                     }
             );
+        }
+        let mut experienced_founder = founder.clone();
+        experienced_founder.movement_direction_values = vec![MovementDirectionValueState {
+            value_schema_version: MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION,
+            movement_direction: 2,
+            observations: 4,
+            value: 128,
+        }];
+        let experienced = running
+            .deterministic_policy_candidates_with_cognition(
+                &experienced_founder,
+                experienced_founder.initial_age_ticks,
+                None,
+            )
+            .expect("direction-experienced candidates");
+        for (base, candidate) in movement_base.iter().zip(&experienced) {
+            let direction_bonus = if base.action.kind == PrimitiveActionKind::Move
+                && base.action.movement_direction == Some(2)
+            {
+                16
+            } else {
+                0
+            };
+            assert_eq!(candidate.weight, base.weight + direction_bonus);
         }
         assert!((1..=10_000).any(|age_ticks| {
             running
@@ -10926,6 +11240,26 @@ mod tests {
                 &[],
             )
             .expect("association tick");
+        let movement_actions = second_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    DomainEvent::OrganismActed { action, .. }
+                        if action.kind == PrimitiveActionKind::Move
+                )
+            })
+            .count();
+        let movement_updates = second_events
+            .iter()
+            .filter(|event| {
+                matches!(
+                    event,
+                    DomainEvent::OrganismMovementDirectionValueChanged { .. }
+                )
+            })
+            .count();
+        assert_eq!(movement_updates, movement_actions);
         assert_eq!(
             second_events
                 .iter()
@@ -10949,25 +11283,101 @@ mod tests {
                 .commit(EventSequence::new(3), first_tick.batch_hash, missing),
             Err(EngineError::InvalidSignalActionAssociation(_))
         ));
-        let (associated, second_tick) = after_signal
+        let (mut associated, second_tick) = after_signal
             .commit(EventSequence::new(3), first_tick.batch_hash, second_events)
             .expect("association tick commit");
         assert!(associated.organisms.values().all(|organism| {
             organism.signal_action_associations.len() == 1
                 && organism.signal_action_associations[0].observations == 1
         }));
-        let snapshot = Snapshot::new(
-            associated.clone(),
-            second_tick.sequence,
-            second_tick.batch_hash,
-        )
-        .expect("association snapshot");
+        let mut batches = vec![genesis.clone(), first_tick.clone(), second_tick];
+        let mut learned_direction = false;
+        for _ in 0..56 {
+            let next_tick = associated.tick.checked_next().expect("bounded test tick");
+            let events = associated
+                .plan_next_tick_with_celestial_and_cognition(
+                    CelestialState::new(
+                        TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+                        CartesianMillimetres::new(i128::from(next_tick.get()), 2, 3),
+                        CartesianMillimetres::new(4, i128::from(next_tick.get()) + 5, 6),
+                    ),
+                    &[],
+                )
+                .expect("direction-learning tick");
+            let moves = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::OrganismActed { action, .. }
+                            if action.kind == PrimitiveActionKind::Move
+                    )
+                })
+                .count();
+            let updates = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::OrganismMovementDirectionValueChanged { .. }
+                    )
+                })
+                .count();
+            assert_eq!(updates, moves);
+            if moves > 0 {
+                let mut missing_direction_value = events.clone();
+                let update_index = missing_direction_value
+                    .iter()
+                    .position(|event| {
+                        matches!(
+                            event,
+                            DomainEvent::OrganismMovementDirectionValueChanged { .. }
+                        )
+                    })
+                    .expect("movement value update");
+                missing_direction_value.remove(update_index);
+                assert!(matches!(
+                    associated.clone().commit(
+                        EventSequence::new(
+                            u64::try_from(batches.len()).expect("bounded history") + 1
+                        ),
+                        batches.last().expect("history").batch_hash,
+                        missing_direction_value,
+                    ),
+                    Err(EngineError::InvalidMovementDirectionValueTransition(_))
+                ));
+            }
+            let (next, batch) = associated
+                .commit(
+                    EventSequence::new(u64::try_from(batches.len()).expect("bounded history") + 1),
+                    batches.last().expect("history").batch_hash,
+                    events,
+                )
+                .expect("direction-learning commit");
+            associated = next;
+            batches.push(batch);
+            if moves > 0 {
+                learned_direction = true;
+                break;
+            }
+        }
+        assert!(learned_direction);
+        assert!(associated.organisms.values().any(|organism| {
+            !organism.movement_direction_values.is_empty()
+                && organism
+                    .movement_direction_values
+                    .iter()
+                    .all(|entry| entry.validate().is_ok())
+        }));
+        let last = batches.last().expect("history tail");
+        let snapshot = Snapshot::new(associated.clone(), last.sequence, last.batch_hash)
+            .expect("association snapshot");
         assert_eq!(
             snapshot.snapshot_schema_version,
-            SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+            MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         );
         assert_eq!(
-            replay(manifest, &[genesis, first_tick, second_tick])
+            replay(manifest, &batches)
                 .expect("association replay")
                 .state,
             associated

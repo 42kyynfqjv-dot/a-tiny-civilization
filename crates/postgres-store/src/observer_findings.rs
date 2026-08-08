@@ -209,6 +209,7 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::OrganismNeedsChanged { .. }
                 | DomainEvent::OrganismActionValueChanged { .. }
+                | DomainEvent::OrganismMovementDirectionValueChanged { .. }
                 | DomainEvent::OrganismSocialActionValueChanged { .. }
                 | DomainEvent::OrganismSignalActionAssociationChanged { .. }
                 | DomainEvent::CognitionRequestSelected { .. }
@@ -430,6 +431,7 @@ async fn apply_finding_events(
             | DomainEvent::OrganismAgeAdvanced { .. }
             | DomainEvent::OrganismNeedsChanged { .. }
             | DomainEvent::OrganismActionValueChanged { .. }
+            | DomainEvent::OrganismMovementDirectionValueChanged { .. }
             | DomainEvent::OrganismSocialActionValueChanged { .. }
             | DomainEvent::OrganismSignalActionAssociationChanged { .. }
             | DomainEvent::CognitionRequestSelected { .. }

@@ -25,8 +25,8 @@ use serde_json::json;
 use sim_engine::{
     BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    MATERIAL_RESERVOIR_RULESET_VERSION, REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION,
-    SELECTABLE_MOVEMENT_RULESET_VERSION,
+    MATERIAL_RESERVOIR_RULESET_VERSION, MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION,
+    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
@@ -48,7 +48,7 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = SELECTABLE_MOVEMENT_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION;
 const MAX_QUALIFICATION_TICKS: u64 = 1_000_000;
 
 #[derive(Debug, Parser)]
@@ -2267,7 +2267,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, SELECTABLE_MOVEMENT_RULESET_VERSION);
+        assert_eq!(ruleset_version, MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION);
     }
 
     #[test]
