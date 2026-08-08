@@ -38,6 +38,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-runtime-volume-policy.sh
 ./scripts/verify-ci-supply-chain.sh
 ./scripts/verify-production-runtime-gate.sh
+./scripts/verify-incident-policy.sh
 ./scripts/verify-public-genesis-preflight.sh
 ./scripts/verify-live-genesis-gate.sh
 ./scripts/verify-backend-status.sh

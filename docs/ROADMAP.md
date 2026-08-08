@@ -565,6 +565,11 @@ unable to authorize deployment.
 - PostgreSQL WAL/base backups to offsite object storage with restore drills;
 - service budgets, incident disclosure, metrics, and archive checksums.
 
+The public incident response policy and append-only disclosure template now separate world events
+from operational failures, require material notices within 24 hours, preserve committed-boundary
+and privacy rules during response, and retain explicit history/data-impact and verification fields.
+Repository checks reject removal of that contract.
+
 Stripe-enabled production preflight now requires an attributable moderator identity, and a
 checked-in systemd timer executes the stale paid-label queue check every fifteen minutes. Enabling
 the timer and routing failed-unit alerts are owner operations; the monitor never approves labels.
