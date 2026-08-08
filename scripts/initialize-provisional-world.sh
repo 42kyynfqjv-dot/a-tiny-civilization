@@ -39,6 +39,16 @@ cd "${genesis_directory}"
 sha256sum --check --strict SHA256SUMS
 cd "${project_root}"
 
+rederive_directory="$(mktemp -d)"
+rederived_candidates=""
+rederived_climate=""
+cleanup() {
+  if [[ -n "${rederived_candidates}" ]]; then rm -f "${rederived_candidates}"; fi
+  if [[ -n "${rederived_climate}" ]]; then rm -f "${rederived_climate}"; fi
+  rmdir "${rederive_directory}"
+}
+trap cleanup EXIT
+
 modeled_candidates="${genesis_directory}/fauna-modeled-range-candidates.json"
 occurrence_evidence="${genesis_directory}/local-fauna-occurrence-evidence.json"
 if [[ -e "${modeled_candidates}" || -e "${occurrence_evidence}" ]]; then
@@ -50,9 +60,7 @@ if [[ -e "${modeled_candidates}" || -e "${occurrence_evidence}" ]]; then
     echo "missing executable civilization-data binary: ${data_executable}" >&2
     exit 2
   fi
-  rederive_directory="$(mktemp -d)"
   rederived_candidates="${rederive_directory}/fauna-candidates.json"
-  trap 'rm -f "${rederived_candidates}"; rmdir "${rederive_directory}"' EXIT
   "${data_executable}" derive corroborated-fauna-candidates \
     --candidates "${modeled_candidates}" \
     --occurrence-evidence "${occurrence_evidence}" \
@@ -61,6 +69,26 @@ if [[ -e "${modeled_candidates}" || -e "${occurrence_evidence}" ]]; then
     echo "fauna candidates do not match the independently rederived occurrence intersection" >&2
     exit 1
   fi
+fi
+
+origin_climate="${genesis_directory}/origin-climate-evidence.json"
+if [[ ! -f "${origin_climate}" ]]; then
+  echo "provisional origin climate evidence is required" >&2
+  exit 2
+fi
+if [[ ! -x "${data_executable}" ]]; then
+  echo "missing executable civilization-data binary: ${data_executable}" >&2
+  exit 2
+fi
+rederived_climate="${rederive_directory}/origin-climate-evidence.json"
+"${data_executable}" derive provisional-origin-climate-evidence \
+  --origin-selection "${genesis_directory}/origin-selection.json" \
+  --source-snapshot data/source-snapshots/era5-single-levels-monthly-means-1981-2010.json \
+  --artifact-root data/source-cache \
+  --output "${rederived_climate}"
+if ! cmp -s "${rederived_climate}" "${origin_climate}"; then
+  echo "origin climate evidence does not match the independently rederived ERA5 source values" >&2
+  exit 1
 fi
 
 # A canonical database is intentionally empty before first genesis. Apply the
@@ -77,6 +105,7 @@ arguments=(
   --artifact-root .
   --provisional-land-origin-selection "${genesis_directory}/origin-selection.json"
   --provisional-origin-environment "${genesis_directory}/origin-environment.json"
+  --provisional-origin-climate-evidence "${origin_climate}"
   --fauna-range-candidates "${genesis_directory}/fauna-candidates.json"
   --fauna-seeded-selection "${genesis_directory}/fauna-selection.json"
   --fauna-origin-environment "${genesis_directory}/origin-environment.json"

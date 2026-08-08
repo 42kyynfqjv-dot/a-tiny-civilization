@@ -32,6 +32,7 @@ cd "${project_root}"
 install -d -m 0750 "${output_directory}"
 origin_selection="${output_directory}/origin-selection.json"
 origin_environment="${output_directory}/origin-environment.json"
+origin_climate="${output_directory}/origin-climate-evidence.json"
 fauna_candidates="${output_directory}/fauna-candidates.json"
 fauna_modeled_candidates="${output_directory}/fauna-modeled-range-candidates.json"
 fauna_occurrences="${output_directory}/local-fauna-occurrence-evidence.json"
@@ -54,6 +55,12 @@ material_resources="${output_directory}/material-resource-plan.json"
   --composition data/provisional/full-earth-breadth-first-0.1.1.json \
   --artifact-root . \
   --output "${origin_environment}"
+
+"${data_executable}" derive provisional-origin-climate-evidence \
+  --origin-selection "${origin_selection}" \
+  --source-snapshot data/source-snapshots/era5-single-levels-monthly-means-1981-2010.json \
+  --artifact-root data/source-cache \
+  --output "${origin_climate}"
 
 selected_l10_patch="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1], encoding="utf-8"))["selected_patch"])' "${origin_selection}")"
 coordinate_json="$("${data_executable}" inspect s2-geographic --s2-cell-id "${selected_l10_patch}")"

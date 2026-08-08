@@ -61,6 +61,10 @@ grep -qF -- '--body-mass-profiles data/derived-cache/amniote-life-history-v1.jso
   scripts/prepare-provisional-genesis.sh
 grep -qF 'derive fauna-body-mass-plan' scripts/prepare-provisional-genesis.sh
 grep -qF 'derive fauna-ecology-plan' scripts/prepare-provisional-genesis.sh
+grep -qF 'derive provisional-origin-climate-evidence' scripts/prepare-provisional-genesis.sh
+grep -qF 'derive provisional-origin-climate-evidence' scripts/initialize-provisional-world.sh
+grep -qF -- '--provisional-origin-climate-evidence "${origin_climate}"' \
+  scripts/initialize-provisional-world.sh
 grep -qF -- '--fauna-ecology-plan "${genesis_directory}/fauna-ecology-plan.json"' \
   scripts/initialize-provisional-world.sh
 grep -qF -- '--body-mass-plan "${fauna_body_masses}"' scripts/prepare-provisional-genesis.sh

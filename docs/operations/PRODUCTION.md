@@ -303,7 +303,8 @@ alerting to notify an operator for either failed service.
   seed procedure, with assumptions disclosed for later scientific review;
 - a ruleset-26 genesis chain produced by `prepare-canonical-genesis.sh` from the
   independently verified public seed resolution and required range-plus-local-occurrence fauna
-  evidence, verified by `SHA256SUMS`, independently rederived during initialization, atomically
+  evidence plus the complete point-scoped 1981–2010 ERA5 evidence, verified by `SHA256SUMS`,
+  independently rederived during initialization, atomically
   initialized by `initialize-canonical-world.sh`, and replayed before the long-running
   runner is enabled;
 - accelerated replay, restart, cognition-deadline, provider-failure,

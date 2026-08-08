@@ -10,56 +10,24 @@ dashboard step independently and provide only confirmation that it is done. When
 implemented service needs a value, its deployment runbook will name a secure secret
 destination and the value can be entered directly there.
 
-## Required before the full-Earth climate release
+## Completed scientific-acquisition handoffs
 
 ### Copernicus Climate Data Store / ERA5
 
-CHELSA is a kilometre-scale land-surface climatology. It cannot supply the ocean
-component of a full-Earth climate baseline. The owner must create or use a Copernicus
-Climate Data Store account, accept the ERA5 monthly-single-level dataset terms, and
-create a personal CDS API key. The required retained request will be frozen in a
-versioned source manifest before download; it covers January–December 1981–2010 and
-includes at least the global near-surface air-temperature, sea-surface-temperature,
-and sea-ice-cover fields needed to distinguish land, open ocean, and ice evidence.
-
-Put the key directly in the host's protected scientific-acquisition environment (not
-the running observatory environment), then report only `CDS API access ready`. Do not
-paste the key into chat or Git. ERA5's monthly single-level product is globally
-complete at a declared 0.25-degree regridded resolution and is distributed under CC-BY;
-see the [ERA5 dataset record](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation)
-and [CDS API setup guidance](https://cds.climate.copernicus.eu/how-to-api).
-
-The request contract is now checked in but remains an operator action. From the
-protected acquisition environment, install `cdsapi>=0.7.7`, review the exact request
-without network access, then run the same command without `--dry-run` only after the
-dataset terms have been accepted:
-
-```bash
-python3 scripts/acquire-era5-monthly-climate.py \
-  --output-directory data/source-cache/era5-monthly-1981-2010 \
-  --dry-run
-```
-
-It requests separate, no-replacement yearly ZIP responses containing NetCDF members
-for global near-surface temperature, precipitation, 10-metre wind, sea-surface
-temperature, and sea ice. The raw downloads remain outside Git and are admitted only
-after exact hashes, terms evidence, and retrieval metadata are frozen in a source
-snapshot.
+This handoff is complete. All 30 no-replacement 1981–2010 annual ZIP responses are retained and
+hash-pinned in the source snapshot, covering global near-surface temperature, precipitation,
+10-metre wind, sea-surface temperature, and sea ice. Canonical preparation independently derives
+the complete 2,160-value point evidence at the selected origin. The CDS credential is acquisition-
+only and is neither required nor admitted in the running observatory environment. ERA5 remains
+reanalysis evidence rather than direct measurement or weather replay; see the
+[ERA5 dataset record](https://cds.climate.copernicus.eu/datasets/reanalysis-era5-single-levels-monthly-means?tab=documentation).
 
 ### Copernicus satellite land cover
 
-The existing CDS account and API credential can also acquire the pinned global 2022
-`satellite-land-cover` `v2_1_1` response selected in
-[ADR 0034](../adr/0034-copernicus-land-and-soil-source-composition.md). CDS requires
-separate acceptance of this dataset's licences. The authenticated request probe fails
-closed with `required licences not accepted` until the owner visits the
-[land-cover licence manager](https://cds.climate.copernicus.eu/datasets/satellite-land-cover?tab=download#manage-licences)
-and accepts every required term. No new API key or account is required.
-
-After acceptance, report only `CDS land-cover licences accepted`. Acquisition will
-then observe the actual response media type and byte length before publishing an
-immutable source artifact; it will not assume that the response container matches the
-dataset's internal NetCDF format.
+This handoff is also complete. The pinned global 2022 `satellite-land-cover` `v2_1_1` response is
+retained, fully inventoried, normalized, and independently traversed under its exact source and
+release digests. No CDS credential is needed at runtime. [ADR 0034](../adr/0034-copernicus-land-and-soil-source-composition.md)
+retains the source and licensing decision.
 
 ## Required before public genesis
 
@@ -244,9 +212,6 @@ unless the bounded paid tail is deliberately authorized.
 
 For now, it is enough to report the completion state, not the secret:
 
-- `CDS API access ready` when the full-Earth climate normalizer is ready for its
-  pinned acquisition;
-- `CDS land-cover licences accepted` after the dataset-specific terms are accepted;
 - `Cloudflare tunnel created` (and hostname chosen),
 - `backup destination selected`,
 - `Stripe account ready` when supporter payments are ready to build,
