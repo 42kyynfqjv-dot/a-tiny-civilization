@@ -14,6 +14,20 @@ use world_domain::{
     SimTick, SpeciesIdentity, WorldId, WorldStatus,
 };
 
+pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
+const BLOCKED_LABEL_TOKENS_V1: &[&str] = &[
+    "bitch", "cunt", "faggot", "fuck", "fucker", "fucking", "hitler", "nazi", "nigga", "nigger",
+    "porn", "retard", "shit", "slut", "whore",
+];
+const RESERVED_LABEL_TOKENS_V1: &[&str] = &[
+    "admin",
+    "administrator",
+    "atinycivilization",
+    "moderator",
+    "official",
+    "system",
+];
+
 pub const PUBLIC_TIMELINE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_TIMELINE_PROJECTION_NAME: &str = "public-timeline-v1";
 pub const PUBLIC_ORGANISM_PROJECTION_VERSION: u16 = 1;
@@ -463,6 +477,9 @@ impl ReservationRequest {
         {
             return Err(ReservationError::InvalidObserverLabel);
         }
+        if !observer_label_passes_automatic_policy(label) {
+            return Err(ReservationError::DisallowedObserverLabel);
+        }
         if let Some(species) = self.target.species() {
             species
                 .validate()
@@ -470,6 +487,40 @@ impl ReservationRequest {
         }
         Ok(())
     }
+}
+
+/// A narrow deterministic pre-payment screen for obvious abuse and impersonation.
+/// Passing it never constitutes approval: every paid label still enters human moderation.
+#[must_use]
+pub fn observer_label_passes_automatic_policy(label: &str) -> bool {
+    let mut tokens = Vec::new();
+    let mut token = String::new();
+    let mut compact = String::new();
+    for character in label.chars() {
+        let mapped = match character.to_ascii_lowercase() {
+            '0' => Some('o'),
+            '1' | '!' => Some('i'),
+            '3' => Some('e'),
+            '4' | '@' => Some('a'),
+            '5' | '$' => Some('s'),
+            '7' => Some('t'),
+            value if value.is_ascii_alphabetic() => Some(value),
+            _ => None,
+        };
+        if let Some(value) = mapped {
+            token.push(value);
+            compact.push(value);
+        } else if !token.is_empty() {
+            tokens.push(std::mem::take(&mut token));
+        }
+    }
+    if !token.is_empty() {
+        tokens.push(token);
+    }
+    let denied = |value: &str| {
+        BLOCKED_LABEL_TOKENS_V1.contains(&value) || RESERVED_LABEL_TOKENS_V1.contains(&value)
+    };
+    compact.is_empty() || (!denied(&compact) && !tokens.iter().any(|value| denied(value)))
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -571,6 +622,8 @@ pub enum ReservationError {
     InvalidSupporterSubject,
     #[error("observer label must be trimmed, non-empty, control-free, and at most 80 bytes")]
     InvalidObserverLabel,
+    #[error("observer label is rejected by the automatic safety policy")]
+    DisallowedObserverLabel,
     #[error("animal reservation requires a valid cited species identity")]
     InvalidAnimalSpecies,
 }
@@ -697,6 +750,22 @@ mod tests {
             request.validate(),
             Err(ReservationError::InvalidSupporterSubject)
         );
+    }
+
+    #[test]
+    fn obvious_abuse_and_impersonation_are_rejected_before_payment() {
+        for label in ["f.u.c.k", "sh1t", "ADMIN", "A Tiny Civilization"] {
+            assert!(
+                !observer_label_passes_automatic_policy(label),
+                "{label} must be rejected"
+            );
+        }
+        for label in ["Ada", "Cassandra", "Ashita", "Zoë", "李明"] {
+            assert!(
+                observer_label_passes_automatic_policy(label),
+                "{label} must remain eligible for human review"
+            );
+        }
     }
 
     #[test]

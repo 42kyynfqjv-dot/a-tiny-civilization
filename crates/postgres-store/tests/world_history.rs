@@ -1348,6 +1348,24 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
         birth_category: BirthCategory::new("female").expect("valid category"),
     };
     let pending = store.create_reservation(&request).await?;
+    let policy_version: i16 = sqlx::query_scalar(
+        "SELECT automatic_policy_version FROM supporter_reservations WHERE id=$1",
+    )
+    .bind(request.reservation_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        policy_version,
+        i16::try_from(observer_projection::OBSERVER_LABEL_POLICY_VERSION)?
+    );
+    assert!(
+        sqlx::query("UPDATE supporter_reservations SET automatic_policy_version=99 WHERE id=$1",)
+            .bind(request.reservation_id)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "automatic moderation evidence is immutable"
+    );
     assert_eq!(pending.state, ReservationState::PendingPayment);
     assert_eq!(store.create_reservation(&request).await?, pending);
     let mut conflicting_request = request.clone();

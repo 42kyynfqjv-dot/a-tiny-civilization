@@ -1,8 +1,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use observer_projection::{
-    CommittedBirth, MatchedBirth, ReservationRequest, ReservationState, ReservationStoreError,
-    ReservationTarget, SupporterReservation, SupporterReservationStore,
+    CommittedBirth, MatchedBirth, OBSERVER_LABEL_POLICY_VERSION, ReservationRequest,
+    ReservationState, ReservationStoreError, ReservationTarget, SupporterReservation,
+    SupporterReservationStore,
 };
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -48,9 +49,9 @@ impl SupporterReservationStore for PostgresStore {
             INSERT INTO supporter_reservations (
                 id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
-                birth_category, state
+                birth_category, automatic_policy_version, state
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending_payment')
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'pending_payment')
             ON CONFLICT (id) DO NOTHING
             RETURNING id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
@@ -68,6 +69,9 @@ impl SupporterReservationStore for PostgresStore {
         .bind(species.map(|value| value.scientific_name.as_str()))
         .bind(species.map(|value| value.source_url.as_str()))
         .bind(request.birth_category.as_str())
+        .bind(i16::try_from(OBSERVER_LABEL_POLICY_VERSION).map_err(|_| {
+            ReservationStoreError::Corrupt("label policy version exceeds SMALLINT".to_owned())
+        })?)
         .fetch_optional(self.pool())
         .await
         .map_err(operation_error)?;
