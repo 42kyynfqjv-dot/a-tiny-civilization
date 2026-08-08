@@ -19,6 +19,7 @@ genesis_directory="$(realpath "$3")"
 predecessor_world_id="${4:-}"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
+migration_executable="${ATINY_CIVILIZATION_MIGRATION_EXECUTABLE:-${project_root}/target/release/civilization-api}"
 
 if [[ ! "${world_seed}" =~ ^[0-9]+$ ]]; then
   echo "WORLD_SEED must be an unsigned decimal integer" >&2
@@ -28,10 +29,19 @@ if [[ ! -x "${runner_executable}" ]]; then
   echo "missing executable civilization-runner binary: ${runner_executable}" >&2
   exit 2
 fi
+if [[ ! -x "${migration_executable}" ]]; then
+  echo "missing executable civilization-api binary: ${migration_executable}" >&2
+  exit 2
+fi
 
 cd "${genesis_directory}"
 sha256sum --check --strict SHA256SUMS
 cd "${project_root}"
+
+# A canonical database is intentionally empty before first genesis. Apply the
+# repository's idempotent migration set before the exclusive-world guard queries
+# it; subsequent identical invocations are safe.
+"${migration_executable}" --database-url "${DATABASE_URL}" migrate
 
 arguments=(
   --database-url "${DATABASE_URL}"

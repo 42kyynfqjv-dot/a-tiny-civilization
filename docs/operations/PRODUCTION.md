@@ -196,7 +196,9 @@ read -r WORLD_ID WORLD_SEED < <(
 With `DATABASE_URL` loaded from the root-protected production environment, initialize
 all founders and material reservoirs in one append and immediately replay-verify it. The
 canonical wrapper refuses a database containing any different world, so use a fresh production
-database rather than the development/proof database:
+database rather than the development/proof database. The initializer first applies the same
+idempotent embedded migration set used by the deployment migration service, allowing a genuinely
+empty canonical database without weakening the exclusive-world check:
 
 ```bash
 ./scripts/initialize-canonical-world.sh \
