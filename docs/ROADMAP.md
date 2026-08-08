@@ -184,6 +184,13 @@ join is deliberately noninterpretive and noncausal under ADR 0123: inhabitants r
 codes, soil-property names, habitat labels, or implied uses. Schema-1 archives remain byte-readable.
 The next causal surface checkpoint must version and justify each physical mapping independently.
 
+Configuration schema 6 now commits that local surface closure into tick-zero private inputs under
+ADR 0124. It retains exact terrain millimetres, one JRC occurrence source code, and all nine ordered
+SoilGrids source-quantile triples, requires complete non-missing soil values, and binds them to the
+same L10 and embodied patches as environment and weather. Older configuration shapes cannot accept
+the new field. No engine rule reads it yet; the next ruleset must define label-free physical effects
+behind new event, snapshot, and state-hash versions.
+
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate
 selection uses only canonical world state, bodily pressure, exact local reachability,

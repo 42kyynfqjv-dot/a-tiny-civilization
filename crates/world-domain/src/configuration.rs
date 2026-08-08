@@ -2,7 +2,8 @@ use serde::{Deserialize, Deserializer, Serialize};
 use thiserror::Error;
 
 use crate::{
-    Digest, MAX_S2_LEVEL, ProvisionalLocalEnvironmentBaseline, ProvisionalLocalWeatherBaseline,
+    Digest, MAX_S2_LEVEL, ProvisionalLocalEnvironmentBaseline, ProvisionalLocalSurfaceBaseline,
+    ProvisionalLocalWeatherBaseline,
 };
 
 pub const LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 1;
@@ -14,6 +15,8 @@ pub const PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 3;
 pub const PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 4;
 /// Provisional execution with source-bound environmental and weather inputs.
 pub const PROVISIONAL_WEATHER_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 5;
+/// Provisional execution with environment, weather, and source-domain surface inputs.
+pub const PROVISIONAL_SURFACE_WORLD_CONFIGURATION_SCHEMA_VERSION: u16 = 6;
 const SECONDS_PER_DAY: u32 = 86_400;
 const MAX_V1_GRID_CELLS: u64 = 1_000_000;
 const WGS_84_ECEF_EPSG: u32 = 4_978;
@@ -396,6 +399,8 @@ pub struct WorldConfiguration {
     pub local_environment_baseline: Option<Box<ProvisionalLocalEnvironmentBaseline>>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub local_weather_baseline: Option<Box<ProvisionalLocalWeatherBaseline>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub local_surface_baseline: Option<Box<ProvisionalLocalSurfaceBaseline>>,
 }
 
 #[derive(Deserialize)]
@@ -452,6 +457,19 @@ struct ProvisionalWeatherWorldConfigurationWire {
 }
 
 #[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProvisionalSurfaceWorldConfigurationWire {
+    configuration_schema_version: u16,
+    tick_duration_seconds: u32,
+    full_earth_grid: FullEarthGrid,
+    provisional_world_composition: ProvisionalWorldCompositionReference,
+    partitioned_execution: PartitionedExecution,
+    local_environment_baseline: Box<ProvisionalLocalEnvironmentBaseline>,
+    local_weather_baseline: Box<ProvisionalLocalWeatherBaseline>,
+    local_surface_baseline: Box<ProvisionalLocalSurfaceBaseline>,
+}
+
+#[derive(Deserialize)]
 #[serde(untagged)]
 enum WorldConfigurationWire {
     Legacy(LegacyWorldConfigurationWire),
@@ -459,6 +477,7 @@ enum WorldConfigurationWire {
     ProvisionalFullEarth(ProvisionalFullEarthWorldConfigurationWire),
     ProvisionalEnvironmental(Box<ProvisionalEnvironmentalWorldConfigurationWire>),
     ProvisionalWeather(Box<ProvisionalWeatherWorldConfigurationWire>),
+    ProvisionalSurface(Box<ProvisionalSurfaceWorldConfigurationWire>),
 }
 
 impl<'de> Deserialize<'de> for WorldConfiguration {
@@ -481,6 +500,7 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 },
                 local_environment_baseline: None,
                 local_weather_baseline: None,
+                local_surface_baseline: None,
             },
             WorldConfigurationWire::FullEarth(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
@@ -496,6 +516,7 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 },
                 local_environment_baseline: None,
                 local_weather_baseline: None,
+                local_surface_baseline: None,
             },
             WorldConfigurationWire::ProvisionalFullEarth(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
@@ -511,6 +532,7 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 },
                 local_environment_baseline: None,
                 local_weather_baseline: None,
+                local_surface_baseline: None,
             },
             WorldConfigurationWire::ProvisionalEnvironmental(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
@@ -526,6 +548,7 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 },
                 local_environment_baseline: Some(wire.local_environment_baseline),
                 local_weather_baseline: None,
+                local_surface_baseline: None,
             },
             WorldConfigurationWire::ProvisionalWeather(wire) => Self {
                 configuration_schema_version: wire.configuration_schema_version,
@@ -541,6 +564,23 @@ impl<'de> Deserialize<'de> for WorldConfiguration {
                 },
                 local_environment_baseline: Some(wire.local_environment_baseline),
                 local_weather_baseline: Some(wire.local_weather_baseline),
+                local_surface_baseline: None,
+            },
+            WorldConfigurationWire::ProvisionalSurface(wire) => Self {
+                configuration_schema_version: wire.configuration_schema_version,
+                tick_duration_seconds: wire.tick_duration_seconds,
+                geometry: WorldGeometry::FullEarth {
+                    full_earth_grid: wire.full_earth_grid,
+                },
+                input: WorldInputReference::ProvisionalExecution {
+                    provisional_world_composition: wire.provisional_world_composition,
+                },
+                execution: ExecutionScale::Partitioned {
+                    partitioned_execution: wire.partitioned_execution,
+                },
+                local_environment_baseline: Some(wire.local_environment_baseline),
+                local_weather_baseline: Some(wire.local_weather_baseline),
+                local_surface_baseline: Some(wire.local_surface_baseline),
             },
         };
         configuration.validate().map_err(serde::de::Error::custom)?;
@@ -566,6 +606,7 @@ impl WorldConfiguration {
             },
             local_environment_baseline: None,
             local_weather_baseline: None,
+            local_surface_baseline: None,
         };
         configuration.validate()?;
         Ok(configuration)
@@ -600,6 +641,7 @@ impl WorldConfiguration {
             },
             local_environment_baseline: None,
             local_weather_baseline: None,
+            local_surface_baseline: None,
         };
         configuration.validate()?;
         Ok(configuration)
@@ -625,6 +667,7 @@ impl WorldConfiguration {
             },
             local_environment_baseline: None,
             local_weather_baseline: None,
+            local_surface_baseline: None,
         };
         configuration.validate()?;
         Ok(configuration)
@@ -650,6 +693,7 @@ impl WorldConfiguration {
             },
             local_environment_baseline: Some(Box::new(local_environment_baseline)),
             local_weather_baseline: None,
+            local_surface_baseline: None,
         };
         configuration.validate()?;
         Ok(configuration)
@@ -675,6 +719,34 @@ impl WorldConfiguration {
             },
             local_environment_baseline: Some(Box::new(local_environment_baseline)),
             local_weather_baseline: Some(Box::new(local_weather_baseline)),
+            local_surface_baseline: None,
+        };
+        configuration.validate()?;
+        Ok(configuration)
+    }
+
+    pub fn new_provisional_full_earth_with_surface_baseline(
+        tick_duration_seconds: u32,
+        full_earth_grid: FullEarthGrid,
+        provisional_world_composition: ProvisionalWorldCompositionReference,
+        partitioned_execution: PartitionedExecution,
+        local_environment_baseline: ProvisionalLocalEnvironmentBaseline,
+        local_weather_baseline: ProvisionalLocalWeatherBaseline,
+        local_surface_baseline: ProvisionalLocalSurfaceBaseline,
+    ) -> Result<Self, WorldConfigurationError> {
+        let configuration = Self {
+            configuration_schema_version: PROVISIONAL_SURFACE_WORLD_CONFIGURATION_SCHEMA_VERSION,
+            tick_duration_seconds,
+            geometry: WorldGeometry::FullEarth { full_earth_grid },
+            input: WorldInputReference::ProvisionalExecution {
+                provisional_world_composition,
+            },
+            execution: ExecutionScale::Partitioned {
+                partitioned_execution,
+            },
+            local_environment_baseline: Some(Box::new(local_environment_baseline)),
+            local_weather_baseline: Some(Box::new(local_weather_baseline)),
+            local_surface_baseline: Some(Box::new(local_surface_baseline)),
         };
         configuration.validate()?;
         Ok(configuration)
@@ -728,6 +800,7 @@ impl WorldConfiguration {
             {
                 if self.local_environment_baseline.is_some()
                     || self.local_weather_baseline.is_some()
+                    || self.local_surface_baseline.is_some()
                 {
                     return Err(WorldConfigurationError::ConfigurationShapeMismatch {
                         schema: self.configuration_schema_version,
@@ -745,7 +818,7 @@ impl WorldConfiguration {
             ) if self.configuration_schema_version
                 == PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION =>
             {
-                if self.local_weather_baseline.is_some() {
+                if self.local_weather_baseline.is_some() || self.local_surface_baseline.is_some() {
                     return Err(WorldConfigurationError::ConfigurationShapeMismatch {
                         schema: self.configuration_schema_version,
                     });
@@ -773,6 +846,11 @@ impl WorldConfiguration {
             ) if self.configuration_schema_version
                 == PROVISIONAL_WEATHER_WORLD_CONFIGURATION_SCHEMA_VERSION =>
             {
+                if self.local_surface_baseline.is_some() {
+                    return Err(WorldConfigurationError::ConfigurationShapeMismatch {
+                        schema: self.configuration_schema_version,
+                    });
+                }
                 let environment = self.local_environment_baseline.as_ref().ok_or(
                     WorldConfigurationError::ConfigurationShapeMismatch {
                         schema: self.configuration_schema_version,
@@ -795,6 +873,50 @@ impl WorldConfiguration {
                     || weather.active_patch.level() != full_earth_grid.levels.embodied_patch
                     || weather.active_patch != environment.active_patch
                     || weather.evidence_patch != environment.evidence_patch
+                {
+                    return Err(WorldConfigurationError::LocalEnvironmentPatchLevelMismatch);
+                }
+            }
+            (
+                WorldGeometry::FullEarth { full_earth_grid },
+                WorldInputReference::ProvisionalExecution { .. },
+                ExecutionScale::Partitioned {
+                    partitioned_execution,
+                },
+            ) if self.configuration_schema_version
+                == PROVISIONAL_SURFACE_WORLD_CONFIGURATION_SCHEMA_VERSION =>
+            {
+                let environment = self.local_environment_baseline.as_ref().ok_or(
+                    WorldConfigurationError::ConfigurationShapeMismatch {
+                        schema: self.configuration_schema_version,
+                    },
+                )?;
+                let weather = self.local_weather_baseline.as_ref().ok_or(
+                    WorldConfigurationError::ConfigurationShapeMismatch {
+                        schema: self.configuration_schema_version,
+                    },
+                )?;
+                let surface = self.local_surface_baseline.as_ref().ok_or(
+                    WorldConfigurationError::ConfigurationShapeMismatch {
+                        schema: self.configuration_schema_version,
+                    },
+                )?;
+                full_earth_grid.validate()?;
+                partitioned_execution.validate(full_earth_grid)?;
+                environment.validate().map_err(|error| {
+                    WorldConfigurationError::InvalidLocalEnvironment(error.to_string())
+                })?;
+                weather.validate().map_err(|error| {
+                    WorldConfigurationError::InvalidLocalWeather(error.to_string())
+                })?;
+                surface.validate().map_err(|error| {
+                    WorldConfigurationError::InvalidLocalSurface(error.to_string())
+                })?;
+                if environment.active_patch.level() != full_earth_grid.levels.embodied_patch
+                    || weather.active_patch != environment.active_patch
+                    || surface.active_patch != environment.active_patch
+                    || weather.evidence_patch != environment.evidence_patch
+                    || surface.evidence_patch != environment.evidence_patch
                 {
                     return Err(WorldConfigurationError::LocalEnvironmentPatchLevelMismatch);
                 }
@@ -851,6 +973,11 @@ impl WorldConfiguration {
     #[must_use]
     pub fn local_weather_baseline(&self) -> Option<&ProvisionalLocalWeatherBaseline> {
         self.local_weather_baseline.as_deref()
+    }
+
+    #[must_use]
+    pub fn local_surface_baseline(&self) -> Option<&ProvisionalLocalSurfaceBaseline> {
+        self.local_surface_baseline.as_deref()
     }
 
     /// Durable partition semantics for a full-Earth configuration. Operational
@@ -957,6 +1084,8 @@ pub enum WorldConfigurationError {
     InvalidLocalEnvironment(String),
     #[error("invalid provisional local-weather baseline: {0}")]
     InvalidLocalWeather(String),
+    #[error("invalid provisional local-surface baseline: {0}")]
+    InvalidLocalSurface(String),
     #[error("local-environment active patch must use the configured embodied-patch level")]
     LocalEnvironmentPatchLevelMismatch,
 }
@@ -1269,6 +1398,84 @@ mod tests {
         assert!(encoded.contains("local_weather_baseline"));
         assert_eq!(
             serde_json::from_str::<WorldConfiguration>(&encoded).expect("decode weather config"),
+            configuration
+        );
+    }
+
+    #[test]
+    fn surface_configuration_has_a_distinct_source_domain_schema_six_shape() {
+        let evidence_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
+        let mut active_patch = evidence_patch;
+        for _ in 10..23 {
+            active_patch = active_patch.children().expect("child patch")[0];
+        }
+        let environment = ProvisionalLocalEnvironmentBaseline {
+            status: "provisional-evidence-only".to_owned(),
+            source_evidence_digest: Digest::sha256(b"origin environment"),
+            evidence_patch,
+            active_patch,
+            air_temperature_unit: "degC".to_owned(),
+            air_temperature_decimal_places: 1,
+            air_temperature_normal_minimum: [1; 12],
+            air_temperature_normal_mean: [2; 12],
+            air_temperature_normal_maximum: [3; 12],
+        };
+        let weather = ProvisionalLocalWeatherBaseline {
+            status: "provisional-weather-input-not-scientifically-admitted".to_owned(),
+            source_normals_digest: Digest::sha256(b"origin climate normals"),
+            evidence_patch,
+            active_patch,
+            air_temperature_unit: "degC".to_owned(),
+            air_temperature_decimal_places: 3,
+            air_temperature_normal_minimum: [10_000; 12],
+            air_temperature_normal_mean: [15_000; 12],
+            air_temperature_normal_maximum: [20_000; 12],
+            precipitation_unit: "m".to_owned(),
+            precipitation_decimal_places: 6,
+            precipitation_normal_mean: [1_000; 12],
+            eastward_wind_unit: "m/s".to_owned(),
+            eastward_wind_decimal_places: 3,
+            eastward_wind_normal_mean: [500; 12],
+            northward_wind_unit: "m/s".to_owned(),
+            northward_wind_decimal_places: 3,
+            northward_wind_normal_mean: [-500; 12],
+        };
+        let surface = ProvisionalLocalSurfaceBaseline {
+            status: "provisional-surface-input-not-scientifically-admitted".to_owned(),
+            source_evidence_digest: environment.source_evidence_digest,
+            evidence_patch,
+            active_patch,
+            terrain_minimum_millimetres: 1_000,
+            terrain_mean_millimetres: 2_000,
+            terrain_maximum_millimetres: 3_000,
+            surface_water_occurrence_source_code: 0,
+            topsoil_source_quantiles: [[1, 2, 3]; 9],
+        };
+        let configuration = WorldConfiguration::new_provisional_full_earth_with_surface_baseline(
+            300,
+            full_earth_grid(),
+            provisional_composition(),
+            execution(),
+            environment,
+            weather,
+            surface,
+        )
+        .expect("surface configuration");
+        assert_eq!(
+            configuration.configuration_schema_version,
+            PROVISIONAL_SURFACE_WORLD_CONFIGURATION_SCHEMA_VERSION
+        );
+        assert_eq!(
+            configuration
+                .local_surface_baseline()
+                .expect("surface baseline")
+                .terrain_mean_millimetres,
+            2_000
+        );
+        let encoded = serde_json::to_string(&configuration).expect("serialize surface config");
+        assert!(encoded.contains("local_surface_baseline"));
+        assert_eq!(
+            serde_json::from_str::<WorldConfiguration>(&encoded).expect("decode surface config"),
             configuration
         );
     }

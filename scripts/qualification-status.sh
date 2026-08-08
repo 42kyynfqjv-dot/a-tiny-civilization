@@ -140,7 +140,7 @@ WITH selected_world AS (
            COUNT(*) FILTER (
                WHERE event -> 'event' ->> 'type' = 'world_configured'
                  AND (event -> 'event' -> 'data' -> 'configuration'
-                      ->> 'configuration_schema_version')::INTEGER = 5
+                      ->> 'configuration_schema_version')::INTEGER IN (5, 6)
                  AND event -> 'event' -> 'data' -> 'configuration'
                       -> 'local_weather_baseline' IS NOT NULL
            )::BIGINT AS weather_configurations,

@@ -45,8 +45,9 @@ use world_data_filesystem::{
 use world_domain::{
     BirthCategory, BodilyNeedState, CapacityExhaustionPolicy, CelestialState, Digest, EntityId,
     OrganismRole, PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline,
-    ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind, SimTick, SpeciesIdentity,
-    TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
+    ProvisionalLocalSurfaceBaseline, ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind,
+    SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest,
+    WorldSeed, WorldStatus,
 };
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
@@ -938,6 +939,23 @@ async fn init_provisional_full_earth_world(
         max_events_per_partition_transition,
     };
     let configuration = match (origin_environment.as_ref(), origin_climate_normals.as_ref()) {
+        (Some(environment), Some(weather))
+            if ruleset_version >= LOCAL_WEATHER_RULESET_VERSION
+                && environment.surface_baseline.is_some() =>
+        {
+            WorldConfiguration::new_provisional_full_earth_with_surface_baseline(
+                tick_duration_seconds,
+                composition.full_earth_grid.clone(),
+                composition_reference.clone(),
+                execution,
+                environment.baseline.clone(),
+                weather.baseline.clone(),
+                environment
+                    .surface_baseline
+                    .clone()
+                    .expect("match guard checked surface baseline"),
+            )
+        }
         (Some(environment), Some(weather)) if ruleset_version >= LOCAL_WEATHER_RULESET_VERSION => {
             WorldConfiguration::new_provisional_full_earth_with_weather_baseline(
                 tick_duration_seconds,
@@ -1172,6 +1190,7 @@ struct ResolvedInitialOrigin {
 struct VerifiedProvisionalOriginEnvironment {
     digest: world_domain::Digest,
     baseline: ProvisionalLocalEnvironmentBaseline,
+    surface_baseline: Option<ProvisionalLocalSurfaceBaseline>,
 }
 
 struct VerifiedProvisionalOriginClimateEvidence {
@@ -1320,11 +1339,33 @@ fn load_provisional_origin_environment(
             "provisional origin environment does not match the selected origin and composition"
         );
     }
+    let source_evidence_digest = world_domain::Digest::sha256(&bytes);
+    let surface_baseline =
+        environment
+            .local_surface
+            .as_ref()
+            .map(|surface| ProvisionalLocalSurfaceBaseline {
+                status: "provisional-surface-input-not-scientifically-admitted".to_owned(),
+                source_evidence_digest,
+                evidence_patch: environment.selected_l10_patch,
+                active_patch: environment.selected_embodied_patch,
+                terrain_minimum_millimetres: surface.terrain.minimum_millimetres,
+                terrain_mean_millimetres: surface.terrain.mean_millimetres,
+                terrain_maximum_millimetres: surface.terrain.maximum_millimetres,
+                surface_water_occurrence_source_code: u8::try_from(
+                    surface.surface_water.mean_value,
+                )
+                .expect("origin surface validation bounds source code to u8"),
+                topsoil_source_quantiles: surface
+                    .topsoil
+                    .property_values
+                    .map(|values| [values.q0_05, values.q0_5, values.q0_95]),
+            });
     Ok(Some(VerifiedProvisionalOriginEnvironment {
-        digest: world_domain::Digest::sha256(&bytes),
+        digest: source_evidence_digest,
         baseline: ProvisionalLocalEnvironmentBaseline {
             status: "provisional-evidence-only".to_owned(),
-            source_evidence_digest: world_domain::Digest::sha256(&bytes),
+            source_evidence_digest,
             evidence_patch: environment.selected_l10_patch,
             active_patch: environment.selected_embodied_patch,
             air_temperature_unit: environment.air_temperature_normal_unit,
@@ -1357,6 +1398,7 @@ fn load_provisional_origin_environment(
                     )
                 })?,
         },
+        surface_baseline,
     }))
 }
 

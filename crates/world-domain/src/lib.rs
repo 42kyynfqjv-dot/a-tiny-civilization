@@ -34,6 +34,7 @@ pub use configuration::{
     CapacityExhaustionPolicy, EarthResolutionLevels, ExecutionScale, FullEarthGrid,
     LEGACY_WORLD_CONFIGURATION_SCHEMA_VERSION,
     PROVISIONAL_ENVIRONMENT_WORLD_CONFIGURATION_SCHEMA_VERSION,
+    PROVISIONAL_SURFACE_WORLD_CONFIGURATION_SCHEMA_VERSION,
     PROVISIONAL_WEATHER_WORLD_CONFIGURATION_SCHEMA_VERSION,
     PROVISIONAL_WORLD_CONFIGURATION_SCHEMA_VERSION, PartitionedExecution, PersonRepresentation,
     ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SpatialGrid,
@@ -53,7 +54,7 @@ pub use embodiment::{
 };
 pub use environment::{
     LocalEnvironmentError, NORMAL_YEAR_PHASE_COUNT, ProvisionalLocalEnvironmentBaseline,
-    ProvisionalLocalWeatherBaseline,
+    ProvisionalLocalSurfaceBaseline, ProvisionalLocalWeatherBaseline,
 };
 pub use event::{
     ACTION_LEARNING_EVENT_SCHEMA_VERSION, BODILY_REGULATION_EVENT_SCHEMA_VERSION,

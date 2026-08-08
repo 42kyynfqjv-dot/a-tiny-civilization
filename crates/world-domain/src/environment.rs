@@ -11,6 +11,7 @@ use crate::{Digest, S2CellId};
 pub const NORMAL_YEAR_PHASE_COUNT: usize = 12;
 const PROVISIONAL_STATUS: &str = "provisional-evidence-only";
 const PROVISIONAL_WEATHER_STATUS: &str = "provisional-weather-input-not-scientifically-admitted";
+const PROVISIONAL_SURFACE_STATUS: &str = "provisional-surface-input-not-scientifically-admitted";
 
 /// Pinned, physical evidence at one active patch. Values are temperature normals,
 /// not weather, habitat suitability, food availability, or an organism's beliefs.
@@ -52,6 +53,27 @@ pub struct ProvisionalLocalWeatherBaseline {
     pub northward_wind_unit: String,
     pub northward_wind_decimal_places: u8,
     pub northward_wind_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
+}
+
+/// Source-domain local surface values committed for later causal mappings.
+///
+/// This private configuration contract deliberately retains upstream domains. It
+/// does not make source codes, property order, or scientific names perceptible to
+/// an organism and does not imply a use for any value.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionalLocalSurfaceBaseline {
+    pub status: String,
+    pub source_evidence_digest: Digest,
+    pub evidence_patch: S2CellId,
+    pub active_patch: S2CellId,
+    pub terrain_minimum_millimetres: i64,
+    pub terrain_mean_millimetres: i64,
+    pub terrain_maximum_millimetres: i64,
+    pub surface_water_occurrence_source_code: u8,
+    /// Ordered SoilGrids source values: nine schema-pinned properties, each
+    /// containing Q0.05, Q0.5, and Q0.95 in the upstream signed-i16 domain.
+    pub topsoil_source_quantiles: [[i16; 3]; 9],
 }
 
 impl ProvisionalLocalEnvironmentBaseline {
@@ -168,6 +190,28 @@ impl ProvisionalLocalWeatherBaseline {
     }
 }
 
+impl ProvisionalLocalSurfaceBaseline {
+    pub fn validate(&self) -> Result<(), LocalEnvironmentError> {
+        if self.status != PROVISIONAL_SURFACE_STATUS
+            || self.source_evidence_digest == Digest::ZERO
+            || self.evidence_patch.level() != 10
+            || self.active_patch.level() < self.evidence_patch.level()
+            || !self.evidence_patch.contains(self.active_patch)
+        {
+            return Err(LocalEnvironmentError::InvalidSurfaceIdentity);
+        }
+        if self.terrain_minimum_millimetres > self.terrain_mean_millimetres
+            || self.terrain_mean_millimetres > self.terrain_maximum_millimetres
+            || self.topsoil_source_quantiles.iter().any(|values| {
+                values.contains(&i16::MIN) || values[0] > values[1] || values[1] > values[2]
+            })
+        {
+            return Err(LocalEnvironmentError::InvalidSurfaceRange);
+        }
+        Ok(())
+    }
+}
+
 fn unit(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -190,6 +234,10 @@ pub enum LocalEnvironmentError {
     InvalidWeatherUnit,
     #[error("provisional local-weather normals have an invalid range")]
     InvalidWeatherRange,
+    #[error("invalid provisional local-surface identity or spatial binding")]
+    InvalidSurfaceIdentity,
+    #[error("provisional local-surface values have an invalid range or missing source value")]
+    InvalidSurfaceRange,
     #[error("normal-year phase {0} is out of range")]
     NormalPhaseOutOfRange(usize),
 }
@@ -270,6 +318,28 @@ mod tests {
         assert_eq!(
             weather.validate(),
             Err(LocalEnvironmentError::InvalidWeatherRange)
+        );
+    }
+
+    #[test]
+    fn surface_baseline_retains_source_domains_without_accepting_missing_soil() {
+        let evidence_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
+        let mut surface = ProvisionalLocalSurfaceBaseline {
+            status: PROVISIONAL_SURFACE_STATUS.to_owned(),
+            source_evidence_digest: Digest::sha256(b"origin surface evidence"),
+            evidence_patch,
+            active_patch: evidence_patch.children().expect("children")[0],
+            terrain_minimum_millimetres: 1_000,
+            terrain_mean_millimetres: 2_000,
+            terrain_maximum_millimetres: 3_000,
+            surface_water_occurrence_source_code: 0,
+            topsoil_source_quantiles: [[1, 2, 3]; 9],
+        };
+        assert_eq!(surface.validate(), Ok(()));
+        surface.topsoil_source_quantiles[3][1] = i16::MIN;
+        assert_eq!(
+            surface.validate(),
+            Err(LocalEnvironmentError::InvalidSurfaceRange)
         );
     }
 }
