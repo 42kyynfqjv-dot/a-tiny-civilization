@@ -15,6 +15,7 @@ mod observer_findings;
 mod observer_organisms;
 mod observer_timeline;
 mod observer_worlds;
+mod stripe_checkout_sessions;
 mod stripe_webhooks;
 mod supporter_reservations;
 mod world_store;

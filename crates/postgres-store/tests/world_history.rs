@@ -33,6 +33,7 @@ use std::{
     },
 };
 use stripe_adapter::{
+    StripeCheckoutSession, StripeCheckoutSessionStore, StripeCheckoutStoreError,
     StripeWebhookDisposition, StripeWebhookStore, StripeWebhookStoreError, VerifiedCheckoutPayment,
     VerifiedStripeEvent,
 };
@@ -1267,6 +1268,32 @@ async fn verified_stripe_events_are_atomic_append_only_and_idempotent(pool: PgPo
             birth_category: BirthCategory::new("female").expect("valid category"),
         })
         .await?;
+    let checkout = StripeCheckoutSession {
+        session_id: "cs_test_durable_fixture".to_owned(),
+        checkout_url: "https://checkout.stripe.com/c/pay/cs_test_durable_fixture"
+            .parse()
+            .expect("Checkout URL"),
+    };
+    assert_eq!(
+        store
+            .record_checkout_session(reservation_id, &checkout)
+            .await?,
+        checkout
+    );
+    assert_eq!(
+        store
+            .record_checkout_session(reservation_id, &checkout)
+            .await?,
+        checkout
+    );
+    let mut conflicting_checkout = checkout.clone();
+    conflicting_checkout.session_id = "cs_test_other_fixture".to_owned();
+    assert!(matches!(
+        store
+            .record_checkout_session(reservation_id, &conflicting_checkout)
+            .await,
+        Err(StripeCheckoutStoreError::Conflict(_))
+    ));
 
     let payment = VerifiedCheckoutPayment {
         event_id: "evt_atomic_fixture_1".to_owned(),

@@ -143,6 +143,30 @@ pub struct StripeCheckoutSession {
     pub checkout_url: Url,
 }
 
+#[async_trait]
+pub trait StripeCheckoutSessionStore: Send + Sync {
+    async fn record_checkout_session(
+        &self,
+        reservation_id: Uuid,
+        session: &StripeCheckoutSession,
+    ) -> Result<StripeCheckoutSession, StripeCheckoutStoreError>;
+
+    async fn load_checkout_session(
+        &self,
+        reservation_id: Uuid,
+    ) -> Result<Option<StripeCheckoutSession>, StripeCheckoutStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum StripeCheckoutStoreError {
+    #[error("Checkout session conflicts with durable evidence: {0}")]
+    Conflict(String),
+    #[error("Checkout session persistence is unavailable: {0}")]
+    Unavailable(String),
+    #[error("stored Checkout session is corrupt: {0}")]
+    Corrupt(String),
+}
+
 #[derive(Debug, Error)]
 pub enum StripeCheckoutError {
     #[error("invalid Stripe Checkout configuration: {0}")]

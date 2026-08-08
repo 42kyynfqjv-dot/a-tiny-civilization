@@ -16,6 +16,7 @@ sim-engine = { path = "../sim-engine" }
 sqlx.workspace = true
 stripe-adapter = { path = "../stripe-adapter" }
 uuid.workspace = true
+url.workspace = true
 world-domain = { path = "../world-domain" }
 
 [dev-dependencies]
