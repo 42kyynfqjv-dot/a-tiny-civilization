@@ -731,3 +731,10 @@ wind means rather than a fabricated speed distribution. Both are private touch-c
 rain, wind, direction, season, forecast, and use labels remain absent. Event, snapshot, and
 state-hash schemas advance to 28, fresh genesis and qualification default to it, and the gate
 requires both readings in canonical history. ADR 0122 records the provisional boundary.
+
+Canonical candidate v10 carries that boundary into a fresh same-identity genesis. It passed at
+tick 1,680 with exact replay, 110,880 perceptions of each new physical scalar, all 4,071 Hindsight
+deliveries complete without error, all five projections current, and one consumed zero-cost local
+Qwen receipt. Its immutable evidence supersedes candidate v9 for mechanical launch review but does
+not authorize deployment or scientific admission. A prior disposable attempt caught canonical
+property ordering before any tick committed and was preserved rather than rewritten or promoted.
