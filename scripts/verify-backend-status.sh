@@ -28,6 +28,7 @@ chmod 600 "$environment_file"
   echo 'POSTGRES_USER=civilization'
   echo 'POSTGRES_PASSWORD=not-the-development-password'
   echo 'OPENROUTER_API_KEY=test-only-provider-key'
+  echo 'COGNITION_EXTERNAL_EXPORT_APPROVED=true'
   echo 'COGNITION_PAID_ENABLED=false'
 } > "$environment_file"
 

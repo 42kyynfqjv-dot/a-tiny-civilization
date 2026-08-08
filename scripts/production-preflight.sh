@@ -87,6 +87,10 @@ if [[ -z "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
   echo "production requires at least one configured cognition provider" >&2
   exit 2
 fi
+if [[ "${COGNITION_EXTERNAL_EXPORT_APPROVED:-false}" != "true" ]]; then
+  echo "production cognition providers require COGNITION_EXTERNAL_EXPORT_APPROVED=true" >&2
+  exit 2
+fi
 if [[ -n "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
       && -z "${CLOUDFLARE_WORKERS_AI_BASE_URL:-}" ]] \
    || [[ -z "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \

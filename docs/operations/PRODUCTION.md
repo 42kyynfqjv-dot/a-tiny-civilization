@@ -59,6 +59,8 @@ Required runtime values are:
 - at least one cognition-provider key: Cloudflare Workers AI, Groq, Cerebras, or
   OpenRouter. Free routes are attempted first and paid cognition is disabled unless
   `COGNITION_PAID_ENABLED=true` is explicitly set;
+- `COGNITION_EXTERNAL_EXPORT_APPROVED=true`, set only after approving the chosen provider's receipt
+  of private cognition and recalled-memory context;
 - `APP_ENV=production`.
 
 The local Hindsight service is keyless inside its private Docker network. Stripe and
@@ -196,7 +198,8 @@ civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 Use a separate disposable database and a non-public world ID. The command accepts at most one
 million ticks per invocation and stops early with an error if the world reaches a terminal state.
 
-The static preflight rejects missing core settings, an absent cognition provider, the
+The static preflight rejects missing core settings, an absent cognition provider or separate
+external-export approval, the
 documented development password, a non-production environment, partial paid, backup,
 or tunnel configuration, mutable `cloudflared` image references, and invalid Compose
 interpolation. It does not print secrets. The default tunnel image is pinned to the

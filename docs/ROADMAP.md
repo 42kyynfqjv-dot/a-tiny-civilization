@@ -517,3 +517,7 @@ removed arbitrary tick-count life-history placeholders before any public genesis
 the corrected simulation-time guardrails and the 1,271-tick regression run. ADR 0086 adds an exact,
 writer-locked `advance-qualification` command that refuses production; its first bounded proof
 advanced precisely ten ticks and replayed at the resulting cursor.
+
+Remote cognition now has a second independent activation boundary: provider credentials and cost
+authorization are insufficient unless `COGNITION_EXTERNAL_EXPORT_APPROVED=true` is set. Runtime and
+production-preflight tests enforce ADR 0087 before any private cognition payload can leave the host.

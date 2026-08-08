@@ -89,6 +89,10 @@ Possession of an API key or approval of a spending cap does not by itself author
 payload. Local Hindsight delivery, recall persistence, route accounting, deterministic fallback,
 deadline latching, and replay have been qualified without external export.
 
+After that approval is made, set `COGNITION_EXTERNAL_EXPORT_APPROVED=true` in the protected
+production environment. The runtime worker and production preflight both refuse a configured
+provider while the value is absent or false.
+
 Report only which provider is configured. The application preflight checks presence
 and pairing without printing the value.
 

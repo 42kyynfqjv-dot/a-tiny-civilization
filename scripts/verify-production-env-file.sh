@@ -17,6 +17,17 @@ chmod 600 "$environment_file"
   echo 'COGNITION_PAID_ENABLED=false'
 } > "$environment_file"
 
+if "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" \
+  >"${temporary_directory}/missing-export-approval.txt" 2>&1; then
+  echo "production preflight accepted a provider key without external-export approval" >&2
+  exit 1
+fi
+if ! grep -q 'COGNITION_EXTERNAL_EXPORT_APPROVED=true' \
+  "${temporary_directory}/missing-export-approval.txt"; then
+  echo "production preflight rejected missing export approval for the wrong reason" >&2
+  exit 1
+fi
+echo 'COGNITION_EXTERNAL_EXPORT_APPROVED=true' >> "$environment_file"
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" >/dev/null
 
 chmod 640 "$environment_file"

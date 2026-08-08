@@ -20,6 +20,7 @@ common=(
   POSTGRES_USER=ci
   POSTGRES_PASSWORD=ci-production-check-only
   OPENROUTER_API_KEY=ci-free-route-check-only
+  COGNITION_EXTERNAL_EXPORT_APPROVED=true
   STRIPE_SECRET_KEY=sk_test_ci_only
   STRIPE_SUPPORTER_PRICE_ID=price_ci_only
   STRIPE_WEBHOOK_SECRET=whsec_ci_only

@@ -84,6 +84,8 @@ jobs:
           POSTGRES_DB=civilization
           POSTGRES_USER=civilization
           POSTGRES_PASSWORD=ci-production-check-only
+          OPENROUTER_API_KEY=ci-provider-check-only
+          COGNITION_EXTERNAL_EXPORT_APPROVED=true
           CLOUDFLARE_TUNNEL_TOKEN=ci-production-check-only
           R2_ACCOUNT_ID=0123456789abcdef0123456789abcdef
           R2_BACKUP_BUCKET=a-tiny-civilization-backups

@@ -230,6 +230,14 @@ enum Command {
         #[arg(long, env = "COGNITION_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
         request_timeout_seconds: u64,
 
+        /// Explicit approval to send private cognition and recalled-memory context externally.
+        #[arg(
+            long,
+            env = "COGNITION_EXTERNAL_EXPORT_APPROVED",
+            default_value_t = false
+        )]
+        external_export_approved: bool,
+
         /// Full OpenAI-compatible Workers AI base ending in `/ai/v1`.
         #[arg(long, env = "CLOUDFLARE_WORKERS_AI_BASE_URL")]
         cloudflare_workers_ai_base_url: Option<String>,
@@ -352,6 +360,7 @@ async fn main() -> Result<()> {
             poll_milliseconds,
             claim_lease_seconds,
             request_timeout_seconds,
+            external_export_approved,
             cloudflare_workers_ai_base_url,
             cloudflare_workers_ai_api_key,
             groq_api_key,
@@ -370,6 +379,7 @@ async fn main() -> Result<()> {
                 openrouter_api_key,
                 timeout,
             )?;
+            validate_cognition_export_approval(adapters.len(), external_export_approved)?;
             let configuration = CognitionWorkerConfiguration::production(paid_enabled);
             serve_cognition_worker(
                 &store,
@@ -1594,6 +1604,18 @@ fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }
 
+fn validate_cognition_export_approval(
+    configured_providers: usize,
+    external_export_approved: bool,
+) -> Result<()> {
+    if configured_providers > 0 && !external_export_approved {
+        anyhow::bail!(
+            "configured cognition providers require COGNITION_EXTERNAL_EXPORT_APPROVED=true"
+        );
+    }
+    Ok(())
+}
+
 async fn serve_cognition_worker(
     store: &PostgresStore,
     memory: &HindsightMemory,
@@ -2196,6 +2218,13 @@ mod tests {
         assert!(is_production_environment(Some(" Production ")));
         assert!(!is_production_environment(Some("development")));
         assert!(!is_production_environment(None));
+    }
+
+    #[test]
+    fn remote_cognition_requires_separate_export_approval() {
+        validate_cognition_export_approval(0, false).expect("local fallback needs no export");
+        validate_cognition_export_approval(1, true).expect("explicitly approved provider");
+        assert!(validate_cognition_export_approval(1, false).is_err());
     }
 
     #[test]
