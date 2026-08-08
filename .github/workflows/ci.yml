@@ -105,3 +105,15 @@ jobs:
           R2_SECRET_ACCESS_KEY=ci-r2-secret-key-only
           WALG_LIBSODIUM_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
           ./scripts/production-preflight.sh
+
+  images:
+    name: Production images
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build pinned Rust runtime image
+        run: docker build --network host --tag a-tiny-civilization-app:ci .
+      - name: Build pinned observatory runtime image
+        run: docker build --network host --tag a-tiny-civilization-web:ci web
+      - name: Smoke non-root read-only runtime images
+        run: ./scripts/smoke-runtime-images.sh

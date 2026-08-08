@@ -47,7 +47,7 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/observer-candidate-smoke.sh ./scripts/verify-observer-candidate-smoke.sh \
   ./scripts/deploy-production-app.sh ./scripts/activate-qualified-canonical-world.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \
-  ./scripts/verify-live-genesis.sh
+  ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh
 ./scripts/verify-observer-candidate-smoke.sh
 ./scripts/verify-create-qualification-evidence.sh
 ./scripts/verify-provisional-genesis-pins.sh

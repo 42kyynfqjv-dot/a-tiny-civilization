@@ -167,6 +167,9 @@ forbids privilege escalation, and runs with a read-only root filesystem. A bound
 `/tmp` tmpfs is the only general scratch space. The web runtime directs Wrangler/Miniflare scratch
 state there; the runner's staged Earth inputs remain a separate read-only mount. CI verifies the
 fully composed service policy rather than trusting Dockerfile intent alone.
+The `Production images` CI job additionally builds both final images, inspects their configured
+runtime users, executes the Rust image under the production restrictions, and boots plus HTTP-probes
+the web image on a random loopback port with a read-only root filesystem.
 
 The Compose project name and canonical PostgreSQL/Hindsight volume names are explicit and do not
 depend on the checkout directory. Those volumes are external to Compose, so `docker compose down
