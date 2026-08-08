@@ -632,6 +632,7 @@ mod tests {
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,

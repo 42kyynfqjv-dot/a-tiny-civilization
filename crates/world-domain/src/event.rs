@@ -2,9 +2,9 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    ActionValueState, BodilyRegulationState, CanonicalHashError, CelestialState,
-    CognitionDeadlineInput, CognitionRequestSelection, Digest, EntityId, EventId, EventSequence,
-    HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
+    ActionValueState, AdultBodyMassCommitment, BodilyRegulationState, CanonicalHashError,
+    CelestialState, CognitionDeadlineInput, CognitionRequestSelection, Digest, EntityId, EventId,
+    EventSequence, HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
     MaterialReservoirCommitment, MetabolicRateCommitment, MovementDirectionValueState,
     OralTransferCommitment, PhysiologicalRegulationCommitment, PrimitiveAction,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId,
@@ -94,6 +94,9 @@ pub const TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 30;
 /// Schema thirty-one binds mass-scaled metabolic power, energy reserve, and
 /// oral-transfer quantities. Payload shapes remain unchanged.
 pub const MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION: u16 = 31;
+/// Schema thirty-two retains the exact adult-body-mass commitment in organism
+/// state instead of leaving it reachable only through an external genesis plan.
+pub const ADULT_BODY_MASS_EVENT_SCHEMA_VERSION: u16 = 32;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -176,6 +179,12 @@ pub enum DomainEvent {
         heritable_disposition_profile: Option<HeritableDispositionProfile>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         heritable_disposition: Option<HeritableDisposition>,
+    },
+    /// Pins one exact adult-body-mass commitment to an initialized or born
+    /// organism. This is private physical provenance, not a perceived category.
+    OrganismAdultBodyMassCommitted {
+        organism_id: EntityId,
+        commitment: AdultBodyMassCommitment,
     },
     /// A physical material instance. Its identity is citable, but its affordances
     /// and effects are intentionally not inferred by this event.
@@ -544,6 +553,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
             | TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
             | MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
+            | ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -613,6 +623,11 @@ fn validate_event_for_schema(
                 ..
             }
         )
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::OrganismAdultBodyMassCommitted { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
@@ -820,6 +835,9 @@ fn validate_event_for_schema(
             }
         }
         DomainEvent::OrganismPerceived { perception, .. } => perception
+            .validate()
+            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::OrganismAdultBodyMassCommitted { commitment, .. } => commitment
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
         DomainEvent::OrganismActed { action, .. } => {
@@ -2025,5 +2043,48 @@ mod tests {
             Digest::sha256(b"heritable state"),
         )
         .expect("schema seventeen accepts a bounded paired disposition");
+    }
+
+    #[test]
+    fn adult_body_mass_state_requires_schema_thirty_two() {
+        let manifest = manifest();
+        let species = species();
+        let event = DomainEvent::OrganismAdultBodyMassCommitted {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0xA32)),
+            commitment: AdultBodyMassCommitment {
+                commitment_schema_version: crate::ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+                species,
+                evidence_basis: PhysiologicalEvidenceBasis::LiteratureApproximation,
+                profile_set_digest: Digest::sha256(b"adult mass profile set"),
+                source_record_id: "adult-mass-row-32".to_owned(),
+                source_record_digest: Digest::sha256(b"adult mass source row"),
+                mass_grams_value: 70_000,
+                mass_grams_decimal_places: 0,
+            },
+        };
+        assert!(matches!(
+            EventBatch::new(
+                MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                32,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"adult mass state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            ADULT_BODY_MASS_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            32,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"adult mass state"),
+        )
+        .expect("schema thirty-two accepts exact adult-body-mass state");
     }
 }

@@ -71,6 +71,7 @@ async fn cancellation_route_requires_account_session_and_csrf_and_refunds_once(
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,

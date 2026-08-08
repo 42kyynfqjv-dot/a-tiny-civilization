@@ -195,6 +195,7 @@ impl ObserverFindingStore for PostgresStore {
                     .await?
                 }
                 DomainEvent::WorldConfigured { .. }
+                | DomainEvent::OrganismAdultBodyMassCommitted { .. }
                 | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::MaterialReservoirCommitted { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
@@ -418,6 +419,7 @@ async fn apply_finding_events(
                 .await?
             }
             DomainEvent::WorldConfigured { .. }
+            | DomainEvent::OrganismAdultBodyMassCommitted { .. }
             | DomainEvent::MaterialInstanceInitialized { .. }
             | DomainEvent::MaterialReservoirCommitted { .. }
             | DomainEvent::MaterialInstanceHeld { .. }

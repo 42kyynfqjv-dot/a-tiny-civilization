@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-31}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-32}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -169,7 +169,9 @@ WITH selected_world AS (
     CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
     WHERE batch.world_id = :'world_id'::UUID
 ), organism_commitment_state AS (
-    SELECT COUNT(*)::BIGINT AS organism_initializations,
+    SELECT COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' IN ('organism_initialized', 'organism_born')
+           )::BIGINT AS organism_initializations,
            COUNT(*) FILTER (
                WHERE event -> 'event' -> 'data' -> 'metabolic_rate' IS NOT NULL
                  AND event -> 'event' -> 'data' -> 'physiological_regulation' IS NOT NULL
@@ -193,10 +195,18 @@ WITH selected_world AS (
                  ) <> (event -> 'event' -> 'data' -> 'physiological_regulation'
                          ->> 'usable_energy_reserve_joules')::NUMERIC
            )::BIGINT AS invalid_energy_reserves
+           , COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_adult_body_mass_committed'
+             )::BIGINT AS adult_body_mass_commitments
+           , COUNT(DISTINCT event -> 'event' -> 'data' ->> 'organism_id') FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_adult_body_mass_committed'
+             )::BIGINT AS distinct_adult_body_mass_organisms
     FROM event_batches batch
     CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
     WHERE batch.world_id = :'world_id'::UUID
-      AND event -> 'event' ->> 'type' IN ('organism_initialized', 'organism_born')
+      AND event -> 'event' ->> 'type' IN (
+          'organism_initialized', 'organism_born', 'organism_adult_body_mass_committed'
+      )
 ), oral_commitment_state AS (
     SELECT COUNT(DISTINCT event -> 'event' -> 'data' ->> 'object_id') FILTER (
                WHERE event -> 'event' ->> 'type' = 'material_instance_initialized'
@@ -353,6 +363,10 @@ WITH selected_world AS (
                  AND distinct_oral_portions > 1
                  AND oral_transfers > 0
              )) AS mass_scaled_oral_route_exercised
+           , (ruleset_version < 32 OR (
+                 adult_body_mass_commitments = organism_initializations
+                 AND distinct_adult_body_mass_organisms = organism_initializations
+             )) AS adult_body_mass_state_bound
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -368,7 +382,7 @@ SELECT jsonb_build_object(
       AND signal_motor_association_exercised AND person_only_cognition
       AND local_weather_bound AND local_atmospheric_flux_exercised
       AND surface_movement_bound AND mass_scaled_metabolism_bound
-      AND mass_scaled_oral_route_exercised,
+      AND mass_scaled_oral_route_exercised AND adult_body_mass_state_bound,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -414,6 +428,8 @@ SELECT jsonb_build_object(
       , 'oral_profiled_materials', oral_profiled_materials
       , 'distinct_oral_portions', distinct_oral_portions
       , 'oral_transfers', oral_transfers
+      , 'adult_body_mass_commitments', adult_body_mass_commitments
+      , 'distinct_adult_body_mass_organisms', distinct_adult_body_mass_organisms
     ),
     'checks', jsonb_build_object(
       'running', running, 'expected_ruleset', expected_ruleset,
@@ -438,6 +454,7 @@ SELECT jsonb_build_object(
       , 'surface_movement_bound', surface_movement_bound
       , 'mass_scaled_metabolism_bound', mass_scaled_metabolism_bound
       , 'mass_scaled_oral_route_exercised', mass_scaled_oral_route_exercised
+      , 'adult_body_mass_state_bound', adult_body_mass_state_bound
     )
 )::TEXT
 FROM checks;

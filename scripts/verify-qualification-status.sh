@@ -14,6 +14,8 @@ grep -qF "distinct_oral_portions > 1" \
   "${project_root}/scripts/qualification-status.sh"
 grep -qF "oral_transfers > 0" \
   "${project_root}/scripts/qualification-status.sh"
+grep -qF "adult_body_mass_commitments = organism_initializations" \
+  "${project_root}/scripts/qualification-status.sh"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 mkdir -p "${temporary_directory}/bin"

@@ -837,3 +837,10 @@ usable energy reserve must equal exactly seven days of that power, oral profiles
 body-scaled portions, and at least one physical oral transfer must occur. This database-side proof
 complements the launch-evidence verifier's exact mass/profile arithmetic and prevents an input bundle
 that was compiled correctly but never exercised by the world from passing production admission.
+
+Ruleset 32 closes the remaining canonical-state gap by recording each exact adult-body-mass
+commitment as a private organism event after initialization and birth. The value now survives event
+replay, state hashing, and snapshots directly instead of remaining reachable only through the
+external body-profile plan or being inferred from metabolic power. Public projections discard the
+commitment, and schema-32 validation requires exactly one species-matching value for every organism.
+ADR 0137 records the boundary; growth and individual changing mass remain later mechanics.

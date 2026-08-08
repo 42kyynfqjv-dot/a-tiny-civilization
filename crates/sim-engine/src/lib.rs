@@ -19,7 +19,8 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
     ACTION_LEARNING_EVENT_SCHEMA_VERSION, ACTION_VALUE_MAX, ACTION_VALUE_MIN,
-    ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
+    ACTION_VALUE_STATE_SCHEMA_VERSION, ADULT_BODY_MASS_EVENT_SCHEMA_VERSION, ActionValueState,
+    AdultBodyMassCommitment, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
     BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, BodilyNeedState, BodilyRegulationState,
     CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
     CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, CognitionDeadlineInput,
@@ -147,6 +148,9 @@ pub const TOPSOIL_MOVEMENT_RULESET_VERSION: u32 = 30;
 /// Ruleset thirty-one replaces universal organism energy quantities with
 /// body-mass-scaled, source-addressed commitments fixed at genesis.
 pub const MASS_SCALED_METABOLISM_RULESET_VERSION: u32 = 31;
+/// Ruleset thirty-two makes each exact adult-mass commitment durable canonical
+/// organism state so later physical couplings never infer it from derived power.
+pub const ADULT_BODY_MASS_STATE_RULESET_VERSION: u32 = 32;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -178,6 +182,7 @@ pub const LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION: u16 = 28;
 pub const TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 29;
 pub const TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 30;
 pub const MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION: u16 = 31;
+pub const ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION: u16 = 32;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -221,6 +226,7 @@ const LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION: u16 = 28;
 const TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 29;
 const TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 30;
 const MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION: u16 = 31;
+const ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION: u16 = 32;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
@@ -629,6 +635,8 @@ pub struct InitialOrganism {
     pub embodied_patch: Option<S2CellId>,
     pub metabolic_rate: Option<MetabolicRateCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adult_body_mass: Option<AdultBodyMassCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub physiological_regulation: Option<PhysiologicalRegulationCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reproductive_physiology: Option<ReproductivePhysiologyCommitment>,
@@ -672,6 +680,8 @@ pub struct OrganismState {
     embodied_patch: Option<S2CellId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     metabolic_rate: Option<MetabolicRateCommitment>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    adult_body_mass: Option<AdultBodyMassCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     physiological_regulation: Option<PhysiologicalRegulationCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -997,6 +1007,10 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    fn uses_adult_body_mass_state_driver(&self) -> bool {
+        self.manifest.ruleset_version >= ADULT_BODY_MASS_STATE_RULESET_VERSION
+    }
+
     fn uses_mass_scaled_metabolism_driver(&self) -> bool {
         self.manifest.ruleset_version >= MASS_SCALED_METABOLISM_RULESET_VERSION
     }
@@ -1360,6 +1374,11 @@ impl EngineState {
         let mut events = Vec::with_capacity(
             initial_organisms
                 .len()
+                .saturating_mul(if self.uses_adult_body_mass_state_driver() {
+                    2
+                } else {
+                    1
+                })
                 .saturating_add(initial_materials.len().saturating_mul(2))
                 .saturating_add(1 + usize::from(configuration.is_some())),
         );
@@ -1409,6 +1428,30 @@ impl EngineState {
             });
         }
         for organism in initial_organisms {
+            let adult_body_mass = if self.uses_adult_body_mass_state_driver() {
+                let commitment = organism.adult_body_mass.as_ref().ok_or_else(|| {
+                    EngineError::InvalidEmbodiedEvent(format!(
+                        "organism {} lacks an adult-body-mass commitment",
+                        organism.organism_id
+                    ))
+                })?;
+                commitment
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                if commitment.species != organism.species {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "adult-body-mass commitment species does not match organism".to_owned(),
+                    ));
+                }
+                Some(commitment.clone())
+            } else {
+                if organism.adult_body_mass.is_some() {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "adult-body-mass state requires ruleset 32".to_owned(),
+                    ));
+                }
+                None
+            };
             if let Some(metabolic_rate) = &organism.metabolic_rate {
                 metabolic_rate
                     .validate()
@@ -1504,6 +1547,12 @@ impl EngineState {
                 heritable_disposition_profile,
                 heritable_disposition,
             });
+            if let Some(commitment) = adult_body_mass {
+                events.push(DomainEvent::OrganismAdultBodyMassCommitted {
+                    organism_id: organism.organism_id,
+                    commitment,
+                });
+            }
         }
         for instance in initial_materials {
             events.push(DomainEvent::MaterialInstanceInitialized {
@@ -3016,6 +3065,17 @@ impl EngineState {
                     heritable_disposition_profile: pending.heritable_disposition_profile.clone(),
                     heritable_disposition: pending.offspring_heritable_disposition.clone(),
                 });
+                if self.uses_adult_body_mass_state_driver() {
+                    events.push(DomainEvent::OrganismAdultBodyMassCommitted {
+                        organism_id: pending.offspring_id,
+                        commitment: parent.adult_body_mass.clone().ok_or_else(|| {
+                            EngineError::InvalidEmbodiedEvent(format!(
+                                "developing parent {} lacks adult-body-mass state",
+                                parent.organism_id
+                            ))
+                        })?,
+                    });
+                }
             }
         }
 
@@ -4232,6 +4292,7 @@ impl EngineState {
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::OrganismMoved { to_patch, .. } => Some(*to_patch),
             DomainEvent::OrganismDied { organism_id, .. }
+            | DomainEvent::OrganismAdultBodyMassCommitted { organism_id, .. }
             | DomainEvent::OrganismAgeAdvanced { organism_id, .. }
             | DomainEvent::OrganismNeedsChanged { organism_id, .. }
             | DomainEvent::OrganismActionValueChanged { organism_id, .. }
@@ -5147,7 +5208,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_mass_scaled_metabolism_driver() {
+        if self.uses_adult_body_mass_state_driver() {
+            ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+        } else if self.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
         } else if self.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
@@ -5238,7 +5301,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_mass_scaled_metabolism_driver() {
+        if self.uses_adult_body_mass_state_driver() {
+            ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION
@@ -5445,6 +5510,7 @@ impl EngineState {
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
+                    adult_body_mass: None,
                     physiological_regulation: physiological_regulation.clone(),
                     reproductive_physiology: reproductive_physiology.clone(),
                     reproductive_available_at: None,
@@ -5464,6 +5530,29 @@ impl EngineState {
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
+            }
+            DomainEvent::OrganismAdultBodyMassCommitted {
+                organism_id,
+                commitment,
+            } => {
+                if !self.uses_adult_body_mass_state_driver() {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "adult-body-mass state requires ruleset 32".to_owned(),
+                    ));
+                }
+                commitment
+                    .validate()
+                    .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                let organism = self
+                    .organisms
+                    .get_mut(organism_id)
+                    .ok_or(EngineError::UnknownOrganism(*organism_id))?;
+                if commitment.species != organism.species || organism.adult_body_mass.is_some() {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "adult-body-mass commitment is duplicated or species-mismatched".to_owned(),
+                    ));
+                }
+                organism.adult_body_mass = Some(commitment.clone());
             }
             DomainEvent::MaterialInstanceInitialized {
                 object_id,
@@ -6053,6 +6142,7 @@ impl EngineState {
                     location_id: *location_id,
                     embodied_patch: *embodied_patch,
                     metabolic_rate: metabolic_rate.clone(),
+                    adult_body_mass: None,
                     physiological_regulation: physiological_regulation.clone(),
                     reproductive_physiology: reproductive_physiology.clone(),
                     reproductive_available_at: None,
@@ -6950,6 +7040,33 @@ impl EngineState {
                     ));
                 }
             }
+            match (
+                self.uses_adult_body_mass_state_driver(),
+                organism.adult_body_mass.as_ref(),
+            ) {
+                (true, Some(commitment)) => {
+                    commitment
+                        .validate()
+                        .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                    if commitment.species != organism.species {
+                        return Err(EngineError::InvalidEmbodiedEvent(
+                            "adult-body-mass commitment species does not match organism".to_owned(),
+                        ));
+                    }
+                }
+                (true, None) => {
+                    return Err(EngineError::InvalidEmbodiedEvent(format!(
+                        "organism {} lacks adult-body-mass state",
+                        organism.organism_id
+                    )));
+                }
+                (false, Some(_)) => {
+                    return Err(EngineError::InvalidEmbodiedEvent(
+                        "adult-body-mass state requires ruleset 32".to_owned(),
+                    ));
+                }
+                (false, None) => {}
+            }
             if self.uses_bodily_regulation_driver() {
                 let regulation = organism.physiological_regulation.as_ref().ok_or(
                     EngineError::MissingPhysiologicalCommitment(organism.organism_id),
@@ -7517,7 +7634,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_mass_scaled_metabolism_driver() {
+        let snapshot_schema_version = if state.uses_adult_body_mass_state_driver() {
+            ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
@@ -7633,12 +7752,15 @@ impl Snapshot {
                 | TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
                 | TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
                 | MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
+                | ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_mass_scaled_metabolism_driver() {
+        let expected_schema_version = if self.state.uses_adult_body_mass_state_driver() {
+            ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_topsoil_movement_driver() {
             TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
@@ -7778,7 +7900,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_mass_scaled_metabolism_driver() {
+    if state.uses_adult_body_mass_state_driver() {
+        Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
+    } else if state.uses_mass_scaled_metabolism_driver() {
         Some(MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION)
     } else if state.uses_topsoil_movement_driver() {
         Some(TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION)
@@ -8331,6 +8455,7 @@ mod tests {
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,
@@ -8577,6 +8702,19 @@ mod tests {
             thermal_recovery_seconds: 600,
         });
         person
+    }
+
+    fn adult_body_mass_fixture(species: SpeciesIdentity) -> AdultBodyMassCommitment {
+        AdultBodyMassCommitment {
+            commitment_schema_version: world_domain::ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+            species,
+            evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
+            profile_set_digest: Digest::sha256(b"adult body mass fixture set"),
+            source_record_id: "adult-mass-fixture-row".to_owned(),
+            source_record_digest: Digest::sha256(b"adult body mass fixture row"),
+            mass_grams_value: 70_000,
+            mass_grams_decimal_places: 0,
+        }
     }
 
     #[test]
@@ -13717,5 +13855,133 @@ mod tests {
         snapshot
             .verify_integrity()
             .expect("mass-scaled metabolism snapshot integrity");
+    }
+
+    #[test]
+    fn adult_body_mass_is_canonical_event_snapshot_and_replay_state() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x32));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x32),
+            ADULT_BODY_MASS_STATE_RULESET_VERSION,
+        );
+        let mut founder = regulated_full_earth_person(world_id, 0x3201, 604_800, 86_400);
+        founder.initial_age_ticks = 20;
+        founder.adult_body_mass = Some(adult_body_mass_fixture(founder.species.clone()));
+        founder.reproductive_physiology =
+            Some(reproductive_fixture_profile(founder.species.clone()));
+        founder.heritable_disposition_profile =
+            Some(heritable_fixture_profile(founder.species.clone()));
+        let founder_id = founder.organism_id;
+        let patch = founder.embodied_patch.expect("founder patch");
+        let water = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("water identity");
+        let material_id = EntityId::deterministic(world_id, b"mass-state-water-reservoir");
+        let reservoir = InitialMaterialInstance {
+            object_id: material_id,
+            material: water.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000),
+            oral_transfer_profiles: vec![OralTransferCommitment {
+                commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "mass-state-water-oral-v1".to_owned(),
+                profile_digest: Digest::sha256(b"mass state water oral profile"),
+                material: water.clone(),
+                species: human(),
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                transfer_mass_milligrams: 700_000,
+                recoverable_energy_joules: 0,
+                hydration_recovery_seconds: 21_600,
+            }],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "mass-state-water-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"mass state water reservoir"),
+                material: water,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("coverage patch"),
+                maximum_mass_milligrams: 1_000_000,
+                replenishment_mass_milligrams_per_tick: 1_000,
+            }),
+        };
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                surface_provisional_full_earth_configuration(),
+                vec![founder],
+                vec![reservoir],
+            )
+            .expect("ruleset-32 genesis plan");
+        assert!(genesis_events.iter().any(|event| matches!(
+            event,
+            DomainEvent::OrganismAdultBodyMassCommitted { organism_id, .. }
+                if *organism_id == founder_id
+        )));
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("ruleset-32 genesis commit");
+        assert_eq!(
+            genesis.event_schema_version,
+            ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running
+                .organisms
+                .get(&founder_id)
+                .and_then(|organism| organism.adult_body_mass.as_ref())
+                .map(|commitment| commitment.mass_grams_value),
+            Some(70_000)
+        );
+        assert_eq!(
+            replay(manifest, std::slice::from_ref(&genesis))
+                .expect("ruleset-32 replay")
+                .state,
+            running
+        );
+        let snapshot = Snapshot::new(running, genesis.sequence, genesis.batch_hash)
+            .expect("ruleset-32 snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("ruleset-32 snapshot integrity");
+    }
+
+    #[test]
+    fn adult_body_mass_ruleset_has_distinct_replay_schemas() {
+        let state = EngineState::new(WorldManifest::new(
+            WorldId::from_uuid(Uuid::from_u128(0x3200)),
+            WorldSeed::new(0x3200),
+            ADULT_BODY_MASS_STATE_RULESET_VERSION,
+        ));
+        assert_eq!(
+            state.event_schema_version(),
+            ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            state.state_hash_schema_version(),
+            ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&state),
+            Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
+        );
+        let snapshot = Snapshot::new(state, EventSequence::ZERO, Digest::ZERO)
+            .expect("adult-body-mass snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("adult-body-mass snapshot integrity");
     }
 }

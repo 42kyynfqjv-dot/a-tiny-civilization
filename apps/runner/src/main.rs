@@ -24,10 +24,10 @@ use postgres_store::PostgresStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
-    BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
+    ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
+    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_WEATHER_RULESET_VERSION, MASS_SCALED_METABOLISM_RULESET_VERSION,
-    MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
+    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, run_partition_capacity_probe,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -53,7 +53,7 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = MASS_SCALED_METABOLISM_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = ADULT_BODY_MASS_STATE_RULESET_VERSION;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
 // 60-second request-to-simulation-deadline window.
@@ -915,6 +915,7 @@ async fn init_proof_world(
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,
@@ -928,6 +929,7 @@ async fn init_proof_world(
             location_id: None,
             embodied_patch: None,
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,
@@ -1138,6 +1140,7 @@ async fn init_provisional_full_earth_world(
             location_id: None,
             embodied_patch: Some(initial_patch),
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,
@@ -1786,6 +1789,7 @@ fn load_provisional_fauna_initial_organisms(
                     location_id: None,
                     embodied_patch: Some(initial_patch),
                     metabolic_rate: metabolic_rate.clone(),
+                    adult_body_mass: None,
                     physiological_regulation: None,
                     reproductive_physiology: None,
                     heritable_disposition_profile: None,
@@ -1909,6 +1913,17 @@ fn apply_provisional_organism_body_profiles(
         }
         organism.initial_age_ticks = profile.initial_age_ticks;
         organism.metabolic_rate = Some(profile.metabolic_rate.clone());
+        organism.adult_body_mass = (ruleset_version
+            >= ADULT_BODY_MASS_STATE_RULESET_VERSION)
+            .then(|| {
+                profile.adult_body_mass.clone().with_context(|| {
+                    format!(
+                        "ruleset {ruleset_version} requires an adult-body-mass commitment for {}:{}",
+                        organism.species.catalog, organism.species.identifier
+                    )
+                })
+            })
+            .transpose()?;
         organism.physiological_regulation = Some(profile.physiological_regulation.clone());
         organism.reproductive_physiology = (ruleset_version
             >= REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION)
@@ -2538,6 +2553,7 @@ mod tests {
             location_id: None,
             embodied_patch: Some("0000000000004000".parse().expect("L23 patch")),
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,
@@ -2560,6 +2576,7 @@ mod tests {
         );
         assert_eq!(organisms[0].initial_age_ticks, 20);
         assert!(organisms[0].metabolic_rate.is_some());
+        assert!(organisms[0].adult_body_mass.is_none());
         assert!(organisms[0].physiological_regulation.is_some());
         assert!(organisms[0].reproductive_physiology.is_some());
         assert!(organisms[0].heritable_disposition_profile.is_none());
@@ -2575,6 +2592,19 @@ mod tests {
         assert_eq!(
             heritable_organisms[0].heritable_disposition_profile,
             plan.entries[0].heritable_disposition_profile
+        );
+
+        let mut mass_state_organisms = organisms.clone();
+        apply_provisional_organism_body_profiles(
+            &mut mass_state_organisms,
+            ADULT_BODY_MASS_STATE_RULESET_VERSION,
+            300,
+            Some(&path),
+        )
+        .expect("ruleset thirty-two retains exact adult-body-mass state");
+        assert_eq!(
+            mass_state_organisms[0].adult_body_mass,
+            plan.entries[0].adult_body_mass
         );
 
         let mut wrong_tick = organisms.clone();
@@ -2656,6 +2686,7 @@ mod tests {
             location_id: None,
             embodied_patch: Some("0000000000004000".parse().expect("L23 patch")),
             metabolic_rate: None,
+            adult_body_mass: None,
             physiological_regulation: None,
             reproductive_physiology: None,
             heritable_disposition_profile: None,
@@ -2950,7 +2981,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, MASS_SCALED_METABOLISM_RULESET_VERSION);
+        assert_eq!(ruleset_version, ADULT_BODY_MASS_STATE_RULESET_VERSION);
         assert!(refuse_other_worlds);
     }
 
