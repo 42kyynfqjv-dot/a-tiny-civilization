@@ -7605,59 +7605,13 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
-        } else if expected_schema == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
-        } else if expected_schema == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
-        } else if expected_schema == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
-        } else if expected_schema == COGNITION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == COGNITION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION
-        } else if expected_schema == ACTION_LEARNING_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == ACTION_LEARNING_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MATERIAL_INGESTION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION
-        } else if expected_schema == BODILY_REGULATION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == BODILY_REGULATION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MATERIAL_HANDLING_EVENT_SCHEMA_VERSION
-        } else if expected_schema == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION
-        } else if expected_schema == BODY_PROVENANCE_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == BODY_PROVENANCE_EVENT_SCHEMA_VERSION
-        } else if expected_schema == CELESTIAL_STATE_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == CELESTIAL_STATE_EVENT_SCHEMA_VERSION
-        } else if expected_schema == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION
-        } else if expected_schema == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION
-        } else if expected_schema == EMBODIED_POSITION_EVENT_SCHEMA_VERSION {
-            batch.event_schema_version == EMBODIED_POSITION_EVENT_SCHEMA_VERSION
-        } else if expected_schema == EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == EVENT_SCHEMA_VERSION {
             matches!(
                 batch.event_schema_version,
                 CONFIGURED_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
             )
         } else {
-            batch.event_schema_version == LEGACY_EVENT_SCHEMA_VERSION
+            batch.event_schema_version == expected_schema
         };
         if !valid_schema {
             return Err(EngineError::BatchEventSchemaMismatch {
