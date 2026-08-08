@@ -24,3 +24,9 @@ and all nine uncovered masses remain explicit engineering assumptions.
 The complete input chain rederived successfully after correcting both `aves_1` and `aves_2` to the
 endotherm branch. Full database qualification remains outstanding; the previous ruleset-30 quality
 admission remains frozen and rejects this source/ruleset boundary.
+
+Qualification and activation tooling now defaults to ruleset 31. Once fresh evidence and admissions
+exist, every production preflight/preparation/activation/deployment entry point accepts the exact
+new quality file through `ATINY_QUALITY_ADMISSION_FILE`; the observatory admission verifier receives
+the same file and must be rebound to its digest. Until then, the checked-in ruleset-30 admission is
+only a fail-closed historical default and cannot admit the changed source tree.

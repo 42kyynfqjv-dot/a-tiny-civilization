@@ -61,7 +61,8 @@ done
   "${project_root}/docs/operations/CANONICAL_SEED_RESOLUTION.json" \
   "$genesis_directory" "$evidence_directory" "$admission_file"
 "${project_root}/scripts/verify-public-observatory-admission.py" \
-  --admission "$observatory_admission_file"
+  --admission "$observatory_admission_file" \
+  --quality-admission "$admission_file"
 ATINY_CIVILIZATION_DATA_EXECUTABLE="${project_root}/target/release/civilization-data" \
   "${project_root}/scripts/verify-staged-runtime-artifacts.sh" "$runtime_root"
 

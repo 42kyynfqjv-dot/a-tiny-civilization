@@ -73,6 +73,84 @@ def require_true_checks(report: dict) -> None:
         raise ValueError("qualification report contains a failing or malformed check")
 
 
+def verify_mass_scaled_genesis(genesis: pathlib.Path) -> None:
+    body_plan = load_object(genesis / "organism-body-profile-plan.json")
+    material_plan = load_object(genesis / "material-resource-plan.json")
+    entries = body_plan.get("entries")
+    if not isinstance(entries, list) or not entries:
+        raise ValueError("ruleset-31 body profiles are absent")
+    masses: dict[tuple[str, str], tuple[int, int]] = {}
+    powers: set[tuple[int, int]] = set()
+    for entry in entries:
+        try:
+            species = entry["species"]
+            key = (species["catalog"], species["identifier"])
+            mass = entry["adult_body_mass"]
+            metabolic = entry["metabolic_rate"]
+            regulation = entry["physiological_regulation"]
+            mass_value = mass["mass_grams_value"]
+            mass_places = mass["mass_grams_decimal_places"]
+            power_value = metabolic["measured_power_value"]
+            power_places = metabolic["measured_power_decimal_places"]
+            reserve = regulation["usable_energy_reserve_joules"]
+        except (KeyError, TypeError) as error:
+            raise ValueError("ruleset-31 body profile is malformed") from error
+        values = (mass_value, mass_places, power_value, power_places, reserve)
+        if not all(isinstance(value, int) and not isinstance(value, bool) for value in values):
+            raise ValueError("ruleset-31 mass, power, or reserve is not integral")
+        if mass_value <= 0 or not 0 <= mass_places <= 9 or power_value <= 0 or not 0 <= power_places <= 9:
+            raise ValueError("ruleset-31 mass or power is outside its fixed-point domain")
+        power_scale = 10 ** power_places
+        expected_reserve = (power_value * 604_800 + power_scale - 1) // power_scale
+        if reserve != expected_reserve:
+            raise ValueError("ruleset-31 usable energy reserve is not seven days of committed power")
+        if key in masses:
+            raise ValueError("ruleset-31 body profile repeats a species")
+        masses[key] = (mass_value, mass_places)
+        powers.add((power_value, power_places))
+    if len(powers) < 2:
+        raise ValueError("ruleset-31 metabolic power is still universal")
+
+    sources = material_plan.get("sources")
+    if not isinstance(sources, list):
+        raise ValueError("ruleset-31 material sources are absent")
+    oral_by_material: dict[str, list[dict]] = {}
+    for source in sources:
+        if isinstance(source, dict) and isinstance(source.get("material"), dict):
+            oral_by_material[source["material"].get("identifier")] = source.get(
+                "oral_transfer_profiles", []
+            )
+    for material_id, energy_per_milligram, hydration_seconds in (
+        ("5793", 16, 0),
+        ("962", 0, 21_600),
+    ):
+        profiles = oral_by_material.get(material_id)
+        if not isinstance(profiles, list) or len(profiles) != len(masses):
+            raise ValueError("ruleset-31 oral transfer coverage is incomplete")
+        seen: set[tuple[str, str]] = set()
+        for profile in profiles:
+            try:
+                species = profile["species"]
+                key = (species["catalog"], species["identifier"])
+                transfer = profile["transfer_mass_milligrams"]
+                energy = profile["recoverable_energy_joules"]
+                hydration = profile["hydration_recovery_seconds"]
+            except (KeyError, TypeError) as error:
+                raise ValueError("ruleset-31 oral transfer profile is malformed") from error
+            if key not in masses or key in seen:
+                raise ValueError("ruleset-31 oral transfer species differ from body profiles")
+            mass_value, mass_places = masses[key]
+            denominator = (10 ** mass_places) * 1_000_000
+            expected_transfer = max(1, (mass_value * 1_000 * 10_000 + denominator - 1) // denominator)
+            if (
+                transfer != expected_transfer
+                or energy != transfer * energy_per_milligram
+                or hydration != hydration_seconds
+            ):
+                raise ValueError("ruleset-31 oral transfer is not body-mass scaled")
+            seen.add(key)
+
+
 def verify(args: argparse.Namespace) -> dict:
     world_id = str(uuid.UUID(args.world_id))
     if world_id != args.world_id.lower():
@@ -104,6 +182,8 @@ def verify(args: argparse.Namespace) -> dict:
         raise ValueError("qualification world is not running")
     if world.get("ruleset_version") != args.expected_ruleset:
         raise ValueError("qualification ruleset is not the expected launch ruleset")
+    if args.expected_ruleset >= 31:
+        verify_mass_scaled_genesis(genesis)
     if world.get("current_tick", -1) < args.minimum_tick:
         raise ValueError("qualification history is too short")
     projections = report.get("projections", {})

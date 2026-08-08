@@ -10,6 +10,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
 genesis_directory="${ATINY_CANONICAL_GENESIS_DIRECTORY:-}"
 evidence_directory="${ATINY_QUALIFICATION_EVIDENCE_DIRECTORY:-}"
+quality_admission="${ATINY_QUALITY_ADMISSION_FILE:-${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json}"
 confirmed=0
 
 while (($#)); do
@@ -42,6 +43,10 @@ if ((confirmed != 1)); then
 fi
 if [[ -z "$genesis_directory" || -z "$evidence_directory" ]]; then
   echo "deployment requires the exact qualified genesis and evidence directories" >&2
+  exit 2
+fi
+if [[ "$quality_admission" != /* || ! -f "$quality_admission" || -L "$quality_admission" ]]; then
+  echo "deployment requires an absolute, regular quality-admission file" >&2
   exit 2
 fi
 
@@ -77,7 +82,8 @@ cd "$project_root"
 # Deployment remains a separate literal authorization, but it cannot begin until the exact
 # candidate evidence, quality-world admission, reviewed observer tree, production configuration,
 # and staged runtime closure all pass the same composed read-only gate used by the runbook.
-"${project_root}/scripts/public-genesis-preflight.sh" \
+ATINY_QUALITY_ADMISSION_FILE="$quality_admission" \
+  "${project_root}/scripts/public-genesis-preflight.sh" \
   --env-file "$environment_file" \
   --genesis-directory "$genesis_directory" \
   --evidence-directory "$evidence_directory" \
@@ -110,7 +116,7 @@ with open(sys.argv[1], encoding="utf-8") as source:
 if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
     raise SystemExit("quality admission ruleset is absent")
 print(value)
-' "${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json")"
+' "$quality_admission")"
 
 world_rows=""
 for _ in $(seq 1 60); do

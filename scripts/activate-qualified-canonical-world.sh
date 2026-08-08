@@ -3,7 +3,7 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/release/civilization-data}"
-expected_ruleset="${ATINY_LAUNCH_RULESET_VERSION:-30}"
+expected_ruleset="${ATINY_LAUNCH_RULESET_VERSION:-31}"
 
 usage() {
   echo "usage: $0 verify COMMITMENT.json RESOLUTION.json GENESIS_DIRECTORY EVIDENCE_DIRECTORY QUALITY_ADMISSION.json" >&2

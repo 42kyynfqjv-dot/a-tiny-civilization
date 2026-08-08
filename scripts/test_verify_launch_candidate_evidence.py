@@ -80,7 +80,7 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         lines = [f"{sha(path)}  ./{path.relative_to(self.evidence).as_posix()}" for path in paths]
         (self.evidence / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-    def run_verifier(self):
+    def run_verifier(self, expected_ruleset: int = 30):
         return subprocess.run(
             [
                 str(VERIFIER),
@@ -91,7 +91,7 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
                 "--evidence-directory",
                 str(self.evidence),
                 "--expected-ruleset",
-                "30",
+                str(expected_ruleset),
             ],
             cwd=PROJECT_ROOT,
             text=True,
@@ -118,6 +118,96 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         result = self.run_verifier()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failing or malformed check", result.stderr)
+
+    def configure_ruleset_31_genesis(self):
+        species = {"catalog": "gbif", "identifier": "2436436"}
+        (self.genesis / "organism-body-profile-plan.json").write_text(
+            json.dumps(
+                {
+                    "entries": [
+                        {
+                            "species": species,
+                            "adult_body_mass": {
+                                "mass_grams_value": 70_000,
+                                "mass_grams_decimal_places": 0,
+                            },
+                            "metabolic_rate": {
+                                "measured_power_value": 148_461_427,
+                                "measured_power_decimal_places": 6,
+                            },
+                            "physiological_regulation": {
+                                "usable_energy_reserve_joules": 89_789_472,
+                            },
+                        }
+                    ]
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        profiles = lambda energy, hydration: [
+            {
+                "species": species,
+                "transfer_mass_milligrams": 700_000,
+                "recoverable_energy_joules": energy,
+                "hydration_recovery_seconds": hydration,
+            }
+        ]
+        (self.genesis / "material-resource-plan.json").write_text(
+            json.dumps(
+                {
+                    "sources": [
+                        {
+                            "material": {"identifier": "5793"},
+                            "oral_transfer_profiles": profiles(11_200_000, 0),
+                        },
+                        {
+                            "material": {"identifier": "962"},
+                            "oral_transfer_profiles": profiles(0, 21_600),
+                        },
+                    ]
+                },
+                separators=(",", ":"),
+            ),
+            encoding="utf-8",
+        )
+        report = json.loads((self.evidence / "qualification-status.json").read_text())
+        report["world"]["ruleset_version"] = 31
+        self.write_json("qualification-status.json", report)
+        self.write_manifest()
+
+    def test_ruleset_31_requires_mass_scaled_energy_and_oral_transfer(self):
+        self.configure_ruleset_31_genesis()
+        result = self.run_verifier(31)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("metabolic power is still universal", result.stderr)
+
+        body = json.loads((self.genesis / "organism-body-profile-plan.json").read_text())
+        second = json.loads(json.dumps(body["entries"][0]))
+        second["species"] = {"catalog": "gbif", "identifier": "1"}
+        second["adult_body_mass"]["mass_grams_value"] = 3_500
+        second["adult_body_mass"]["mass_grams_decimal_places"] = 3
+        second["metabolic_rate"]["measured_power_value"] = 187_378
+        second["physiological_regulation"]["usable_energy_reserve_joules"] = 113_327
+        body["entries"].append(second)
+        (self.genesis / "organism-body-profile-plan.json").write_text(
+            json.dumps(body, separators=(",", ":")), encoding="utf-8"
+        )
+        materials = json.loads((self.genesis / "material-resource-plan.json").read_text())
+        for source in materials["sources"]:
+            source["oral_transfer_profiles"].append(
+                {
+                    "species": second["species"],
+                    "transfer_mass_milligrams": 35,
+                    "recoverable_energy_joules": 560 if source["material"]["identifier"] == "5793" else 0,
+                    "hydration_recovery_seconds": 0 if source["material"]["identifier"] == "5793" else 21_600,
+                }
+            )
+        (self.genesis / "material-resource-plan.json").write_text(
+            json.dumps(materials, separators=(",", ":")), encoding="utf-8"
+        )
+        result = self.run_verifier(31)
+        self.assertEqual(result.returncode, 0, result.stderr)
 
 
 if __name__ == "__main__":

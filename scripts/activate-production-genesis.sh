@@ -8,6 +8,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
 genesis_directory="${ATINY_CANONICAL_GENESIS_DIRECTORY:-}"
 evidence_directory="${ATINY_QUALIFICATION_EVIDENCE_DIRECTORY:-}"
+quality_admission="${ATINY_QUALITY_ADMISSION_FILE:-${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json}"
 confirmed=0
 
 while (($#)); do
@@ -42,6 +43,10 @@ if [[ -z "$genesis_directory" || -z "$evidence_directory" ]]; then
   echo "production genesis requires the exact qualified genesis and evidence directories" >&2
   exit 2
 fi
+if [[ "$quality_admission" != /* || ! -f "$quality_admission" || -L "$quality_admission" ]]; then
+  echo "production genesis requires an absolute, regular quality-admission file" >&2
+  exit 2
+fi
 if ((EUID != 0)); then
   echo "run production genesis as root; it reads a root-protected environment file" >&2
   exit 2
@@ -49,7 +54,8 @@ fi
 
 cd "$project_root"
 "${project_root}/scripts/verify-production-checkout.sh"
-"${project_root}/scripts/public-genesis-preflight.sh" \
+ATINY_QUALITY_ADMISSION_FILE="$quality_admission" \
+  "${project_root}/scripts/public-genesis-preflight.sh" \
   --env-file "$environment_file" \
   --genesis-directory "$genesis_directory" \
   --evidence-directory "$evidence_directory" \
@@ -80,7 +86,7 @@ print(f"postgres://{user}:{password}@127.0.0.1:{port}/{database}")
   "${project_root}/docs/operations/CANONICAL_SEED_RESOLUTION.json" \
   "$genesis_directory" \
   "$evidence_directory" \
-  "${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json" \
+  "$quality_admission" \
   --confirm-experimental-genesis
 
 unset DATABASE_URL POSTGRES_PASSWORD

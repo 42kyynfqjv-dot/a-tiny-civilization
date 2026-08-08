@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
-QUALITY_ADMISSION = PROJECT_ROOT / "docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json"
+DEFAULT_QUALITY_ADMISSION = PROJECT_ROOT / "docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json"
 QUALIFIED_PATHS = ["docs/policies", "web"]
 DIMENSIONS = {
     "edge_security",
@@ -63,7 +63,8 @@ def git(*arguments: str, check: bool = True) -> subprocess.CompletedProcess[str]
 
 def verify(args: argparse.Namespace) -> dict:
     admission = load_canonical(pathlib.Path(args.admission).resolve())
-    quality_admission = load_canonical(QUALITY_ADMISSION)
+    quality_admission_path = pathlib.Path(args.quality_admission).resolve()
+    quality_admission = load_canonical(quality_admission_path)
     expected_fields = {
         "dimensions",
         "public_deployment_authorized",
@@ -102,7 +103,7 @@ def verify(args: argparse.Namespace) -> dict:
     if git("merge-base", "--is-ancestor", source, "HEAD", check=False).returncode != 0:
         fail("qualified source commit is not an ancestor of HEAD")
 
-    quality_digest = hashlib.sha256(QUALITY_ADMISSION.read_bytes()).hexdigest()
+    quality_digest = hashlib.sha256(quality_admission_path.read_bytes()).hexdigest()
     if not SHA256.fullmatch(admission["quality_world_admission_sha256"]):
         fail("quality-world admission digest is malformed")
     if admission["quality_world_admission_sha256"] != quality_digest:
@@ -152,6 +153,7 @@ def verify(args: argparse.Namespace) -> dict:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--admission", required=True)
+    parser.add_argument("--quality-admission", default=DEFAULT_QUALITY_ADMISSION)
     parser.add_argument("--world-id")
     args = parser.parse_args()
     try:

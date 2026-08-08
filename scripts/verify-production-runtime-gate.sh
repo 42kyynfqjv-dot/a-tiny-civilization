@@ -75,7 +75,7 @@ if ! rg -q 'requires the literal --confirm-public-deployment argument' "$deploym
   echo "production deployment lost its explicit confirmation boundary" >&2
   exit 1
 fi
-for contract in '--genesis-directory' '--evidence-directory' '--runtime-root'; do
+for contract in '--genesis-directory' '--evidence-directory' '--runtime-root' 'ATINY_QUALITY_ADMISSION_FILE'; do
   if ! rg -q -- "$contract" "$deployment"; then
     echo "production deployment lost required public-genesis input: $contract" >&2
     exit 1
@@ -98,6 +98,7 @@ for contract in \
   'up -d db migrate' \
   'migration-ready and empty for qualified activation' \
   'already contains the exact running qualified world' \
+  'ATINY_QUALITY_ADMISSION_FILE' \
   'validate-production-world-state\.py' \
   'mode allow-empty'; do
   if ! rg -q -- "$contract" "$database_preparation"; then
@@ -126,7 +127,7 @@ for contract in \
   'requires the literal --confirm-experimental-genesis argument' \
   'production-preflight\.sh.*--env-file' \
   '127\.0\.0\.1' \
-  'QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08\.json' \
+  'ATINY_QUALITY_ADMISSION_FILE' \
   'no service or public route was started'; do
   if ! rg -q -- "$contract" "$production_activation"; then
     echo "production activation lost required contract: $contract" >&2
