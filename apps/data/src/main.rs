@@ -20,6 +20,7 @@ use tiff::decoder::{
     ChunkType as TiffChunkType, Decoder as TiffDecoder, DecodingResult as TiffDecodingResult,
 };
 use tiff::tags::Tag as TiffTag;
+use uuid::Uuid;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
@@ -57,9 +58,9 @@ use world_domain::{
     PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis,
     PhysiologicalRegulationCommitment, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
     ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2FaceUv,
-    SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldSeed, decode_s2_face_ij,
-    route_geographic_to_s2, route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv,
-    s2_face_uv_to_ray, s2_ray_to_geographic_e7,
+    SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldSeed,
+    decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2, s2_face_ij_center_uv,
+    s2_face_ij_vertex_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -121,6 +122,13 @@ enum SeedCommand {
         commitment: PathBuf,
         #[arg(long)]
         output: PathBuf,
+    },
+    /// Verify committed and resolved seed artifacts offline and print their bound identity.
+    Verify {
+        #[arg(long)]
+        commitment: PathBuf,
+        #[arg(long)]
+        resolution: PathBuf,
     },
 }
 
@@ -867,6 +875,7 @@ struct ResolvedPublicSeed {
     derivation_domain: String,
     derivation_digest: Digest,
     world_seed: WorldSeed,
+    world_id: WorldId,
     verified_relays: [String; 2],
 }
 
@@ -930,6 +939,7 @@ async fn resolve_public_world_seed(commitment_path: &Path, output: &Path) -> Res
         derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
         derivation_digest,
         world_seed,
+        world_id: derive_public_world_id(derivation_digest),
         verified_relays: DRAND_RELAYS.map(str::to_owned),
     };
     write_pretty_json_artifact(output, &resolved)?;
@@ -937,6 +947,42 @@ async fn resolve_public_world_seed(commitment_path: &Path, output: &Path) -> Res
         "resolved committed round {} to world seed {}",
         resolved.target_beacon.round, resolved.world_seed
     );
+    Ok(())
+}
+
+fn verify_resolved_public_seed(commitment_path: &Path, resolution_path: &Path) -> Result<()> {
+    let commitment_bytes = fs::read(commitment_path)
+        .with_context(|| format!("failed to read {}", commitment_path.display()))?;
+    let commitment: PublicSeedCommitment = serde_json::from_slice(&commitment_bytes)
+        .with_context(|| format!("failed to decode {}", commitment_path.display()))?;
+    validate_public_seed_commitment(&commitment)?;
+    let resolution_bytes = fs::read(resolution_path)
+        .with_context(|| format!("failed to read {}", resolution_path.display()))?;
+    let resolution: ResolvedPublicSeed = serde_json::from_slice(&resolution_bytes)
+        .with_context(|| format!("failed to decode {}", resolution_path.display()))?;
+    validate_resolved_public_seed(&commitment, &resolution)?;
+    println!("{} {}", resolution.world_id, resolution.world_seed);
+    Ok(())
+}
+
+fn validate_resolved_public_seed(
+    commitment: &PublicSeedCommitment,
+    resolution: &ResolvedPublicSeed,
+) -> Result<()> {
+    let (world_seed, derivation_digest) = derive_public_world_seed(&resolution.target_beacon)?;
+    let expected = ResolvedPublicSeed {
+        schema_version: PUBLIC_SEED_SCHEMA_VERSION,
+        commitment_digest: Digest::canonical(&commitment)?,
+        target_beacon: resolution.target_beacon.clone(),
+        derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
+        derivation_digest,
+        world_seed,
+        world_id: derive_public_world_id(derivation_digest),
+        verified_relays: DRAND_RELAYS.map(str::to_owned),
+    };
+    if resolution.target_beacon.round != commitment.target_round || resolution != &expected {
+        bail!("public seed resolution does not exactly match its commitment and derivation");
+    }
     Ok(())
 }
 
@@ -1070,6 +1116,11 @@ fn derive_public_world_seed(beacon: &DrandBeacon) -> Result<(WorldSeed, Digest)>
     ))
 }
 
+fn derive_public_world_id(derivation_digest: Digest) -> WorldId {
+    let name = format!("https://atinycivilization.com/worlds/{}", derivation_digest);
+    WorldId::from_uuid(Uuid::new_v5(&Uuid::NAMESPACE_URL, name.as_bytes()))
+}
+
 fn seed_derivation_preimage(beacon: &DrandBeacon) -> Result<Vec<u8>> {
     let chain_hash = decode_hex_length(QUICKNET_CHAIN_HASH, 32, "quicknet chain hash")?;
     let randomness = decode_hex_length(&beacon.randomness, 32, "quicknet randomness")?;
@@ -1115,6 +1166,10 @@ async fn main() -> Result<()> {
             SeedCommand::Resolve { commitment, output } => {
                 resolve_public_world_seed(&commitment, &output).await
             }
+            SeedCommand::Verify {
+                commitment,
+                resolution,
+            } => verify_resolved_public_seed(&commitment, &resolution),
         },
         Command::Source { command } => match command {
             SourceCommand::Validate {
@@ -14039,6 +14094,10 @@ mod tests {
             digest.to_string(),
             "eb6649783df68c3c9f31428147d2e93cfdcc46c8f187193a5bfcd8fdd3952ab9"
         );
+        assert_eq!(
+            derive_public_world_id(digest).to_string(),
+            "50cd61e5-7a00-56a7-b99a-639e1b430683"
+        );
 
         let mut changed = beacon;
         changed.randomness.replace_range(0..2, "00");
@@ -14073,5 +14132,55 @@ mod tests {
         commitment.target_round = 322;
         commitment.target_unix_seconds = quicknet_round_unix_seconds(322).expect("round time");
         assert!(validate_public_seed_commitment(&commitment).is_err());
+    }
+
+    #[test]
+    fn resolved_seed_binds_beacon_seed_and_world_id() {
+        let observed_signature = "b75c69d0b72a5d906e854e808ba7e2accb1542ac355ae486d591aa9d43765482e26cd02df835d3546d23c4b13e0dfc92";
+        let commitment = PublicSeedCommitment {
+            schema_version: PUBLIC_SEED_SCHEMA_VERSION,
+            chain_hash: QUICKNET_CHAIN_HASH.to_owned(),
+            public_key: QUICKNET_PUBLIC_KEY.to_owned(),
+            scheme: QUICKNET_SCHEME.to_owned(),
+            period_seconds: QUICKNET_PERIOD_SECONDS,
+            genesis_unix_seconds: QUICKNET_GENESIS_UNIX_SECONDS,
+            target_round: 323,
+            target_unix_seconds: quicknet_round_unix_seconds(323).expect("round time"),
+            minimum_unrevealed_rounds: MINIMUM_UNREVEALED_ROUNDS,
+            observed_beacon: DrandBeacon {
+                round: 123,
+                randomness: hex::encode(derive_randomness(
+                    &hex::decode(observed_signature).expect("observed signature"),
+                )),
+                signature: observed_signature.to_owned(),
+                previous_signature: None,
+            },
+            derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
+        };
+        let target_beacon = DrandBeacon {
+            round: 323,
+            randomness: "10624fb156f7a8cc371c8777b19f5269a3ec139f21f39893dc45b91a6b050756"
+                .to_owned(),
+            signature: "8e8357b75918a2439ffa66ffa7e92b292e3b5c6828e458f280a626a6c06bc1187c7a1f3704c11e8369be047eb8049511"
+                .to_owned(),
+            previous_signature: None,
+        };
+        let (world_seed, derivation_digest) =
+            derive_public_world_seed(&target_beacon).expect("target derivation");
+        let resolution = ResolvedPublicSeed {
+            schema_version: PUBLIC_SEED_SCHEMA_VERSION,
+            commitment_digest: Digest::canonical(&commitment).expect("commitment digest"),
+            target_beacon,
+            derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
+            derivation_digest,
+            world_seed,
+            world_id: derive_public_world_id(derivation_digest),
+            verified_relays: DRAND_RELAYS.map(str::to_owned),
+        };
+        validate_resolved_public_seed(&commitment, &resolution).expect("bound resolution");
+
+        let mut changed = resolution;
+        changed.world_seed = WorldSeed::new(changed.world_seed.get().wrapping_add(1));
+        assert!(validate_resolved_public_seed(&commitment, &changed).is_err());
     }
 }

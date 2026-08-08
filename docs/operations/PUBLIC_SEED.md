@@ -35,12 +35,26 @@ git push origin main
 
 The resolver verifies matching Protocol Labs and Cloudflare responses, the pinned BLS public key,
 the beacon signature, randomness derivation, target timing, and the project seed derivation. It
-refuses replacement. The `world_seed` field is a decimal string suitable for
-`prepare-provisional-genesis.sh`; do not transform, truncate, preview, or reroll it.
+refuses replacement. The resolution binds both `world_seed` and `world_id`. The offline
+`seed verify` command recomputes both and prints them only after checking the complete
+commitment/resolution pair. Do not transform, truncate, preview, or reroll either value.
 
 ## 3. Bind genesis
 
-Use the resolved decimal string once, with a newly chosen world UUID and a new genesis directory.
+Use the checked wrappers so neither value can be mistyped or operator-selected:
+
+```bash
+./scripts/prepare-canonical-genesis.sh \
+  docs/operations/CANONICAL_SEED_COMMITMENT.json \
+  docs/operations/CANONICAL_SEED_RESOLUTION.json \
+  /var/lib/a-tiny-civilization/genesis/canonical-1 32
+
+DATABASE_URL=... ./scripts/initialize-canonical-world.sh \
+  docs/operations/CANONICAL_SEED_COMMITMENT.json \
+  docs/operations/CANONICAL_SEED_RESOLUTION.json \
+  /var/lib/a-tiny-civilization/genesis/canonical-1
+```
+
 Retain both public seed artifacts beside the genesis checksums and launch evidence. If any later
-gate fails, fix the gate and rerun against the same seed; never select another seed to obtain a more
-interesting outcome.
+gate fails, fix the gate and rerun against the same seed and derived world ID; never select another
+seed to obtain a more interesting outcome.

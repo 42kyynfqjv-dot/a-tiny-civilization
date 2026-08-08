@@ -31,8 +31,10 @@ SHA-256(
 )
 ```
 
-The first eight digest bytes, interpreted as an unsigned big-endian integer, are the world seed. The
-complete digest, beacon, commitment digest, and relay identities remain in the resolution artifact.
+The first eight digest bytes, interpreted as an unsigned big-endian integer, are the world seed. A
+UUIDv5 under the standard URL namespace, named by
+`https://atinycivilization.com/worlds/{derivation_digest}`, is the world ID. The complete digest,
+beacon, commitment digest, derived identity, and relay identities remain in the resolution artifact.
 
 ## Consequences
 
