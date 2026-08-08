@@ -40,6 +40,8 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
 ./scripts/verify-create-qualification-evidence.sh
 ./scripts/verify-provisional-genesis-pins.sh
 python3 scripts/verify-runtime-artifact-listing.py
+python3 -m py_compile scripts/verify-launch-candidate-evidence.py
+python3 scripts/test_verify_launch_candidate_evidence.py
 ./scripts/verify-demo.sh
 
 cd web

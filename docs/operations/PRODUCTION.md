@@ -262,6 +262,20 @@ The observer smoke command independently requires a running disclosed world, zer
 five projections, nonempty timeline/finding/organism/artifact/wiki views, hash-only audit
 commitments, and no private or explicit mechanism vocabulary in the public payloads. Supply the
 actual expected sequence for each retained candidate rather than copying the example cursor.
+Before accepting a retained bundle into launch review, independently bind all of its offline claims:
+
+```bash
+./scripts/verify-launch-candidate-evidence.py \
+  --world-id "$QUALIFICATION_WORLD_ID" \
+  --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
+  --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --expected-ruleset 30 --minimum-tick 1000
+```
+
+This verifies every bundle checksum, the external genesis-manifest binding, absence declaration for
+canonical payloads, exact world/ruleset identity, replay and qualification status, minimum history,
+all five projections, complete Hindsight delivery, person-only model receipts, every boolean gate,
+and that the recorded source commit is an ancestor of the checked-out code.
 
 For the standard private Compose Qwen2.5 1.5B service, set
 `LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1`. A host-run worker may use a loopback URL.
