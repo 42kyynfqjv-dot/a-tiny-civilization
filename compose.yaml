@@ -28,6 +28,9 @@ services:
       POSTGRES_DB: ${POSTGRES_DB:-civilization}
       POSTGRES_USER: ${POSTGRES_USER:-civilization}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-local-development-only}
+      # Applies only when PostgreSQL creates a new cluster. Existing volumes are
+      # checked at runtime and cannot silently pass without page checksums.
+      POSTGRES_INITDB_ARGS: --data-checksums
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 3s

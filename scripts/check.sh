@@ -32,6 +32,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-production-env-file.sh
 ./scripts/verify-container-image-pins.sh
 ./scripts/verify-container-log-policy.sh
+./scripts/verify-postgres-durability.sh
 ./scripts/verify-ci-supply-chain.sh
 ./scripts/verify-production-runtime-gate.sh
 ./scripts/verify-public-genesis-preflight.sh

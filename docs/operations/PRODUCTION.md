@@ -149,6 +149,13 @@ that bound. Canonical PostgreSQL history remains durable in its named volume; co
 operational diagnostics and are intentionally bounded so they cannot silently consume the history
 disk.
 
+A newly created PostgreSQL volume is initialized with page checksums. The complete backend health
+gate also reads the live server settings and refuses readiness unless `data_checksums`, `fsync`,
+`synchronous_commit`, and `full_page_writes` are all `on`. The initialization flag cannot repair an
+older volume: if a pre-genesis development volume fails this check, create a fresh production
+volume through an explicitly scoped operator procedure rather than weakening the gate. Never
+replace a volume after canonical tick zero.
+
 ### Docker tunnel and backup profile
 
 From the repository checkout, load the protected environment file into the current

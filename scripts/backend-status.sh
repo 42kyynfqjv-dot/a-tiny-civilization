@@ -117,9 +117,18 @@ check_once() {
          LEFT JOIN cognition_deadline_latches latch USING(request_id)
          WHERE result.request_id IS NULL AND latch.request_id IS NULL
            AND request.claimed_at < NOW() - make_interval(secs => ${maximum_async_age_seconds}))
+        ,current_setting('data_checksums')
+        ,current_setting('fsync')
+        ,current_setting('synchronous_commit')
+        ,current_setting('full_page_writes')
       FROM projection\"")" || return 1
   IFS='|' read -r heartbeat_count active_world_count projection_count projection_lag \
-    stale_memory_count stuck_cognition_count <<<"$data_status"
+    stale_memory_count stuck_cognition_count data_checksums fsync synchronous_commit \
+    full_page_writes <<<"$data_status"
+  [[ "$data_checksums" == "on" ]] || return 1
+  [[ "$fsync" == "on" ]] || return 1
+  [[ "$synchronous_commit" == "on" ]] || return 1
+  [[ "$full_page_writes" == "on" ]] || return 1
   [[ "$heartbeat_count" == "4" ]] || return 1
   [[ "$active_world_count" == "0" || "$active_world_count" == "1" ]] || return 1
   if [[ "$active_world_count" == "1" ]]; then
@@ -133,7 +142,7 @@ check_once() {
 deadline=$((SECONDS + wait_seconds))
 while ! check_once; do
   if ((SECONDS >= deadline)); then
-    echo "backend is not ready: disk capacity, an endpoint, local model, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
+    echo "backend is not ready: disk capacity, PostgreSQL durability, an endpoint, local model, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
     exit 1
   fi
   sleep 1
