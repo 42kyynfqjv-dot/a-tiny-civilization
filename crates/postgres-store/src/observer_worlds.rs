@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 use observer_projection::{
-    ObserverProjectionStoreError, ObserverWorldStore, PublicWorld, PublicWorldInputStatus,
-    PublicWorldTelemetry,
+    ObserverProjectionStoreError, ObserverWorldStore, PUBLIC_FINDING_PROJECTION_NAME,
+    PUBLIC_FINDING_PROJECTION_VERSION, PublicWorld, PublicWorldInputStatus, PublicWorldTelemetry,
 };
 use sqlx::FromRow;
 use world_domain::{Digest, EventSequence, SimTick, WorldId, WorldStatus};
@@ -204,7 +204,7 @@ impl ObserverWorldStore for PostgresStore {
             CROSS JOIN LATERAL (
                 SELECT COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-timeline-v1'), 0)::BIGINT AS timeline_sequence,
                        COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-organism-v1'), 0)::BIGINT AS organism_sequence,
-                       COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-finding-v1'), 0)::BIGINT AS findings_sequence,
+                       COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = $2), 0)::BIGINT AS findings_sequence,
                        COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-world-telemetry-v1'), 0)::BIGINT AS telemetry_sequence,
                        COALESCE(MAX(p.through_sequence) FILTER (WHERE p.projection_name = 'public-artifact-v1'), 0)::BIGINT AS artifact_sequence
                 FROM projection_offsets p WHERE p.world_id = w.id
@@ -216,12 +216,14 @@ impl ObserverWorldStore for PostgresStore {
                 LEFT JOIN observer_finding_life_endings e
                   ON e.world_id = l.world_id AND e.organism_id = l.organism_id
                  AND e.projection_version = l.projection_version
-                WHERE l.world_id = w.id AND l.projection_version = 1
+                WHERE l.world_id = w.id AND l.projection_version = $3
             ) lives
             WHERE w.id = $1
             "#,
         )
         .bind(world_id.as_uuid())
+        .bind(PUBLIC_FINDING_PROJECTION_NAME)
+        .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION))
         .fetch_optional(self.pool())
         .await
         .map_err(unavailable)?;

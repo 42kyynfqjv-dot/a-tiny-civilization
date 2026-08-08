@@ -32,8 +32,8 @@ pub const PUBLIC_TIMELINE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_TIMELINE_PROJECTION_NAME: &str = "public-timeline-v1";
 pub const PUBLIC_ORGANISM_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ORGANISM_PROJECTION_NAME: &str = "public-organism-v1";
-pub const PUBLIC_FINDING_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_FINDING_PROJECTION_NAME: &str = "public-finding-v1";
+pub const PUBLIC_FINDING_PROJECTION_VERSION: u16 = 2;
+pub const PUBLIC_FINDING_PROJECTION_NAME: &str = "public-finding-v2";
 pub const PUBLIC_ARTIFACT_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ARTIFACT_PROJECTION_NAME: &str = "public-artifact-v1";
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
@@ -314,7 +314,8 @@ pub trait ObserverHistoryCommitmentStore: Send + Sync {
 }
 
 /// A deterministic observer finding. It points to evidence rather than narrating a
-/// world. `Streak` is reserved until canonical events can establish persistence.
+/// world. `Streak` is used only for persistence established directly by committed
+/// events, never for inferred customs, meanings, or intentions.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PublicFindingKind {

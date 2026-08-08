@@ -259,6 +259,7 @@ impl ObserverFindingStore for PostgresStore {
                 }
             }
         }
+        apply_people_presence_streak(&mut tx, batch).await?;
         sqlx::query("UPDATE projection_offsets SET through_sequence=$3, updated_at=NOW() WHERE projection_name=$1 AND world_id=$2").bind(PUBLIC_FINDING_PROJECTION_NAME).bind(batch.world_id.as_uuid()).bind(sequence).execute(&mut *tx).await.map_err(unavailable)?;
         tx.commit().await.map_err(unavailable)?;
         Ok(true)
@@ -481,7 +482,52 @@ async fn apply_finding_events(
             }
         }
     }
+    apply_people_presence_streak(tx, batch).await?;
     Ok(())
+}
+
+async fn apply_people_presence_streak(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch: &world_domain::EventBatch,
+) -> Result<(), ObserverProjectionStoreError> {
+    let Some((record, tick)) = batch.events.iter().find_map(|record| match record.event {
+        DomainEvent::TickAdvanced { to, .. } if is_presence_milestone(to.get()) => {
+            Some((record, to.get()))
+        }
+        _ => None,
+    }) else {
+        return Ok(());
+    };
+    let living_people: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observer_finding_lives l LEFT JOIN observer_finding_life_endings e ON e.projection_version=l.projection_version AND e.world_id=l.world_id AND e.organism_id=l.organism_id WHERE l.projection_version=$1 AND l.world_id=$2 AND l.role='person' AND e.organism_id IS NULL")
+        .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION))
+        .bind(batch.world_id.as_uuid())
+        .fetch_one(&mut **tx)
+        .await
+        .map_err(unavailable)?;
+    if living_people == 0 {
+        return Ok(());
+    }
+    insert_finding(
+        tx,
+        batch,
+        record,
+        PublicFindingKind::Streak,
+        &format!("people_present_through_{tick}_ticks"),
+        "Human presence continued",
+        &format!("At least one person remained present through {tick} recorded ticks."),
+    )
+    .await
+}
+
+fn is_presence_milestone(tick: u64) -> bool {
+    if tick < 100 {
+        return false;
+    }
+    let mut value = tick;
+    while value > 100 && value.is_multiple_of(10) {
+        value /= 10;
+    }
+    value == 100
 }
 
 fn to_i64(value: u64, field: &str) -> Result<i64, ObserverProjectionStoreError> {

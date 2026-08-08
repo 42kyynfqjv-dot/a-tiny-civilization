@@ -172,14 +172,14 @@ WITH selected_world AS (
     SELECT COUNT(*) FILTER (
                WHERE projection_name IN (
                    'public-timeline-v1', 'public-organism-v1',
-                   'public-finding-v1', 'public-world-telemetry-v1',
+                   'public-finding-v2', 'public-world-telemetry-v1',
                    'public-artifact-v1'
                )
            )::BIGINT AS required_count,
            COUNT(*) FILTER (
                WHERE projection_name IN (
                    'public-timeline-v1', 'public-organism-v1',
-                   'public-finding-v1', 'public-world-telemetry-v1',
+                   'public-finding-v2', 'public-world-telemetry-v1',
                    'public-artifact-v1'
                ) AND through_sequence = (SELECT current_sequence FROM selected_world)
            )::BIGINT AS current_count

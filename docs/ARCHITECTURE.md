@@ -98,10 +98,11 @@ can visibly identify the exact committed history it displays. It polls this inde
 the safe timeline and organism projections; unavailable or empty history is shown as
 such rather than replaced with invented content.
 
-`public-finding-v1` independently projects auditable first occurrences and population
-records. Its `streak` vocabulary intentionally has no output until canonical behavior
-events can prove persistence rather than merely suggest it. See
-[ADR 0020](adr/0020-deterministic-observer-findings.md).
+`public-finding-v2` independently rebuilds auditable first occurrences, population
+records, and logarithmic milestones at which committed tick/life events prove that at
+least one person remains. It does not call survival a tradition or infer any intent.
+See [ADR 0020](adr/0020-deterministic-observer-findings.md) and
+[ADR 0133](adr/0133-human-presence-streaks-use-only-life-and-tick-facts.md).
 
 Snapshots are caches. A complete replay from durable events, or a snapshot plus its
 tail, must produce the same state hash.

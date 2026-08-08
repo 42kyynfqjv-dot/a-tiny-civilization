@@ -85,14 +85,14 @@ check_once() {
       ), projection AS (
         SELECT COUNT(projection_offset.*) FILTER (WHERE projection_offset.projection_name IN (
                  'public-timeline-v1','public-organism-v1',
-                 'public-finding-v1','public-world-telemetry-v1','public-artifact-v1'
+                 'public-finding-v2','public-world-telemetry-v1','public-artifact-v1'
                ))::BIGINT AS required_count,
                COALESCE(MAX(ABS(world.current_sequence - projection_offset.through_sequence)),0)::BIGINT AS maximum_lag
         FROM active_world world
         LEFT JOIN projection_offsets projection_offset ON projection_offset.world_id=world.id
           AND projection_offset.projection_name IN (
             'public-timeline-v1','public-organism-v1',
-            'public-finding-v1','public-world-telemetry-v1','public-artifact-v1'
+            'public-finding-v2','public-world-telemetry-v1','public-artifact-v1'
           )
       )
       SELECT

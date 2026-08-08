@@ -1941,6 +1941,58 @@ async fn public_findings_are_committed_versioned_and_non_narrative(pool: PgPool)
 }
 
 #[sqlx::test(migrations = "../../db/migrations")]
+async fn public_findings_rebuild_a_factual_people_presence_streak(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(508_100);
+    let created = store.create_world(&manifest, None).await?;
+    let (mut state, genesis_batch, genesis_snapshot) =
+        genesis(&manifest, vec![initial_person(manifest.world_id)])?;
+    let mut persisted = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let mut previous_hash = genesis_batch.batch_hash;
+    let mut batches = vec![genesis_batch];
+
+    for sequence in 2..=101 {
+        let events = state.plan_next_tick()?;
+        let (next, batch) = state.commit(EventSequence::new(sequence), previous_hash, events)?;
+        let snapshot = Snapshot::new(next.clone(), batch.sequence, batch.batch_hash)?;
+        persisted = store
+            .commit_transition(
+                persisted.cursor,
+                &batch,
+                &snapshot,
+                &TransitionEffects::default(),
+            )
+            .await?;
+        previous_hash = batch.batch_hash;
+        batches.push(batch);
+        state = next;
+    }
+
+    assert_eq!(store.apply_public_finding_batches(&batches).await?, 101);
+    assert_eq!(store.apply_public_finding_batches(&batches).await?, 0);
+    let findings = store.list_public_findings(manifest.world_id, 200).await?;
+    let streaks = findings
+        .iter()
+        .filter(|finding| matches!(finding.kind, observer_projection::PublicFindingKind::Streak))
+        .collect::<Vec<_>>();
+    assert_eq!(streaks.len(), 1);
+    assert_eq!(streaks[0].finding_key, "people_present_through_100_ticks");
+    assert_eq!(streaks[0].source_tick, SimTick::new(100));
+    assert_eq!(
+        streaks[0].summary,
+        "At least one person remained present through 100 recorded ticks."
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
 async fn cognition_selection_creates_one_immutable_leased_job_atomically(
     pool: PgPool,
 ) -> Result<()> {
