@@ -99,8 +99,9 @@ that Compose will consume. The file must be an absolute, regular non-symlink own
 invoking operator for a manual preflight), with no group or other permissions. The helper then builds
 the application and web images, starts the database, migrations,
 API, projector, and runner with `APP_ENV=production`, then updates the web container
-without allowing Compose defaults to recreate its API dependency. It waits for the
-observer API readiness check. It deliberately does **not** configure a tunnel or
+without allowing Compose defaults to recreate its API dependency. It waits for web and API
+responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
+worker, and cognition worker. It deliberately does **not** configure a tunnel or
 off-site backups; those remain separate operational changes.
 
 The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second

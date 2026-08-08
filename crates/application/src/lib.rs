@@ -39,6 +39,9 @@ pub struct FoundationStatus {
     pub running_worlds: i64,
     pub archived_worlds: i64,
     pub latest_runner_heartbeat: Option<DateTime<Utc>>,
+    pub latest_projector_heartbeat: Option<DateTime<Utc>>,
+    pub latest_memory_worker_heartbeat: Option<DateTime<Utc>>,
+    pub latest_cognition_worker_heartbeat: Option<DateTime<Utc>>,
 }
 
 #[derive(Debug, Error)]

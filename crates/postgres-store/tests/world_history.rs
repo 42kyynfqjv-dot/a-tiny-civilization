@@ -4,11 +4,11 @@ use application::{
     CognitionJobEntry, CognitionJobStore, CognitionModel, CognitionModelError, CognitionModelRoute,
     CognitionProviderId, CognitionRecallRecord, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRoutePurpose, CognitionRouteRegistry, CognitionWorkerConfiguration,
-    CognitionWorkerStep, MemoryAdapterError, MemoryFactKind, MemoryOutboxStore,
+    CognitionWorkerStep, FoundationStore, MemoryAdapterError, MemoryFactKind, MemoryOutboxStore,
     MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt,
     ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
-    PaidCognitionReservationDecision, RecallUnavailableReason, RecalledMemory, StoreError,
-    StoredWorld, TransitionEffects, WorldStore, advance_world,
+    PaidCognitionReservationDecision, RecallUnavailableReason, RecalledMemory, ServiceHeartbeat,
+    StoreError, StoredWorld, TransitionEffects, WorldStore, advance_world,
     initialize_or_resume_configured_world, initialize_or_resume_configured_world_with_materials,
     initialize_or_resume_world, process_next_cognition_job, resume_world,
     resume_world_from_snapshot,
@@ -69,6 +69,30 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
     drop(held);
     let reacquired = second.acquire_runner_writer_lock().await?;
     drop(reacquired);
+    let heartbeat_floor = Utc::now();
+    for service_name in [
+        "simulation-runner",
+        "observer-projector",
+        "memory-worker",
+        "cognition-worker",
+    ] {
+        second
+            .record_heartbeat(&ServiceHeartbeat {
+                service_name: service_name.to_owned(),
+                instance_id: Uuid::new_v4(),
+                metadata: serde_json::json!({"test": true}),
+            })
+            .await?;
+    }
+    let status = second.foundation_status().await?;
+    for observed in [
+        status.latest_runner_heartbeat,
+        status.latest_projector_heartbeat,
+        status.latest_memory_worker_heartbeat,
+        status.latest_cognition_worker_heartbeat,
+    ] {
+        assert!(observed.is_some_and(|timestamp| timestamp >= heartbeat_floor));
+    }
     Ok(())
 }
 

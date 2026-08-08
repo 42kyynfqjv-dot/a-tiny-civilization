@@ -888,6 +888,9 @@ struct StatusResponse {
     database_time: DateTime<Utc>,
     worlds: WorldCounts,
     latest_runner_heartbeat: Option<DateTime<Utc>>,
+    latest_projector_heartbeat: Option<DateTime<Utc>>,
+    latest_memory_worker_heartbeat: Option<DateTime<Utc>>,
+    latest_cognition_worker_heartbeat: Option<DateTime<Utc>>,
 }
 
 #[derive(Serialize)]
@@ -913,6 +916,9 @@ async fn status(State(state): State<ApiState>) -> Result<Json<StatusResponse>, A
             archived: status.archived_worlds,
         },
         latest_runner_heartbeat: status.latest_runner_heartbeat,
+        latest_projector_heartbeat: status.latest_projector_heartbeat,
+        latest_memory_worker_heartbeat: status.latest_memory_worker_heartbeat,
+        latest_cognition_worker_heartbeat: status.latest_cognition_worker_heartbeat,
     }))
 }
 

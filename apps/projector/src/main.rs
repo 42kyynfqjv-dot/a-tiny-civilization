@@ -1,13 +1,15 @@
 //! Runs deterministic observer projections over already-committed history.
 
 use anyhow::{Context, Result};
-use application::WorldStore;
+use application::{FoundationStore, ServiceHeartbeat, WorldStore};
 use clap::{Parser, Subcommand};
 use observer_projection::{
     ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
+use serde_json::json;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 use world_domain::WorldId;
 
 #[derive(Debug, Parser)]
@@ -58,9 +60,21 @@ async fn main() -> Result<()> {
         }
         Command::Serve { poll_seconds } => {
             let interval = std::time::Duration::from_secs(poll_seconds.max(1));
+            let heartbeat = ServiceHeartbeat {
+                service_name: "observer-projector".to_owned(),
+                instance_id: Uuid::new_v4(),
+                metadata: json!({
+                    "projector_version": env!("CARGO_PKG_VERSION"),
+                    "mode": "continuous-projections",
+                }),
+            };
             loop {
                 let world_ids = store.list_world_ids().await.context("list worlds")?;
                 project_worlds(&store, &world_ids).await?;
+                store
+                    .record_heartbeat(&heartbeat)
+                    .await
+                    .context("record observer-projector heartbeat")?;
                 tokio::time::sleep(interval).await;
             }
         }

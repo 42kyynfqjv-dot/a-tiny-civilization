@@ -184,6 +184,9 @@ struct StatusRow {
     running_worlds: i64,
     archived_worlds: i64,
     latest_runner_heartbeat: Option<DateTime<Utc>>,
+    latest_projector_heartbeat: Option<DateTime<Utc>>,
+    latest_memory_worker_heartbeat: Option<DateTime<Utc>>,
+    latest_cognition_worker_heartbeat: Option<DateTime<Utc>>,
 }
 
 #[async_trait]
@@ -227,6 +230,21 @@ impl FoundationStore for PostgresStore {
                     FROM service_heartbeats
                     WHERE service_name = 'simulation-runner'
                 ) AS latest_runner_heartbeat
+                ,(
+                    SELECT MAX(last_seen_at)
+                    FROM service_heartbeats
+                    WHERE service_name = 'observer-projector'
+                ) AS latest_projector_heartbeat
+                ,(
+                    SELECT MAX(last_seen_at)
+                    FROM service_heartbeats
+                    WHERE service_name = 'memory-worker'
+                ) AS latest_memory_worker_heartbeat
+                ,(
+                    SELECT MAX(last_seen_at)
+                    FROM service_heartbeats
+                    WHERE service_name = 'cognition-worker'
+                ) AS latest_cognition_worker_heartbeat
             FROM worlds
             "#,
         )
@@ -240,6 +258,9 @@ impl FoundationStore for PostgresStore {
             running_worlds: row.running_worlds,
             archived_worlds: row.archived_worlds,
             latest_runner_heartbeat: row.latest_runner_heartbeat,
+            latest_projector_heartbeat: row.latest_projector_heartbeat,
+            latest_memory_worker_heartbeat: row.latest_memory_worker_heartbeat,
+            latest_cognition_worker_heartbeat: row.latest_cognition_worker_heartbeat,
         })
     }
 }

@@ -369,9 +369,11 @@ dependencies = [
  "dotenvy",
  "observer-projection",
  "postgres-store",
+ "serde_json",
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "uuid",
  "world-domain",
 ]
 

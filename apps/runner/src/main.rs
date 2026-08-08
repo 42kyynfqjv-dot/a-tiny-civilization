@@ -1361,8 +1361,19 @@ async fn serve_memory_worker(
     poll_milliseconds: u64,
     claim_lease_seconds: u32,
 ) -> Result<()> {
+    let heartbeat = ServiceHeartbeat {
+        service_name: "memory-worker".to_owned(),
+        instance_id: Uuid::new_v4(),
+        metadata: json!({
+            "worker_id": worker_id,
+            "worker_version": env!("CARGO_PKG_VERSION"),
+            "mode": "hindsight-delivery",
+        }),
+    };
     let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(1)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tracing::info!(
         worker_id,
         poll_milliseconds = poll_milliseconds.max(1),
@@ -1372,6 +1383,11 @@ async fn serve_memory_worker(
 
     loop {
         tokio::select! {
+            _ = heartbeat_interval.tick() => {
+                if let Err(error) = store.record_heartbeat(&heartbeat).await {
+                    tracing::warn!(%error, "memory-worker heartbeat failed; will retry");
+                }
+            }
             _ = interval.tick() => {
                 match store.claim_next_memory(worker_id, claim_lease_seconds).await {
                     Ok(Some(entry)) => {
@@ -1518,8 +1534,21 @@ async fn serve_cognition_worker(
     configuration
         .validate()
         .context("validate cognition worker configuration")?;
+    let heartbeat = ServiceHeartbeat {
+        service_name: "cognition-worker".to_owned(),
+        instance_id: Uuid::new_v4(),
+        metadata: json!({
+            "worker_id": worker_id,
+            "worker_version": env!("CARGO_PKG_VERSION"),
+            "configured_providers": adapters.len(),
+            "paid_enabled": configuration.paid_enabled,
+            "mode": "replay-safe-cognition",
+        }),
+    };
     let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(1)));
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tracing::info!(
         worker_id,
         configured_providers = adapters.len(),
@@ -1529,6 +1558,11 @@ async fn serve_cognition_worker(
     );
     loop {
         tokio::select! {
+            _ = heartbeat_interval.tick() => {
+                if let Err(error) = store.record_heartbeat(&heartbeat).await {
+                    tracing::warn!(%error, "cognition-worker heartbeat failed; will retry");
+                }
+            }
             _ = interval.tick() => {
                 match process_next_cognition_job(
                     store,
