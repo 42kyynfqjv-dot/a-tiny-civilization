@@ -41,6 +41,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-production-port-preflight.sh
 ./scripts/verify-incident-policy.sh
 ./scripts/verify-public-genesis-preflight.sh
+./scripts/verify-launch-operations.sh
 ./scripts/verify-live-genesis-gate.sh
 ./scripts/verify-backend-status.sh
 ./scripts/verify-production-monitor-installer.sh
@@ -53,6 +54,7 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/verify-production-checkout.sh \
   ./scripts/install-production-backend-monitor.sh \
   ./scripts/render-production-backend-monitor-override.sh \
+  ./scripts/verify-launch-operations.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \
   ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh \
   ./scripts/verify-public-edge.sh

@@ -55,6 +55,7 @@ for path in "$environment_file" "$genesis_directory" "$evidence_directory" "$adm
 done
 
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file"
+"${project_root}/scripts/verify-launch-operations.sh"
 "${project_root}/scripts/activate-qualified-canonical-world.sh" verify \
   "${project_root}/docs/operations/CANONICAL_SEED_COMMITMENT.json" \
   "${project_root}/docs/operations/CANONICAL_SEED_RESOLUTION.json" \

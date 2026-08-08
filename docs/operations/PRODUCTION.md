@@ -104,7 +104,13 @@ genesis and evidence directories and the root-protected env file that Compose wi
 file must be an absolute, regular non-symlink owned by root (or the invoking operator for a manual
 preflight), with no group or other permissions. Before Compose changes service state, the helper
 revalidates the candidate and both admissions, retransverses the staged full-Earth composition,
-rejects mutable or symlinked paths, and rechecks both DE441 segments by byte length and SHA-256. It then
+rejects mutable or symlinked paths, rechecks both DE441 segments by byte length and SHA-256, and
+reruns the complete host-portable read-only production operations suite: supporter isolation,
+image/log/durability/shutdown/privilege/volume policies, deployment ordering, live
+genesis verification structure, backend monitoring, systemd unit rendering, incident fields, and
+the private Hindsight/local-model contract. Cargo dependency-tree architecture analysis remains an
+immutable CI and source-admission gate rather than becoming a production-host toolchain dependency.
+It then
 builds the application and web images, starts only the private database, migrations, pinned local
 model, and Hindsight foundation, and then requires that PostgreSQL already contain exactly the
 running world and ruleset named by the admitted evidence. Only after that check does it start the
