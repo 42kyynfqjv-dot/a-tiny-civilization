@@ -2,18 +2,9 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/debug/civilization-data}"
 composition="data/provisional/full-earth-breadth-first-0.1.1.json"
 
 cd "$project_root"
-if [[ ! -x "$data_executable" ]]; then
-  echo "missing civilization-data executable: $data_executable" >&2
-  exit 2
-fi
-
-validation="$($data_executable validate-provisional --artifact-root . "$composition")"
-grep -qx 'composition: full-earth-breadth-first@0.1.1' <<<"$validation"
-grep -qx 'artifacts: 11 (312140902 bytes verified)' <<<"$validation"
 
 python3 - "$composition" <<'PY'
 import hashlib, json, pathlib, sys
@@ -28,6 +19,20 @@ release = physiology["release"]
 if release["artifact_path"] != "data/derived-cache/fauna-physiology-catalog-v2.json":
     raise SystemExit("active composition does not pin normalized fauna physiology v2")
 PY
+
+if [[ "${ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE:-0}" == "1" ]]; then
+  data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/release/civilization-data}"
+  if [[ ! -x "$data_executable" ]]; then
+    echo "missing civilization-data executable: $data_executable" >&2
+    exit 2
+  fi
+  validation="$($data_executable validate-provisional --artifact-root . "$composition")"
+  grep -qx 'composition: full-earth-breadth-first@0.1.1' <<<"$validation"
+  grep -qx 'artifacts: 147466 (10164215509 bytes verified)' <<<"$validation"
+elif [[ "${ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE:-0}" != "0" ]]; then
+  echo "ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE must be 0 or 1" >&2
+  exit 2
+fi
 
 for source in \
   apps/runner/src/main.rs \

@@ -1,7 +1,7 @@
 //! Safe, exhaustive filesystem verification for scientific world-data releases.
 
 use std::{
-    collections::{BTreeSet, VecDeque},
+    collections::{BTreeMap, BTreeSet, VecDeque},
     fs,
     io::Read,
     path::{Component, Path, PathBuf},
@@ -225,9 +225,179 @@ pub fn verify_provisional_world_artifacts(
                 .map(|component| &component.release),
         );
     let mut stats = VerificationStats::default();
+    let mut seen_paths = BTreeSet::new();
+    let mut seen_releases = BTreeMap::<String, (Digest, u64, String)>::new();
     for release in releases {
-        verify_provisional_artifact(&artifact_root, release)?;
-        stats.add_artifact(release.byte_length)?;
+        let identity = (
+            release.content_hash,
+            release.byte_length,
+            release.media_type.clone(),
+        );
+        if let Some(previous) = seen_releases.get(&release.artifact_path) {
+            if previous != &identity {
+                bail!(
+                    "provisional artifact path {:?} has conflicting references",
+                    release.artifact_path
+                );
+            }
+            continue;
+        }
+        seen_releases.insert(release.artifact_path.clone(), identity);
+        if release.media_type == "application/vnd.atinycivilization.tile-index+json" {
+            stats.add_tree(verify_provisional_tile_tree(
+                &artifact_root,
+                release,
+                &mut seen_paths,
+            )?)?;
+        } else {
+            if !seen_paths.insert(release.artifact_path.clone()) {
+                bail!(
+                    "provisional artifact path {:?} is referenced twice",
+                    release.artifact_path
+                );
+            }
+            verify_provisional_artifact(&artifact_root, release)?;
+            stats.add_artifact(release.byte_length)?;
+        }
+    }
+    Ok(stats)
+}
+
+fn verify_provisional_tile_tree(
+    artifact_root: &SafeArtifactRoot,
+    release: &ProvisionalArtifactReference,
+    seen_paths: &mut BTreeSet<String>,
+) -> Result<VerificationStats> {
+    if !seen_paths.insert(release.artifact_path.clone()) {
+        bail!(
+            "provisional tile-tree root path {:?} is referenced twice",
+            release.artifact_path
+        );
+    }
+    let root = BundleArtifact {
+        kind: BundleArtifactKind::TileTreeIndex,
+        relative_path: &release.artifact_path,
+        content_hash: release.content_hash,
+        byte_length: release.byte_length,
+    };
+    let root_bytes = verify_artifact(&root, &mut |path| artifact_root.read(path))?;
+    let root_index = TileTreeIndex::from_canonical_slice(&root_bytes).with_context(|| {
+        format!(
+            "provisional tile-tree root {:?} is invalid",
+            release.artifact_path
+        )
+    })?;
+    let layer_id = root_index.layer_id.clone();
+    let expected_root_suffix = format!("layers/{layer_id}/root.index");
+    let tree_prefix = release
+        .artifact_path
+        .strip_suffix(&expected_root_suffix)
+        .with_context(|| {
+            format!(
+                "provisional tile-tree root {:?} does not end in {:?}",
+                release.artifact_path, expected_root_suffix
+            )
+        })?;
+    let mut stats = VerificationStats {
+        artifacts: 1,
+        bytes: release.byte_length,
+        tile_indexes: 1,
+        tiles: 0,
+    };
+    let mut pending = root_index.entries.into_iter().collect::<VecDeque<_>>();
+    let mut index_scopes = BTreeSet::new();
+    let mut tile_cells = BTreeSet::new();
+
+    while let Some(entry) = pending.pop_front() {
+        if stats.artifacts >= 10_000_000 {
+            bail!("provisional tile tree exceeds the ten-million-artifact safety bound");
+        }
+        let key = (entry.s2_level, entry.s2_cell_id.clone());
+        match entry.kind {
+            TileTreeEntryKind::Index if !index_scopes.insert(key.clone()) => {
+                bail!(
+                    "provisional tile tree repeats index scope {} at level {}",
+                    entry.s2_cell_id,
+                    entry.s2_level
+                );
+            }
+            TileTreeEntryKind::Tile if !tile_cells.insert(key) => {
+                bail!(
+                    "provisional tile tree repeats tile {} at level {}",
+                    entry.s2_cell_id,
+                    entry.s2_level
+                );
+            }
+            _ => {}
+        }
+        let resolved_relative_path = format!("{tree_prefix}{}", entry.artifact.path);
+        if !seen_paths.insert(resolved_relative_path.clone()) {
+            bail!(
+                "provisional tile tree repeats or cycles through artifact path {:?}",
+                resolved_relative_path
+            );
+        }
+        if entry.kind == TileTreeEntryKind::Index
+            && entry.artifact.media_type != "application/vnd.atinycivilization.tile-index+json"
+        {
+            bail!(
+                "provisional child index {:?} has an invalid media type",
+                entry.artifact.path
+            );
+        }
+        let artifact = BundleArtifact {
+            kind: match entry.kind {
+                TileTreeEntryKind::Index => BundleArtifactKind::TileTreeIndex,
+                TileTreeEntryKind::Tile => BundleArtifactKind::Tile,
+            },
+            relative_path: &resolved_relative_path,
+            content_hash: entry.artifact.content_hash,
+            byte_length: entry.artifact.byte_length,
+        };
+        let bytes = verify_artifact(&artifact, &mut |path| artifact_root.read(path))?;
+        stats.add_artifact(artifact.byte_length)?;
+        match entry.kind {
+            TileTreeEntryKind::Tile => {
+                validate_known_tile_payload(&layer_id, &entry, &bytes)?;
+                stats.tiles = stats
+                    .tiles
+                    .checked_add(1)
+                    .context("verified provisional tile count overflow")?;
+            }
+            TileTreeEntryKind::Index => {
+                stats.tile_indexes = stats
+                    .tile_indexes
+                    .checked_add(1)
+                    .context("verified provisional tile-index count overflow")?;
+                let child = TileTreeIndex::from_canonical_slice(&bytes).with_context(|| {
+                    format!(
+                        "provisional tile index {:?} is invalid",
+                        entry.artifact.path
+                    )
+                })?;
+                if child.layer_id != layer_id {
+                    bail!(
+                        "provisional tile index {:?} declares layer {:?}, expected {:?}",
+                        entry.artifact.path,
+                        child.layer_id,
+                        layer_id
+                    );
+                }
+                for descendant in &child.entries {
+                    if !entry_contains(&entry, descendant)? {
+                        bail!(
+                            "provisional tile index {:?} contains S2 cell {} level {} outside parent {} level {}",
+                            entry.artifact.path,
+                            descendant.s2_cell_id,
+                            descendant.s2_level,
+                            entry.s2_cell_id,
+                            entry.s2_level
+                        );
+                    }
+                }
+                pending.extend(child.entries);
+            }
+        }
     }
     Ok(stats)
 }
@@ -852,6 +1022,35 @@ mod tests {
         assert!(load_provisional_world_composition(&composition_path).is_err());
 
         fs::remove_dir_all(root).expect("remove provisional fixture root");
+    }
+
+    #[test]
+    fn provisional_verification_traverses_every_tile_index_and_leaf() {
+        let root = temporary_root("provisional-tile-tree");
+        let mut composition = provisional_composition(&root);
+        let (tree, files) = valid_tree();
+        for (relative, bytes) in &files {
+            let destination = root.join(relative);
+            fs::create_dir_all(destination.parent().expect("fixture parent"))
+                .expect("create tile-tree fixture directory");
+            fs::write(destination, bytes).expect("write tile-tree fixture");
+        }
+        let release = &mut composition.earth_layers[0].release;
+        release.artifact_path = tree.root_index_path.clone();
+        release.media_type = tree.root_index_media_type.clone();
+        release.content_hash = tree.root_index_hash;
+        release.byte_length = tree.root_index_byte_length;
+
+        let stats = verify_provisional_world_artifacts(&composition, &root)
+            .expect("verify complete provisional tile closure");
+        assert_eq!(stats.artifacts, 14);
+        assert_eq!(stats.tile_indexes, 2);
+        assert_eq!(stats.tiles, 2);
+
+        fs::remove_file(root.join("layers/elevation/l10/a.tile"))
+            .expect("remove transitive provisional leaf");
+        assert!(verify_provisional_world_artifacts(&composition, &root).is_err());
+        fs::remove_dir_all(root).expect("remove provisional tile-tree root");
     }
 
     #[test]

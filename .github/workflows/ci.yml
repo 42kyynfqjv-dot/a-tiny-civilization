@@ -78,7 +78,7 @@ jobs:
       - run: docker compose -f compose.yaml -f compose.backup.yaml config --quiet
       - run: RESTORE_WORLD_ID=00000000-0000-0000-0000-000000000001 docker compose -f compose.restore.yaml config --quiet
       - run: ./scripts/check-production-boundaries.sh
-      - run: bash -n scripts/backend-status.sh scripts/backup-postgres.sh scripts/backup-status.sh scripts/deploy-production-app.sh scripts/moderation-status.sh scripts/postgres-restore-entrypoint.sh scripts/restore-drill.sh scripts/production-preflight.sh scripts/verify-backend-status.sh scripts/verify-production-env-file.sh scripts/verify-provisional-genesis-pins.sh scripts/verify-supporter-production-policy.sh
+      - run: bash -n scripts/backend-status.sh scripts/backup-postgres.sh scripts/backup-status.sh scripts/deploy-production-app.sh scripts/moderation-status.sh scripts/postgres-restore-entrypoint.sh scripts/restore-drill.sh scripts/production-preflight.sh scripts/stage-provisional-runner-artifacts.sh scripts/verify-backend-status.sh scripts/verify-production-env-file.sh scripts/verify-provisional-genesis-pins.sh scripts/verify-supporter-production-policy.sh
       - run: >-
           APP_ENV=production
           POSTGRES_DB=civilization

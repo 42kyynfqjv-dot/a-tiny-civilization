@@ -145,6 +145,15 @@ runner service group.
 sudo ./scripts/stage-provisional-runner-artifacts.sh ./runtime-artifacts
 ```
 
+The staging command traverses all six unique global tile trees, rather than copying only their root
+indexes, and re-verifies the complete staged closure. For an explicit pre-genesis source audit run:
+
+```bash
+ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE=1 \
+ATINY_CIVILIZATION_DATA_EXECUTABLE=target/release/civilization-data \
+  ./scripts/verify-provisional-genesis-pins.sh
+```
+
 The runner mounts that directory read-only at `/runtime`. The command is deliberately
 for the provisional integration path only; it does not authorize canonical genesis.
 

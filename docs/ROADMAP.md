@@ -249,6 +249,9 @@ The active ruleset-18 genesis path now pins its append-only successor,
 normalized, independently source-pinned fauna physiology v2 catalog. Preparation, initialization,
 runner defaults, and root-owned runtime staging all select the same 0.1.1 bytes and artifact set;
 the earlier 0.1.0 composition remains immutable evidence for histories that already reference it.
+The 0.1.1 filesystem audit now traverses 147,466 unique artifacts (10,164,215,509 bytes), including
+every leaf under its six unique global tile roots. Runtime staging derives and re-verifies that
+closure plus the two pinned DE441 evaluator inputs; root-only staging is no longer accepted.
 
 Six upstream snapshots are now committed independently of any world bundle. They pin
 Natural Earth v5.1.2 generalized land polygons, NOAA ETOPO 2022 v1 bedrock relief, two

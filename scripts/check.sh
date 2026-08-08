@@ -32,6 +32,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-production-env-file.sh
 ./scripts/verify-backend-status.sh
 ./scripts/verify-provisional-genesis-pins.sh
+python3 scripts/verify-runtime-artifact-listing.py
 ./scripts/verify-demo.sh
 
 cd web
