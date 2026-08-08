@@ -63,6 +63,8 @@ pub const SOCIAL_LEARNING_EVENT_SCHEMA_VERSION: u16 = 20;
 /// Adds durable, label-free surface traces produced by primitive force. The trace
 /// scalar is a provisional physical response, never an artifact or use label.
 pub const MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION: u16 = 21;
+/// Schema twenty-two adds spatially distinct, label-free surface contact regions.
+pub const MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION: u16 = 22;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -182,6 +184,19 @@ pub enum DomainEvent {
         from_trace_units: u32,
         applied_force_units: u16,
         to_trace_units: u32,
+    },
+    /// One bounded contact region and the aggregate physical surface trace changed
+    /// together after primitive force. No mark, symbol, writing, or purpose exists
+    /// in this event vocabulary.
+    MaterialSurfaceRegionTraceChanged {
+        object_id: EntityId,
+        organism_id: EntityId,
+        contact_region: u8,
+        from_region_trace_units: u32,
+        from_total_trace_units: u32,
+        applied_force_units: u16,
+        to_region_trace_units: u32,
+        to_total_trace_units: u32,
     },
     /// Exact physical mass transferred from a held material through one organism's
     /// mouth. The event says nothing about desirability, safety, knowledge, or use.
@@ -475,6 +490,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION
             | SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
             | MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
+            | MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -562,6 +578,11 @@ fn validate_event_for_schema(
     }
     if event_schema_version < MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::MaterialSurfaceTraceChanged { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::MaterialSurfaceRegionTraceChanged { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
@@ -767,6 +788,28 @@ fn validate_event_for_schema(
             {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "invalid material surface-trace transition".to_owned(),
+                ));
+            }
+        }
+        DomainEvent::MaterialSurfaceRegionTraceChanged {
+            contact_region,
+            from_region_trace_units,
+            from_total_trace_units,
+            applied_force_units,
+            to_region_trace_units,
+            to_total_trace_units,
+            ..
+        } => {
+            let force = u32::from(*applied_force_units);
+            if *contact_region >= 8
+                || force == 0
+                || from_region_trace_units.checked_add(force) != Some(*to_region_trace_units)
+                || from_total_trace_units.checked_add(force) != Some(*to_total_trace_units)
+                || *to_region_trace_units > i32::MAX.unsigned_abs()
+                || *to_total_trace_units > i32::MAX.unsigned_abs()
+            {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "invalid material surface-region transition".to_owned(),
                 ));
             }
         }
@@ -1219,6 +1262,7 @@ mod tests {
                 kind: PrimitiveActionKind::ApplyForce,
                 target_id: None,
                 intensity: 1,
+                contact_region: None,
             },
         };
         assert!(
@@ -1634,6 +1678,69 @@ mod tests {
                 Digest::ZERO,
                 vec![invalid],
                 Digest::sha256(b"invalid surface state"),
+            ),
+            Err(EventBatchError::InvalidEmbodiedEvent(_))
+        ));
+    }
+
+    #[test]
+    fn surface_regions_require_schema_twenty_two_and_exact_dual_arithmetic() {
+        let manifest = manifest();
+        let event = DomainEvent::MaterialSurfaceRegionTraceChanged {
+            object_id: EntityId::from_uuid(uuid::Uuid::from_u128(0x611)),
+            organism_id: EntityId::from_uuid(uuid::Uuid::from_u128(0x612)),
+            contact_region: 7,
+            from_region_trace_units: 2,
+            from_total_trace_units: 9,
+            applied_force_units: 3,
+            to_region_trace_units: 5,
+            to_total_trace_units: 12,
+        };
+        assert!(matches!(
+            EventBatch::new(
+                MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                20,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"surface-region state"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::new(1),
+            20,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"surface-region state"),
+        )
+        .expect("schema twenty-two accepts exact regional surface traces");
+
+        let invalid = DomainEvent::MaterialSurfaceRegionTraceChanged {
+            object_id: EntityId::from_uuid(uuid::Uuid::from_u128(0x611)),
+            organism_id: EntityId::from_uuid(uuid::Uuid::from_u128(0x612)),
+            contact_region: 8,
+            from_region_trace_units: 2,
+            from_total_trace_units: 9,
+            applied_force_units: 3,
+            to_region_trace_units: 6,
+            to_total_trace_units: 12,
+        };
+        assert!(matches!(
+            EventBatch::new(
+                MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                20,
+                Digest::ZERO,
+                vec![invalid],
+                Digest::sha256(b"invalid surface-region state"),
             ),
             Err(EventBatchError::InvalidEmbodiedEvent(_))
         ));

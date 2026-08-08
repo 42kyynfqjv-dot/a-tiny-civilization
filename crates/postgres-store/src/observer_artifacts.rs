@@ -41,6 +41,7 @@ struct ArtifactTraceRow {
     applied_force_units: i32,
     to_trace_units: i64,
     provenance: String,
+    contact_region: Option<i16>,
 }
 
 impl PostgresStore {
@@ -147,6 +148,43 @@ impl PostgresStore {
                             return Err(corrupt("artifact trace was projected more than once"));
                         }
                     }
+                    DomainEvent::MaterialSurfaceRegionTraceChanged {
+                        object_id,
+                        contact_region,
+                        from_total_trace_units,
+                        applied_force_units,
+                        to_total_trace_units,
+                        ..
+                    } => {
+                        let inserted = sqlx::query(
+                            r#"
+                            INSERT INTO observer_artifact_traces (
+                              projection_version,world_id,object_id,source_event_id,
+                              source_sequence,source_tick,from_trace_units,applied_force_units,
+                              to_trace_units,provenance,contact_region
+                            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'world_fact',$10)
+                            ON CONFLICT DO NOTHING
+                            "#,
+                        )
+                        .bind(i32::from(PUBLIC_ARTIFACT_PROJECTION_VERSION))
+                        .bind(batch.world_id.as_uuid())
+                        .bind(object_id.as_uuid())
+                        .bind(record.event_id.as_uuid())
+                        .bind(sequence)
+                        .bind(tick)
+                        .bind(i64::from(*from_total_trace_units))
+                        .bind(i32::from(*applied_force_units))
+                        .bind(i64::from(*to_total_trace_units))
+                        .bind(i16::from(*contact_region))
+                        .execute(&mut *transaction)
+                        .await
+                        .map_err(unavailable)?;
+                        if inserted.rows_affected() != 1 {
+                            return Err(corrupt(
+                                "surface-region artifact trace was projected more than once",
+                            ));
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -246,7 +284,7 @@ impl ObserverArtifactStore for PostgresStore {
         let rows = sqlx::query_as::<_, ArtifactTraceRow>(
             r#"
             SELECT world_id,object_id,source_event_id,source_sequence,source_tick,
-              from_trace_units,applied_force_units,to_trace_units,provenance
+              from_trace_units,applied_force_units,to_trace_units,provenance,contact_region
             FROM observer_artifact_traces
             WHERE projection_version=$1 AND world_id=$2 AND object_id=$3
               AND source_sequence>$4
@@ -305,6 +343,10 @@ fn parse_trace_row(
         source_sequence: EventSequence::new(to_u64(row.source_sequence, "trace sequence")?),
         source_tick: SimTick::new(to_u64(row.source_tick, "trace tick")?),
         provenance: ClaimProvenance::WorldFact,
+        contact_region: row
+            .contact_region
+            .map(|region| u8::try_from(region).map_err(|_| corrupt("contact region")))
+            .transpose()?,
         from_trace_units: u32::try_from(row.from_trace_units)
             .map_err(|_| corrupt("from trace units"))?,
         applied_force_units: u16::try_from(row.applied_force_units)

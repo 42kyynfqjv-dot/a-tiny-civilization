@@ -10,7 +10,7 @@ Accepted.
 genesis is authorized. It first performs exact canonical replay with the runner and then emits one
 JSON object derived directly from PostgreSQL. A successful report requires:
 
-- a running world at the explicitly expected ruleset (ruleset 19 by default) with at least 1,000
+- a running world at the explicitly expected ruleset (ruleset 20 by default) with at least 1,000
   ticks of history;
 - contiguous canonical batches through the durable cursor and at least one valid snapshot;
 - all five public projections exactly current;
@@ -19,6 +19,7 @@ JSON object derived directly from PostgreSQL. A successful report requires:
   recall plus non-null model receipt exercised;
 - nonempty organism, timeline, and deterministic-finding projections.
 - for ruleset 19 and later, at least one projected canonical material surface trace.
+- for ruleset 20 and later, at least one projected trace with a non-null physical contact region.
 
 Future cognition requests are reported but are not failures. Their deadlines have not occurred in
 simulation time, so treating them as overdue would make the gate depend on wall-clock timing.

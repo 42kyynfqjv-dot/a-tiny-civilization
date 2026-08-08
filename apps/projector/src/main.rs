@@ -119,13 +119,17 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
         let finding_start = batches.partition_point(|batch| batch.sequence <= finding_cursor);
         let telemetry_start = batches.partition_point(|batch| batch.sequence <= telemetry_cursor);
         let artifact_start = batches.partition_point(|batch| batch.sequence <= artifact_cursor);
-        let (applied, indexed, findings, telemetry, artifacts) = tokio::try_join!(
+        // The default projector pool has four connections. Keep at most four
+        // long-lived projection transactions concurrent, then run the fifth from
+        // its independent cursor. Starting five here can starve one projection
+        // until the pool timeout when rebuilding a substantial history.
+        let (applied, indexed, findings, telemetry) = tokio::try_join!(
             project_timeline(store, &batches[timeline_start..]),
             project_organisms(store, &batches[organism_start..]),
             project_findings(store, &batches[finding_start..]),
             project_telemetry(store, &batches[telemetry_start..]),
-            project_artifacts(store, &batches[artifact_start..]),
         )?;
+        let artifacts = project_artifacts(store, &batches[artifact_start..]).await?;
         // Archive is already an immutable canonical fact. Checking the durable lifecycle
         // state also covers worlds archived before this projector version was deployed.
         // Expiration is idempotent observer-side bookkeeping only.

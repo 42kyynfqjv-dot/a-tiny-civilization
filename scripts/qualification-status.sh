@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-19}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-20}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -161,7 +161,9 @@ WITH selected_world AS (
       (SELECT COUNT(*) FROM observer_organisms WHERE world_id = :'world_id'::UUID)::BIGINT AS organisms,
       (SELECT COUNT(*) FROM observer_timeline_items WHERE world_id = :'world_id'::UUID)::BIGINT AS timeline_items,
       (SELECT COUNT(*) FROM observer_findings WHERE world_id = :'world_id'::UUID)::BIGINT AS findings,
-      (SELECT COUNT(*) FROM observer_artifact_traces WHERE world_id = :'world_id'::UUID)::BIGINT AS artifact_traces
+      (SELECT COUNT(*) FROM observer_artifact_traces WHERE world_id = :'world_id'::UUID)::BIGINT AS artifact_traces,
+      (SELECT COUNT(*) FROM observer_artifact_traces WHERE world_id = :'world_id'::UUID
+         AND contact_region IS NOT NULL)::BIGINT AS regional_artifact_traces
 ), facts AS (
     SELECT world.*, event_state.*, snapshot_state.*,
            projection_state.required_count AS projection_required_count,
@@ -194,7 +196,8 @@ WITH selected_world AS (
              AND due_without_consumption = 0 AS cognition_deadlines_complete,
            recalled > 0 AND model_receipts > 0 AS hindsight_cognition_exercised,
            organisms > 0 AND timeline_items > 0 AND findings > 0 AS observer_content_present,
-           (ruleset_version < 19 OR artifact_traces > 0) AS material_transformation_exercised
+           (ruleset_version < 19 OR artifact_traces > 0) AS material_transformation_exercised,
+           (ruleset_version < 20 OR regional_artifact_traces > 0) AS surface_arrangement_exercised
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -204,7 +207,7 @@ SELECT jsonb_build_object(
       AND contiguous_history AND snapshots_present AND projections_current
       AND memory_delivered AND cognition_deadlines_complete
       AND hindsight_cognition_exercised AND observer_content_present
-      AND material_transformation_exercised,
+      AND material_transformation_exercised AND surface_arrangement_exercised,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -230,7 +233,8 @@ SELECT jsonb_build_object(
     ),
     'observer', jsonb_build_object(
       'organisms', organisms, 'timeline_items', timeline_items, 'findings', findings,
-      'artifact_traces', artifact_traces
+      'artifact_traces', artifact_traces,
+      'regional_artifact_traces', regional_artifact_traces
     ),
     'checks', jsonb_build_object(
       'running', running, 'expected_ruleset', expected_ruleset,
@@ -242,7 +246,8 @@ SELECT jsonb_build_object(
       'cognition_deadlines_complete', cognition_deadlines_complete,
       'hindsight_cognition_exercised', hindsight_cognition_exercised,
       'observer_content_present', observer_content_present,
-      'material_transformation_exercised', material_transformation_exercised
+      'material_transformation_exercised', material_transformation_exercised,
+      'surface_arrangement_exercised', surface_arrangement_exercised
     )
 )::TEXT
 FROM checks;

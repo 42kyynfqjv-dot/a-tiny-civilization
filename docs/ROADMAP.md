@@ -546,3 +546,11 @@ physical-event provenance separate from observer interpretation and retain exact
 citations. The corrected qualification world returned one silicon-dioxide altered-material entry
 plus six factual findings. No writing, symbolism, or purpose is claimed before the world supplies
 evidence for it.
+
+Ruleset 20 adds the missing neutral arrangement substrate without adding writing. A force action
+may address one of eight physical contact regions; exact region and aggregate traces are perceived
+and replayed, while the engine assigns no pattern, symbol, or purpose. Its first isolated
+qualification history reached tick 1,000 with 85 regional transitions spanning all eight regions,
+all five observer projections current, and exact stop/resume/replay. ADR 0096 records the schema and
+observer boundaries. Hindsight delivery and the audited cognition fallback are exercised separately;
+a non-null real provider receipt remains a fail-closed launch requirement.

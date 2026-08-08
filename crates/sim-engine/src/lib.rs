@@ -31,10 +31,11 @@ use world_domain::{
     HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
-    MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION, MAX_COGNITION_SELECTION_READINGS,
-    MaterialIdentity, MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
-    OrganismRole, PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel,
-    PhysiologicalRegulationCommitment, PrimitiveAction, PrimitiveActionKind, PropertyReading,
+    MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
+    MAX_COGNITION_SELECTION_READINGS, MaterialIdentity, MaterialReservoirCommitment,
+    MetabolicRateCommitment, OralTransferCommitment, OrganismRole,
+    PROVISIONAL_WORLD_EVENT_SCHEMA_VERSION, PerceptionChannel, PhysiologicalRegulationCommitment,
+    PrimitiveAction, PrimitiveActionKind, PropertyReading,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
@@ -101,6 +102,9 @@ pub const SOCIAL_LEARNING_RULESET_VERSION: u32 = 18;
 /// Ruleset nineteen lets primitive force leave a bounded, directly perceptible trace
 /// on a held object without assigning it an artifact, symbol, tool, or use label.
 pub const MATERIAL_SURFACE_TRACE_RULESET_VERSION: u32 = 19;
+/// Ruleset twenty retains eight independently addressable, label-free contact
+/// regions on each material object. Regions are physical motor coordinates only.
+pub const MATERIAL_SURFACE_REGIONS_RULESET_VERSION: u32 = 20;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -123,6 +127,7 @@ pub const COGNITION_SNAPSHOT_SCHEMA_VERSION: u16 = 19;
 pub const MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION: u16 = 20;
 pub const SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 21;
 pub const MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION: u16 = 22;
+pub const MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION: u16 = 23;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -159,6 +164,8 @@ const COGNITION_STATE_HASH_SCHEMA_VERSION: u16 = 19;
 const MATERIAL_RESERVOIR_STATE_HASH_SCHEMA_VERSION: u16 = 20;
 const SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 21;
 const MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION: u16 = 22;
+const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
+const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
@@ -171,6 +178,37 @@ fn motor_phase(organism_id: EntityId, age_ticks: u64) -> u16 {
         .as_u128()
         .wrapping_add(u128::from(age_ticks)))
         % 4) as u16
+}
+
+fn surface_region_property_code(contact_region: u8) -> String {
+    format!("surface_region_{contact_region}")
+}
+
+fn surface_region_perception(
+    object_id: EntityId,
+    contact_region: u8,
+    region_trace_units: u32,
+    total_trace_units: u32,
+) -> SituatedPerception {
+    SituatedPerception {
+        subject_id: Some(object_id),
+        readings: vec![
+            PropertyReading {
+                channel: PerceptionChannel::Touch,
+                property_code: surface_region_property_code(contact_region),
+                quantized_value: i32::try_from(region_trace_units)
+                    .expect("surface-region trace is bounded to i32"),
+                uncertainty: 0,
+            },
+            PropertyReading {
+                channel: PerceptionChannel::Touch,
+                property_code: "surface_trace".to_owned(),
+                quantized_value: i32::try_from(total_trace_units)
+                    .expect("surface trace is bounded to i32"),
+                uncertainty: 0,
+            },
+        ],
+    }
 }
 
 fn motor_action_for_phase(phase: u16) -> PrimitiveActionKind {
@@ -538,6 +576,8 @@ pub struct MaterialInstanceState {
     #[serde(default, skip_serializing_if = "is_zero_u32")]
     surface_trace_units: u32,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    surface_region_trace_units: Vec<u32>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     oral_transfer_profiles: Vec<OralTransferCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     reservoir: Option<MaterialReservoirCommitment>,
@@ -594,6 +634,11 @@ impl MaterialInstanceState {
     #[must_use]
     pub const fn surface_trace_units(&self) -> u32 {
         self.surface_trace_units
+    }
+
+    #[must_use]
+    pub fn surface_region_trace_units(&self) -> &[u32] {
+        &self.surface_region_trace_units
     }
 
     #[must_use]
@@ -1402,7 +1447,39 @@ impl EngineState {
                         }) =>
                 {
                     let object_id = action.target_id.expect("guarded material target");
-                    if let Some((from_trace_units, to_trace_units)) =
+                    if self.uses_material_surface_regions_driver() {
+                        let contact_region = action
+                            .contact_region
+                            .ok_or(EngineError::MissingSurfaceContactRegion)?;
+                        if let Some((from_region, from_total, to_region, to_total)) = self
+                            .next_material_surface_region_trace(
+                                organism_id,
+                                object_id,
+                                contact_region,
+                                action.intensity,
+                            )?
+                        {
+                            events.push(DomainEvent::MaterialSurfaceRegionTraceChanged {
+                                object_id,
+                                organism_id,
+                                contact_region,
+                                from_region_trace_units: from_region,
+                                from_total_trace_units: from_total,
+                                applied_force_units: action.intensity,
+                                to_region_trace_units: to_region,
+                                to_total_trace_units: to_total,
+                            });
+                            events.push(DomainEvent::OrganismPerceived {
+                                organism_id,
+                                perception: surface_region_perception(
+                                    object_id,
+                                    contact_region,
+                                    to_region,
+                                    to_total,
+                                ),
+                            });
+                        }
+                    } else if let Some((from_trace_units, to_trace_units)) =
                         self.next_material_surface_trace(organism_id, object_id, action.intensity)?
                     {
                         events.push(DomainEvent::MaterialSurfaceTraceChanged {
@@ -1580,6 +1657,7 @@ impl EngineState {
                     kind: PrimitiveActionKind::Move,
                     target_id: None,
                     intensity: 1,
+                    contact_region: None,
                 },
                 weight: 2,
             },
@@ -1588,6 +1666,7 @@ impl EngineState {
                     kind: PrimitiveActionKind::Orient,
                     target_id: None,
                     intensity: 1,
+                    contact_region: None,
                 },
                 weight: 2,
             },
@@ -1596,6 +1675,7 @@ impl EngineState {
                     kind: PrimitiveActionKind::Reach,
                     target_id: target,
                     intensity: 1,
+                    contact_region: None,
                 },
                 weight: if target.is_some() { oral_drive } else { 1 },
             },
@@ -1618,6 +1698,7 @@ impl EngineState {
                                 kind,
                                 target_id: Some(target_id),
                                 intensity: 1,
+                                contact_region: None,
                             },
                             weight: if matches!(
                                 kind,
@@ -1637,6 +1718,7 @@ impl EngineState {
                             kind: PrimitiveActionKind::Grasp,
                             target_id: Some(target_id),
                             intensity: 1,
+                            contact_region: None,
                         },
                         weight: oral_drive,
                     });
@@ -1649,11 +1731,31 @@ impl EngineState {
                     PrimitiveActionKind::Chew,
                     PrimitiveActionKind::Swallow,
                 ] {
+                    if kind == PrimitiveActionKind::ApplyForce
+                        && self.uses_material_surface_regions_driver()
+                    {
+                        for contact_region in 0..MATERIAL_SURFACE_REGION_COUNT {
+                            candidates.push(PolicyCandidate {
+                                action: PrimitiveAction {
+                                    kind,
+                                    target_id: Some(target_id),
+                                    intensity: 1,
+                                    contact_region: Some(
+                                        u8::try_from(contact_region)
+                                            .expect("surface region count fits u8"),
+                                    ),
+                                },
+                                weight: 1,
+                            });
+                        }
+                        continue;
+                    }
                     candidates.push(PolicyCandidate {
                         action: PrimitiveAction {
                             kind,
                             target_id: Some(target_id),
                             intensity: 1,
+                            contact_region: None,
                         },
                         weight: if matches!(
                             kind,
@@ -1675,6 +1777,7 @@ impl EngineState {
                     kind: PrimitiveActionKind::Rest,
                     target_id: None,
                     intensity: 1,
+                    contact_region: None,
                 },
                 weight: rest_drive,
             },
@@ -1683,6 +1786,7 @@ impl EngineState {
                     kind: PrimitiveActionKind::EmitSignal,
                     target_id: None,
                     intensity: 1,
+                    contact_region: None,
                 },
                 weight: 2,
             },
@@ -2973,6 +3077,7 @@ impl EngineState {
                                             kind: action_kind,
                                             target_id: None,
                                             intensity: 1,
+                                            contact_region: None,
                                         },
                                     },
                                 ));
@@ -3317,6 +3422,10 @@ impl EngineState {
         self.manifest.ruleset_version >= MATERIAL_SURFACE_TRACE_RULESET_VERSION
     }
 
+    fn uses_material_surface_regions_driver(&self) -> bool {
+        self.manifest.ruleset_version >= MATERIAL_SURFACE_REGIONS_RULESET_VERSION
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
@@ -3381,7 +3490,8 @@ impl EngineState {
                 .or_else(|| resulting_state.organisms.get(holder_id))
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::MaterialInstanceReleased { embodied_patch, .. } => Some(*embodied_patch),
-            DomainEvent::MaterialSurfaceTraceChanged { organism_id, .. } => self
+            DomainEvent::MaterialSurfaceTraceChanged { organism_id, .. }
+            | DomainEvent::MaterialSurfaceRegionTraceChanged { organism_id, .. } => self
                 .organisms
                 .get(organism_id)
                 .or_else(|| resulting_state.organisms.get(organism_id))
@@ -3544,7 +3654,7 @@ impl EngineState {
         }) {
             return Err(EngineError::MaterialReservoirUnsupported);
         }
-        if self.uses_material_surface_trace_driver() {
+        if self.uses_material_surface_regions_driver() {
             let mut expected_traces = Vec::new();
             let mut expected_perceptions = Vec::new();
             for event in events {
@@ -3568,8 +3678,90 @@ impl EngineState {
                 {
                     continue;
                 }
-                if let Some((from_trace_units, to_trace_units)) = self
-                    .next_material_surface_trace(*organism_id, object_id, action.intensity)?
+                let contact_region = action
+                    .contact_region
+                    .ok_or(EngineError::MissingSurfaceContactRegion)?;
+                if let Some((from_region, from_total, to_region, to_total)) = self
+                    .next_material_surface_region_trace(
+                        *organism_id,
+                        object_id,
+                        contact_region,
+                        action.intensity,
+                    )?
+                {
+                    expected_traces.push(DomainEvent::MaterialSurfaceRegionTraceChanged {
+                        object_id,
+                        organism_id: *organism_id,
+                        contact_region,
+                        from_region_trace_units: from_region,
+                        from_total_trace_units: from_total,
+                        applied_force_units: action.intensity,
+                        to_region_trace_units: to_region,
+                        to_total_trace_units: to_total,
+                    });
+                    expected_perceptions.push(DomainEvent::OrganismPerceived {
+                        organism_id: *organism_id,
+                        perception: surface_region_perception(
+                            object_id,
+                            contact_region,
+                            to_region,
+                            to_total,
+                        ),
+                    });
+                }
+            }
+            let actual_traces = events
+                .iter()
+                .filter(|event| {
+                    matches!(event, DomainEvent::MaterialSurfaceRegionTraceChanged { .. })
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            let actual_perceptions = events
+                .iter()
+                .filter(|event| {
+                    matches!(
+                        event,
+                        DomainEvent::OrganismPerceived { perception, .. }
+                            if perception.readings.iter().any(|reading| reading.property_code.starts_with("surface_region_"))
+                    )
+                })
+                .cloned()
+                .collect::<Vec<_>>();
+            if actual_traces != expected_traces
+                || actual_perceptions != expected_perceptions
+                || events
+                    .iter()
+                    .any(|event| matches!(event, DomainEvent::MaterialSurfaceTraceChanged { .. }))
+            {
+                return Err(EngineError::InvalidMaterialSurfaceRegionEventSet);
+            }
+        } else if self.uses_material_surface_trace_driver() {
+            let mut expected_traces = Vec::new();
+            let mut expected_perceptions = Vec::new();
+            for event in events {
+                let DomainEvent::OrganismActed {
+                    organism_id,
+                    action,
+                } = event
+                else {
+                    continue;
+                };
+                if action.kind != PrimitiveActionKind::ApplyForce {
+                    continue;
+                }
+                let Some(object_id) = action.target_id else {
+                    continue;
+                };
+                if !self
+                    .material_instances
+                    .get(&object_id)
+                    .is_some_and(|instance| instance.held_by == Some(*organism_id))
+                {
+                    continue;
+                }
+                if let Some((from_trace_units, to_trace_units)) =
+                    self.next_material_surface_trace(*organism_id, object_id, action.intensity)?
                 {
                     expected_traces.push(DomainEvent::MaterialSurfaceTraceChanged {
                         object_id,
@@ -3613,12 +3805,17 @@ impl EngineState {
                 return Err(EngineError::InvalidMaterialSurfaceTraceEventSet);
             }
         } else if events.iter().any(|event| {
-            matches!(event, DomainEvent::MaterialSurfaceTraceChanged { .. })
-                || matches!(
-                    event,
-                    DomainEvent::OrganismPerceived { perception, .. }
-                        if perception.readings.iter().any(|reading| reading.property_code == "surface_trace")
-                )
+            matches!(
+                event,
+                DomainEvent::MaterialSurfaceTraceChanged { .. }
+                    | DomainEvent::MaterialSurfaceRegionTraceChanged { .. }
+            ) || matches!(
+                event,
+                DomainEvent::OrganismPerceived { perception, .. }
+                    if perception.readings.iter().any(|reading|
+                        reading.property_code == "surface_trace"
+                            || reading.property_code.starts_with("surface_region_"))
+            )
         }) {
             return Err(EngineError::MaterialSurfaceTraceUnsupported);
         }
@@ -3991,7 +4188,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_material_surface_trace_driver() {
+        if self.uses_material_surface_regions_driver() {
+            MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
+        } else if self.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
         } else if self.uses_social_learning_driver() {
             SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
@@ -4062,7 +4261,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_material_surface_trace_driver() {
+        if self.uses_material_surface_regions_driver() {
+            MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_social_learning_driver() {
             SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION
@@ -4294,6 +4495,13 @@ impl EngineState {
                             held_by: None,
                             remaining_mass_milligrams: *initial_mass_milligrams,
                             surface_trace_units: 0,
+                            surface_region_trace_units: if self
+                                .uses_material_surface_regions_driver()
+                            {
+                                vec![0; MATERIAL_SURFACE_REGION_COUNT]
+                            } else {
+                                Vec::new()
+                            },
                             oral_transfer_profiles: oral_transfer_profiles.clone(),
                             reservoir: None,
                             reservoir_settled_at: None,
@@ -4366,7 +4574,9 @@ impl EngineState {
                 applied_force_units,
                 to_trace_units,
             } => {
-                if !self.uses_material_surface_trace_driver() {
+                if !self.uses_material_surface_trace_driver()
+                    || self.uses_material_surface_regions_driver()
+                {
                     return Err(EngineError::MaterialSurfaceTraceUnsupported);
                 }
                 self.require_living_organism(*organism_id)?;
@@ -4385,6 +4595,41 @@ impl EngineState {
                     return Err(EngineError::InvalidMaterialSurfaceTrace(*object_id));
                 }
                 instance.surface_trace_units = *to_trace_units;
+            }
+            DomainEvent::MaterialSurfaceRegionTraceChanged {
+                object_id,
+                organism_id,
+                contact_region,
+                from_region_trace_units,
+                from_total_trace_units,
+                applied_force_units,
+                to_region_trace_units,
+                to_total_trace_units,
+            } => {
+                if !self.uses_material_surface_regions_driver() {
+                    return Err(EngineError::MaterialSurfaceRegionsUnsupported);
+                }
+                self.require_living_organism(*organism_id)?;
+                let instance = self
+                    .material_instances
+                    .get_mut(object_id)
+                    .ok_or(EngineError::UnknownMaterialInstance(*object_id))?;
+                let region_index = usize::from(*contact_region);
+                let force = u32::from(*applied_force_units);
+                if region_index >= MATERIAL_SURFACE_REGION_COUNT
+                    || instance.surface_region_trace_units.len() != MATERIAL_SURFACE_REGION_COUNT
+                    || instance.held_by != Some(*organism_id)
+                    || instance.surface_region_trace_units[region_index] != *from_region_trace_units
+                    || instance.surface_trace_units != *from_total_trace_units
+                    || from_region_trace_units.checked_add(force) != Some(*to_region_trace_units)
+                    || from_total_trace_units.checked_add(force) != Some(*to_total_trace_units)
+                    || *to_region_trace_units > MAX_MATERIAL_SURFACE_TRACE_UNITS
+                    || *to_total_trace_units > MAX_MATERIAL_SURFACE_TRACE_UNITS
+                {
+                    return Err(EngineError::InvalidMaterialSurfaceRegions(*object_id));
+                }
+                instance.surface_region_trace_units[region_index] = *to_region_trace_units;
+                instance.surface_trace_units = *to_total_trace_units;
             }
             DomainEvent::MaterialOralPortionTransferred {
                 object_id,
@@ -5438,6 +5683,44 @@ impl EngineState {
         Ok(Some((from, to)))
     }
 
+    fn next_material_surface_region_trace(
+        &self,
+        organism_id: EntityId,
+        object_id: EntityId,
+        contact_region: u8,
+        applied_force_units: u16,
+    ) -> Result<Option<(u32, u32, u32, u32)>, EngineError> {
+        let instance = self
+            .material_instances
+            .get(&object_id)
+            .ok_or(EngineError::UnknownMaterialInstance(object_id))?;
+        if instance.held_by != Some(organism_id) {
+            return Err(EngineError::MaterialInstanceNotHeldByActor(object_id));
+        }
+        let region_index = usize::from(contact_region);
+        if instance.surface_region_trace_units.len() != MATERIAL_SURFACE_REGION_COUNT
+            || region_index >= MATERIAL_SURFACE_REGION_COUNT
+        {
+            return Err(EngineError::InvalidMaterialSurfaceRegions(object_id));
+        }
+        let from_region = instance.surface_region_trace_units[region_index];
+        let from_total = instance.surface_trace_units;
+        let force = u32::from(applied_force_units);
+        let Some(to_region) = from_region
+            .checked_add(force)
+            .filter(|to| *to <= MAX_MATERIAL_SURFACE_TRACE_UNITS)
+        else {
+            return Ok(None);
+        };
+        let Some(to_total) = from_total
+            .checked_add(force)
+            .filter(|to| *to <= MAX_MATERIAL_SURFACE_TRACE_UNITS)
+        else {
+            return Ok(None);
+        };
+        Ok(Some((from_region, from_total, to_region, to_total)))
+    }
+
     fn resolve_oral_transfer(
         &self,
         organism_id: EntityId,
@@ -5906,6 +6189,24 @@ impl EngineState {
             {
                 return Err(EngineError::InvalidMaterialSurfaceTrace(*id));
             }
+            if self.uses_material_surface_regions_driver() {
+                let total = instance
+                    .surface_region_trace_units
+                    .iter()
+                    .try_fold(0_u32, |total, region| total.checked_add(*region))
+                    .ok_or(EngineError::InvalidMaterialSurfaceRegions(*id))?;
+                if instance.surface_region_trace_units.len() != MATERIAL_SURFACE_REGION_COUNT
+                    || instance
+                        .surface_region_trace_units
+                        .iter()
+                        .any(|region| *region > MAX_MATERIAL_SURFACE_TRACE_UNITS)
+                    || total != instance.surface_trace_units
+                {
+                    return Err(EngineError::InvalidMaterialSurfaceRegions(*id));
+                }
+            } else if !instance.surface_region_trace_units.is_empty() {
+                return Err(EngineError::InvalidMaterialSurfaceRegions(*id));
+            }
             match (&instance.reservoir, instance.reservoir_settled_at) {
                 (None, None) => {}
                 (Some(reservoir), Some(settled_at)) => {
@@ -6030,7 +6331,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_material_surface_trace_driver() {
+        let snapshot_schema_version = if state.uses_material_surface_regions_driver() {
+            MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_social_learning_driver() {
             SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
@@ -6119,12 +6422,15 @@ impl Snapshot {
                 | MATERIAL_RESERVOIR_SNAPSHOT_SCHEMA_VERSION
                 | SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
                 | MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
+                | MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_material_surface_trace_driver() {
+        let expected_schema_version = if self.state.uses_material_surface_regions_driver() {
+            MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_social_learning_driver() {
             SOCIAL_LEARNING_SNAPSHOT_SCHEMA_VERSION
@@ -6317,7 +6623,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_material_surface_trace_driver() {
+        let expected_schema = if state.uses_material_surface_regions_driver() {
+            MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
+        } else if state.uses_material_surface_trace_driver() {
             MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
         } else if state.uses_social_learning_driver() {
             SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
@@ -6376,7 +6684,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
         } else if expected_schema == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SOCIAL_LEARNING_EVENT_SCHEMA_VERSION
@@ -6559,6 +6869,14 @@ pub enum EngineError {
     InvalidMaterialSurfaceTrace(EntityId),
     #[error("material surface-trace events do not exactly match primitive force and perception")]
     InvalidMaterialSurfaceTraceEventSet,
+    #[error("material surface regions are unsupported by this ruleset")]
+    MaterialSurfaceRegionsUnsupported,
+    #[error("material instance {0} has invalid surface-region state or arithmetic")]
+    InvalidMaterialSurfaceRegions(EntityId),
+    #[error("a ruleset-twenty held-object force action requires a contact region")]
+    MissingSurfaceContactRegion,
+    #[error("material surface-region events do not exactly match primitive force and perception")]
+    InvalidMaterialSurfaceRegionEventSet,
     #[error("material-reservoir transfer events do not match ordered action resolution")]
     InvalidMaterialReservoirEventSet,
     #[error("organism map key {0} does not match its value")]
@@ -7042,6 +7360,7 @@ mod tests {
                     kind: PrimitiveActionKind::ApplyForce,
                     target_id: None,
                     intensity: 3,
+                    contact_region: None,
                 },
             )
             .expect("primitive action");
@@ -7422,6 +7741,7 @@ mod tests {
                     kind: PrimitiveActionKind::Grasp,
                     target_id: Some(object_id),
                     intensity: 1,
+                    contact_region: None,
                 },
             )
             .expect("local grasp plan");
@@ -7465,6 +7785,7 @@ mod tests {
                     kind: PrimitiveActionKind::Release,
                     target_id: Some(object_id),
                     intensity: 1,
+                    contact_region: None,
                 },
             )
             .expect("release plan");
@@ -7545,6 +7866,7 @@ mod tests {
                     kind: PrimitiveActionKind::EmitSignal,
                     target_id: None,
                     intensity: 7,
+                    contact_region: None,
                 },
             )
             .expect("signal plan");
@@ -8295,6 +8617,7 @@ mod tests {
                         kind: PrimitiveActionKind::Grasp,
                         target_id: Some(object_id),
                         intensity: 1,
+                        contact_region: None,
                     },
                 )
                 .expect("grasp portion");
@@ -8377,6 +8700,7 @@ mod tests {
                     kind: PrimitiveActionKind::Swallow,
                     target_id: Some(object_id),
                     intensity: 1,
+                    contact_region: None,
                 },
             )
             .expect("resolved manual swallow");
@@ -8600,6 +8924,7 @@ mod tests {
                     kind: PrimitiveActionKind::Orient,
                     target_id: None,
                     intensity: 1,
+                    contact_region: None,
                 },
             )
             .expect("primitive action plan");
@@ -10116,6 +10441,187 @@ mod tests {
         assert_eq!(
             replay(manifest, &batches)
                 .expect("surface-trace replay")
+                .state,
+            state
+        );
+    }
+
+    #[test]
+    fn ruleset_twenty_retains_selectable_label_free_surface_arrangements() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x125));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(13503953896175478596),
+            MATERIAL_SURFACE_REGIONS_RULESET_VERSION,
+        );
+        let mut founder =
+            regulated_full_earth_person(world_id, 0x732, 10_000_000_000, 1_000_000_000);
+        founder.birth_category = BirthCategory::new("female").expect("category");
+        founder.reproductive_physiology =
+            Some(reproductive_fixture_profile(founder.species.clone()));
+        founder.heritable_disposition_profile =
+            Some(heritable_fixture_profile(founder.species.clone()));
+        let organism_id = founder.organism_id;
+        let patch = founder.embodied_patch.expect("founder patch");
+        let water = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("water identity");
+        let reservoir = InitialMaterialInstance {
+            object_id: EntityId::deterministic(world_id, b"surface-regions-water"),
+            material: water.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000),
+            oral_transfer_profiles: vec![OralTransferCommitment {
+                commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "surface-regions-water-v1".to_owned(),
+                profile_digest: Digest::sha256(b"surface regions water response"),
+                material: water.clone(),
+                species: human(),
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                transfer_mass_milligrams: 10_000,
+                recoverable_energy_joules: 100,
+                hydration_recovery_seconds: 200,
+            }],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "surface-regions-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"surface regions reservoir"),
+                material: water,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("L10 coverage"),
+                maximum_mass_milligrams: 1_000_000,
+                replenishment_mass_milligrams_per_tick: 10_000,
+            }),
+        };
+        let object_id = EntityId::deterministic(world_id, b"surface-regions-quartz");
+        let quartz = InitialMaterialInstance {
+            object_id,
+            material: MaterialIdentity::new(
+                "pubchem",
+                "24261",
+                "silicon dioxide",
+                "https://pubchem.ncbi.nlm.nih.gov/compound/24261",
+            )
+            .expect("silicon-dioxide identity"),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(100_000),
+            oral_transfer_profiles: Vec::new(),
+            reservoir: None,
+        };
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![founder],
+                vec![reservoir, quartz],
+            )
+            .expect("surface-regions genesis plan");
+        let (mut state, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("surface-regions genesis");
+        assert_eq!(
+            genesis.event_schema_version,
+            MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            state
+                .material_instances
+                .get(&object_id)
+                .expect("object")
+                .surface_region_trace_units(),
+            &[0; MATERIAL_SURFACE_REGION_COUNT]
+        );
+        let mut batches = vec![genesis];
+        let mut traced_transition = None;
+        for tick in 1..=2_000_u64 {
+            let celestial = CelestialState::new(
+                TdbSecondsSinceJ2000::new(i128::from(tick * 300)),
+                CartesianMillimetres::new(i128::from(tick), 2, 3),
+                CartesianMillimetres::new(4, i128::from(tick) + 5, 6),
+            );
+            let events = state
+                .plan_next_tick_with_celestial_and_cognition(celestial, &[])
+                .expect("surface-regions tick plan");
+            let has_trace = events.iter().any(|event| {
+                matches!(
+                    event,
+                    DomainEvent::MaterialSurfaceRegionTraceChanged {
+                        object_id: event_object,
+                        organism_id: event_organism,
+                        contact_region: 0..=7,
+                        ..
+                    } if *event_object == object_id && *event_organism == organism_id
+                )
+            });
+            let sequence =
+                EventSequence::new(u64::try_from(batches.len()).expect("bounded history") + 1);
+            let previous_hash = batches.last().expect("genesis exists").batch_hash;
+            let before = state.clone();
+            let (next, batch) = state
+                .commit(sequence, previous_hash, events.clone())
+                .expect("surface-regions tick commit");
+            state = next;
+            batches.push(batch);
+            if has_trace {
+                traced_transition = Some((before, sequence, previous_hash, events));
+                break;
+            }
+        }
+        let (before_trace, sequence, previous_hash, trace_events) =
+            traced_transition.expect("freeform policy eventually selects a surface region");
+        let instance = state.material_instances.get(&object_id).expect("object");
+        assert_eq!(instance.surface_region_trace_units().len(), 8);
+        assert_eq!(
+            instance
+                .surface_region_trace_units()
+                .iter()
+                .copied()
+                .sum::<u32>(),
+            instance.surface_trace_units()
+        );
+        assert!(instance.surface_trace_units() > 0);
+        assert!(
+            state
+                .organisms
+                .get(&organism_id)
+                .expect("founder")
+                .perception_memory
+                .iter()
+                .any(|entry| entry.subject_id == Some(object_id)
+                    && entry.property_code.starts_with("surface_region_"))
+        );
+
+        let mut missing_perception = trace_events;
+        missing_perception.retain(|event| {
+            !matches!(
+                event,
+                DomainEvent::OrganismPerceived { perception, .. }
+                    if perception.subject_id == Some(object_id)
+                        && perception.readings.iter().any(|reading| reading.property_code.starts_with("surface_region_"))
+            )
+        });
+        assert!(matches!(
+            before_trace.commit(sequence, previous_hash, missing_perception),
+            Err(EngineError::InvalidMaterialSurfaceRegionEventSet)
+        ));
+        let snapshot = Snapshot::new(
+            state.clone(),
+            batches.last().expect("trace batch").sequence,
+            batches.last().expect("trace batch").batch_hash,
+        )
+        .expect("surface-regions snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("surface-regions replay")
                 .state,
             state
         );

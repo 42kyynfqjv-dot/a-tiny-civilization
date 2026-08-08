@@ -364,12 +364,21 @@ pub struct PrimitiveAction {
     pub target_id: Option<EntityId>,
     /// Bounded intensity for movement, force, or signal amplitude.
     pub intensity: u16,
+    /// Optional label-free contact region for a force action. It is a motor
+    /// coordinate, not a glyph, character, purpose, or inferred surface meaning.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_region: Option<u8>,
 }
 
 impl PrimitiveAction {
     pub fn validate(&self) -> Result<(), EmbodimentError> {
         if self.intensity == 0 {
             return Err(EmbodimentError::ZeroActionIntensity);
+        }
+        if self.contact_region.is_some_and(|region| region >= 8)
+            || (self.contact_region.is_some() && self.kind != PrimitiveActionKind::ApplyForce)
+        {
+            return Err(EmbodimentError::InvalidContactRegion);
         }
         Ok(())
     }
@@ -415,6 +424,8 @@ pub enum EmbodimentError {
     UnsortedOrDuplicateReadings,
     #[error("primitive action intensity must be greater than zero")]
     ZeroActionIntensity,
+    #[error("contact region must be absent or a bounded apply-force motor coordinate")]
+    InvalidContactRegion,
 }
 
 #[cfg(test)]
@@ -458,6 +469,7 @@ mod tests {
             kind: PrimitiveActionKind::ApplyForce,
             target_id: None,
             intensity: 1,
+            contact_region: Some(7),
         }
         .validate()
         .expect("physical action");
@@ -466,6 +478,17 @@ mod tests {
                 kind: PrimitiveActionKind::Swallow,
                 target_id: None,
                 intensity: 0,
+                contact_region: None,
+            }
+            .validate()
+            .is_err()
+        );
+        assert!(
+            PrimitiveAction {
+                kind: PrimitiveActionKind::Move,
+                target_id: None,
+                intensity: 1,
+                contact_region: Some(0),
             }
             .validate()
             .is_err()

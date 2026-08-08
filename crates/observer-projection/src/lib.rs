@@ -142,6 +142,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::MaterialInstanceHeld { .. }
                 | DomainEvent::MaterialInstanceReleased { .. }
                 | DomainEvent::MaterialSurfaceTraceChanged { .. }
+                | DomainEvent::MaterialSurfaceRegionTraceChanged { .. }
                 | DomainEvent::MaterialOralPortionTransferred { .. }
                 | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
@@ -388,6 +389,8 @@ pub struct PublicArtifactTrace {
     pub source_sequence: EventSequence,
     pub source_tick: SimTick,
     pub provenance: ClaimProvenance,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_region: Option<u8>,
     pub from_trace_units: u32,
     pub applied_force_units: u16,
     pub to_trace_units: u32,
@@ -605,6 +608,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::MaterialInstanceHeld { .. }
             | DomainEvent::MaterialInstanceReleased { .. }
             | DomainEvent::MaterialSurfaceTraceChanged { .. }
+            | DomainEvent::MaterialSurfaceRegionTraceChanged { .. }
             | DomainEvent::MaterialOralPortionTransferred { .. }
             | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
             | DomainEvent::TickAdvanced { .. }
