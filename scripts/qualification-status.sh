@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-24}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-25}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -117,6 +117,10 @@ WITH selected_world AS (
     SELECT COUNT(*) FILTER (
                WHERE event -> 'event' ->> 'type' = 'organism_signal_action_association_changed'
            )::BIGINT AS signal_action_associations,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_signal_action_association_changed'
+                 AND event -> 'event' -> 'data' -> 'to' -> 'movement_direction' IS NOT NULL
+           )::BIGINT AS signal_motor_associations,
            COUNT(*) FILTER (
                WHERE event -> 'event' ->> 'type' = 'organism_movement_direction_value_changed'
            )::BIGINT AS movement_direction_values,
@@ -226,6 +230,8 @@ WITH selected_world AS (
            , (ruleset_version < 23 OR directed_moves > 0) AS selectable_movement_exercised
            , (ruleset_version < 24 OR movement_direction_values > 0)
                AS movement_direction_learning_exercised
+           , (ruleset_version < 25 OR signal_motor_associations > 0)
+               AS signal_motor_association_exercised
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -237,7 +243,8 @@ SELECT jsonb_build_object(
       AND hindsight_cognition_exercised AND observer_content_present
       AND material_transformation_exercised AND surface_arrangement_exercised
       AND acoustic_variation_exercised AND signal_action_association_exercised
-      AND selectable_movement_exercised AND movement_direction_learning_exercised,
+      AND selectable_movement_exercised AND movement_direction_learning_exercised
+      AND signal_motor_association_exercised,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -269,6 +276,7 @@ SELECT jsonb_build_object(
     'canonical_features', jsonb_build_object(
       'varied_signals', varied_signals,
       'signal_action_associations', signal_action_associations
+      , 'signal_motor_associations', signal_motor_associations
       , 'directed_moves', directed_moves
       , 'movement_direction_values', movement_direction_values
     ),
@@ -288,6 +296,7 @@ SELECT jsonb_build_object(
       , 'signal_action_association_exercised', signal_action_association_exercised
       , 'selectable_movement_exercised', selectable_movement_exercised
       , 'movement_direction_learning_exercised', movement_direction_learning_exercised
+      , 'signal_motor_association_exercised', signal_motor_association_exercised
     )
 )::TEXT
 FROM checks;

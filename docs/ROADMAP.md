@@ -579,3 +579,10 @@ bounded bodily-outcome value for each of the four adjacent movement coordinates,
 weakly adjusts only the matching future direction. Values are life-local, non-heritable, omitted
 from every public projection, and replay-checked against the exact move and bodily transition. Fresh
 genesis and qualification default to ruleset 24; ADR 0101 records the boundary.
+
+Ruleset 25 lets a private sound association retain the exact movement motor coordinate directly
+witnessed after that sound. Hearing the amplitude again can weakly bias only that direction, while
+the engine still stores no word, message, destination, intention, or meaning. Legacy generic
+associations remain replay-compatible; new associations are bounded, life-local, non-heritable, and
+absent from public projections. Fresh genesis and qualification default to ruleset 25; ADR 0102
+records the boundary.

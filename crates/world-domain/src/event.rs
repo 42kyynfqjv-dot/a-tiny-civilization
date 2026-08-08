@@ -75,6 +75,9 @@ pub const SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 24;
 /// Schema twenty-five adds private, bounded outcome values for the four movement
 /// motor coordinates. These values do not encode destinations or map knowledge.
 pub const MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION: u16 = 25;
+/// Schema twenty-six lets a private sound association retain the exact movement
+/// motor coordinate that followed. It still commits no word or meaning.
+pub const SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION: u16 = 26;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -519,6 +522,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
             | SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
             | MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
+            | SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -988,6 +992,19 @@ fn validate_event_for_schema(
         } => {
             to.validate()
                 .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            let expected_schema =
+                if event_schema_version >= SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION {
+                    crate::SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+                } else {
+                    crate::SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
+                };
+            if to.association_schema_version != expected_schema
+                || from.is_some_and(|from| from.association_schema_version != expected_schema)
+            {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "signal association value schema disagrees with event schema".to_owned(),
+                ));
+            }
             if observer_id == actor_id {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "signal-action association cannot observe self".to_owned(),
@@ -1000,6 +1017,7 @@ fn validate_event_for_schema(
                     })?;
                     if from.signal_intensity != to.signal_intensity
                         || from.action_kind != to.action_kind
+                        || from.movement_direction != to.movement_direction
                     {
                         return Err(EventBatchError::InvalidEmbodiedEvent(
                             "signal-action association changed its address".to_owned(),

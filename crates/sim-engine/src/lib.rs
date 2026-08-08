@@ -41,6 +41,7 @@ use world_domain::{
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
     SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION,
     SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+    SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
     SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
     SpeciesIdentityError, TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId,
@@ -120,6 +121,9 @@ pub const SELECTABLE_MOVEMENT_RULESET_VERSION: u32 = 23;
 /// Ruleset twenty-four lets an organism retain bounded bodily-outcome experience
 /// independently for each adjacent movement motor coordinate.
 pub const MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION: u32 = 24;
+/// Ruleset twenty-five lets a heard amplitude predict an exact movement motor
+/// coordinate when that coordinate was directly witnessed after the sound.
+pub const SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION: u32 = 25;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -145,6 +149,7 @@ pub const MATERIAL_SURFACE_TRACE_SNAPSHOT_SCHEMA_VERSION: u16 = 22;
 pub const MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION: u16 = 23;
 pub const SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 24;
 pub const MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 25;
+pub const SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 26;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -186,6 +191,7 @@ const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
+const MAX_SIGNAL_MOTOR_ASSOCIATIONS: usize = 8 * (HERITABLE_ACTION_KINDS.len() + 3);
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 
@@ -796,11 +802,19 @@ impl OrganismState {
         &self,
         signal_intensity: u8,
         action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
     ) -> Option<SignalActionAssociationState> {
         self.signal_action_associations
-            .binary_search_by_key(&(signal_intensity, action_kind), |entry| {
-                (entry.signal_intensity, entry.action_kind)
-            })
+            .binary_search_by_key(
+                &(signal_intensity, action_kind, movement_direction),
+                |entry| {
+                    (
+                        entry.signal_intensity,
+                        entry.action_kind,
+                        entry.movement_direction,
+                    )
+                },
+            )
             .ok()
             .map(|index| self.signal_action_associations[index])
     }
@@ -1985,7 +1999,13 @@ impl EngineState {
             for candidate in &mut candidates {
                 candidate.weight = associated_candidate_weight(
                     candidate.weight,
-                    organism.signal_action_association(signal_intensity, candidate.action.kind),
+                    organism.signal_action_association(
+                        signal_intensity,
+                        candidate.action.kind,
+                        self.uses_signal_motor_association_driver()
+                            .then_some(candidate.action.movement_direction)
+                            .flatten(),
+                    ),
                 );
             }
         }
@@ -2179,7 +2199,7 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         signal_intensity: u8,
-        action_kind: PrimitiveActionKind,
+        action: &PrimitiveAction,
     ) -> Result<
         (
             Option<SignalActionAssociationState>,
@@ -2187,7 +2207,12 @@ impl EngineState {
         ),
         EngineError,
     > {
-        let prior = organism.signal_action_association(signal_intensity, action_kind);
+        let movement_direction = self
+            .uses_signal_motor_association_driver()
+            .then_some(action.movement_direction)
+            .flatten();
+        let prior =
+            organism.signal_action_association(signal_intensity, action.kind, movement_direction);
         let observations =
             prior.map_or(Ok(1), |prior| {
                 prior.observations.checked_add(1).ok_or(
@@ -2200,9 +2225,14 @@ impl EngineState {
         Ok((
             prior,
             SignalActionAssociationState {
-                association_schema_version: SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+                association_schema_version: if self.uses_signal_motor_association_driver() {
+                    SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+                } else {
+                    SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
+                },
                 signal_intensity,
-                action_kind,
+                action_kind: action.kind,
+                movement_direction,
                 observations,
                 value,
             },
@@ -3551,7 +3581,7 @@ impl EngineState {
                         let (from, to) = self.next_signal_action_association(
                             observer,
                             signal_intensity,
-                            action.kind,
+                            action,
                         )?;
                         events.push(DomainEvent::OrganismSignalActionAssociationChanged {
                             observer_id,
@@ -3740,6 +3770,10 @@ impl EngineState {
 
     fn uses_movement_direction_learning_driver(&self) -> bool {
         self.manifest.ruleset_version >= MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION
+    }
+
+    fn uses_signal_motor_association_driver(&self) -> bool {
+        self.manifest.ruleset_version >= SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -4553,7 +4587,7 @@ impl EngineState {
                     {
                         let action = actions.get(&actor_id).expect("selected action exists");
                         let expected =
-                            self.next_signal_action_association(observer, intensity, action.kind)?;
+                            self.next_signal_action_association(observer, intensity, action)?;
                         if expected.0 != *from || expected.1 != *to {
                             return Err(EngineError::InvalidSignalActionAssociation(
                                 observer.organism_id,
@@ -4739,7 +4773,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_movement_direction_learning_driver() {
+        if self.uses_signal_motor_association_driver() {
+            SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
+        } else if self.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
         } else if self.uses_selectable_movement_driver() {
             SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
@@ -5923,6 +5959,11 @@ impl EngineState {
                 self.require_living_organism(*actor_id)?;
                 to.validate()
                     .map_err(|_| EngineError::InvalidSignalActionAssociation(*observer_id))?;
+                let maximum = if self.uses_signal_motor_association_driver() {
+                    MAX_SIGNAL_MOTOR_ASSOCIATIONS
+                } else {
+                    MAX_SIGNAL_ACTION_ASSOCIATIONS
+                };
                 let observer = self
                     .organisms
                     .get_mut(observer_id)
@@ -5936,23 +5977,29 @@ impl EngineState {
                     .map_or(1_i16, |from| from.value.saturating_add(1))
                     .min(ACTION_VALUE_MAX);
                 if observer.signal_action_associations_updated_at == Some(self.tick)
-                    || observer.signal_action_association(to.signal_intensity, to.action_kind)
-                        != *from
+                    || observer.signal_action_association(
+                        to.signal_intensity,
+                        to.action_kind,
+                        to.movement_direction,
+                    ) != *from
                     || to.observations != expected_observations
                     || to.value != expected_value
                 {
                     return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
                 }
-                let key = (to.signal_intensity, to.action_kind);
+                let key = (to.signal_intensity, to.action_kind, to.movement_direction);
                 match observer
                     .signal_action_associations
-                    .binary_search_by_key(&key, |entry| (entry.signal_intensity, entry.action_kind))
-                {
+                    .binary_search_by_key(&key, |entry| {
+                        (
+                            entry.signal_intensity,
+                            entry.action_kind,
+                            entry.movement_direction,
+                        )
+                    }) {
                     Ok(index) => observer.signal_action_associations[index] = *to,
                     Err(index) => {
-                        if observer.signal_action_associations.len()
-                            >= MAX_SIGNAL_ACTION_ASSOCIATIONS
-                        {
+                        if observer.signal_action_associations.len() >= maximum {
                             return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
                         }
                         observer.signal_action_associations.insert(index, *to);
@@ -6695,15 +6742,32 @@ impl EngineState {
                 return Err(EngineError::SocialLearningUnsupported);
             }
             if self.uses_signal_action_association_driver() {
-                if organism.signal_action_associations.len() > MAX_SIGNAL_ACTION_ASSOCIATIONS
+                let maximum = if self.uses_signal_motor_association_driver() {
+                    MAX_SIGNAL_MOTOR_ASSOCIATIONS
+                } else {
+                    MAX_SIGNAL_ACTION_ASSOCIATIONS
+                };
+                let expected_schema = if self.uses_signal_motor_association_driver() {
+                    SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+                } else {
+                    SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
+                };
+                if organism.signal_action_associations.len() > maximum
                     || organism.signal_action_associations.windows(2).any(|pair| {
-                        (pair[0].signal_intensity, pair[0].action_kind)
-                            >= (pair[1].signal_intensity, pair[1].action_kind)
+                        (
+                            pair[0].signal_intensity,
+                            pair[0].action_kind,
+                            pair[0].movement_direction,
+                        ) >= (
+                            pair[1].signal_intensity,
+                            pair[1].action_kind,
+                            pair[1].movement_direction,
+                        )
                     })
-                    || organism
-                        .signal_action_associations
-                        .iter()
-                        .any(|entry| entry.validate().is_err())
+                    || organism.signal_action_associations.iter().any(|entry| {
+                        entry.validate().is_err()
+                            || entry.association_schema_version != expected_schema
+                    })
                     || organism
                         .signal_action_associations_updated_at
                         .is_some_and(|updated_at| updated_at > self.tick)
@@ -7033,7 +7097,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_movement_direction_learning_driver() {
+        let snapshot_schema_version = if state.uses_signal_motor_association_driver() {
+            SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
@@ -7131,12 +7197,15 @@ impl Snapshot {
                 | MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION
                 | SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
                 | MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+                | SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_movement_direction_learning_driver() {
+        let expected_schema_version = if self.state.uses_signal_motor_association_driver() {
+            SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
@@ -7335,7 +7404,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_movement_direction_learning_driver() {
+        let expected_schema = if state.uses_signal_motor_association_driver() {
+            SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
+        } else if state.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
         } else if state.uses_selectable_movement_driver() {
             SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
@@ -7402,7 +7473,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
+        } else if expected_schema == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
         } else if expected_schema == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
@@ -11021,12 +11094,12 @@ mod tests {
     }
 
     #[test]
-    fn ruleset_twenty_four_associates_signals_and_learns_movement_direction() {
+    fn ruleset_twenty_five_associates_signals_with_movement_directions() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x126));
         let manifest = WorldManifest::new(
             world_id,
             WorldSeed::new(13_503_953_896_175_478_597),
-            MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION,
+            SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION,
         );
         let mut first = regulated_full_earth_person(world_id, 0x741, 10_000_000, 1_000_000);
         let mut second = regulated_full_earth_person(world_id, 0x742, 10_000_000, 1_000_000);
@@ -11111,7 +11184,7 @@ mod tests {
             .expect("association genesis commit");
         assert_eq!(
             genesis.event_schema_version,
-            MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
+            SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
         );
         let founder = running.organisms.values().next().expect("founder");
         let movement_base = running
@@ -11230,6 +11303,47 @@ mod tests {
         let (after_signal, first_tick) = running
             .commit(EventSequence::new(2), genesis.batch_hash, first_events)
             .expect("signal tick commit");
+        let signalled = after_signal
+            .organisms
+            .values()
+            .next()
+            .expect("signalled founder");
+        let heard_intensity = signalled
+            .recent_signal(after_signal.tick)
+            .expect("directly heard amplitude");
+        let unassociated_candidates = after_signal
+            .deterministic_policy_candidates_with_cognition(
+                signalled,
+                signalled.age_ticks.expect("ruleset age"),
+                None,
+            )
+            .expect("unassociated candidates");
+        let mut motor_associated = signalled.clone();
+        motor_associated.signal_action_associations = vec![SignalActionAssociationState {
+            association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: heard_intensity,
+            action_kind: PrimitiveActionKind::Move,
+            movement_direction: Some(2),
+            observations: 4,
+            value: 128,
+        }];
+        let associated_candidates = after_signal
+            .deterministic_policy_candidates_with_cognition(
+                &motor_associated,
+                motor_associated.age_ticks.expect("ruleset age"),
+                None,
+            )
+            .expect("motor-associated candidates");
+        for (base, candidate) in unassociated_candidates.iter().zip(&associated_candidates) {
+            let association_bonus = if base.action.kind == PrimitiveActionKind::Move
+                && base.action.movement_direction == Some(2)
+            {
+                16
+            } else {
+                0
+            };
+            assert_eq!(candidate.weight, base.weight + association_bonus);
+        }
         let second_events = after_signal
             .plan_next_tick_with_celestial_and_cognition(
                 CelestialState::new(
@@ -11283,11 +11397,32 @@ mod tests {
                 .commit(EventSequence::new(3), first_tick.batch_hash, missing),
             Err(EngineError::InvalidSignalActionAssociation(_))
         ));
+        let mut redirected = second_events.clone();
+        let redirected_to = redirected
+            .iter_mut()
+            .find_map(|event| match event {
+                DomainEvent::OrganismSignalActionAssociationChanged { to, .. } => Some(to),
+                _ => None,
+            })
+            .expect("signal association update");
+        redirected_to.movement_direction = Some(
+            redirected_to
+                .movement_direction
+                .map_or(0, |direction| (direction + 1) % 4),
+        );
+        assert!(
+            after_signal
+                .clone()
+                .commit(EventSequence::new(3), first_tick.batch_hash, redirected)
+                .is_err()
+        );
         let (mut associated, second_tick) = after_signal
             .commit(EventSequence::new(3), first_tick.batch_hash, second_events)
             .expect("association tick commit");
         assert!(associated.organisms.values().all(|organism| {
             organism.signal_action_associations.len() == 1
+                && organism.signal_action_associations[0].association_schema_version
+                    == SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
                 && organism.signal_action_associations[0].observations == 1
         }));
         let mut batches = vec![genesis.clone(), first_tick.clone(), second_tick];
@@ -11374,7 +11509,7 @@ mod tests {
             .expect("association snapshot");
         assert_eq!(
             snapshot.snapshot_schema_version,
-            MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
+            SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         );
         assert_eq!(
             replay(manifest, &batches)

@@ -372,6 +372,7 @@ impl MovementDirectionValueState {
 }
 
 pub const SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION: u16 = 1;
+pub const SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION: u16 = 2;
 
 /// A private, bounded association between one directly heard physical amplitude
 /// and one subsequently witnessed primitive action. It contains no inferred
@@ -381,18 +382,32 @@ pub struct SignalActionAssociationState {
     pub association_schema_version: u16,
     pub signal_intensity: u8,
     pub action_kind: PrimitiveActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_direction: Option<u8>,
     pub observations: u32,
     pub value: i16,
 }
 
 impl SignalActionAssociationState {
     pub fn validate(self) -> Result<(), EmbodimentError> {
-        if self.association_schema_version != SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION {
+        if !matches!(
+            self.association_schema_version,
+            SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION | SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+        ) {
             return Err(EmbodimentError::UnsupportedSignalActionAssociationSchema);
         }
         if !(1..=8).contains(&self.signal_intensity)
             || self.observations == 0
             || !(1..=ACTION_VALUE_MAX).contains(&self.value)
+            || (self.association_schema_version == SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
+                && self.movement_direction.is_some())
+            || (self.association_schema_version == SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+                && ((self.action_kind == PrimitiveActionKind::Move
+                    && !self
+                        .movement_direction
+                        .is_some_and(|direction| direction < 4))
+                    || (self.action_kind != PrimitiveActionKind::Move
+                        && self.movement_direction.is_some())))
         {
             return Err(EmbodimentError::InvalidSignalActionAssociation);
         }
@@ -612,6 +627,47 @@ mod tests {
             }
             .validate(),
             Err(EmbodimentError::InvalidMovementDirectionValueState)
+        ));
+    }
+
+    #[test]
+    fn signal_associations_add_motor_coordinates_without_rewriting_legacy_values() {
+        let legacy = SignalActionAssociationState {
+            association_schema_version: SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: 2,
+            action_kind: PrimitiveActionKind::Move,
+            movement_direction: None,
+            observations: 1,
+            value: 1,
+        };
+        legacy.validate().expect("legacy generic move association");
+        assert!(
+            !serde_json::to_string(&legacy)
+                .expect("legacy association json")
+                .contains("movement_direction")
+        );
+
+        SignalActionAssociationState {
+            association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: 2,
+            action_kind: PrimitiveActionKind::Move,
+            movement_direction: Some(3),
+            observations: 1,
+            value: 1,
+        }
+        .validate()
+        .expect("direction-specific signal association");
+        assert!(matches!(
+            SignalActionAssociationState {
+                association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+                signal_intensity: 2,
+                action_kind: PrimitiveActionKind::Move,
+                movement_direction: None,
+                observations: 1,
+                value: 1,
+            }
+            .validate(),
+            Err(EmbodimentError::InvalidSignalActionAssociation)
         ));
     }
 
