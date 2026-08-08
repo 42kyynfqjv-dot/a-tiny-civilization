@@ -96,3 +96,9 @@ OpenRouter free-route probe returned a schema-valid result from
 `google/gemma-4-26b-a4b-it:free` with 412 prompt tokens, 8 completion tokens, and zero billed
 micro-USD. It read neither PostgreSQL nor Hindsight and is therefore protocol evidence, not a
 live-cognition export test.
+
+The consolidated ADR-0089 qualification report subsequently replayed the same history and passed
+all checks in one read-only run: contiguous history, snapshots, four current projections, complete
+memory delivery, all due cognition latches and consumptions, an exercised Hindsight recall/result,
+and nonempty observer content. The retained JSON schema reports future cognition work separately so
+an unelapsed simulation-time deadline cannot create a false failure.

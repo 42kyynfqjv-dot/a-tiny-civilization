@@ -193,10 +193,15 @@ APP_ENV=development civilization-runner advance-qualification \
   --world-id "$QUALIFICATION_WORLD_ID" --ticks 1000
 civilization-runner verify-world --world-id "$QUALIFICATION_WORLD_ID"
 civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
+./scripts/qualification-status.sh "$QUALIFICATION_WORLD_ID" > qualification-status.json
 ```
 
 Use a separate disposable database and a non-public world ID. The command accepts at most one
 million ticks per invocation and stops early with an error if the world reaches a terminal state.
+The status command is read-only apart from the runner's replay verification reads. It exits nonzero
+unless canonical replay, snapshots, projections, memory delivery, cognition deadlines, one actual
+Hindsight-backed cognition result, and observer content all pass; its single JSON object is suitable
+for the retained launch-evidence bundle.
 
 Provider authentication and response compatibility can be tested separately without a database or
 world-data export. This sends only the fixed synthetic request specified by ADR 0088 and still

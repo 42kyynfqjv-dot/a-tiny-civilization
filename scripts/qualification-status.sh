@@ -1,0 +1,247 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+if [[ $# -ne 1 ]]; then
+  echo "usage: $0 WORLD_ID" >&2
+  exit 2
+fi
+if [[ -z "${DATABASE_URL:-}" ]]; then
+  echo "DATABASE_URL is required" >&2
+  exit 2
+fi
+
+world_id="$1"
+if [[ ! "$world_id" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]]; then
+  echo "WORLD_ID must be a UUID" >&2
+  exit 2
+fi
+
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
+minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-18}"
+
+if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! "$expected_ruleset" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ATINY_QUALIFICATION_RULESET_VERSION must be a positive integer" >&2
+  exit 2
+fi
+if [[ ! -x "$runner_executable" ]]; then
+  echo "missing executable civilization-runner binary: $runner_executable" >&2
+  exit 2
+fi
+if ! command -v psql >/dev/null 2>&1; then
+  echo "psql is required" >&2
+  exit 2
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+  echo "python3 is required to pass DATABASE_URL to libpq without exposing it in process arguments" >&2
+  exit 2
+fi
+
+mapfile -d '' -t connection_fields < <(python3 <<'PY'
+import os
+import sys
+from urllib.parse import parse_qs, unquote, urlsplit
+
+url = urlsplit(os.environ["DATABASE_URL"])
+if url.scheme not in {"postgres", "postgresql"}:
+    sys.exit("DATABASE_URL must use postgres:// or postgresql://")
+if not url.hostname or url.username is None or not url.path.startswith("/") or len(url.path) == 1:
+    sys.exit("DATABASE_URL must include host, user, and database")
+parameters = (
+    parse_qs(url.query, keep_blank_values=True, strict_parsing=True)
+    if url.query
+    else {}
+)
+if set(parameters) - {"sslmode"} or any(len(values) != 1 for values in parameters.values()):
+    sys.exit("qualification DATABASE_URL supports only one optional sslmode parameter")
+fields = (
+    url.hostname,
+    str(url.port or 5432),
+    unquote(url.username),
+    unquote(url.password or ""),
+    unquote(url.path[1:]),
+    parameters.get("sslmode", [""])[0],
+)
+for field in fields:
+    sys.stdout.buffer.write(field.encode("utf-8") + b"\0")
+PY
+)
+if [[ "${#connection_fields[@]}" -ne 6 ]]; then
+  echo "DATABASE_URL could not be converted to protected libpq settings" >&2
+  exit 2
+fi
+
+verification_log="$(mktemp)"
+trap 'rm -f "$verification_log"' EXIT
+if ! "$runner_executable" verify-world --world-id "$world_id" \
+  >"$verification_log" 2>&1; then
+  echo "canonical replay verification failed" >&2
+  sed -n '1,80p' "$verification_log" >&2
+  exit 1
+fi
+
+libpq_environment=(
+  "PGHOST=${connection_fields[0]}"
+  "PGPORT=${connection_fields[1]}"
+  "PGUSER=${connection_fields[2]}"
+  "PGPASSWORD=${connection_fields[3]}"
+  "PGDATABASE=${connection_fields[4]}"
+)
+if [[ -n "${connection_fields[5]}" ]]; then
+  libpq_environment+=("PGSSLMODE=${connection_fields[5]}")
+fi
+
+report="$(env -u DATABASE_URL "${libpq_environment[@]}" psql -X -v ON_ERROR_STOP=1 -At \
+  -v world_id="$world_id" \
+  -v minimum_tick="$minimum_tick" \
+  -v expected_ruleset="$expected_ruleset" <<'SQL'
+WITH selected_world AS (
+    SELECT * FROM worlds WHERE id = :'world_id'::UUID
+), event_state AS (
+    SELECT COUNT(*)::BIGINT AS batch_count,
+           COALESCE(MIN(sequence), 0)::BIGINT AS minimum_sequence,
+           COALESCE(MAX(sequence), 0)::BIGINT AS maximum_sequence,
+           COALESCE(MAX(tick), 0)::BIGINT AS maximum_tick
+    FROM event_batches WHERE world_id = :'world_id'::UUID
+), snapshot_state AS (
+    SELECT COUNT(*)::BIGINT AS snapshot_count,
+           COALESCE(MAX(through_sequence), 0)::BIGINT AS newest_sequence,
+           COALESCE(MAX(tick), 0)::BIGINT AS newest_tick
+    FROM snapshots WHERE world_id = :'world_id'::UUID
+), projection_state AS (
+    SELECT COUNT(*) FILTER (
+               WHERE projection_name IN (
+                   'public-timeline-v1', 'public-organism-v1',
+                   'public-finding-v1', 'public-world-telemetry-v1'
+               )
+           )::BIGINT AS required_count,
+           COUNT(*) FILTER (
+               WHERE projection_name IN (
+                   'public-timeline-v1', 'public-organism-v1',
+                   'public-finding-v1', 'public-world-telemetry-v1'
+               ) AND through_sequence = (SELECT current_sequence FROM selected_world)
+           )::BIGINT AS current_count
+    FROM projection_offsets WHERE world_id = :'world_id'::UUID
+), memory_state AS (
+    SELECT COUNT(*)::BIGINT AS total,
+           COUNT(*) FILTER (WHERE completed_at IS NULL)::BIGINT AS pending,
+           COUNT(*) FILTER (WHERE last_error IS NOT NULL)::BIGINT AS errors
+    FROM memory_outbox WHERE world_id = :'world_id'::UUID
+), cognition_state AS (
+    SELECT COUNT(*)::BIGINT AS requests,
+           COUNT(*) FILTER (WHERE request.deadline_tick <= world.current_tick)::BIGINT AS due,
+           COUNT(*) FILTER (
+               WHERE request.deadline_tick <= world.current_tick AND latch.request_id IS NULL
+           )::BIGINT AS due_without_latch,
+           COUNT(*) FILTER (
+               WHERE request.deadline_tick <= world.current_tick AND consumption.request_id IS NULL
+           )::BIGINT AS due_without_consumption,
+           COUNT(*) FILTER (WHERE request.deadline_tick > world.current_tick)::BIGINT AS future,
+           COUNT(recall.request_id)::BIGINT AS recalled,
+           COUNT(result.request_id)::BIGINT AS completed_results
+    FROM cognition_requests request
+    JOIN selected_world world ON world.id = request.world_id
+    LEFT JOIN cognition_deadline_latches latch USING (request_id)
+    LEFT JOIN cognition_latch_consumptions consumption USING (request_id)
+    LEFT JOIN cognition_recall_outcomes recall USING (request_id)
+    LEFT JOIN cognition_results result USING (request_id)
+), observer_state AS (
+    SELECT
+      (SELECT COUNT(*) FROM observer_organisms WHERE world_id = :'world_id'::UUID)::BIGINT AS organisms,
+      (SELECT COUNT(*) FROM observer_timeline_items WHERE world_id = :'world_id'::UUID)::BIGINT AS timeline_items,
+      (SELECT COUNT(*) FROM observer_findings WHERE world_id = :'world_id'::UUID)::BIGINT AS findings
+), facts AS (
+    SELECT world.*, event_state.*, snapshot_state.*,
+           projection_state.required_count AS projection_required_count,
+           projection_state.current_count AS projection_current_count,
+           memory_state.total AS memory_total,
+           memory_state.pending AS memory_pending,
+           memory_state.errors AS memory_errors,
+           cognition_state.*, observer_state.*
+    FROM selected_world world
+    CROSS JOIN event_state
+    CROSS JOIN snapshot_state
+    CROSS JOIN projection_state
+    CROSS JOIN memory_state
+    CROSS JOIN cognition_state
+    CROSS JOIN observer_state
+), checks AS (
+    SELECT facts.*,
+           status = 'running' AS running,
+           ruleset_version = :'expected_ruleset'::INTEGER AS expected_ruleset,
+           current_tick >= :'minimum_tick'::BIGINT AS sufficient_history,
+           batch_count = current_sequence
+             AND minimum_sequence = 1
+             AND maximum_sequence = current_sequence
+             AND maximum_tick = current_tick AS contiguous_history,
+           snapshot_count > 0 AND newest_sequence <= current_sequence
+             AND newest_tick <= current_tick AS snapshots_present,
+           projection_required_count = 4 AND projection_current_count = 4 AS projections_current,
+           memory_total > 0 AND memory_pending = 0 AND memory_errors = 0 AS memory_delivered,
+           requests > 0 AND due > 0 AND due_without_latch = 0
+             AND due_without_consumption = 0 AS cognition_deadlines_complete,
+           recalled > 0 AND completed_results > 0 AS hindsight_cognition_exercised,
+           organisms > 0 AND timeline_items > 0 AND findings > 0 AS observer_content_present
+    FROM facts
+)
+SELECT jsonb_build_object(
+    'schema_version', 1,
+    'world_id', id,
+    'passed', running AND expected_ruleset AND sufficient_history
+      AND contiguous_history AND snapshots_present AND projections_current
+      AND memory_delivered AND cognition_deadlines_complete
+      AND hindsight_cognition_exercised AND observer_content_present,
+    'replay_verified', true,
+    'world', jsonb_build_object(
+      'status', status, 'ruleset_version', ruleset_version,
+      'current_tick', current_tick, 'current_sequence', current_sequence
+    ),
+    'history', jsonb_build_object(
+      'event_batches', batch_count, 'latest_tick', maximum_tick,
+      'snapshots', snapshot_count, 'newest_snapshot_sequence', newest_sequence,
+      'newest_snapshot_tick', newest_tick
+    ),
+    'projections', jsonb_build_object(
+      'required', projection_required_count, 'current', projection_current_count
+    ),
+    'memory', jsonb_build_object(
+      'total', memory_total, 'pending', memory_pending, 'errors', memory_errors
+    ),
+    'cognition', jsonb_build_object(
+      'requests', requests, 'due', due, 'future', future,
+      'due_without_latch', due_without_latch,
+      'due_without_consumption', due_without_consumption,
+      'recalled', recalled, 'completed_results', completed_results
+    ),
+    'observer', jsonb_build_object(
+      'organisms', organisms, 'timeline_items', timeline_items, 'findings', findings
+    ),
+    'checks', jsonb_build_object(
+      'running', running, 'expected_ruleset', expected_ruleset,
+      'sufficient_history', sufficient_history,
+      'contiguous_history', contiguous_history,
+      'snapshots_present', snapshots_present,
+      'projections_current', projections_current,
+      'memory_delivered', memory_delivered,
+      'cognition_deadlines_complete', cognition_deadlines_complete,
+      'hindsight_cognition_exercised', hindsight_cognition_exercised,
+      'observer_content_present', observer_content_present
+    )
+)::TEXT
+FROM checks;
+SQL
+)"
+
+if [[ -z "$report" ]]; then
+  echo "qualification world was not found" >&2
+  exit 1
+fi
+printf '%s\n' "$report"
+if [[ "$report" != *'"passed": true'* ]]; then
+  exit 1
+fi
