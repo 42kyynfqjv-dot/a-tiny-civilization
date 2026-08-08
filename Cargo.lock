@@ -389,6 +389,7 @@ dependencies = [
  "sha2 0.10.9",
  "tiff",
  "tokio",
+ "uuid",
  "weezl",
  "world-data",
  "world-data-filesystem",
