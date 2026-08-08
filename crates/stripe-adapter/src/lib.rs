@@ -243,6 +243,249 @@ pub enum StripeCheckoutError {
     InvalidResponse(String),
 }
 
+#[derive(Clone)]
+pub struct StripeRefundClient {
+    client: reqwest::Client,
+    endpoint: Url,
+    secret_key: String,
+}
+
+impl fmt::Debug for StripeRefundClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StripeRefundClient")
+            .field("endpoint", &self.endpoint)
+            .field("has_secret_key", &true)
+            .finish()
+    }
+}
+
+impl StripeRefundClient {
+    pub fn new(
+        api_base_url: &str,
+        secret_key: impl Into<String>,
+        timeout: Duration,
+    ) -> Result<Self, StripeRefundError> {
+        let api_base = Url::parse(api_base_url)
+            .map_err(|error| StripeRefundError::Configuration(error.to_string()))?;
+        let local_http = api_base.scheme() == "http"
+            && matches!(api_base.host_str(), Some("localhost") | Some("127.0.0.1"));
+        if (api_base.scheme() != "https" && !local_http)
+            || !api_base.username().is_empty()
+            || api_base.password().is_some()
+            || api_base.fragment().is_some()
+        {
+            return Err(StripeRefundError::Configuration(
+                "Stripe API URL must use HTTPS outside localhost".to_owned(),
+            ));
+        }
+        let secret_key = secret_key.into();
+        if secret_key.is_empty() {
+            return Err(StripeRefundError::Configuration(
+                "Stripe secret key is required".to_owned(),
+            ));
+        }
+        let endpoint = api_base
+            .join("v1/refunds")
+            .map_err(|error| StripeRefundError::Configuration(error.to_string()))?;
+        let client = reqwest::Client::builder()
+            .timeout(timeout.max(Duration::from_secs(1)))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(|error| StripeRefundError::Configuration(error.to_string()))?;
+        Ok(Self {
+            client,
+            endpoint,
+            secret_key,
+        })
+    }
+
+    async fn create_refund_inner(
+        &self,
+        request: &PreparedStripeRefund,
+    ) -> Result<String, StripeRefundError> {
+        if !valid_prefixed_id(&request.payment_intent_id, "pi_") {
+            return Err(StripeRefundError::InvalidRequest(
+                "invalid PaymentIntent ID".to_owned(),
+            ));
+        }
+        let reservation_id = request.reservation_id.to_string();
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("payment_intent", &request.payment_intent_id)
+            .append_pair("metadata[reservation_id]", &reservation_id)
+            .append_pair("metadata[reason]", request.reason.as_str())
+            .finish();
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .bearer_auth(&self.secret_key)
+            .header(
+                "Idempotency-Key",
+                format!("atiny-refund-{}", request.reservation_id),
+            )
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| StripeRefundError::Unavailable(error.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response
+                .bytes()
+                .await
+                .map(|bytes| {
+                    String::from_utf8_lossy(&bytes[..bytes.len().min(MAX_STRIPE_ERROR_BYTES)])
+                        .into_owned()
+                })
+                .unwrap_or_else(|_| "response body unavailable".to_owned());
+            return Err(StripeRefundError::Rejected { status, body });
+        }
+        if response
+            .content_length()
+            .is_some_and(|length| length > MAX_STRIPE_RESPONSE_BYTES as u64)
+        {
+            return Err(StripeRefundError::InvalidResponse(
+                "Stripe response exceeds the configured limit".to_owned(),
+            ));
+        }
+        let bytes = response
+            .bytes()
+            .await
+            .map_err(|error| StripeRefundError::Unavailable(error.to_string()))?;
+        if bytes.len() > MAX_STRIPE_RESPONSE_BYTES {
+            return Err(StripeRefundError::InvalidResponse(
+                "Stripe response exceeds the configured limit".to_owned(),
+            ));
+        }
+        let wire: RefundWire = serde_json::from_slice(&bytes)
+            .map_err(|error| StripeRefundError::InvalidResponse(error.to_string()))?;
+        if !valid_prefixed_id(&wire.id, "re_") {
+            return Err(StripeRefundError::InvalidResponse(
+                "invalid Stripe refund ID".to_owned(),
+            ));
+        }
+        Ok(wire.id)
+    }
+}
+
+#[async_trait]
+pub trait StripeRefundGateway: Send + Sync {
+    async fn create_refund(
+        &self,
+        request: &PreparedStripeRefund,
+    ) -> Result<String, StripeRefundError>;
+}
+
+#[async_trait]
+impl StripeRefundGateway for StripeRefundClient {
+    async fn create_refund(
+        &self,
+        request: &PreparedStripeRefund,
+    ) -> Result<String, StripeRefundError> {
+        self.create_refund_inner(request).await
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StripeRefundReason {
+    ModerationRejection,
+    WorldExtinction,
+    SupporterCancellation,
+    DuplicateCharge,
+    ServiceFailure,
+}
+
+impl StripeRefundReason {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::ModerationRejection => "moderation_rejection",
+            Self::WorldExtinction => "world_extinction",
+            Self::SupporterCancellation => "supporter_cancellation",
+            Self::DuplicateCharge => "duplicate_charge",
+            Self::ServiceFailure => "service_failure",
+        }
+    }
+}
+
+impl std::str::FromStr for StripeRefundReason {
+    type Err = StripeRefundError;
+
+    fn from_str(value: &str) -> Result<Self, Self::Err> {
+        match value {
+            "moderation_rejection" => Ok(Self::ModerationRejection),
+            "world_extinction" => Ok(Self::WorldExtinction),
+            "supporter_cancellation" => Ok(Self::SupporterCancellation),
+            "duplicate_charge" => Ok(Self::DuplicateCharge),
+            "service_failure" => Ok(Self::ServiceFailure),
+            _ => Err(StripeRefundError::InvalidRequest(
+                "unknown refund reason".to_owned(),
+            )),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct PreparedStripeRefund {
+    pub reservation_id: Uuid,
+    pub payment_intent_id: String,
+    pub reason: StripeRefundReason,
+    pub stripe_refund_id: Option<String>,
+}
+
+#[async_trait]
+pub trait StripeRefundStore: Send + Sync {
+    async fn prepare_stripe_refund(
+        &self,
+        reservation_id: Uuid,
+        reason: StripeRefundReason,
+    ) -> Result<PreparedStripeRefund, StripeRefundStoreError>;
+
+    async fn complete_stripe_refund(
+        &self,
+        reservation_id: Uuid,
+        stripe_refund_id: &str,
+    ) -> Result<PreparedStripeRefund, StripeRefundStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum StripeRefundStoreError {
+    #[error("supporter reservation does not exist: {0}")]
+    ReservationNotFound(Uuid),
+    #[error("supporter reservation is not eligible for an automatic refund: {0}")]
+    Ineligible(Uuid),
+    #[error("supporter payment has no durable PaymentIntent evidence: {0}")]
+    MissingPaymentEvidence(Uuid),
+    #[error("refund conflicts with durable evidence: {0}")]
+    Conflict(String),
+    #[error("refund persistence is unavailable: {0}")]
+    Unavailable(String),
+    #[error("stored refund evidence is corrupt: {0}")]
+    Corrupt(String),
+}
+
+#[derive(Debug, Error)]
+pub enum StripeRefundError {
+    #[error("invalid Stripe refund configuration: {0}")]
+    Configuration(String),
+    #[error("invalid Stripe refund request: {0}")]
+    InvalidRequest(String),
+    #[error("Stripe refund service is unavailable: {0}")]
+    Unavailable(String),
+    #[error("Stripe rejected refund with HTTP {status}: {body}")]
+    Rejected {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    #[error("Stripe returned an invalid refund response: {0}")]
+    InvalidResponse(String),
+}
+
+#[derive(Deserialize)]
+struct RefundWire {
+    id: String,
+}
+
 #[derive(Deserialize)]
 struct CheckoutSessionWire {
     id: String,
@@ -401,10 +644,15 @@ impl StripeWebhookVerifier {
             .reservation_id
             .parse::<Uuid>()
             .map_err(|_| StripeWebhookError::InvalidReservationId)?;
+        let payment_intent_id = object
+            .payment_intent
+            .filter(|value| valid_prefixed_id(value, "pi_"))
+            .ok_or(StripeWebhookError::InvalidPaymentIntentId)?;
         Ok(VerifiedStripeEvent::Paid(VerifiedCheckoutPayment {
             event_id: event.id,
             event_type: event.event_type,
             checkout_session_id: object.id,
+            payment_intent_id,
             reservation_id,
             amount_minor: self.expected_amount_minor,
             currency: self.expected_currency.clone(),
@@ -425,6 +673,7 @@ pub struct VerifiedCheckoutPayment {
     pub event_id: String,
     pub event_type: String,
     pub checkout_session_id: String,
+    pub payment_intent_id: String,
     pub reservation_id: Uuid,
     pub amount_minor: u64,
     pub currency: String,
@@ -486,6 +735,8 @@ pub enum StripeWebhookError {
     CurrencyMismatch,
     #[error("Stripe checkout metadata has no valid reservation ID")]
     InvalidReservationId,
+    #[error("Stripe checkout has no valid payment-intent ID")]
+    InvalidPaymentIntentId,
 }
 
 struct ParsedSignature<'a> {
@@ -534,6 +785,7 @@ struct StripeEventData {
 #[derive(Deserialize)]
 struct CheckoutSession {
     id: String,
+    payment_intent: Option<String>,
     payment_status: String,
     amount_total: Option<u64>,
     currency: Option<String>,
@@ -585,6 +837,7 @@ mod tests {
             "livemode": live,
             "data": {"object": {
                 "id": "cs_fixture_1",
+                "payment_intent": "pi_fixture_1",
                 "payment_status": if paid { "paid" } else { "unpaid" },
                 "amount_total": 500,
                 "currency": "usd",
@@ -685,6 +938,74 @@ mod tests {
         server.abort();
     }
 
+    #[tokio::test]
+    async fn refund_creation_is_payment_bound_and_idempotent() {
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Option<(HeaderMap, Bytes)>>>);
+
+        async fn create(
+            State(capture): State<Capture>,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Json<serde_json::Value> {
+            *capture.0.lock().expect("capture lock") = Some((headers, body));
+            Json(serde_json::json!({"id": "re_test_fixture_1"}))
+        }
+
+        let capture = Capture::default();
+        let app = Router::new()
+            .route("/v1/refunds", post(create))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake Stripe");
+        let address = listener.local_addr().expect("fake Stripe address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve fake Stripe");
+        });
+
+        let client = StripeRefundClient::new(
+            &format!("http://{address}/"),
+            "sk_test_fixture",
+            Duration::from_secs(2),
+        )
+        .expect("refund client");
+        let reservation_id = Uuid::parse_str(RESERVATION).expect("reservation UUID");
+        let request = PreparedStripeRefund {
+            reservation_id,
+            payment_intent_id: "pi_test_fixture_1".to_owned(),
+            reason: StripeRefundReason::ModerationRejection,
+            stripe_refund_id: None,
+        };
+        assert_eq!(
+            client.create_refund(&request).await.expect("refund"),
+            "re_test_fixture_1"
+        );
+
+        let (headers, body) = capture
+            .0
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("captured request");
+        assert_eq!(
+            headers.get("idempotency-key").expect("idempotency header"),
+            &format!("atiny-refund-{reservation_id}")
+        );
+        assert_eq!(
+            headers.get("authorization").expect("authorization"),
+            "Bearer sk_test_fixture"
+        );
+        let form = url::form_urlencoded::parse(&body)
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(form["payment_intent"], "pi_test_fixture_1");
+        assert_eq!(form["metadata[reservation_id]"], reservation_id.to_string());
+        assert_eq!(form["metadata[reason]"], "moderation_rejection");
+        assert!(!format!("{client:?}").contains("sk_test_fixture"));
+        server.abort();
+    }
+
     #[test]
     fn verifies_exact_raw_body_and_extracts_paid_reservation() {
         let raw = body("checkout.session.completed", true, false);
@@ -695,6 +1016,7 @@ mod tests {
             panic!("expected paid event");
         };
         assert_eq!(payment.reservation_id.to_string(), RESERVATION);
+        assert_eq!(payment.payment_intent_id, "pi_fixture_1");
         assert_eq!(payment.amount_minor, 500);
         assert_eq!(payment.payload_hash, Digest::sha256(&raw));
     }

@@ -129,8 +129,15 @@ a strict requirement and refuses to run without the complete configuration.
 The repository now has reservation persistence, strict idempotent webhook admission, and an
 authenticated CSRF-protected Checkout-creation endpoint. The route stays indistinguishable from a
 missing route until observer sign-in, the Stripe webhook, and the fixed Stripe product are all
-configured. A live payment UI is still intentionally absent. To activate that product, the owner
-will need to:
+configured. A live payment UI is still intentionally absent.
+
+The repository also includes an operator-only, durable full-refund command. It prepares immutable
+intent before Stripe is called, uses a reservation-scoped idempotency key, and records the returned
+refund ID. Newly admitted payments retain signed PaymentIntent evidence; older rows without it fail
+closed for manual review. A monitored moderation queue and live credentials are still required
+before payments are enabled.
+
+To activate that product, the owner will need to:
 
 1. Create and verify a Stripe account; decide price, currency, refund/transfer policy,
    tax posture, and the moderation/fulfilment policy before enabling live mode.

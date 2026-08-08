@@ -446,8 +446,9 @@ smaller than the former every-transition policy.
   account-bound reservation/Checkout orchestration is also implemented and retry-safe. Apple and
   Google now have strict code/token adapters, browser-bound single-use attempts, hardened cookies,
   and edge-proxy coverage. A versioned automatic screen rejects obvious abuse before payment and
-  immutable human moderation still gates activation. Refund/transfer operations and the public
-  supporter UI remain.
+  immutable human moderation still gates activation. A full-refund operator command now durably
+  prepares terminal refunds, uses Stripe idempotency, and immutably records completion; transfers
+  are prohibited by policy. The monitored moderation workflow and public supporter UI remain.
 
 ### 6. Public operations
 

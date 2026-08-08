@@ -39,8 +39,8 @@ use std::{
 };
 use stripe_adapter::{
     StripeCheckoutSession, StripeCheckoutSessionStore, StripeCheckoutStoreError,
-    StripeWebhookDisposition, StripeWebhookStore, StripeWebhookStoreError, VerifiedCheckoutPayment,
-    VerifiedStripeEvent,
+    StripeRefundReason, StripeRefundStore, StripeRefundStoreError, StripeWebhookDisposition,
+    StripeWebhookStore, StripeWebhookStoreError, VerifiedCheckoutPayment, VerifiedStripeEvent,
 };
 use uuid::Uuid;
 use world_domain::{
@@ -1503,6 +1503,7 @@ async fn verified_stripe_events_are_atomic_append_only_and_idempotent(pool: PgPo
         event_id: "evt_atomic_fixture_1".to_owned(),
         event_type: "checkout.session.completed".to_owned(),
         checkout_session_id: "cs_atomic_fixture_1".to_owned(),
+        payment_intent_id: "pi_atomic_fixture_1".to_owned(),
         reservation_id,
         amount_minor: 500,
         currency: "usd".to_owned(),
@@ -1538,6 +1539,57 @@ async fn verified_stripe_events_are_atomic_append_only_and_idempotent(pool: PgPo
         .fetch_one(&pool)
         .await?;
     assert_eq!(state, "pending_moderation");
+    assert!(matches!(
+        store
+            .prepare_stripe_refund(reservation_id, StripeRefundReason::ModerationRejection)
+            .await,
+        Err(StripeRefundStoreError::Ineligible(id)) if id == reservation_id
+    ));
+    store.reject_reservation(reservation_id).await?;
+    let prepared = store
+        .prepare_stripe_refund(reservation_id, StripeRefundReason::ModerationRejection)
+        .await?;
+    assert_eq!(prepared.payment_intent_id, "pi_atomic_fixture_1");
+    assert_eq!(prepared.stripe_refund_id, None);
+    assert_eq!(
+        store
+            .prepare_stripe_refund(reservation_id, StripeRefundReason::ModerationRejection)
+            .await?,
+        prepared
+    );
+    assert!(matches!(
+        store
+            .prepare_stripe_refund(reservation_id, StripeRefundReason::ServiceFailure)
+            .await,
+        Err(StripeRefundStoreError::Conflict(_))
+    ));
+    let completed = store
+        .complete_stripe_refund(reservation_id, "re_atomic_fixture_1")
+        .await?;
+    assert_eq!(
+        completed.stripe_refund_id.as_deref(),
+        Some("re_atomic_fixture_1")
+    );
+    assert_eq!(
+        store
+            .complete_stripe_refund(reservation_id, "re_atomic_fixture_1")
+            .await?,
+        completed
+    );
+    assert!(matches!(
+        store
+            .complete_stripe_refund(reservation_id, "re_conflicting_fixture")
+            .await,
+        Err(StripeRefundStoreError::Conflict(_))
+    ));
+    assert!(
+        sqlx::query("DELETE FROM supporter_refunds WHERE reservation_id=$1")
+            .bind(reservation_id)
+            .execute(&pool)
+            .await
+            .is_err(),
+        "refund evidence is append-preserving"
+    );
 
     let mut retried_as_new_event = payment.clone();
     retried_as_new_event.event_id = "evt_atomic_fixture_2".to_owned();

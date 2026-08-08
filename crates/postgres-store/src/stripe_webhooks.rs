@@ -12,6 +12,7 @@ struct WebhookRow {
     event_type: String,
     payload_hash: Vec<u8>,
     checkout_session_id: Option<String>,
+    payment_intent_id: Option<String>,
     reservation_id: Option<uuid::Uuid>,
     amount_minor: Option<i64>,
     currency: Option<String>,
@@ -29,6 +30,7 @@ struct ReservationPaymentRow {
 struct PriorPaymentRow {
     reservation_id: uuid::Uuid,
     checkout_session_id: String,
+    payment_intent_id: Option<String>,
     amount_minor: i64,
     currency: String,
     live_mode: bool,
@@ -74,7 +76,7 @@ async fn load_event(
 ) -> Result<Option<WebhookRow>, StripeWebhookStoreError> {
     sqlx::query_as::<_, WebhookRow>(
         r#"
-        SELECT event_type, payload_hash, checkout_session_id, reservation_id,
+        SELECT event_type, payload_hash, checkout_session_id, payment_intent_id, reservation_id,
             amount_minor, currency, live_mode, outcome
         FROM stripe_webhook_events WHERE event_id = $1
         "#,
@@ -95,6 +97,7 @@ fn event_matches_row(
                 && row.event_type == ignored.event_type
                 && row.payload_hash.as_slice() == ignored.payload_hash.as_bytes()
                 && row.checkout_session_id.is_none()
+                && row.payment_intent_id.is_none()
                 && row.reservation_id.is_none()
         }
         VerifiedStripeEvent::Paid(payment) => {
@@ -109,6 +112,7 @@ fn event_matches_row(
             ) && row.event_type == payment.event_type
                 && row.payload_hash.as_slice() == payment.payload_hash.as_bytes()
                 && row.checkout_session_id.as_deref() == Some(payment.checkout_session_id.as_str())
+                && row.payment_intent_id.as_deref() == Some(payment.payment_intent_id.as_str())
                 && row.reservation_id == Some(payment.reservation_id)
                 && row.amount_minor == Some(amount)
                 && row.currency.as_deref() == Some(payment.currency.as_str())
@@ -160,20 +164,22 @@ async fn record_payment(
 
     let prior = sqlx::query_as::<_, PriorPaymentRow>(
         r#"
-        SELECT reservation_id,checkout_session_id,amount_minor,currency,live_mode
+        SELECT reservation_id,checkout_session_id,payment_intent_id,amount_minor,currency,live_mode
         FROM stripe_webhook_events
         WHERE outcome='payment_recorded'
-          AND (reservation_id=$1 OR checkout_session_id=$2)
+          AND (reservation_id=$1 OR checkout_session_id=$2 OR payment_intent_id=$3)
         "#,
     )
     .bind(payment.reservation_id)
     .bind(&payment.checkout_session_id)
+    .bind(&payment.payment_intent_id)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(unavailable)?;
     if let Some(prior) = prior {
         if prior.reservation_id != payment.reservation_id
             || prior.checkout_session_id != payment.checkout_session_id
+            || prior.payment_intent_id.as_deref() != Some(payment.payment_intent_id.as_str())
             || prior.amount_minor != amount
             || prior.currency != payment.currency
             || prior.live_mode != payment.live_mode
@@ -233,8 +239,8 @@ async fn insert_payment(
         r#"
         INSERT INTO stripe_webhook_events (
             event_id,event_type,payload_hash,checkout_session_id,reservation_id,
-            amount_minor,currency,live_mode,outcome
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+            payment_intent_id,amount_minor,currency,live_mode,outcome
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
         "#,
     )
     .bind(&payment.event_id)
@@ -242,6 +248,7 @@ async fn insert_payment(
     .bind(payment.payload_hash.as_bytes().as_slice())
     .bind(&payment.checkout_session_id)
     .bind(payment.reservation_id)
+    .bind(&payment.payment_intent_id)
     .bind(amount)
     .bind(&payment.currency)
     .bind(payment.live_mode)

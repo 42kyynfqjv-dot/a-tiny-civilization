@@ -5,9 +5,13 @@ use clap::{Parser, Subcommand};
 use observer_api::ApiState;
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient};
 use postgres_store::PostgresStore;
-use stripe_adapter::{StripeCheckoutClient, StripeWebhookVerifier};
+use stripe_adapter::{
+    StripeCheckoutClient, StripeRefundClient, StripeRefundGateway, StripeRefundReason,
+    StripeRefundStore, StripeWebhookVerifier,
+};
 use supporter_application::SupporterCheckoutService;
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use uuid::Uuid;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization observer API")]
@@ -27,6 +31,27 @@ struct Cli {
 enum Command {
     /// Apply all pending PostgreSQL migrations and exit.
     Migrate,
+    /// Issue or safely resume a full Stripe refund for a terminal supporter reservation.
+    Refund {
+        #[arg(long)]
+        reservation_id: Uuid,
+        #[arg(long, value_parser = [
+            "moderation_rejection",
+            "world_extinction",
+            "supporter_cancellation",
+            "duplicate_charge",
+            "service_failure",
+        ])]
+        reason: String,
+        #[arg(long, env = "STRIPE_SECRET_KEY", hide_env_values = true)]
+        stripe_secret_key: String,
+        #[arg(
+            long,
+            env = "STRIPE_API_BASE_URL",
+            default_value = "https://api.stripe.com/"
+        )]
+        stripe_api_base_url: String,
+    },
     /// Serve the observer API.
     Serve {
         #[arg(long, env = "API_BIND", default_value = "0.0.0.0:8080")]
@@ -122,6 +147,39 @@ async fn main() -> Result<()> {
         Command::Migrate => {
             store.migrate().await.context("apply database migrations")?;
             tracing::info!("database migrations complete");
+        }
+        Command::Refund {
+            reservation_id,
+            reason,
+            stripe_secret_key,
+            stripe_api_base_url,
+        } => {
+            let reason = reason
+                .parse::<StripeRefundReason>()
+                .context("parse refund reason")?;
+            let prepared = store
+                .prepare_stripe_refund(reservation_id, reason)
+                .await
+                .context("durably prepare supporter refund")?;
+            if let Some(refund_id) = prepared.stripe_refund_id.as_deref() {
+                tracing::info!(%reservation_id, %refund_id, "supporter refund was already complete");
+            } else {
+                let gateway = StripeRefundClient::new(
+                    &stripe_api_base_url,
+                    stripe_secret_key,
+                    Duration::from_secs(10),
+                )
+                .context("configure Stripe refund client")?;
+                let refund_id = gateway
+                    .create_refund(&prepared)
+                    .await
+                    .context("request idempotent Stripe refund")?;
+                store
+                    .complete_stripe_refund(reservation_id, &refund_id)
+                    .await
+                    .context("record Stripe refund completion")?;
+                tracing::info!(%reservation_id, %refund_id, "supporter refund complete");
+            }
         }
         Command::Serve {
             bind,

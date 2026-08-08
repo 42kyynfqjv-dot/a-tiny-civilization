@@ -25,6 +25,7 @@ reveals abuse, personal data, or legal risk; the canonical organism and history 
 Payment is support for the public project and not ownership of an organism, world, story, trademark,
 or scientific result.
 
-Operational activation is blocked until the refund process has a tested Stripe path and a monitored
-human moderation queue. Questions and legally required notices should go to
+The refund process has a tested, idempotent Stripe path. Operational activation remains blocked
+until there is a monitored human moderation queue. Questions and legally required notices should
+go to
 `support@atinycivilization.com`; that mailbox must exist before payments are enabled.
