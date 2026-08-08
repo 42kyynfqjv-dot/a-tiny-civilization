@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Atomically initialize (or exactly resume) one ruleset-25 world from the
+# Atomically initialize (or exactly resume) one ruleset-26 world from the
 # artifacts produced by prepare-provisional-genesis.sh. The runner is not started.
 
 if (( $# < 3 || $# > 4 )); then
@@ -50,7 +50,7 @@ arguments=(
   --provisional-material-resource-plan "${genesis_directory}/material-resource-plan.json"
   --tick-duration-seconds 300
   --max-events-per-partition-transition 10000
-  --ruleset-version 25
+  --ruleset-version 26
 )
 if [[ "${ATINY_REFUSE_OTHER_WORLDS:-0}" == "1" ]]; then
   arguments+=(--refuse-other-worlds)

@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-25}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-26}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -174,13 +174,17 @@ WITH selected_world AS (
            COUNT(result.request_id) FILTER (
                WHERE result.result_payload -> 'receipt' IS NOT NULL
                  AND result.result_payload -> 'receipt' <> 'null'::JSONB
-           )::BIGINT AS model_receipts
+           )::BIGINT AS model_receipts,
+           COUNT(*) FILTER (WHERE organism.role IS DISTINCT FROM 'person')::BIGINT
+             AS non_person_requests
     FROM cognition_requests request
     JOIN selected_world world ON world.id = request.world_id
     LEFT JOIN cognition_deadline_latches latch USING (request_id)
     LEFT JOIN cognition_latch_consumptions consumption USING (request_id)
     LEFT JOIN cognition_recall_outcomes recall USING (request_id)
     LEFT JOIN cognition_results result USING (request_id)
+    LEFT JOIN observer_organisms organism
+      ON organism.world_id = request.world_id AND organism.organism_id = request.agent_id
 ), observer_state AS (
     SELECT
       (SELECT COUNT(*) FROM observer_organisms WHERE world_id = :'world_id'::UUID)::BIGINT AS organisms,
@@ -232,6 +236,8 @@ WITH selected_world AS (
                AS movement_direction_learning_exercised
            , (ruleset_version < 25 OR signal_motor_associations > 0)
                AS signal_motor_association_exercised
+           , (ruleset_version < 26 OR non_person_requests = 0)
+               AS person_only_cognition
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -244,7 +250,7 @@ SELECT jsonb_build_object(
       AND material_transformation_exercised AND surface_arrangement_exercised
       AND acoustic_variation_exercised AND signal_action_association_exercised
       AND selectable_movement_exercised AND movement_direction_learning_exercised
-      AND signal_motor_association_exercised,
+      AND signal_motor_association_exercised AND person_only_cognition,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -266,7 +272,7 @@ SELECT jsonb_build_object(
       'due_without_latch', due_without_latch,
       'due_without_consumption', due_without_consumption,
       'recalled', recalled, 'completed_results', completed_results,
-      'model_receipts', model_receipts
+      'model_receipts', model_receipts, 'non_person_requests', non_person_requests
     ),
     'observer', jsonb_build_object(
       'organisms', organisms, 'timeline_items', timeline_items, 'findings', findings,
@@ -297,6 +303,7 @@ SELECT jsonb_build_object(
       , 'selectable_movement_exercised', selectable_movement_exercised
       , 'movement_direction_learning_exercised', movement_direction_learning_exercised
       , 'signal_motor_association_exercised', signal_motor_association_exercised
+      , 'person_only_cognition', person_only_cognition
     )
 )::TEXT
 FROM checks;

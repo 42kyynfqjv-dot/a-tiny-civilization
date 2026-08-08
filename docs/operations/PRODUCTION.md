@@ -294,7 +294,7 @@ alerting to notify an operator for either failed service.
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
-- a ruleset-25 genesis chain produced by `prepare-canonical-genesis.sh` from the
+- a ruleset-26 genesis chain produced by `prepare-canonical-genesis.sh` from the
   independently verified public seed resolution, verified by `SHA256SUMS`, atomically
   initialized by `initialize-canonical-world.sh`, and replayed before the long-running
   runner is enabled;

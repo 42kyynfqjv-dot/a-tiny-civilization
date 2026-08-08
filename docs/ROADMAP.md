@@ -99,7 +99,7 @@ are integrated.
 The offline bundle, restart-safe PostgreSQL runtime, snapshots, extinction transition,
 authorized successor operation, and tamper detection are implemented and covered by
 the full repository checks. The complete provisional full-Earth input closure and its
-source-backed ruleset-25 causal path are now admitted. Canonical preparation and
+source-backed ruleset-26 causal path are now admitted. Canonical preparation and
 initialization wrappers accept only an offline-verified public seed resolution and
 derive the world identifier without operator choice; public launch remains gated on
 resolving the already-published future-beacon commitment and qualifying that exact world.
@@ -586,8 +586,15 @@ Ruleset 25 lets a private sound association retain the exact movement motor coor
 witnessed after that sound. Hearing the amplitude again can weakly bias only that direction, while
 the engine still stores no word, message, destination, intention, or meaning. Legacy generic
 associations remain replay-compatible; new associations are bounded, life-local, non-heritable, and
-absent from public projections. Fresh genesis and qualification default to ruleset 25; ADR 0102
-records the boundary.
+absent from public projections. Ruleset-25 histories retain that behavior; ADR 0102 records the
+boundary.
+
+Ruleset 26 reserves the scarce external-cognition budget for living people. Fauna retain the full
+deterministic embodied policy, learning, signaling, reproduction, and public identity paths but can
+never consume an LLM request. This fixes the canonical-candidate finding that the first successful
+Qwen receipt went to a moth merely because fauna outnumbered people 32 to 1. Fresh genesis and
+qualification default to ruleset 26; ruleset-25 history remains byte-identical. ADR 0108 records the
+participation-tier boundary.
 
 Ruleset-25 integrated qualification now continues through tick 1,381 with exact genesis and
 snapshot-plus-tail replay, all five projections current, 3,672 error-free Hindsight deliveries, and

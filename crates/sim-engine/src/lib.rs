@@ -124,6 +124,10 @@ pub const MOVEMENT_DIRECTION_LEARNING_RULESET_VERSION: u32 = 24;
 /// Ruleset twenty-five lets a heard amplitude predict an exact movement motor
 /// coordinate when that coordinate was directly witnessed after the sound.
 pub const SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION: u32 = 25;
+/// Ruleset twenty-six reserves scarce external cognition for people. Fauna keep
+/// the complete deterministic embodied policy, learning, communication, and
+/// reproduction paths but cannot consume the civilization's model budget.
+pub const PERSON_COGNITION_RULESET_VERSION: u32 = 26;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -1356,7 +1360,10 @@ impl EngineState {
         let living_organism_ids = self
             .organisms
             .values()
-            .filter(|organism| organism.is_alive())
+            .filter(|organism| {
+                organism.is_alive()
+                    && (!self.uses_person_only_cognition() || organism.role == OrganismRole::Person)
+            })
             .map(|organism| organism.organism_id)
             .collect::<Vec<_>>();
         if living_organism_ids.is_empty() {
@@ -1384,6 +1391,11 @@ impl EngineState {
             .organisms
             .get(&organism_id)
             .expect("living-organism presence was checked");
+        if self.uses_person_only_cognition() && organism.role != OrganismRole::Person {
+            return Err(EngineError::InvalidCognitionSelection(
+                "this ruleset reserves external cognition for people".to_owned(),
+            ));
+        }
         let deadline_tick = SimTick::new(
             self.tick
                 .get()
@@ -3774,6 +3786,10 @@ impl EngineState {
 
     fn uses_signal_motor_association_driver(&self) -> bool {
         self.manifest.ruleset_version >= SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION
+    }
+
+    fn uses_person_only_cognition(&self) -> bool {
+        self.manifest.ruleset_version >= PERSON_COGNITION_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -10880,6 +10896,90 @@ mod tests {
         assert!(matches!(
             EngineState::new(legacy_manifest).plan_cognition_request(organism_id),
             Err(EngineError::CognitionUnsupported)
+        ));
+    }
+
+    #[test]
+    fn ruleset_twenty_six_reserves_external_cognition_for_people() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x126));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(18111088317882099744),
+            PERSON_COGNITION_RULESET_VERSION,
+        );
+        let mut person = regulated_full_earth_person(world_id, 0x1261, 10_000_000_000, 10_000_000);
+        person.birth_category = BirthCategory::new("female").expect("category");
+        person.initial_age_ticks = 20;
+        person.reproductive_physiology = Some(reproductive_fixture_profile(person.species.clone()));
+        person.heritable_disposition_profile =
+            Some(heritable_fixture_profile(person.species.clone()));
+        let person_id = person.organism_id;
+
+        let mut fauna = person.clone();
+        fauna.organism_id = EntityId::from_uuid(Uuid::from_u128(0x1262));
+        fauna.role = OrganismRole::Fauna;
+        let fauna_id = fauna.organism_id;
+
+        let material = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("real water identity");
+        let patch = person.embodied_patch.expect("founder patch");
+        let oral_profile = OralTransferCommitment {
+            commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+            profile_id: "person-cognition-water-oral-v1".to_owned(),
+            profile_digest: Digest::sha256(b"person cognition water oral fixture"),
+            material: material.clone(),
+            species: person.species.clone(),
+            evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+            transfer_mass_milligrams: 1,
+            recoverable_energy_joules: 1,
+            hydration_recovery_seconds: 1,
+        };
+        let initial_material = InitialMaterialInstance {
+            object_id: EntityId::deterministic(world_id, b"person-cognition-water"),
+            material: material.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000),
+            oral_transfer_profiles: vec![oral_profile],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "person-cognition-water-v1".to_owned(),
+                profile_digest: Digest::sha256(b"person cognition water fixture"),
+                material,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("L10 coverage"),
+                maximum_mass_milligrams: 2_000_000,
+                replenishment_mass_milligrams_per_tick: 1,
+            }),
+        };
+
+        let initial = EngineState::new(manifest);
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                environmental_provisional_full_earth_configuration(),
+                vec![person, fauna],
+                vec![initial_material],
+            )
+            .expect("person-plus-fauna cognition genesis");
+        let (running, _) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("person-plus-fauna cognition genesis commit");
+
+        let scheduled = running
+            .plan_scheduled_cognition_request()
+            .expect("scheduled person cognition");
+        let DomainEvent::CognitionRequestSelected { selection } = &scheduled[0] else {
+            panic!("selection planner emitted a different event")
+        };
+        assert_eq!(selection.organism_id, person_id);
+        assert!(matches!(
+            running.plan_cognition_request(fauna_id),
+            Err(EngineError::InvalidCognitionSelection(_))
         ));
     }
 
