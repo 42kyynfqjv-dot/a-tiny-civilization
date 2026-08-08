@@ -32,3 +32,9 @@ that its configured genesis makes the ruleset's transformation path reachable an
 observer artifact has exact canonical provenance. The first reservoir-only qualification remains a
 useful immutable negative test; the corrected qualification uses a newly derived bundle and a new
 database/world rather than editing that history.
+
+The corrected disposable world reached tick 1,000 at sequence 1,018 with genesis replay equal to
+snapshot plus tail. Its free policy produced 12 grasps, 12 releases, and 11 surface-trace changes;
+the observer projection filed one cited silicon-dioxide object whose trace reached 29 units. A live
+localhost API read returned the same object with first provenance at tick 70/sequence 73 and latest
+provenance at tick 735/sequence 749. No observer input or scripted action was used.
