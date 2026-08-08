@@ -28,7 +28,8 @@ use stripe_adapter::{
     StripeWebhookVerifier,
 };
 use supporter_application::{
-    SupporterCheckoutError, SupporterCheckoutRequest, SupporterCheckoutService,
+    SupporterCancellationError, SupporterCancellationService, SupporterCheckoutError,
+    SupporterCheckoutRequest, SupporterCheckoutService,
 };
 use tower_http::trace::TraceLayer;
 use uuid::Uuid;
@@ -64,6 +65,7 @@ pub struct ApiState {
     stripe: Option<Arc<StripeWebhookRuntime>>,
     auth: Option<Arc<AuthRuntime>>,
     supporter_checkout: Option<Arc<SupporterCheckoutService>>,
+    supporter_cancellation: Option<Arc<SupporterCancellationService>>,
 }
 
 impl ApiState {
@@ -76,6 +78,7 @@ impl ApiState {
             stripe: None,
             auth: None,
             supporter_checkout: None,
+            supporter_cancellation: None,
         }
     }
 
@@ -111,6 +114,12 @@ impl ApiState {
         self.supporter_checkout = Some(Arc::new(service));
         self
     }
+
+    #[must_use]
+    pub fn with_supporter_cancellation(mut self, service: SupporterCancellationService) -> Self {
+        self.supporter_cancellation = Some(Arc::new(service));
+        self
+    }
 }
 
 struct StripeWebhookRuntime {
@@ -142,6 +151,10 @@ pub fn router(state: ApiState) -> Router {
         .route(
             "/api/v1/supporters/checkout",
             post(supporter_checkout).layer(axum::extract::DefaultBodyLimit::max(16_384)),
+        )
+        .route(
+            "/api/v1/supporters/{reservation_id}/cancel",
+            post(supporter_cancel),
         )
         .route(
             "/api/v1/supporters/stripe/webhook",
@@ -486,6 +499,37 @@ async fn supporter_checkout(
     }))
 }
 
+#[derive(Serialize)]
+struct SupporterCancellationResponse {
+    reservation_id: Uuid,
+    state: observer_projection::ReservationState,
+    refunded: bool,
+}
+
+async fn supporter_cancel(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Path(reservation_id): Path<Uuid>,
+) -> Result<Json<SupporterCancellationResponse>, ApiError> {
+    let auth = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    let service = state
+        .supporter_cancellation
+        .as_ref()
+        .ok_or(ApiError::NotFound)?;
+    let session = authenticate(auth, &headers, true)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let cancellation = service
+        .cancel(&session, reservation_id)
+        .await
+        .map_err(map_supporter_cancellation_error)?;
+    Ok(Json(SupporterCancellationResponse {
+        reservation_id,
+        state: cancellation.reservation.state,
+        refunded: cancellation.stripe_refund_id.is_some(),
+    }))
+}
+
 async fn authenticate(
     runtime: &AuthRuntime,
     headers: &HeaderMap,
@@ -649,6 +693,27 @@ fn map_supporter_checkout_error(error: SupporterCheckoutError) -> ApiError {
             | stripe_adapter::StripeCheckoutStoreError::Corrupt(_),
         )
         | SupporterCheckoutError::Stripe(_) => ApiError::Unavailable,
+    }
+}
+
+fn map_supporter_cancellation_error(error: SupporterCancellationError) -> ApiError {
+    tracing::warn!(error = %error, "supporter cancellation rejected");
+    match error {
+        SupporterCancellationError::Reservation(
+            observer_projection::ReservationStoreError::Unavailable(_)
+            | observer_projection::ReservationStoreError::Corrupt(_),
+        )
+        | SupporterCancellationError::RefundStore(
+            stripe_adapter::StripeRefundStoreError::Unavailable(_)
+            | stripe_adapter::StripeRefundStoreError::Corrupt(_),
+        )
+        | SupporterCancellationError::Stripe(_) => ApiError::Unavailable,
+        SupporterCancellationError::Reservation(_) | SupporterCancellationError::RefundStore(_) => {
+            ApiError::Conflict(
+                "cancellation_conflict",
+                "reservation cannot be cancelled or refunded",
+            )
+        }
     }
 }
 

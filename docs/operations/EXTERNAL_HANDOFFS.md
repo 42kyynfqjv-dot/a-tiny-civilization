@@ -148,6 +148,11 @@ The queue command exits nonzero when any paid item has exceeded the age threshol
 no Stripe credential. Rejection records immutable evidence first and then requires
 `STRIPE_SECRET_KEY` to complete or resume the idempotent full refund.
 
+The authenticated API also supports account-owned cancellation at
+`POST /api/v1/supporters/{reservation_id}/cancel`. It requires the same session and CSRF proof as
+Checkout, refuses matched or foreign-account reservations, and automatically refunds paid
+cancellations. No additional owner credential is required beyond the existing Stripe setup.
+
 To activate that product, the owner will need to:
 
 1. Create and verify a Stripe account; decide price, currency, refund/transfer policy,

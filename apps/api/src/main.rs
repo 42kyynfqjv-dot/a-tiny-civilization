@@ -11,7 +11,7 @@ use stripe_adapter::{
     StripeCheckoutClient, StripeRefundClient, StripeRefundGateway, StripeRefundReason,
     StripeRefundStore, StripeWebhookVerifier,
 };
-use supporter_application::SupporterCheckoutService;
+use supporter_application::{SupporterCancellationService, SupporterCheckoutService};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use uuid::Uuid;
 
@@ -415,7 +415,7 @@ async fn main() -> Result<()> {
                 {
                     let gateway = StripeCheckoutClient::new(
                         "https://api.stripe.com/",
-                        secret_key,
+                        secret_key.clone(),
                         price_id,
                         &stripe_success_url,
                         &stripe_cancel_url,
@@ -426,6 +426,17 @@ async fn main() -> Result<()> {
                         Arc::new(store.clone()),
                         Arc::new(store.clone()),
                         Arc::new(gateway),
+                    ));
+                    let refund_gateway = StripeRefundClient::new(
+                        "https://api.stripe.com/",
+                        secret_key,
+                        Duration::from_secs(10),
+                    )
+                    .context("configure authenticated supporter cancellation refunds")?;
+                    state = state.with_supporter_cancellation(SupporterCancellationService::new(
+                        Arc::new(store.clone()),
+                        Arc::new(store.clone()),
+                        Arc::new(refund_gateway),
                     ));
                     tracing::info!("authenticated supporter Checkout enabled");
                 }

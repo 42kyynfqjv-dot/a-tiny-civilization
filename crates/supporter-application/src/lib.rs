@@ -8,8 +8,9 @@ use observer_projection::{
     SupporterReservation, SupporterReservationStore,
 };
 use stripe_adapter::{
-    StripeCheckoutError, StripeCheckoutGateway, StripeCheckoutSession, StripeCheckoutSessionStore,
-    StripeCheckoutStoreError,
+    PreparedStripeRefund, StripeCheckoutError, StripeCheckoutGateway, StripeCheckoutSession,
+    StripeCheckoutSessionStore, StripeCheckoutStoreError, StripeRefundError, StripeRefundGateway,
+    StripeRefundReason, StripeRefundStore, StripeRefundStoreError,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -60,7 +61,7 @@ impl SupporterCheckoutService {
             .create_reservation(&ReservationRequest {
                 reservation_id: request.reservation_id,
                 world_id: request.world_id,
-                supporter_subject: format!("account:{}", authenticated.account_id),
+                supporter_subject: account_subject(authenticated),
                 observer_label: request.observer_label.clone(),
                 target: request.target.clone(),
                 birth_category: request.birth_category.clone(),
@@ -93,6 +94,80 @@ impl SupporterCheckoutService {
     }
 }
 
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SupporterCancellation {
+    pub reservation: SupporterReservation,
+    pub stripe_refund_id: Option<String>,
+}
+
+pub struct SupporterCancellationService {
+    reservations: Arc<dyn SupporterReservationStore>,
+    refunds: Arc<dyn StripeRefundStore>,
+    gateway: Arc<dyn StripeRefundGateway>,
+}
+
+impl SupporterCancellationService {
+    #[must_use]
+    pub fn new(
+        reservations: Arc<dyn SupporterReservationStore>,
+        refunds: Arc<dyn StripeRefundStore>,
+        gateway: Arc<dyn StripeRefundGateway>,
+    ) -> Self {
+        Self {
+            reservations,
+            refunds,
+            gateway,
+        }
+    }
+
+    pub async fn cancel(
+        &self,
+        authenticated: &ObserverSession,
+        reservation_id: Uuid,
+    ) -> Result<SupporterCancellation, SupporterCancellationError> {
+        let reservation = self
+            .reservations
+            .cancel_reservation(reservation_id, &account_subject(authenticated))
+            .await?;
+        if reservation.payment_reference.is_none() {
+            return Ok(SupporterCancellation {
+                reservation,
+                stripe_refund_id: None,
+            });
+        }
+        let prepared = self
+            .refunds
+            .prepare_stripe_refund(reservation_id, StripeRefundReason::SupporterCancellation)
+            .await?;
+        let stripe_refund_id =
+            complete_or_resume_refund(self.refunds.as_ref(), self.gateway.as_ref(), &prepared)
+                .await?;
+        Ok(SupporterCancellation {
+            reservation,
+            stripe_refund_id: Some(stripe_refund_id),
+        })
+    }
+}
+
+async fn complete_or_resume_refund(
+    store: &dyn StripeRefundStore,
+    gateway: &dyn StripeRefundGateway,
+    prepared: &PreparedStripeRefund,
+) -> Result<String, SupporterCancellationError> {
+    if let Some(refund_id) = prepared.stripe_refund_id.as_ref() {
+        return Ok(refund_id.clone());
+    }
+    let refund_id = gateway.create_refund(prepared).await?;
+    store
+        .complete_stripe_refund(prepared.reservation_id, &refund_id)
+        .await?;
+    Ok(refund_id)
+}
+
+fn account_subject(authenticated: &ObserverSession) -> String {
+    format!("account:{}", authenticated.account_id)
+}
+
 #[derive(Debug, Error)]
 pub enum SupporterCheckoutError {
     #[error(transparent)]
@@ -103,4 +178,14 @@ pub enum SupporterCheckoutError {
     Session(#[from] StripeCheckoutStoreError),
     #[error("supporter Checkout conflict: {0}")]
     Conflict(String),
+}
+
+#[derive(Debug, Error)]
+pub enum SupporterCancellationError {
+    #[error(transparent)]
+    Reservation(#[from] ReservationStoreError),
+    #[error(transparent)]
+    RefundStore(#[from] StripeRefundStoreError),
+    #[error(transparent)]
+    Stripe(#[from] StripeRefundError),
 }

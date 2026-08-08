@@ -15,9 +15,10 @@ replacement alias instead of immediate rejection when the problem appears uninte
 The operator will provide a full refund when a paid alias is rejected without an accepted
 replacement, when a technical duplicate charge occurs, or when the selected world becomes extinct
 before the reservation is matched. An unmatched supporter may request cancellation and a refund
-before matching, subject to any non-waivable local consumer rights. After an alias is matched and
-published, purchases are final except where law requires otherwise or the service materially failed
-to provide what this policy describes.
+before matching through the authenticated account route, subject to any non-waivable local consumer
+rights. Paid cancellations use the same idempotent full-refund process. After an alias is matched
+and published, purchases are final except where law requires otherwise or the service materially
+failed to provide what this policy describes.
 
 Reservations cannot be sold or transferred between accounts, worlds, roles, species, or birth
 categories. The operator may hide or remove an observer alias after publication if later context

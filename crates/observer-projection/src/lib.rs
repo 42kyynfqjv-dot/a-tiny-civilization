@@ -612,6 +612,13 @@ pub trait SupporterReservationStore: Send + Sync {
         limit: u32,
     ) -> Result<Vec<SupporterReservation>, ReservationStoreError>;
 
+    /// Cancels only an unmatched reservation owned by the authenticated observer subject.
+    async fn cancel_reservation(
+        &self,
+        reservation_id: Uuid,
+        supporter_subject: &str,
+    ) -> Result<SupporterReservation, ReservationStoreError>;
+
     /// Observer-side matching for a birth that has already committed in canonical history.
     async fn match_committed_birth(
         &self,

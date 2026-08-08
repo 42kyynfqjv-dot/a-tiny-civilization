@@ -23,5 +23,13 @@ tracing.workspace = true
 uuid.workspace = true
 world-domain = { path = "../world-domain" }
 
+[dev-dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+postgres-store = { path = "../postgres-store" }
+sqlx.workspace = true
+tokio.workspace = true
+tower.workspace = true
+
 [lints]
 workspace = true

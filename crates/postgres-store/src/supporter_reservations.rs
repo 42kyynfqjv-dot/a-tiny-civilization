@@ -165,6 +165,77 @@ impl SupporterReservationStore for PostgresStore {
         rows.into_iter().map(parse_reservation).collect()
     }
 
+    async fn cancel_reservation(
+        &self,
+        reservation_id: Uuid,
+        supporter_subject: &str,
+    ) -> Result<SupporterReservation, ReservationStoreError> {
+        if supporter_subject.trim().is_empty()
+            || supporter_subject != supporter_subject.trim()
+            || supporter_subject.len() > 256
+            || supporter_subject.chars().any(char::is_control)
+        {
+            return Err(ReservationStoreError::Conflict(
+                "invalid supporter cancellation subject".to_owned(),
+            ));
+        }
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        let row = load_reservation_in_transaction(&mut transaction, reservation_id).await?;
+        if row.supporter_subject != supporter_subject {
+            return Err(ReservationStoreError::Conflict(
+                "reservation is not owned by this observer account".to_owned(),
+            ));
+        }
+        let existing: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM supporter_cancellations WHERE reservation_id=$1)",
+        )
+        .bind(reservation_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        if existing {
+            if row.state != "cancelled_by_supporter" {
+                return Err(ReservationStoreError::Corrupt(
+                    "cancellation evidence disagrees with reservation state".to_owned(),
+                ));
+            }
+            transaction.commit().await.map_err(operation_error)?;
+            return parse_reservation(row);
+        }
+        if !matches!(
+            row.state.as_str(),
+            "pending_payment" | "pending_moderation" | "active"
+        ) {
+            return Err(ReservationStoreError::Conflict(
+                "only an unmatched reservation can be cancelled".to_owned(),
+            ));
+        }
+        let row = sqlx::query_as::<_, ReservationRow>(
+            r#"
+            UPDATE supporter_reservations SET state='cancelled_by_supporter'
+            WHERE id=$1
+            RETURNING id, world_id, supporter_subject, observer_label, target_role,
+                species_catalog, species_identifier, species_scientific_name, species_source_url,
+                birth_category, state, payment_reference, payment_verified_at, created_at, activated_at,
+                matched_birth_event_id, matched_event_sequence, matched_tick, matched_organism_id
+            "#,
+        )
+        .bind(reservation_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        sqlx::query(
+            "INSERT INTO supporter_cancellations (reservation_id,supporter_subject) VALUES ($1,$2)",
+        )
+        .bind(reservation_id)
+        .bind(supporter_subject)
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        transaction.commit().await.map_err(operation_error)?;
+        parse_reservation(row)
+    }
+
     async fn match_committed_birth(
         &self,
         birth: &CommittedBirth,
@@ -368,9 +439,10 @@ async fn load_reservation_in_transaction(
         "#,
     )
     .bind(reservation_id)
-    .fetch_one(&mut **transaction)
+    .fetch_optional(&mut **transaction)
     .await
-    .map_err(operation_error)
+    .map_err(operation_error)?
+    .ok_or(ReservationStoreError::NotFound(reservation_id))
 }
 
 async fn load_or_idempotent_payment(

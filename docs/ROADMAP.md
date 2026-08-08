@@ -451,6 +451,9 @@ smaller than the former every-transition policy.
   are prohibited by policy. An operator-only queue now reports paid labels oldest-first, fails a
   monitor check when review age exceeds its threshold, and stores immutable moderator decisions;
   rejection resumes the refund automatically. The public supporter UI remains.
+  Authenticated supporters can also cancel their own unmatched reservations through a
+  CSRF-protected, retry-safe route; paid cancellations automatically use the durable full-refund
+  path while unpaid cancellations never contact Stripe.
 
 ### 6. Public operations
 
