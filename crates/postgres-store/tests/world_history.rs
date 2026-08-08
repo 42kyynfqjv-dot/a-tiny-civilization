@@ -737,6 +737,7 @@ impl CognitionModel for PersistedBeforeCallModel {
             action_kind: PrimitiveActionKind::Rest,
             contact_region: None,
             signal_intensity: None,
+            movement_direction: None,
             provider_response_hash: Digest::sha256(b"fake free cognition response"),
             adapter_version: "postgres-worker-test-v1".to_owned(),
         })
@@ -2525,6 +2526,7 @@ async fn late_paid_cognition_is_audited_and_billed_but_cannot_replace_the_latch(
         action_kind: PrimitiveActionKind::Rest,
         contact_region: None,
         signal_intensity: None,
+        movement_direction: None,
         provider_response_hash: Digest::sha256(b"late paid cognition response"),
         adapter_version: "postgres-late-response-test-v1".to_owned(),
     };

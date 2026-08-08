@@ -184,6 +184,8 @@ pub struct CognitionModelEvidence {
     pub contact_region: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_intensity: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_direction: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -323,6 +325,9 @@ impl CognitionDeadlineInput {
                         evidence.action_kind != PrimitiveActionKind::EmitSignal
                             || !(1..=8).contains(&intensity)
                     })
+                    || evidence.movement_direction.is_some_and(|direction| {
+                        evidence.action_kind != PrimitiveActionKind::Move || direction >= 4
+                    })
                     || self.recall_outcome_hash == Digest::ZERO
                     || self.route_registry_hash == Digest::ZERO
                     || self.result_hash == Digest::ZERO
@@ -389,6 +394,14 @@ impl CognitionDeadlineInput {
     pub const fn signal_intensity(&self) -> Option<u8> {
         match &self.outcome {
             CognitionInputOutcome::Model(evidence) => evidence.signal_intensity,
+            CognitionInputOutcome::Unavailable { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn movement_direction(&self) -> Option<u8> {
+        match &self.outcome {
+            CognitionInputOutcome::Model(evidence) => evidence.movement_direction,
             CognitionInputOutcome::Unavailable { .. } => None,
         }
     }
@@ -511,6 +524,7 @@ mod tests {
                 action_kind: PrimitiveActionKind::Orient,
                 contact_region: None,
                 signal_intensity: None,
+                movement_direction: None,
             },
         )
         .expect("valid model input");

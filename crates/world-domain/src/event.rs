@@ -68,6 +68,9 @@ pub const MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION: u16 = 22;
 /// Adds private associations between a directly heard amplitude and a subsequently
 /// witnessed primitive action. No signal meaning is committed.
 pub const SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION: u16 = 23;
+/// Schema twenty-four admits a bounded movement-direction motor coordinate on
+/// primitive move actions. No destination or map concept is added.
+pub const SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 24;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -503,6 +506,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION
             | MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
             | SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+            | SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -773,9 +777,21 @@ fn validate_event_for_schema(
         DomainEvent::OrganismPerceived { perception, .. } => perception
             .validate()
             .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
-        DomainEvent::OrganismActed { action, .. } => action
-            .validate()
-            .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?,
+        DomainEvent::OrganismActed { action, .. } => {
+            action
+                .validate()
+                .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
+            if (event_schema_version < SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+                && action.movement_direction.is_some())
+                || (event_schema_version >= SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+                    && action.kind == crate::PrimitiveActionKind::Move
+                    && action.movement_direction.is_none())
+            {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "movement-direction field disagrees with event schema".to_owned(),
+                ));
+            }
+        }
         DomainEvent::MaterialInstanceInitialized {
             material,
             initial_mass_milligrams,
@@ -1325,6 +1341,7 @@ mod tests {
                 target_id: None,
                 intensity: 1,
                 contact_region: None,
+                movement_direction: None,
             },
         };
         assert!(

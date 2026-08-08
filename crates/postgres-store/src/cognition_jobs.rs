@@ -1092,6 +1092,7 @@ fn build_deadline_input(
                         action_kind: receipt.action_kind,
                         contact_region: receipt.contact_region,
                         signal_intensity: receipt.signal_intensity,
+                        movement_direction: receipt.movement_direction,
                     },
                 )
                 .map_err(corrupt)

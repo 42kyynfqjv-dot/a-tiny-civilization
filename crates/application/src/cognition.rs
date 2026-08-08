@@ -497,6 +497,8 @@ pub struct ModelCognitionReceipt {
     pub contact_region: Option<u8>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub signal_intensity: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_direction: Option<u8>,
     pub provider_response_hash: Digest,
     pub adapter_version: String,
 }
@@ -531,6 +533,9 @@ impl ModelCognitionReceipt {
             })
             || self.signal_intensity.is_some_and(|intensity| {
                 self.action_kind != PrimitiveActionKind::EmitSignal || !(1..=8).contains(&intensity)
+            })
+            || self.movement_direction.is_some_and(|direction| {
+                self.action_kind != PrimitiveActionKind::Move || direction >= 4
             })
         {
             return Err(CognitionContractError::InvalidReceipt);

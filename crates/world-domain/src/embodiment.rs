@@ -397,6 +397,10 @@ pub struct PrimitiveAction {
     /// coordinate, not a glyph, character, purpose, or inferred surface meaning.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub contact_region: Option<u8>,
+    /// Optional label-free choice among the four immediately adjacent motor
+    /// directions. It is neither a place name nor a map coordinate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_direction: Option<u8>,
 }
 
 impl PrimitiveAction {
@@ -408,6 +412,13 @@ impl PrimitiveAction {
             || (self.contact_region.is_some() && self.kind != PrimitiveActionKind::ApplyForce)
         {
             return Err(EmbodimentError::InvalidContactRegion);
+        }
+        if self
+            .movement_direction
+            .is_some_and(|direction| direction >= 4)
+            || (self.movement_direction.is_some() && self.kind != PrimitiveActionKind::Move)
+        {
+            return Err(EmbodimentError::InvalidMovementDirection);
         }
         Ok(())
     }
@@ -459,6 +470,8 @@ pub enum EmbodimentError {
     ZeroActionIntensity,
     #[error("contact region must be absent or a bounded apply-force motor coordinate")]
     InvalidContactRegion,
+    #[error("movement direction must be absent or a bounded move motor coordinate")]
+    InvalidMovementDirection,
 }
 
 #[cfg(test)]
@@ -503,6 +516,7 @@ mod tests {
             target_id: None,
             intensity: 1,
             contact_region: Some(7),
+            movement_direction: None,
         }
         .validate()
         .expect("physical action");
@@ -512,6 +526,7 @@ mod tests {
                 target_id: None,
                 intensity: 0,
                 contact_region: None,
+                movement_direction: None,
             }
             .validate()
             .is_err()
@@ -522,6 +537,7 @@ mod tests {
                 target_id: None,
                 intensity: 1,
                 contact_region: Some(0),
+                movement_direction: None,
             }
             .validate()
             .is_err()

@@ -38,11 +38,12 @@ use world_domain::{
     PrimitiveAction, PrimitiveActionKind, PropertyReading,
     REPRODUCTIVE_PHYSIOLOGY_EVENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId, S2CellIdError,
-    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION,
-    SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
-    SOCIAL_LEARNING_EVENT_SCHEMA_VERSION, SequenceOverflow, SignalActionAssociationState, SimTick,
-    SituatedPerception, SpeciesIdentity, SpeciesIdentityError, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
+    SCHEDULED_CAUSAL_EVENT_SCHEMA_VERSION, SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION,
+    SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+    SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
+    SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
+    SpeciesIdentityError, TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId,
+    WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -112,6 +113,9 @@ pub const ACOUSTIC_VARIATION_RULESET_VERSION: u32 = 21;
 /// Ruleset twenty-two lets an organism privately associate a sound amplitude heard
 /// from another organism with that organism's directly witnessed next action.
 pub const SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION: u32 = 22;
+/// Ruleset twenty-three makes the four adjacent movement motor directions
+/// selectable without exposing a map, place, or destination label.
+pub const SELECTABLE_MOVEMENT_RULESET_VERSION: u32 = 23;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -303,6 +307,14 @@ fn subtract_load(current: u64, amount: u128) -> u64 {
 struct PolicyCandidate {
     action: PrimitiveAction,
     weight: u32,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct CognitionMotorPreference {
+    action_kind: PrimitiveActionKind,
+    contact_region: Option<u8>,
+    signal_intensity: Option<u8>,
+    movement_direction: Option<u8>,
 }
 
 #[derive(Serialize)]
@@ -1663,7 +1675,7 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         age_ticks: u64,
-        cognition_preference: Option<(PrimitiveActionKind, Option<u8>, Option<u8>)>,
+        cognition_preference: Option<CognitionMotorPreference>,
     ) -> Result<Vec<PolicyCandidate>, EngineError> {
         let patch = organism
             .embodied_patch
@@ -1718,6 +1730,7 @@ impl EngineState {
                     target_id: None,
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
                 weight: 2,
             },
@@ -1727,6 +1740,7 @@ impl EngineState {
                     target_id: None,
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
                 weight: 2,
             },
@@ -1736,10 +1750,29 @@ impl EngineState {
                     target_id: target,
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
                 weight: if target.is_some() { oral_drive } else { 1 },
             },
         ];
+        if self.uses_selectable_movement_driver() {
+            candidates[0].action.movement_direction = Some(0);
+            for direction in 1..4_u8 {
+                candidates.insert(
+                    usize::from(direction),
+                    PolicyCandidate {
+                        action: PrimitiveAction {
+                            kind: PrimitiveActionKind::Move,
+                            target_id: None,
+                            intensity: 1,
+                            contact_region: None,
+                            movement_direction: Some(direction),
+                        },
+                        weight: 2,
+                    },
+                );
+            }
+        }
         if let Some(target_id) = target {
             if held_objects.is_empty() {
                 let target_is_reservoir = self
@@ -1759,6 +1792,7 @@ impl EngineState {
                                 target_id: Some(target_id),
                                 intensity: 1,
                                 contact_region: None,
+                                movement_direction: None,
                             },
                             weight: if matches!(
                                 kind,
@@ -1779,6 +1813,7 @@ impl EngineState {
                             target_id: Some(target_id),
                             intensity: 1,
                             contact_region: None,
+                            movement_direction: None,
                         },
                         weight: oral_drive,
                     });
@@ -1804,6 +1839,7 @@ impl EngineState {
                                         u8::try_from(contact_region)
                                             .expect("surface region count fits u8"),
                                     ),
+                                    movement_direction: None,
                                 },
                                 weight: 1,
                             });
@@ -1816,6 +1852,7 @@ impl EngineState {
                             target_id: Some(target_id),
                             intensity: 1,
                             contact_region: None,
+                            movement_direction: None,
                         },
                         weight: if matches!(
                             kind,
@@ -1837,6 +1874,7 @@ impl EngineState {
                 target_id: None,
                 intensity: 1,
                 contact_region: None,
+                movement_direction: None,
             },
             weight: rest_drive,
         });
@@ -1848,6 +1886,7 @@ impl EngineState {
                         target_id: None,
                         intensity,
                         contact_region: None,
+                        movement_direction: None,
                     },
                     weight: 2,
                 });
@@ -1859,6 +1898,7 @@ impl EngineState {
                     target_id: None,
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
                 weight: 2,
             });
@@ -1913,15 +1953,18 @@ impl EngineState {
             }
         }
 
-        if let Some((cognition_action_kind, cognition_contact_region, cognition_signal_intensity)) =
-            cognition_preference
-        {
+        if let Some(preference) = cognition_preference {
             for candidate in &mut candidates {
-                if candidate.action.kind == cognition_action_kind
-                    && cognition_contact_region
+                if candidate.action.kind == preference.action_kind
+                    && preference
+                        .contact_region
                         .is_none_or(|region| candidate.action.contact_region == Some(region))
-                    && cognition_signal_intensity
+                    && preference
+                        .signal_intensity
                         .is_none_or(|intensity| candidate.action.intensity == u16::from(intensity))
+                    && preference.movement_direction.is_none_or(|direction| {
+                        candidate.action.movement_direction == Some(direction)
+                    })
                 {
                     candidate.weight = candidate
                         .weight
@@ -1947,7 +1990,7 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         age_ticks: u64,
-        cognition_preference: Option<(PrimitiveActionKind, Option<u8>, Option<u8>)>,
+        cognition_preference: Option<CognitionMotorPreference>,
     ) -> Result<PrimitiveAction, EngineError> {
         let candidates = self.deterministic_policy_candidates_with_cognition(
             organism,
@@ -1957,7 +2000,9 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_signal_action_association_driver() {
+            policy_version: if self.uses_selectable_movement_driver() {
+                8
+            } else if self.uses_signal_action_association_driver() {
                 7
             } else if self.uses_acoustic_variation_driver() {
                 6
@@ -1998,7 +2043,11 @@ impl EngineState {
             })
             .expect("positive candidate weights cover the deterministic roll");
         let mut action = selected.action;
-        action.intensity = u16::from(digest.as_bytes()[8] % 4) + 1;
+        if !(self.uses_acoustic_variation_driver()
+            && action.kind == PrimitiveActionKind::EmitSignal)
+        {
+            action.intensity = u16::from(digest.as_bytes()[8] % 4) + 1;
+        }
         Ok(action)
     }
 
@@ -3136,8 +3185,11 @@ impl EngineState {
                                 let cognition_preference = cognition_input
                                     .filter(|input| input.organism_id == organism.organism_id)
                                     .and_then(|input| {
-                                        input.action_kind().map(|kind| {
-                                            (kind, input.contact_region(), input.signal_intensity())
+                                        input.action_kind().map(|kind| CognitionMotorPreference {
+                                            action_kind: kind,
+                                            contact_region: input.contact_region(),
+                                            signal_intensity: input.signal_intensity(),
+                                            movement_direction: input.movement_direction(),
                                         })
                                     });
                                 let action = self.deterministic_policy_action_with_cognition(
@@ -3146,6 +3198,7 @@ impl EngineState {
                                     cognition_preference,
                                 )?;
                                 let action_kind = action.kind;
+                                let movement_direction = action.movement_direction;
                                 let resolved_action =
                                     self.plan_action(organism.organism_id, action)?;
                                 for (offset, event) in resolved_action.into_iter().enumerate() {
@@ -3164,17 +3217,26 @@ impl EngineState {
                                     let from_patch = organism.embodied_patch.ok_or(
                                         EngineError::MissingEmbodiedPatch(organism.organism_id),
                                     )?;
-                                    let direction = usize::try_from(
-                                        first_digest_u64(Digest::canonical(&PolicyMovementDraw {
-                                            policy_version: 1,
-                                            world_seed: self.manifest.seed.get(),
-                                            organism_id: organism.organism_id,
-                                            tick: self.tick.checked_next()?,
-                                            age_ticks: to_age_ticks,
-                                            from_patch,
-                                        })?) % 4,
-                                    )
-                                    .expect("direction is in 0..4");
+                                    let direction = if self.uses_selectable_movement_driver() {
+                                        usize::from(
+                                            movement_direction
+                                                .ok_or(EngineError::MissingMovementDirection)?,
+                                        )
+                                    } else {
+                                        usize::try_from(
+                                            first_digest_u64(Digest::canonical(
+                                                &PolicyMovementDraw {
+                                                    policy_version: 1,
+                                                    world_seed: self.manifest.seed.get(),
+                                                    organism_id: organism.organism_id,
+                                                    tick: self.tick.checked_next()?,
+                                                    age_ticks: to_age_ticks,
+                                                    from_patch,
+                                                },
+                                            )?) % 4,
+                                        )
+                                        .expect("direction is in 0..4")
+                                    };
                                     let to_patch = s2_edge_neighbors(from_patch)
                                         .map_err(EngineError::from)?[direction];
                                     let emission_index = u32::try_from(events.len())
@@ -3210,6 +3272,7 @@ impl EngineState {
                                             target_id: None,
                                             intensity: 1,
                                             contact_region: None,
+                                            movement_direction: None,
                                         },
                                     },
                                 ));
@@ -3580,6 +3643,10 @@ impl EngineState {
 
     fn uses_signal_action_association_driver(&self) -> bool {
         self.manifest.ruleset_version >= SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION
+    }
+
+    fn uses_selectable_movement_driver(&self) -> bool {
+        self.manifest.ruleset_version >= SELECTABLE_MOVEMENT_RULESET_VERSION
     }
 
     fn validate_event_budget(
@@ -4115,6 +4182,58 @@ impl EngineState {
                 }
             }
         }
+        if self.uses_selectable_movement_driver() && tick_advanced {
+            let moves = events
+                .iter()
+                .enumerate()
+                .filter_map(|(index, event)| match event {
+                    DomainEvent::OrganismActed {
+                        organism_id,
+                        action,
+                    } if action.kind == PrimitiveActionKind::Move => {
+                        Some((index, *organism_id, action.movement_direction))
+                    }
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            let relocations = events
+                .iter()
+                .enumerate()
+                .filter_map(|(index, event)| match event {
+                    DomainEvent::OrganismMoved {
+                        organism_id,
+                        from_patch,
+                        to_patch,
+                    } => Some((index, *organism_id, *from_patch, *to_patch)),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            if moves.len() != relocations.len() {
+                return Err(EngineError::InvalidSelectableMovementEventSet);
+            }
+            for (action_index, organism_id, direction) in moves {
+                let from_patch = self
+                    .organisms
+                    .get(&organism_id)
+                    .and_then(|organism| organism.embodied_patch)
+                    .ok_or(EngineError::MissingEmbodiedPatch(organism_id))?;
+                let direction =
+                    usize::from(direction.ok_or(EngineError::MissingMovementDirection)?);
+                let expected_to =
+                    s2_edge_neighbors(from_patch).map_err(EngineError::from)?[direction];
+                let matching = relocations.iter().filter(
+                    |(relocation_index, moved_id, actual_from, actual_to)| {
+                        action_index < *relocation_index
+                            && organism_id == *moved_id
+                            && from_patch == *actual_from
+                            && expected_to == *actual_to
+                    },
+                );
+                if matching.count() != 1 {
+                    return Err(EngineError::InvalidSelectableMovementEventSet);
+                }
+            }
+        }
         if self.uses_social_learning_driver() && tick_advanced {
             let actions = events
                 .iter()
@@ -4415,7 +4534,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_signal_action_association_driver() {
+        if self.uses_selectable_movement_driver() {
+            SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
         } else if self.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
@@ -6936,7 +7057,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_signal_action_association_driver() {
+        let expected_schema = if state.uses_selectable_movement_driver() {
+            SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+        } else if state.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
         } else if state.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
@@ -6999,7 +7122,9 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION {
+        let valid_schema = if expected_schema == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION {
+            batch.event_schema_version == SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
+        } else if expected_schema == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
         } else if expected_schema == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION {
             batch.event_schema_version == MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION
@@ -7192,6 +7317,10 @@ pub enum EngineError {
     InvalidMaterialSurfaceRegions(EntityId),
     #[error("a ruleset-twenty held-object force action requires a contact region")]
     MissingSurfaceContactRegion,
+    #[error("a ruleset-twenty-three move action requires a movement direction")]
+    MissingMovementDirection,
+    #[error("selectable movement actions and relocations do not exactly agree")]
+    InvalidSelectableMovementEventSet,
     #[error("material surface-region events do not exactly match primitive force and perception")]
     InvalidMaterialSurfaceRegionEventSet,
     #[error("material-reservoir transfer events do not match ordered action resolution")]
@@ -7682,6 +7811,7 @@ mod tests {
                     target_id: None,
                     intensity: 3,
                     contact_region: None,
+                    movement_direction: None,
                 },
             )
             .expect("primitive action");
@@ -8063,6 +8193,7 @@ mod tests {
                     target_id: Some(object_id),
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
             )
             .expect("local grasp plan");
@@ -8107,6 +8238,7 @@ mod tests {
                     target_id: Some(object_id),
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
             )
             .expect("release plan");
@@ -8188,6 +8320,7 @@ mod tests {
                     target_id: None,
                     intensity: 7,
                     contact_region: None,
+                    movement_direction: None,
                 },
             )
             .expect("signal plan");
@@ -8939,6 +9072,7 @@ mod tests {
                         target_id: Some(object_id),
                         intensity: 1,
                         contact_region: None,
+                        movement_direction: None,
                     },
                 )
                 .expect("grasp portion");
@@ -9022,6 +9156,7 @@ mod tests {
                     target_id: Some(object_id),
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
             )
             .expect("resolved manual swallow");
@@ -9246,6 +9381,7 @@ mod tests {
                     target_id: None,
                     intensity: 1,
                     contact_region: None,
+                    movement_direction: None,
                 },
             )
             .expect("primitive action plan");
@@ -10595,12 +10731,12 @@ mod tests {
     }
 
     #[test]
-    fn ruleset_twenty_two_associates_heard_amplitude_with_the_next_witnessed_action() {
+    fn ruleset_twenty_three_associates_signals_and_selects_movement_direction() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x126));
         let manifest = WorldManifest::new(
             world_id,
             WorldSeed::new(13_503_953_896_175_478_597),
-            SIGNAL_ACTION_ASSOCIATION_RULESET_VERSION,
+            SELECTABLE_MOVEMENT_RULESET_VERSION,
         );
         let mut first = regulated_full_earth_person(world_id, 0x741, 10_000_000, 1_000_000);
         let mut second = regulated_full_earth_person(world_id, 0x742, 10_000_000, 1_000_000);
@@ -10685,8 +10821,81 @@ mod tests {
             .expect("association genesis commit");
         assert_eq!(
             genesis.event_schema_version,
-            SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION
+            SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
         );
+        let founder = running.organisms.values().next().expect("founder");
+        let movement_base = running
+            .deterministic_policy_candidates_with_cognition(
+                founder,
+                founder.initial_age_ticks,
+                None,
+            )
+            .expect("movement candidates");
+        let movement_biased = running
+            .deterministic_policy_candidates_with_cognition(
+                founder,
+                founder.initial_age_ticks,
+                Some(CognitionMotorPreference {
+                    action_kind: PrimitiveActionKind::Move,
+                    contact_region: None,
+                    signal_intensity: None,
+                    movement_direction: Some(2),
+                }),
+            )
+            .expect("direction-biased candidates");
+        assert_eq!(
+            movement_base
+                .iter()
+                .filter(|candidate| candidate.action.kind == PrimitiveActionKind::Move)
+                .filter_map(|candidate| candidate.action.movement_direction)
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2, 3]
+        );
+        for (base, biased) in movement_base.iter().zip(&movement_biased) {
+            let receives_bonus = base.action.kind == PrimitiveActionKind::Move
+                && base.action.movement_direction == Some(2);
+            assert_eq!(
+                biased.weight,
+                base.weight
+                    + if receives_bonus {
+                        COGNITION_ACTION_WEIGHT_BONUS
+                    } else {
+                        0
+                    }
+            );
+        }
+        assert!((1..=10_000).any(|age_ticks| {
+            running
+                .deterministic_policy_action_with_cognition(
+                    founder,
+                    age_ticks,
+                    Some(CognitionMotorPreference {
+                        action_kind: PrimitiveActionKind::EmitSignal,
+                        contact_region: None,
+                        signal_intensity: Some(8),
+                        movement_direction: None,
+                    }),
+                )
+                .is_ok_and(|action| {
+                    action.kind == PrimitiveActionKind::EmitSignal && action.intensity == 8
+                })
+        }));
+        assert!((1..=10_000).any(|age_ticks| {
+            running
+                .deterministic_policy_action_with_cognition(
+                    founder,
+                    age_ticks,
+                    Some(CognitionMotorPreference {
+                        action_kind: PrimitiveActionKind::Move,
+                        contact_region: None,
+                        signal_intensity: None,
+                        movement_direction: Some(2),
+                    }),
+                )
+                .is_ok_and(|action| {
+                    action.kind == PrimitiveActionKind::Move && action.movement_direction == Some(2)
+                })
+        }));
         let first_events = running
             .plan_next_tick_with_celestial_and_cognition(
                 CelestialState::new(
@@ -11085,7 +11294,12 @@ mod tests {
             .deterministic_policy_candidates_with_cognition(
                 organism,
                 1,
-                Some((PrimitiveActionKind::ApplyForce, Some(3), None)),
+                Some(CognitionMotorPreference {
+                    action_kind: PrimitiveActionKind::ApplyForce,
+                    contact_region: Some(3),
+                    signal_intensity: None,
+                    movement_direction: None,
+                }),
             )
             .expect("region-biased candidates");
         assert_eq!(base_candidates.len(), region_biased.len());
@@ -11122,7 +11336,12 @@ mod tests {
             .deterministic_policy_candidates_with_cognition(
                 acoustic_organism,
                 1,
-                Some((PrimitiveActionKind::EmitSignal, None, Some(6))),
+                Some(CognitionMotorPreference {
+                    action_kind: PrimitiveActionKind::EmitSignal,
+                    contact_region: None,
+                    signal_intensity: Some(6),
+                    movement_direction: None,
+                }),
             )
             .expect("intensity-biased acoustic candidates");
         assert_eq!(
@@ -11234,7 +11453,12 @@ mod tests {
             .deterministic_policy_candidates_with_cognition(
                 organism,
                 21,
-                Some((PrimitiveActionKind::Rest, None, None)),
+                Some(CognitionMotorPreference {
+                    action_kind: PrimitiveActionKind::Rest,
+                    contact_region: None,
+                    signal_intensity: None,
+                    movement_direction: None,
+                }),
             )
             .expect("biased candidates");
         assert_eq!(base.len(), biased.len());

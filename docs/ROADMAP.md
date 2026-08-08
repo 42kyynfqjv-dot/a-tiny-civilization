@@ -567,3 +567,9 @@ action, then weakly bias its response when that amplitude is heard again. Associ
 state never enter public projections, newborns inherit none of them, and the engine contains no
 message or vocabulary. Fresh genesis and qualification now default to ruleset 22; ADR 0099 records
 the temporal and privacy invariants.
+
+Ruleset 23 makes immediate movement direction selectable instead of an engine-side draw. Four
+label-free adjacent motor coordinates can be explored or weakly selected by cognition, while exact
+action-to-relocation coupling rejects teleportation and direction tampering. No map, place name,
+route, or destination enters the world. Fresh genesis and qualification default to ruleset 23;
+ADR 0100 records the boundary and the corrected preservation of selected signal intensity.

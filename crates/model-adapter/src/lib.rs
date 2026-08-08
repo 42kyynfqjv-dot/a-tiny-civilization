@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{Digest, PrimitiveActionKind};
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v3";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v4";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -316,7 +316,7 @@ fn api_request(
         "messages": [
             {
                 "role": "system",
-                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be an integer from 0 through 7; otherwise it must be null. For emit_signal only, signal_intensity may be an integer from 1 through 8; otherwise it must be null. These are physical motor coordinates only, never symbols, words, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
+                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be 0 through 7. For emit_signal only, signal_intensity may be 1 through 8. For move only, movement_direction may be 0 through 3. Every other motor coordinate must be null. These are physical motor coordinates only, never symbols, words, maps, place names, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
             },
             {
                 "role": "user",
@@ -353,9 +353,15 @@ fn api_request(
                                 {"type": "integer", "minimum": 1, "maximum": 8},
                                 {"type": "null"}
                             ]
+                        },
+                        "movement_direction": {
+                            "anyOf": [
+                                {"type": "integer", "minimum": 0, "maximum": 3},
+                                {"type": "null"}
+                            ]
                         }
                     },
-                    "required": ["action_kind", "contact_region", "signal_intensity"],
+                    "required": ["action_kind", "contact_region", "signal_intensity", "movement_direction"],
                     "additionalProperties": false
                 }
             }
@@ -413,6 +419,8 @@ struct BoundedAction {
     contact_region: Option<u8>,
     #[serde(default)]
     signal_intensity: Option<u8>,
+    #[serde(default)]
+    movement_direction: Option<u8>,
 }
 
 fn parse_response(
@@ -478,6 +486,7 @@ fn parse_response(
         action_kind: action.action_kind,
         contact_region: action.contact_region,
         signal_intensity: action.signal_intensity,
+        movement_direction: action.movement_direction,
         provider_response_hash: response_hash,
         adapter_version: MODEL_ADAPTER_VERSION.to_owned(),
     };
@@ -615,6 +624,7 @@ mod tests {
                     action_kind,
                     contact_region: None,
                     signal_intensity: None,
+                    movement_direction: None,
                     provider_response_hash: Digest::sha256(b"fake-response"),
                     adapter_version: "fake-v1".to_owned(),
                 }),
@@ -764,6 +774,20 @@ mod tests {
             .expect("valid bounded signal intensity");
         assert_eq!(receipt.action_kind, PrimitiveActionKind::EmitSignal);
         assert_eq!(receipt.signal_intensity, Some(8));
+
+        let movement = json!({
+            "id": "generation-movement",
+            "model": "openai/gpt-oss-120b:free",
+            "choices": [{"message": {"content": "{\"action_kind\":\"move\",\"contact_region\":null,\"signal_intensity\":null,\"movement_direction\":2}"}}],
+            "usage": {"prompt_tokens": 91, "completion_tokens": 10, "cost": 0}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter(), movement).await;
+        let receipt = adapter
+            .infer(&CognitionModelRoute::openrouter_free(), &request())
+            .await
+            .expect("valid bounded movement direction");
+        assert_eq!(receipt.action_kind, PrimitiveActionKind::Move);
+        assert_eq!(receipt.movement_direction, Some(2));
     }
 
     #[tokio::test]

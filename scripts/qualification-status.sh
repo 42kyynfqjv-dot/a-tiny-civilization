@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-22}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-23}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -121,7 +121,13 @@ WITH selected_world AS (
                WHERE event -> 'event' ->> 'type' = 'organism_acted'
                  AND event -> 'event' -> 'data' -> 'action' ->> 'kind' = 'emit_signal'
                  AND (event -> 'event' -> 'data' -> 'action' ->> 'intensity')::INTEGER > 1
-           )::BIGINT AS varied_signals
+           )::BIGINT AS varied_signals,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'organism_acted'
+                 AND event -> 'event' -> 'data' -> 'action' ->> 'kind' = 'move'
+                 AND event -> 'event' -> 'data' -> 'action' -> 'movement_direction'
+                       IS NOT NULL
+           )::BIGINT AS directed_moves
     FROM event_batches batch
     CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
     WHERE batch.world_id = :'world_id'::UUID
@@ -214,6 +220,7 @@ WITH selected_world AS (
            , (ruleset_version < 21 OR varied_signals > 0) AS acoustic_variation_exercised
            , (ruleset_version < 22 OR signal_action_associations > 0)
                AS signal_action_association_exercised
+           , (ruleset_version < 23 OR directed_moves > 0) AS selectable_movement_exercised
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -224,7 +231,8 @@ SELECT jsonb_build_object(
       AND memory_delivered AND cognition_deadlines_complete
       AND hindsight_cognition_exercised AND observer_content_present
       AND material_transformation_exercised AND surface_arrangement_exercised
-      AND acoustic_variation_exercised AND signal_action_association_exercised,
+      AND acoustic_variation_exercised AND signal_action_association_exercised
+      AND selectable_movement_exercised,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -256,6 +264,7 @@ SELECT jsonb_build_object(
     'canonical_features', jsonb_build_object(
       'varied_signals', varied_signals,
       'signal_action_associations', signal_action_associations
+      , 'directed_moves', directed_moves
     ),
     'checks', jsonb_build_object(
       'running', running, 'expected_ruleset', expected_ruleset,
@@ -271,6 +280,7 @@ SELECT jsonb_build_object(
       'surface_arrangement_exercised', surface_arrangement_exercised
       , 'acoustic_variation_exercised', acoustic_variation_exercised
       , 'signal_action_association_exercised', signal_action_association_exercised
+      , 'selectable_movement_exercised', selectable_movement_exercised
     )
 )::TEXT
 FROM checks;
