@@ -102,3 +102,9 @@ all checks in one read-only run: contiguous history, snapshots, four current pro
 memory delivery, all due cognition latches and consumptions, an exercised Hindsight recall/result,
 and nonempty observer content. The retained JSON schema reports future cognition work separately so
 an unelapsed simulation-time deadline cannot create a false failure.
+
+ADR 0090 packaged that passing report with all seven seed-derived genesis JSON documents, their
+original nested manifest, and source commit `2c5e752d5e204119dcd68cbd3d6549ecb7d083bf`. The disposable
+bundle occupied 651,468 filesystem bytes; its root `SHA256SUMS` digest was
+`4c1f9d36a73c3b623dea4fd19980c5eadb057add797a6c489905520874ca32f5`. It contained no canonical
+event payloads.
