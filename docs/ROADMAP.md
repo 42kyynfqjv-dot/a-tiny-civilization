@@ -666,3 +666,10 @@ source covers 23 of 32 selected fauna taxa and contributes 257 exact trait/row p
 preparation derives the plan, and initialization re-resolves every pair before pinning both plan and
 profile-set digests in the immutable world manifest. Separately reviewed causal ecology remains a
 later step.
+
+Canonical candidate v6 carries that noncausal ecology plan into a fresh same-identity genesis. It
+passed at tick 1,680 with exact genesis and snapshot-tail replay, all five projections current, all
+3,939 Hindsight deliveries complete without errors, and one fixed-deadline local Qwen receipt
+consumed with paid dispatch disabled. Its immutable evidence supersedes candidate v5 for launch
+review. The evidence changes provenance coverage only and does not authorize deployment, causal
+ecology, or scientific admission.
