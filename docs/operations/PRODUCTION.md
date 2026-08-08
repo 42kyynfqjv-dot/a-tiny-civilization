@@ -136,9 +136,21 @@ sudo ./scripts/prepare-production-genesis-database.sh \
 ```
 
 It runs the same complete candidate/admission/runtime preflight before changing service state and
-refuses to start any public or canonical process. Run
-`activate-qualified-canonical-world.sh activate` while the database is still private, record its
-tick-zero replay hashes, and only then invoke the deployment helper above. The helper now refuses an
+refuses to start any public or canonical process. Commit the admitted world while the database is
+still private:
+
+```bash
+sudo ./scripts/activate-production-genesis.sh \
+  --env-file /etc/a-tiny-civilization-production.env \
+  --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
+  --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --confirm-experimental-genesis
+```
+
+This wrapper re-runs the full composed preflight, loads the protected literal environment through
+the production parser, percent-encodes the loopback PostgreSQL URL in memory, and invokes the
+unchanged qualified activation boundary. It commits only tick zero and starts no service. Record
+its replay hashes, and only then invoke the deployment helper above. The helper now refuses an
 empty database instead of publishing a pre-genesis shell, and it refuses a different world,
 ruleset, terminal status, zero sequence, or multiple worlds before any canonical service or web
 container starts.

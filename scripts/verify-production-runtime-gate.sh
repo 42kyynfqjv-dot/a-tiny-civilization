@@ -4,6 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deployment="${project_root}/scripts/deploy-production-app.sh"
 database_preparation="${project_root}/scripts/prepare-production-genesis-database.sh"
+production_activation="${project_root}/scripts/activate-production-genesis.sh"
 runtime_verifier="${project_root}/scripts/verify-staged-runtime-artifacts.sh"
 
 preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$deployment")"
@@ -70,6 +71,29 @@ done
 if rg -q 'up .*\b(api|projector|runner|web|memory-worker|cognition-worker|cloudflared)\b' \
   "$database_preparation"; then
   echo "private database preparation may start only db and migrate" >&2
+  exit 1
+fi
+
+activation_preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$production_activation")"
+activation_mutation_line="$(rg -n -m1 'activate-qualified-canonical-world\.sh.*activate' "$production_activation")"
+if ((${activation_preflight_line%%:*} >= ${activation_mutation_line%%:*})); then
+  echo "production activation must run the composed preflight before tick-zero mutation" >&2
+  exit 1
+fi
+for contract in \
+  'requires the literal --confirm-experimental-genesis argument' \
+  'production-preflight\.sh.*--env-file' \
+  '127\.0\.0\.1' \
+  'QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08\.json' \
+  'no service or public route was started'; do
+  if ! rg -q -- "$contract" "$production_activation"; then
+    echo "production activation lost required contract: $contract" >&2
+    exit 1
+  fi
+done
+if rg -q '\b(docker|cloudflared)\b.*\b(up|run|start|deploy|route)\b|deploy-production-app\.sh' \
+  "$production_activation"; then
+  echo "production activation may not deploy or start services" >&2
   exit 1
 fi
 
