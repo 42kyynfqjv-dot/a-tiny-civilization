@@ -11,5 +11,7 @@ grep -qF 'HINDSIGHT_API_MODEL_INIT_TIMEOUT: "900"' "$compose_file"
 grep -qE '^[[:space:]]+stop_grace_period:[[:space:]]+30s$' "$compose_file"
 grep -qF 'HINDSIGHT_API_LLM_PROVIDER: none' "$compose_file"
 grep -qF 'HINDSIGHT_API_STORE_DOCUMENT_TEXT: "false"' "$compose_file"
+grep -qF 'HF_HUB_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-1}' "$compose_file"
+grep -qF 'TRANSFORMERS_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-1}' "$compose_file"
 
 echo "Hindsight runtime is pinned, keyless, text-minimized, and provisioned with sufficient shared memory."

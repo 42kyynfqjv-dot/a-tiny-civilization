@@ -21,5 +21,11 @@ matching 900-second model-initialization timeout prevents Hindsight's internal e
 ending earlier. A 30-second compose stop grace period matches the image's documented
 embedded-PostgreSQL shutdown.
 
+The host's named model cache already contains both pinned local models. Runtime therefore defaults
+Hugging Face and Transformers to offline mode. Without it, `transformers` performs a metadata-only
+`adapter_config.json` lookup even when weights are cached; restricted egress can hold model
+initialization until timeout. An operator preparing a genuinely empty cache may explicitly set
+`HINDSIGHT_HF_OFFLINE=0`, populate it, then return production runtime to offline mode.
+
 Memory delivery remains asynchronous and replay-external. Hindsight failure cannot alter or block a
 canonical tick, and undelivered records remain in the durable outbox for retry.
