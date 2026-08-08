@@ -2,6 +2,8 @@
 set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+grep -qF "result.result_payload -> 'receipt' <> 'null'::JSONB" \
+  "${project_root}/scripts/qualification-status.sh"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 mkdir -p "${temporary_directory}/bin"

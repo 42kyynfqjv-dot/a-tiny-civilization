@@ -10,16 +10,21 @@ Accepted.
 genesis is authorized. It first performs exact canonical replay with the runner and then emits one
 JSON object derived directly from PostgreSQL. A successful report requires:
 
-- a running ruleset-18 world with at least 1,000 ticks of history;
+- a running world at the explicitly expected ruleset (ruleset 19 by default) with at least 1,000
+  ticks of history;
 - contiguous canonical batches through the durable cursor and at least one valid snapshot;
-- all four public projections exactly current;
+- all five public projections exactly current;
 - a nonempty, fully delivered Hindsight memory outbox with no recorded delivery errors;
 - at least one due cognition request, no missing due latch or consumption, and at least one real
-  recall/result path exercised;
+  recall plus non-null model receipt exercised;
 - nonempty organism, timeline, and deterministic-finding projections.
+- for ruleset 19 and later, at least one projected canonical material surface trace.
 
 Future cognition requests are reported but are not failures. Their deadlines have not occurred in
 simulation time, so treating them as overdue would make the gate depend on wall-clock timing.
+A durable cognition-result row may contain only the audited sequence of skipped or failed routes;
+that is not a model completion. The gate inspects the typed payload and requires a non-null receipt,
+preventing an entirely unconfigured provider ladder from passing.
 
 The script exits nonzero when replay fails, the world is absent, or any reported check is false. It
 does not advance the world, run projections, deliver memory, or contact a model provider; those are

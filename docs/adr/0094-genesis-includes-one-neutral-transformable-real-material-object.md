@@ -38,3 +38,10 @@ snapshot plus tail. Its free policy produced 12 grasps, 12 releases, and 11 surf
 the observer projection filed one cited silicon-dioxide object whose trace reached 29 units. A live
 localhost API read returned the same object with first provenance at tick 70/sequence 73 and latest
 provenance at tick 735/sequence 749. No observer input or scripted action was used.
+
+At tick 1,021/sequence 1,040 the tightened qualification report has every local check green:
+replay, history, snapshots, five projections, 2,828 delivered memory records, all due cognition
+deadline latches/consumptions, observer content, and material transformation. It remains correctly
+red on exactly one check: no external model receipt has been authorized for real private cognition
+payload. The stored result contains a fully audited ten-route skipped-unconfigured ladder with a
+null receipt, which ADR 0089 now forbids the report from miscounting as model completion.

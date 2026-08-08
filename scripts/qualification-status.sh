@@ -145,7 +145,11 @@ WITH selected_world AS (
            )::BIGINT AS due_without_consumption,
            COUNT(*) FILTER (WHERE request.deadline_tick > world.current_tick)::BIGINT AS future,
            COUNT(recall.request_id)::BIGINT AS recalled,
-           COUNT(result.request_id)::BIGINT AS completed_results
+           COUNT(result.request_id)::BIGINT AS completed_results,
+           COUNT(result.request_id) FILTER (
+               WHERE result.result_payload -> 'receipt' IS NOT NULL
+                 AND result.result_payload -> 'receipt' <> 'null'::JSONB
+           )::BIGINT AS model_receipts
     FROM cognition_requests request
     JOIN selected_world world ON world.id = request.world_id
     LEFT JOIN cognition_deadline_latches latch USING (request_id)
@@ -188,7 +192,7 @@ WITH selected_world AS (
            memory_total > 0 AND memory_pending = 0 AND memory_errors = 0 AS memory_delivered,
            requests > 0 AND due > 0 AND due_without_latch = 0
              AND due_without_consumption = 0 AS cognition_deadlines_complete,
-           recalled > 0 AND completed_results > 0 AS hindsight_cognition_exercised,
+           recalled > 0 AND model_receipts > 0 AS hindsight_cognition_exercised,
            organisms > 0 AND timeline_items > 0 AND findings > 0 AS observer_content_present,
            (ruleset_version < 19 OR artifact_traces > 0) AS material_transformation_exercised
     FROM facts
@@ -221,7 +225,8 @@ SELECT jsonb_build_object(
       'requests', requests, 'due', due, 'future', future,
       'due_without_latch', due_without_latch,
       'due_without_consumption', due_without_consumption,
-      'recalled', recalled, 'completed_results', completed_results
+      'recalled', recalled, 'completed_results', completed_results,
+      'model_receipts', model_receipts
     ),
     'observer', jsonb_build_object(
       'organisms', organisms, 'timeline_items', timeline_items, 'findings', findings,
