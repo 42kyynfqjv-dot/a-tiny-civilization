@@ -46,6 +46,18 @@ for contract in '--world-id.*expected_world_id' '--wait-seconds 300'; do
     exit 1
   fi
 done
+for contract in \
+  '/privacy' \
+  '/terms' \
+  '/supporter-policy' \
+  '/presentation-policy' \
+  'edge-check=plaintext' \
+  'route_markers'; do
+  if ! rg -q -- "$contract" "${project_root}/scripts/verify-public-edge.sh"; then
+    echo "public edge gate lost admitted-route contract: $contract" >&2
+    exit 1
+  fi
+done
 if ((private_foundation_number >= world_guard_number || world_guard_number >= canonical_start_number)); then
   echo "deployment must validate the privately activated world before canonical services start" >&2
   exit 1

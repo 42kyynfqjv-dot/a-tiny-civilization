@@ -221,10 +221,11 @@ runtime users, executes the Rust image under the production restrictions, and bo
 the web image on a random loopback port with a read-only root filesystem.
 
 After a deployment passes the private backend and observer smoke gates, the deploy helper also
-checks the real `atinycivilization.com` edge. HTTP must redirect to the one canonical HTTPS origin;
-the homepage, wiki, and observer status must return 200 with the complete security/no-store header
-contract; and the returned homepage and JSON must parse as the expected public product. A healthy
-loopback origin behind a broken tunnel or weakened edge policy is not reported as a successful
+checks the real `atinycivilization.com` edge. HTTP must preserve paths and query strings while
+redirecting to the one canonical HTTPS origin. The homepage, wiki, every public policy route, and
+observer status must return 200 with the complete security/no-store header contract and their
+admitted content markers; the returned status must parse as JSON. A healthy loopback origin behind
+a broken tunnel, missing policy route, or weakened edge policy is not reported as a successful
 deployment.
 
 The Compose project name and canonical PostgreSQL/Hindsight volume names are explicit and do not
