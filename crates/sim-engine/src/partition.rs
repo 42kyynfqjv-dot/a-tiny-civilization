@@ -1399,6 +1399,95 @@ mod tests {
     }
 
     #[test]
+    fn worker_disruption_and_checkpoint_restart_cannot_change_history() {
+        let mut reference_people = fixture_people();
+        let mut disrupted_people = reference_people.clone();
+        let initial_work = reference_people
+            .values()
+            .map(person_work)
+            .collect::<Vec<_>>();
+        let mut reference_schedule = PartitionSchedule::new(PARTITION_LEVEL, initial_work.clone())
+            .expect("valid reference schedule");
+        let mut disrupted_schedule = PartitionSchedule::new(PARTITION_LEVEL, initial_work)
+            .expect("valid disrupted schedule");
+        let mut current_tick = SimTick::ZERO;
+
+        for iteration in 0..12 {
+            // A process restart must recover the exact canonical queue before it
+            // can assign any work. Worker identity and ownership are deliberately
+            // absent from this checkpoint.
+            let checkpoint = PartitionScheduleCheckpoint::new(disrupted_schedule);
+            let checkpoint_bytes = checkpoint.canonical_bytes().expect("checkpoint bytes");
+            disrupted_schedule =
+                PartitionScheduleCheckpoint::from_canonical_slice(&checkpoint_bytes)
+                    .expect("checkpoint restart")
+                    .schedule()
+                    .clone();
+
+            let reference_plan = reference_schedule
+                .plan_next_tick(current_tick)
+                .expect("reference tick plan");
+            let disrupted_plan = disrupted_schedule
+                .plan_next_tick(current_tick)
+                .expect("disrupted tick plan");
+            assert_eq!(reference_plan, disrupted_plan);
+
+            let reference_outputs = propose_partition_outputs(&reference_people, &reference_plan);
+
+            // Recompute all immutable proposals to model a timed-out attempt being
+            // retried on different workers. Then perturb arrival order to model
+            // delay and reassignment. Only the final complete result set reaches
+            // the barrier; duplicate or partial sets are rejected by separate tests.
+            let mut disrupted_outputs =
+                propose_partition_outputs(&disrupted_people, &disrupted_plan);
+            if iteration % 2 == 0 {
+                disrupted_outputs.reverse();
+            } else if disrupted_outputs.len() > 1 {
+                disrupted_outputs.rotate_left(1);
+            }
+
+            let reference_resolved = reference_plan
+                .complete(reference_outputs, 10)
+                .expect("reference barrier resolves");
+            let disrupted_resolved = disrupted_plan
+                .complete(disrupted_outputs, 10)
+                .expect("disrupted barrier resolves");
+
+            assert_eq!(
+                serde_json::to_vec(
+                    &reference_resolved
+                        .emissions()
+                        .iter()
+                        .map(Emission::event)
+                        .collect::<Vec<_>>(),
+                )
+                .expect("reference event bytes"),
+                serde_json::to_vec(
+                    &disrupted_resolved
+                        .emissions()
+                        .iter()
+                        .map(Emission::event)
+                        .collect::<Vec<_>>(),
+                )
+                .expect("disrupted event bytes")
+            );
+            assert_eq!(
+                reference_resolved.next_schedule(),
+                disrupted_resolved.next_schedule()
+            );
+
+            apply_synthetic_events(&mut reference_people, reference_resolved.emissions());
+            apply_synthetic_events(&mut disrupted_people, disrupted_resolved.emissions());
+            assert_eq!(reference_people, disrupted_people);
+
+            current_tick = reference_resolved.to_tick();
+            assert_eq!(current_tick, disrupted_resolved.to_tick());
+            reference_schedule = reference_resolved.next_schedule().clone();
+            disrupted_schedule = disrupted_resolved.next_schedule().clone();
+        }
+    }
+
+    #[test]
     fn empty_tick_advances_once_and_overdue_work_is_never_skipped() {
         let empty = PartitionSchedule::new(PARTITION_LEVEL, Vec::new()).expect("empty schedule");
         let resolved = empty

@@ -95,7 +95,12 @@ The reference tests prove:
 - a synthetic set of durable people produces the same due-work set, ordered event
   bytes, individual state, and next schedule under dense scanning and queued partition
   execution on every tested tick. Workers derive proposals from immutable pre-tick
-  state, and resolved events are applied only after the barrier accepts every result.
+  state, and resolved events are applied only after the barrier accepts every result;
+  and
+- checkpoint recovery on every tick plus recomputed retry results, alternating worker-result
+  arrival orders, and operational reassignment produce the same ordered event bytes, state, and
+  next schedule as an uninterrupted reference execution. Worker identity remains absent from
+  canonical state.
 
 ## Consequences
 
