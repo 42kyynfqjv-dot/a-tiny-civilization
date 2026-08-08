@@ -67,6 +67,34 @@ def verify_manifest(root: pathlib.Path) -> str:
     return digest(manifest)
 
 
+def verify_genesis_manifest(root: pathlib.Path) -> str:
+    manifest = root / "SHA256SUMS"
+    if not manifest.is_file() or manifest.is_symlink():
+        raise ValueError(f"unsafe or missing genesis checksum manifest: {manifest}")
+    covered: set[pathlib.Path] = set()
+    for line in manifest.read_text(encoding="utf-8").splitlines():
+        match = re.fullmatch(r"([0-9a-f]{64})  \./([^\s]+)", line)
+        if not match:
+            raise ValueError("genesis checksum manifest has a noncanonical or nonportable line")
+        relative = pathlib.PurePosixPath(match.group(2))
+        if relative.is_absolute() or ".." in relative.parts:
+            raise ValueError("genesis checksum manifest path escapes its bundle")
+        path = root.joinpath(*relative.parts)
+        if not path.is_file() or path.is_symlink() or path in covered or path == manifest:
+            raise ValueError(f"unsafe, missing, or duplicate genesis file: {relative}")
+        if digest(path) != match.group(1):
+            raise ValueError(f"genesis checksum mismatch: {relative}")
+        covered.add(path)
+    genesis_files = {
+        path
+        for path in root.iterdir()
+        if path.is_file() and not path.is_symlink() and path != manifest
+    }
+    if not genesis_files or covered != genesis_files:
+        raise ValueError("genesis checksum manifest must cover every and only genesis artifact")
+    return digest(manifest)
+
+
 def require_true_checks(report: dict) -> None:
     checks = report.get("checks")
     if not isinstance(checks, dict) or not checks or any(value is not True for value in checks.values()):
@@ -167,7 +195,7 @@ def verify(args: argparse.Namespace) -> dict:
         raise ValueError("evidence bundle does not explicitly exclude canonical event payloads")
     if evidence_record.get("world_id") != world_id or report.get("world_id") != world_id:
         raise ValueError("world identity differs across launch evidence")
-    genesis_manifest_digest = digest(genesis / "SHA256SUMS")
+    genesis_manifest_digest = verify_genesis_manifest(genesis)
     if not HEX_DIGEST.fullmatch(genesis_manifest_digest):
         raise ValueError("genesis checksum identity is malformed")
     if evidence_record.get("genesis_sha256s_sha256") != genesis_manifest_digest:

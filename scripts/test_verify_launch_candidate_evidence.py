@@ -25,11 +25,8 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         self.evidence = root / "evidence"
         (self.evidence / "genesis").mkdir(parents=True)
         self.genesis.mkdir()
-        genesis_manifest = "0" * 64 + "  /source/not-used-by-this-verifier.json\n"
-        (self.genesis / "SHA256SUMS").write_text(genesis_manifest, encoding="utf-8")
-        (self.evidence / "genesis" / "SHA256SUMS").write_text(
-            genesis_manifest, encoding="utf-8"
-        )
+        (self.genesis / "seed.json").write_text("{}\n", encoding="utf-8")
+        self.write_genesis_manifest(update_evidence=False)
         source_commit = subprocess.check_output(
             ["git", "rev-parse", "HEAD"], cwd=PROJECT_ROOT, text=True
         ).strip()
@@ -80,6 +77,22 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         lines = [f"{sha(path)}  ./{path.relative_to(self.evidence).as_posix()}" for path in paths]
         (self.evidence / "SHA256SUMS").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
+    def write_genesis_manifest(self, update_evidence: bool = True):
+        paths = sorted(
+            path
+            for path in self.genesis.iterdir()
+            if path.is_file() and path.name != "SHA256SUMS"
+        )
+        lines = [f"{sha(path)}  ./{path.name}" for path in paths]
+        manifest = self.genesis / "SHA256SUMS"
+        manifest.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        (self.evidence / "genesis" / "SHA256SUMS").write_bytes(manifest.read_bytes())
+        if update_evidence:
+            record = json.loads((self.evidence / "evidence.json").read_text())
+            record["genesis_sha256s_sha256"] = sha(manifest)
+            self.write_json("evidence.json", record)
+            self.write_manifest()
+
     def run_verifier(self, expected_ruleset: int = 30):
         return subprocess.run(
             [
@@ -118,6 +131,21 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         result = self.run_verifier()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("failing or malformed check", result.stderr)
+
+    def test_rejects_an_absolute_genesis_manifest_even_when_bound(self):
+        manifest = self.genesis / "SHA256SUMS"
+        manifest.write_text(
+            f"{sha(self.genesis / 'seed.json')}  {self.genesis / 'seed.json'}\n",
+            encoding="utf-8",
+        )
+        (self.evidence / "genesis" / "SHA256SUMS").write_bytes(manifest.read_bytes())
+        record = json.loads((self.evidence / "evidence.json").read_text())
+        record["genesis_sha256s_sha256"] = sha(manifest)
+        self.write_json("evidence.json", record)
+        self.write_manifest()
+        result = self.run_verifier()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("noncanonical or nonportable", result.stderr)
 
     def configure_ruleset_31_genesis(self):
         species = {"catalog": "gbif", "identifier": "2436436"}
@@ -174,7 +202,7 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         report = json.loads((self.evidence / "qualification-status.json").read_text())
         report["world"]["ruleset_version"] = 31
         self.write_json("qualification-status.json", report)
-        self.write_manifest()
+        self.write_genesis_manifest()
 
     def test_ruleset_31_requires_mass_scaled_energy_and_oral_transfer(self):
         self.configure_ruleset_31_genesis()
@@ -206,6 +234,7 @@ class LaunchCandidateEvidenceTests(unittest.TestCase):
         (self.genesis / "material-resource-plan.json").write_text(
             json.dumps(materials, separators=(",", ":")), encoding="utf-8"
         )
+        self.write_genesis_manifest()
         result = self.run_verifier(31)
         self.assertEqual(result.returncode, 0, result.stderr)
 
