@@ -222,8 +222,7 @@ signal timing. It uses the real writer lock, snapshot resume, cognition scheduli
 driver, but refuses `APP_ENV=production` and cannot change a public world's pace:
 
 ```bash
-APP_ENV=development civilization-runner advance-qualification \
-  --world-id "$QUALIFICATION_WORLD_ID" --ticks 1000
+./scripts/advance-qualification-world.sh "$QUALIFICATION_WORLD_ID" 1000
 civilization-runner verify-world --world-id "$QUALIFICATION_WORLD_ID"
 civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 ./scripts/qualification-status.sh "$QUALIFICATION_WORLD_ID" > qualification-status.json
