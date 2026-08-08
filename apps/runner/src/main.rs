@@ -27,7 +27,7 @@ use sim_engine::{
     BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
     LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION,
-    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, TERRAIN_MOVEMENT_RULESET_VERSION,
+    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, TOPSOIL_MOVEMENT_RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
@@ -52,7 +52,7 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = TERRAIN_MOVEMENT_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = TOPSOIL_MOVEMENT_RULESET_VERSION;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
 // 60-second request-to-simulation-deadline window.
@@ -2829,7 +2829,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, TERRAIN_MOVEMENT_RULESET_VERSION);
+        assert_eq!(ruleset_version, TOPSOIL_MOVEMENT_RULESET_VERSION);
         assert!(refuse_other_worlds);
     }
 

@@ -19,7 +19,7 @@ fi
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 minimum_tick="${ATINY_QUALIFICATION_MINIMUM_TICK:-1000}"
-expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-29}"
+expected_ruleset="${ATINY_QUALIFICATION_RULESET_VERSION:-30}"
 
 if [[ ! "$minimum_tick" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_QUALIFICATION_MINIMUM_TICK must be a positive integer" >&2
@@ -274,9 +274,10 @@ WITH selected_world AS (
                  AND water_flux_perceptions > 0 AND air_motion_perceptions > 0
              )) AS local_atmospheric_flux_exercised
            , (ruleset_version < 29 OR (
-                 minimum_event_schema = 29 AND maximum_event_schema = 29
+                 minimum_event_schema = ruleset_version
+                 AND maximum_event_schema = ruleset_version
                  AND surface_configurations = 1
-             )) AS terrain_movement_bound
+             )) AS surface_movement_bound
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -291,7 +292,7 @@ SELECT jsonb_build_object(
       AND selectable_movement_exercised AND movement_direction_learning_exercised
       AND signal_motor_association_exercised AND person_only_cognition
       AND local_weather_bound AND local_atmospheric_flux_exercised
-      AND terrain_movement_bound,
+      AND surface_movement_bound,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -351,7 +352,7 @@ SELECT jsonb_build_object(
       , 'person_only_cognition', person_only_cognition
       , 'local_weather_bound', local_weather_bound
       , 'local_atmospheric_flux_exercised', local_atmospheric_flux_exercised
-      , 'terrain_movement_bound', terrain_movement_bound
+      , 'surface_movement_bound', surface_movement_bound
     )
 )::TEXT
 FROM checks;

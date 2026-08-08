@@ -45,7 +45,8 @@ use world_domain::{
     SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
     SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
-    SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
+    SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
+    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
     WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
@@ -138,6 +139,9 @@ pub const LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION: u32 = 28;
 /// Ruleset twenty-nine makes moving across the provisional local terrain range
 /// increase private bodily fatigue without exposing terrain or altitude labels.
 pub const TERRAIN_MOVEMENT_RULESET_VERSION: u32 = 29;
+/// Ruleset thirty additionally applies the source-bound topsoil coarse-fragment
+/// median to private movement fatigue without exposing a soil or surface label.
+pub const TOPSOIL_MOVEMENT_RULESET_VERSION: u32 = 30;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -167,6 +171,7 @@ pub const SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 26;
 pub const LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION: u16 = 27;
 pub const LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION: u16 = 28;
 pub const TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 29;
+pub const TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 30;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -208,6 +213,7 @@ const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
 const LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION: u16 = 27;
 const LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION: u16 = 28;
 const TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 29;
+const TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 30;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
@@ -351,6 +357,37 @@ fn terrain_adjusted_movement_exposure(
     })? / REFERENCE_RELIEF_MILLIMETRES;
     baseline_exposure.checked_add(additional).ok_or_else(|| {
         EngineError::PhysiologicalArithmetic("terrain movement exposure overflowed".to_owned())
+    })
+}
+
+/// Apply the median coarse-fragment volume fraction from the schema-pinned
+/// SoilGrids property order. The source domain is cubic centimetres per cubic
+/// decimetre, so 1,000 is the complete volume. This remains a provisional
+/// regional movement-load approximation and creates no organism-facing label.
+fn topsoil_adjusted_movement_exposure(
+    baseline_exposure: u128,
+    topsoil_source_quantiles: &[[i16; 3]; 9],
+) -> Result<u128, EngineError> {
+    const COARSE_FRAGMENT_PROPERTY_INDEX: usize = 2;
+    const COMPLETE_VOLUME_SOURCE_UNITS: u128 = 1_000;
+    let median = topsoil_source_quantiles[COARSE_FRAGMENT_PROPERTY_INDEX][1];
+    let median = u128::try_from(median).map_err(|_| {
+        EngineError::PhysiologicalArithmetic(
+            "topsoil coarse-fragment median is negative".to_owned(),
+        )
+    })?;
+    if median > COMPLETE_VOLUME_SOURCE_UNITS {
+        return Err(EngineError::PhysiologicalArithmetic(
+            "topsoil coarse-fragment median exceeds complete volume".to_owned(),
+        ));
+    }
+    let additional = baseline_exposure.checked_mul(median).ok_or_else(|| {
+        EngineError::PhysiologicalArithmetic(
+            "topsoil movement exposure numerator overflowed".to_owned(),
+        )
+    })? / COMPLETE_VOLUME_SOURCE_UNITS;
+    baseline_exposure.checked_add(additional).ok_or_else(|| {
+        EngineError::PhysiologicalArithmetic("topsoil movement exposure overflowed".to_owned())
     })
 }
 
@@ -965,6 +1002,10 @@ impl EngineState {
         self.manifest.ruleset_version >= TERRAIN_MOVEMENT_RULESET_VERSION
     }
 
+    fn uses_topsoil_movement_driver(&self) -> bool {
+        self.manifest.ruleset_version >= TOPSOIL_MOVEMENT_RULESET_VERSION
+    }
+
     fn local_temperature_at_tick(
         &self,
         configuration: &WorldConfiguration,
@@ -1332,16 +1373,21 @@ impl EngineState {
                 .map_err(|error| EngineError::InvalidLocalWeather(error.to_string()))?;
         }
         if self.uses_terrain_movement_driver() {
-            configuration
+            let surface = configuration
                 .as_ref()
                 .and_then(WorldConfiguration::local_surface_baseline)
                 .ok_or_else(|| {
                     EngineError::InvalidLocalSurface(
                         "terrain movement ruleset requires a local surface baseline".to_owned(),
                     )
-                })?
+                })?;
+            surface
                 .validate()
                 .map_err(|error| EngineError::InvalidLocalSurface(error.to_string()))?;
+            if self.uses_topsoil_movement_driver() {
+                topsoil_adjusted_movement_exposure(1, &surface.topsoil_source_quantiles)
+                    .map_err(|error| EngineError::InvalidLocalSurface(error.to_string()))?;
+            }
         }
         events.push(DomainEvent::WorldStarted {
             manifest: self.manifest.clone(),
@@ -3181,7 +3227,7 @@ impl EngineState {
                 .ok_or_else(|| {
                     EngineError::PhysiologicalArithmetic("fatigue exposure overflowed".to_owned())
                 })?;
-            let exposure = if self.uses_terrain_movement_driver()
+            let mut exposure = if self.uses_terrain_movement_driver()
                 && action.kind == PrimitiveActionKind::Move
             {
                 let surface = configuration.local_surface_baseline().ok_or_else(|| {
@@ -3197,6 +3243,17 @@ impl EngineState {
             } else {
                 baseline_exposure
             };
+            if self.uses_topsoil_movement_driver() && action.kind == PrimitiveActionKind::Move {
+                let surface = configuration.local_surface_baseline().ok_or_else(|| {
+                    EngineError::PhysiologicalArithmetic(
+                        "topsoil movement requires a local surface baseline".to_owned(),
+                    )
+                })?;
+                exposure = topsoil_adjusted_movement_exposure(
+                    exposure,
+                    &surface.topsoil_source_quantiles,
+                )?;
+            }
             add_load(
                 organism.bodily_regulation.fatigue_load_second_squared,
                 exposure,
@@ -5079,7 +5136,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_terrain_movement_driver() {
+        if self.uses_topsoil_movement_driver() {
+            TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
         } else if self.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
@@ -5166,7 +5225,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_terrain_movement_driver() {
+        if self.uses_topsoil_movement_driver() {
+            TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION
@@ -6840,16 +6901,22 @@ impl EngineState {
                 .map_err(|error| EngineError::InvalidLocalWeather(error.to_string()))?;
         }
         if self.uses_terrain_movement_driver() && self.status != WorldStatus::Initializing {
-            self.configuration
+            let surface = self
+                .configuration
                 .as_ref()
                 .and_then(WorldConfiguration::local_surface_baseline)
                 .ok_or_else(|| {
                     EngineError::InvalidLocalSurface(
                         "terrain movement ruleset requires a local surface baseline".to_owned(),
                     )
-                })?
+                })?;
+            surface
                 .validate()
                 .map_err(|error| EngineError::InvalidLocalSurface(error.to_string()))?;
+            if self.uses_topsoil_movement_driver() {
+                topsoil_adjusted_movement_exposure(1, &surface.topsoil_source_quantiles)
+                    .map_err(|error| EngineError::InvalidLocalSurface(error.to_string()))?;
+            }
         }
         let mut heritable_profiles_by_species = BTreeMap::new();
         for (id, organism) in &self.organisms {
@@ -7435,7 +7502,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_terrain_movement_driver() {
+        let snapshot_schema_version = if state.uses_topsoil_movement_driver() {
+            TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
@@ -7545,12 +7614,15 @@ impl Snapshot {
                 | LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
                 | LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
                 | TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+                | TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_terrain_movement_driver() {
+        let expected_schema_version = if self.state.uses_topsoil_movement_driver() {
+            TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_terrain_movement_driver() {
             TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
@@ -7686,7 +7758,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_terrain_movement_driver() {
+    if state.uses_topsoil_movement_driver() {
+        Some(TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION)
+    } else if state.uses_terrain_movement_driver() {
         Some(TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION)
     } else if state.uses_local_atmospheric_flux_driver() {
         Some(LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION)
@@ -13425,6 +13499,21 @@ mod tests {
     }
 
     #[test]
+    fn topsoil_coarse_fragments_add_only_proportional_movement_exposure() {
+        let mut quantiles = [[1, 2, 3]; 9];
+        quantiles[2] = [0, 30, 574];
+        assert_eq!(
+            topsoil_adjusted_movement_exposure(1_000_000, &quantiles)
+                .expect("canonical topsoil coarse-fragment median"),
+            1_030_000
+        );
+        quantiles[2][1] = -1;
+        assert!(topsoil_adjusted_movement_exposure(1, &quantiles).is_err());
+        quantiles[2][1] = 1_001;
+        assert!(topsoil_adjusted_movement_exposure(1, &quantiles).is_err());
+    }
+
+    #[test]
     fn ruleset_twenty_nine_binds_terrain_and_makes_movement_privately_costlier() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x129));
         let terrain_manifest = WorldManifest::new(
@@ -13506,5 +13595,75 @@ mod tests {
         snapshot
             .verify_integrity()
             .expect("terrain snapshot integrity");
+    }
+
+    #[test]
+    fn ruleset_thirty_binds_topsoil_and_stacks_only_private_movement_cost() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x130));
+        let topsoil_manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed30),
+            TOPSOIL_MOVEMENT_RULESET_VERSION,
+        );
+        let regulated_manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed30),
+            BODILY_REGULATION_RULESET_VERSION,
+        );
+        let initial = EngineState::new(regulated_manifest);
+        let person = regulated_full_earth_person(world_id, 0x230, 60_000, 60_000);
+        let events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("regulated genesis");
+        let (mut running, _) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, events)
+            .expect("regulated commit");
+        running.manifest = topsoil_manifest.clone();
+        running.configuration = Some(surface_provisional_full_earth_configuration());
+
+        let organism = running
+            .organisms
+            .get(&person.organism_id)
+            .expect("initialized person");
+        let moving = running
+            .next_bodily_regulation(
+                organism,
+                &PrimitiveAction {
+                    kind: PrimitiveActionKind::Move,
+                    target_id: None,
+                    intensity: 1,
+                    contact_region: None,
+                    movement_direction: Some(0),
+                },
+                OralRecovery::default(),
+            )
+            .expect("topsoil movement exposure");
+        assert_eq!(moving.fatigue_load_second_squared, 204_903);
+
+        let empty_topsoil_state = EngineState::new(topsoil_manifest);
+        assert_eq!(
+            empty_topsoil_state.event_schema_version(),
+            TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            empty_topsoil_state.state_hash_schema_version(),
+            TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&empty_topsoil_state),
+            Some(TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION)
+        );
+        let snapshot = Snapshot::new(empty_topsoil_state, EventSequence::ZERO, Digest::ZERO)
+            .expect("topsoil snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("topsoil snapshot integrity");
     }
 }

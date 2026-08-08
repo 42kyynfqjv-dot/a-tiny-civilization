@@ -88,6 +88,9 @@ pub const LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION: u16 = 28;
 /// Schema twenty-nine changes movement fatigue through the committed local
 /// terrain-relief range. Payload shapes remain unchanged.
 pub const TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 29;
+/// Schema thirty additionally changes movement fatigue through the committed
+/// topsoil coarse-fragment median. Payload shapes remain unchanged.
+pub const TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 30;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -536,6 +539,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | LOCAL_WEATHER_EVENT_SCHEMA_VERSION
             | LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
             | TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
+            | TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }

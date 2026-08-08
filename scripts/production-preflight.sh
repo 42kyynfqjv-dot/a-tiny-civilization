@@ -135,7 +135,7 @@ if [[ ! "$cognition_timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
   echo "COGNITION_REQUEST_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
   exit 2
 fi
-# Ruleset 26 commits a 60-tick response window. The wall-cost circuit breaker
+# Cognition-capable rulesets commit a 60-tick response window. The wall-cost circuit breaker
 # must expire before that window at the configured target tick cadence so an
 # unavailable route can still be durably latched without racing the deadline.
 if ((cognition_timeout_seconds * 1000 >= 60 * runner_tick_milliseconds)); then

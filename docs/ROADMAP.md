@@ -208,6 +208,14 @@ running world. The same-seed tick-zero PostgreSQL proof is recorded in
 1,000-tick replay, snapshot, Hindsight, local-model, projection, and mechanics qualification gate;
 it remains undeployed pending the separate launch-quality review and operations activation.
 
+Ruleset 30 adds the first causal SoilGrids use under ADR 0126. The exact source-bound median
+coarse-fragment volume fraction adds a checked proportional factor to the already terrain-adjusted
+private movement load. The canonical origin retains 30 source units per 1,000 complete-volume units;
+inhabitants receive no soil/property/use label and can encounter only the bodily consequence. The
+other eight SoilGrids properties and the JRC surface-water source code remain causally unread. A
+fresh same-seed ruleset-30 candidate and full qualification evidence must supersede, not mutate, the
+qualified ruleset-29 candidate before ruleset 30 can enter launch review.
+
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate
 selection uses only canonical world state, bodily pressure, exact local reachability,
