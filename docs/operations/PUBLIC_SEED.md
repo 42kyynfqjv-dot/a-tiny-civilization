@@ -44,15 +44,20 @@ commitment/resolution pair. Do not transform, truncate, preview, or reroll eithe
 Use the checked wrappers so neither value can be mistyped or operator-selected:
 
 ```bash
+read -r WORLD_ID WORLD_SEED < <(
+  target/release/civilization-data seed verify \
+    --commitment docs/operations/CANONICAL_SEED_COMMITMENT.json \
+    --resolution docs/operations/CANONICAL_SEED_RESOLUTION.json
+)
 ./scripts/prepare-canonical-genesis.sh \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
-  /var/lib/a-tiny-civilization/genesis/canonical-1 32
+  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
 
 DATABASE_URL=... ./scripts/initialize-canonical-world.sh \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
-  /var/lib/a-tiny-civilization/genesis/canonical-1
+  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID"
 ```
 
 Retain both public seed artifacts beside the genesis checksums and launch evidence. If any later
