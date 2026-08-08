@@ -8,6 +8,7 @@ mod gbif_catalog;
 mod land_cover;
 mod local_occurrences;
 mod origin;
+mod origin_climate;
 mod origin_environment;
 mod physiology;
 mod provisional;
@@ -65,6 +66,12 @@ pub use local_occurrences::{
 pub use origin::{
     PROVISIONAL_LAND_ORIGIN_SELECTION_MEDIA_TYPE, PROVISIONAL_LAND_ORIGIN_SELECTION_SCHEMA_VERSION,
     ProvisionalLandOriginSelection, ProvisionalLandOriginSelectionError,
+};
+pub use origin_climate::{
+    ERA5_NORMAL_FIRST_YEAR, ERA5_NORMAL_LAST_YEAR, ERA5_NORMAL_MONTHS, OriginClimateSeries,
+    OriginClimateSourceArtifact, PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_MEDIA_TYPE,
+    PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION, PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS,
+    ProvisionalOriginClimateEvidence, ProvisionalOriginClimateEvidenceError,
 };
 pub use origin_environment::{
     PROVISIONAL_ORIGIN_ENVIRONMENT_MEDIA_TYPE, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,

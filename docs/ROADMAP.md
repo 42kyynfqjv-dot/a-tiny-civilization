@@ -392,6 +392,14 @@ opening source files. It is the default for new provisional worlds; older worlds
 their committed ruleset. Earth-orientation transforms and the coupled ocean response
 remain pending.
 
+The retained ERA5 normal-period archives now have an executable point-evidence boundary rather
+than only a one-year schema probe. A canonical artifact binds the seed-selected origin to all 30
+verified annual archives and preserves six complete 1981–2010 monthly series—air temperature,
+precipitation, two wind components, sea-surface temperature, and sea-ice fraction—as 2,160 exact
+source binary32 values. The committed origin resolves to ERA5 row 265 / column 1026. This is
+noncausal evidence: fixed-point conversion, weather generation, land/ocean composition, and
+cross-variable scientific admission remain separate later mechanics.
+
 ### 3. Situated memory and bounded cognition
 
 - local deterministic working memory plus the asynchronous Hindsight adapter;

@@ -23,23 +23,27 @@ use tiff::tags::Tag as TiffTag;
 use uuid::Uuid;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
-    FaunaBirthCategoryCount, FaunaBodyMassPlan, FaunaBodyMassSelection, FaunaEcologyPlan,
-    FaunaEcologyPlanEntry, FaunaEcologyProfileSelection, FaunaMetabolicRatePlan,
-    FaunaMetabolicRateSelection, FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet,
-    FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
+    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, ERA5_NORMAL_FIRST_YEAR,
+    ERA5_NORMAL_LAST_YEAR, FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FaunaBirthCategoryCount,
+    FaunaBodyMassPlan, FaunaBodyMassSelection, FaunaEcologyPlan, FaunaEcologyPlanEntry,
+    FaunaEcologyProfileSelection, FaunaMetabolicRatePlan, FaunaMetabolicRateSelection,
+    FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
+    FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
     LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION, LandCoverClassCount, LandCoverEvidenceCell,
     LandCoverSignedValueCount, LocalFaunaOccurrenceEvidenceSet, LocalFaunaOccurrenceRecord,
-    PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
-    PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
-    PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION, PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS,
+    OriginClimateSeries, OriginClimateSourceArtifact, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
+    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION,
+    PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
-    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, PackedBooleanFieldTile,
-    PackedLandCoverEvidenceTile, PackedScalarFieldTile, PackedScalarTerrainTile,
-    PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile, ProvisionalLandOriginSelection,
-    ProvisionalMaterialResourcePlan, ProvisionalMaterialResourceSource,
-    ProvisionalOrganismBodyProfileEntry, ProvisionalOrganismBodyProfilePlan,
+    PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS,
+    PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION, PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS,
+    PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
+    PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
+    ProvisionalLandOriginSelection, ProvisionalMaterialResourcePlan,
+    ProvisionalMaterialResourceSource, ProvisionalOrganismBodyProfileEntry,
+    ProvisionalOrganismBodyProfilePlan, ProvisionalOriginClimateEvidence,
     ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
     SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
     SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
@@ -677,6 +681,18 @@ enum DeriveCommand {
         origin_selection: PathBuf,
         #[arg(long)]
         composition: PathBuf,
+        #[arg(long)]
+        artifact_root: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Retain all 1981-2010 monthly ERA5 source values at a seed-selected origin.
+    /// Values remain exact binary32 source bits and are noncausal evidence only.
+    ProvisionalOriginClimateEvidence {
+        #[arg(long)]
+        origin_selection: PathBuf,
+        #[arg(long)]
+        source_snapshot: PathBuf,
         #[arg(long)]
         artifact_root: PathBuf,
         #[arg(long)]
@@ -1799,6 +1815,17 @@ async fn main() -> Result<()> {
                 container_s2_level,
                 target_s2_level,
                 source_chunk_cache,
+            ),
+            DeriveCommand::ProvisionalOriginClimateEvidence {
+                origin_selection,
+                source_snapshot,
+                artifact_root,
+                output,
+            } => derive_provisional_origin_climate_evidence(
+                &origin_selection,
+                &source_snapshot,
+                &artifact_root,
+                &output,
             ),
         },
     }
@@ -9916,7 +9943,15 @@ struct Era5MemberInspection {
     uncompressed_byte_length: u64,
     latitude_endpoint_ieee754_le_hex: [String; 2],
     longitude_endpoint_ieee754_le_hex: [String; 2],
-    variables: Vec<EtopoVariableInspection>,
+    variables: Vec<Era5VariableInspection>,
+}
+
+#[derive(Serialize)]
+struct Era5VariableInspection {
+    name: String,
+    data_type: &'static str,
+    shape: Vec<u64>,
+    attributes: Vec<ChelsaAttributeInspection>,
 }
 
 const ERA5_MONTHS_PER_YEAR: u64 = 12;
@@ -10028,11 +10063,28 @@ fn inspect_era5_annual_archive(
             .variables()
             .with_context(|| format!("enumerate variables in ERA5 member {member_name}"))?
             .iter()
-            .map(|variable| EtopoVariableInspection {
-                name: variable.name().to_owned(),
-                shape: variable.shape().to_vec(),
+            .map(|variable| -> Result<Era5VariableInspection> {
+                let mut attributes = variable
+                    .attributes()
+                    .iter()
+                    .map(|attribute| ChelsaAttributeInspection {
+                        name: attribute.name.clone(),
+                        string_value: attribute.value.as_string(),
+                        first_numeric_value: attribute
+                            .value
+                            .as_f64()
+                            .map(|value| value.to_string()),
+                    })
+                    .collect::<Vec<_>>();
+                attributes.sort_by(|left, right| left.name.cmp(&right.name));
+                Ok(Era5VariableInspection {
+                    name: variable.name().to_owned(),
+                    data_type: netcdf_type_name(variable.dtype())?,
+                    shape: variable.shape().to_vec(),
+                    attributes,
+                })
             })
-            .collect::<Vec<_>>();
+            .collect::<Result<Vec<_>>>()?;
         variables.sort_by(|left, right| left.name.cmp(&right.name));
         members.push(Era5MemberInspection {
             name: member_name.to_owned(),
@@ -10045,7 +10097,7 @@ fn inspect_era5_annual_archive(
     println!(
         "{}",
         serde_json::to_string(&Era5AnnualArchiveInspection {
-            inspection_schema_version: 1,
+            inspection_schema_version: 2,
             source_snapshot_id: snapshot.snapshot_id,
             source_snapshot_digest,
             year,
@@ -10054,6 +10106,276 @@ fn inspect_era5_annual_archive(
             artifact_byte_length: artifact.byte_length,
             members,
         })?
+    );
+    Ok(())
+}
+
+const ERA5_ORIGIN_SERIES: [(&str, &str, &str, &str); 6] = [
+    ("siconc", "(0 - 1)", "avgua", ERA5_ARCHIVE_MEMBERS[0]),
+    ("sst", "K", "avgua", ERA5_ARCHIVE_MEMBERS[0]),
+    ("t2m", "K", "avgua", ERA5_ARCHIVE_MEMBERS[0]),
+    ("tp", "m", "avgad", ERA5_ARCHIVE_MEMBERS[1]),
+    ("u10", "m s**-1", "avgua", ERA5_ARCHIVE_MEMBERS[0]),
+    ("v10", "m s**-1", "avgua", ERA5_ARCHIVE_MEMBERS[0]),
+];
+
+fn era5_origin_source_address(
+    coordinate: GeographicCoordinateE7,
+) -> Result<(u16, u16, GeographicCoordinateE7)> {
+    const QUARTER_DEGREE_E7: i64 = 2_500_000;
+    let latitude_delta = 900_000_000_i64 - i64::from(coordinate.latitude_e7());
+    let row = (latitude_delta + QUARTER_DEGREE_E7 / 2) / QUARTER_DEGREE_E7;
+    let longitude_360 = if coordinate.longitude_e7() < 0 {
+        i64::from(coordinate.longitude_e7()) + 3_600_000_000
+    } else {
+        i64::from(coordinate.longitude_e7())
+    };
+    let column = ((longitude_360 + QUARTER_DEGREE_E7 / 2) / QUARTER_DEGREE_E7) % 1_440;
+    let source_latitude = 900_000_000_i64 - row * QUARTER_DEGREE_E7;
+    let source_longitude_360 = column * QUARTER_DEGREE_E7;
+    let source_longitude = if source_longitude_360 >= 1_800_000_000 {
+        source_longitude_360 - 3_600_000_000
+    } else {
+        source_longitude_360
+    };
+    Ok((
+        u16::try_from(row).context("ERA5 source row does not fit u16")?,
+        u16::try_from(column).context("ERA5 source column does not fit u16")?,
+        GeographicCoordinateE7::new(
+            i32::try_from(source_latitude)?,
+            i32::try_from(source_longitude)?,
+        )?,
+    ))
+}
+
+fn era5_source_artifact_for_year(
+    snapshot: &SourceSnapshotManifest,
+    year: u16,
+) -> Result<&SourceSnapshotArtifact> {
+    let suffix = format!("-{year}.zip");
+    snapshot
+        .artifacts
+        .iter()
+        .find(|artifact| {
+            artifact.role == world_data::SourceSnapshotArtifactRole::Data
+                && artifact.artifact_path.ends_with(&suffix)
+        })
+        .with_context(|| format!("ERA5 snapshot has no archive for {year}"))
+}
+
+fn era5_string_attribute(file: &NcFile, variable: &str, attribute: &str) -> Result<String> {
+    file.variable(variable)
+        .with_context(|| format!("ERA5 member has no {variable} variable"))?
+        .attributes()
+        .iter()
+        .find(|candidate| candidate.name == attribute)
+        .and_then(|candidate| candidate.value.as_string())
+        .with_context(|| format!("ERA5 {variable} has no string {attribute} attribute"))
+}
+
+fn read_era5_origin_months(
+    file: &NcFile,
+    variable: &str,
+    unit: &str,
+    step_type: &str,
+    row: u16,
+    column: u16,
+) -> Result<Vec<u32>> {
+    if era5_string_attribute(file, variable, "units")? != unit
+        || era5_string_attribute(file, variable, "GRIB_stepType")? != step_type
+        || file
+            .variable(variable)
+            .with_context(|| format!("ERA5 member has no {variable} variable"))?
+            .dtype()
+            != &NcType::Float
+    {
+        bail!("ERA5 {variable} source contract changed");
+    }
+    let selection = NcSliceInfo {
+        selections: vec![
+            NcSliceInfoElem::Slice {
+                start: 0,
+                end: ERA5_MONTHS_PER_YEAR,
+                step: 1,
+            },
+            NcSliceInfoElem::Index(u64::from(row)),
+            NcSliceInfoElem::Index(u64::from(column)),
+        ],
+    };
+    let values = file
+        .read_variable_slice::<f32>(variable, &selection)
+        .with_context(|| format!("read ERA5 {variable} origin values"))?;
+    let values = values
+        .as_slice()
+        .context("ERA5 origin selection is not contiguous")?;
+    if values.len() != usize::try_from(ERA5_MONTHS_PER_YEAR)? {
+        bail!("ERA5 origin selection did not return twelve months");
+    }
+    if values.iter().any(|value| value.is_infinite()) {
+        bail!("ERA5 origin selection contains an infinite source value");
+    }
+    Ok(values.iter().map(|value| value.to_bits()).collect())
+}
+
+fn validate_era5_origin_axes(
+    file: &NcFile,
+    row: u16,
+    column: u16,
+    expected: GeographicCoordinateE7,
+) -> Result<()> {
+    let read = |name: &str, index: u16| -> Result<f64> {
+        let values = file.read_variable_slice::<f64>(
+            name,
+            &NcSliceInfo {
+                selections: vec![NcSliceInfoElem::Index(u64::from(index))],
+            },
+        )?;
+        values
+            .as_slice()
+            .context("ERA5 axis selection is not contiguous")?
+            .first()
+            .copied()
+            .context("ERA5 axis selection is empty")
+    };
+    let latitude = read("latitude", row)?;
+    let longitude = read("longitude", column)?;
+    let expected_latitude = f64::from(expected.latitude_e7()) / 10_000_000.0;
+    let expected_longitude = if expected.longitude_e7() < 0 {
+        f64::from(expected.longitude_e7()) / 10_000_000.0 + 360.0
+    } else {
+        f64::from(expected.longitude_e7()) / 10_000_000.0
+    };
+    if latitude.to_bits() != expected_latitude.to_bits()
+        || longitude.to_bits() != expected_longitude.to_bits()
+    {
+        bail!("ERA5 source axes disagree with the selected quarter-degree cell");
+    }
+    Ok(())
+}
+
+fn derive_provisional_origin_climate_evidence(
+    origin_selection_path: &Path,
+    source_snapshot_path: &Path,
+    artifact_root: &Path,
+    output: &Path,
+) -> Result<()> {
+    let origin_selection_bytes = fs::read(origin_selection_path).with_context(|| {
+        format!(
+            "read provisional origin selection {}",
+            origin_selection_path.display()
+        )
+    })?;
+    let origin_selection =
+        ProvisionalLandOriginSelection::from_canonical_slice(&origin_selection_bytes)
+            .context("decode canonical provisional origin selection")?;
+    let sample_coordinate = s2_ray_to_geographic_e7(s2_face_uv_to_ray(s2_face_ij_center_uv(
+        decode_s2_face_ij(origin_selection.selected_patch),
+    )?)?)?;
+    let (source_grid_row, source_grid_column, source_grid_coordinate) =
+        era5_origin_source_address(sample_coordinate)?;
+    let snapshot = load_source_manifest(source_snapshot_path)?;
+    verify_source_snapshot_artifacts(&snapshot, artifact_root)?;
+    let source_snapshot_digest = snapshot.content_digest()?;
+    let mut source_artifacts = Vec::new();
+    let mut series_values = ERA5_ORIGIN_SERIES
+        .iter()
+        .map(|(variable, _, _, _)| ((*variable).to_owned(), Vec::new()))
+        .collect::<BTreeMap<_, _>>();
+    for year in ERA5_NORMAL_FIRST_YEAR..=ERA5_NORMAL_LAST_YEAR {
+        let artifact = era5_source_artifact_for_year(&snapshot, year)?;
+        source_artifacts.push(OriginClimateSourceArtifact {
+            year,
+            artifact_path: artifact.artifact_path.clone(),
+            content_hash: artifact.content_hash,
+            byte_length: artifact.byte_length,
+        });
+        let archive_path = artifact_root.join(&artifact.artifact_path);
+        let archive_file = File::open(&archive_path)
+            .with_context(|| format!("open verified ERA5 archive {}", archive_path.display()))?;
+        let mut archive = zip::ZipArchive::new(archive_file)
+            .context("open verified ERA5 ZIP through the portable reader")?;
+        if archive.len() != ERA5_ARCHIVE_MEMBERS.len() {
+            bail!("ERA5 ZIP archive has an unexpected member count");
+        }
+        for member_name in ERA5_ARCHIVE_MEMBERS {
+            let mut member = archive
+                .by_name(member_name)
+                .with_context(|| format!("ERA5 archive is missing {member_name}"))?;
+            let mut bytes = Vec::with_capacity(usize::try_from(member.size())?);
+            member
+                .read_to_end(&mut bytes)
+                .with_context(|| format!("read ERA5 member {member_name}"))?;
+            if u64::try_from(bytes.len())? != member.size() {
+                bail!("ERA5 member byte length changed during read");
+            }
+            drop(member);
+            let file = NcFile::from_bytes(&bytes)
+                .with_context(|| format!("parse ERA5 member {member_name}"))?;
+            validate_era5_member_schema(&file, member_name)?;
+            validate_era5_origin_axes(
+                &file,
+                source_grid_row,
+                source_grid_column,
+                source_grid_coordinate,
+            )?;
+            for (variable, unit, step_type, expected_member) in ERA5_ORIGIN_SERIES {
+                if member_name != expected_member {
+                    continue;
+                }
+                series_values
+                    .get_mut(variable)
+                    .context("ERA5 origin series map lost a variable")?
+                    .extend(read_era5_origin_months(
+                        &file,
+                        variable,
+                        unit,
+                        step_type,
+                        source_grid_row,
+                        source_grid_column,
+                    )?);
+            }
+        }
+    }
+    let evidence = ProvisionalOriginClimateEvidence {
+        evidence_schema_version: PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION,
+        status: PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS.to_owned(),
+        origin_selection_digest: Digest::sha256(&origin_selection_bytes),
+        selected_patch: origin_selection.selected_patch,
+        sample_latitude_e7: sample_coordinate.latitude_e7(),
+        sample_longitude_e7: sample_coordinate.longitude_e7(),
+        source_snapshot_digest,
+        source_grid_row,
+        source_grid_column,
+        source_grid_latitude_e7: source_grid_coordinate.latitude_e7(),
+        source_grid_longitude_e7: source_grid_coordinate.longitude_e7(),
+        source_artifacts,
+        series: ERA5_ORIGIN_SERIES
+            .into_iter()
+            .map(|(variable, unit, step_type, _)| {
+                Ok(OriginClimateSeries {
+                    variable: variable.to_owned(),
+                    source_unit: unit.to_owned(),
+                    source_step_type: step_type.to_owned(),
+                    values_ieee754_binary32_bits: series_values
+                        .remove(variable)
+                        .context("ERA5 origin series is absent")?,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?,
+    };
+    write_new_artifact(output, &evidence.canonical_bytes()?)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": evidence.status,
+            "output": output.display().to_string(),
+            "content_hash": Digest::sha256(&evidence.canonical_bytes()?),
+            "source_snapshot_digest": evidence.source_snapshot_digest,
+            "source_grid_row": evidence.source_grid_row,
+            "source_grid_column": evidence.source_grid_column,
+            "series": evidence.series.len(),
+            "values": evidence.series.iter().map(|series| series.values_ieee754_binary32_bits.len()).sum::<usize>(),
+        })
     );
     Ok(())
 }
@@ -13584,6 +13906,23 @@ mod tests {
         assert_eq!(accumulated.get("tp"), Some(&vec![12, 721, 1_440]));
         assert!(!accumulated.contains_key("t2m"));
         assert!(expected_era5_member_variables("unexpected.nc").is_err());
+    }
+
+    #[test]
+    fn era5_origin_address_uses_nearest_quarter_degree_with_wrapped_longitude() {
+        let coordinate = GeographicCoordinateE7::new(236_449_522, -1_034_974_258)
+            .expect("canonical origin coordinate");
+        let (row, column, source) =
+            era5_origin_source_address(coordinate).expect("ERA5 source address");
+        assert_eq!((row, column), (265, 1_026));
+        assert_eq!(source.latitude_e7(), 237_500_000);
+        assert_eq!(source.longitude_e7(), -1_035_000_000);
+
+        let dateline = GeographicCoordinateE7::new(0, -1_800_000_000).expect("dateline");
+        let (_, column, source) =
+            era5_origin_source_address(dateline).expect("wrapped ERA5 address");
+        assert_eq!(column, 720);
+        assert_eq!(source.longitude_e7(), -1_800_000_000);
     }
 
     #[test]
