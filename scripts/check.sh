@@ -35,6 +35,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-postgres-durability.sh
 ./scripts/verify-graceful-shutdown-policy.sh
 ./scripts/verify-container-privilege-policy.sh
+./scripts/verify-runtime-volume-policy.sh
 ./scripts/verify-ci-supply-chain.sh
 ./scripts/verify-production-runtime-gate.sh
 ./scripts/verify-public-genesis-preflight.sh

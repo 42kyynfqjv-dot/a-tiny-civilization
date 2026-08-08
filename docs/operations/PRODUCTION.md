@@ -168,6 +168,13 @@ forbids privilege escalation, and runs with a read-only root filesystem. A bound
 state there; the runner's staged Earth inputs remain a separate read-only mount. CI verifies the
 fully composed service policy rather than trusting Dockerfile intent alone.
 
+The Compose project name and canonical PostgreSQL/Hindsight volume names are explicit and do not
+depend on the checkout directory. Those volumes are external to Compose, so `docker compose down
+-v` cannot delete them. `make up`, `make hindsight-up`, and the production deploy helper create
+missing volumes idempotently and require project ownership/schema labels before reuse. Provisioning
+never deletes or replaces a volume; an unexpected pre-existing volume fails closed for operator
+review.
+
 ### Docker tunnel and backup profile
 
 From the repository checkout, load the protected environment file into the current

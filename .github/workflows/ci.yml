@@ -86,6 +86,7 @@ jobs:
       - run: ./scripts/verify-postgres-durability.sh
       - run: ./scripts/verify-graceful-shutdown-policy.sh
       - run: ./scripts/verify-container-privilege-policy.sh
+      - run: ./scripts/verify-runtime-volume-policy.sh
       - run: ./scripts/verify-production-runtime-gate.sh
       - run: ./scripts/verify-public-genesis-preflight.sh
       - run: ./scripts/verify-live-genesis-gate.sh

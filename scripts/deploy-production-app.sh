@@ -58,6 +58,7 @@ cd "$project_root"
 ATINY_CIVILIZATION_DATA_EXECUTABLE="${project_root}/target/release/civilization-data" \
   "${project_root}/scripts/verify-staged-runtime-artifacts.sh" \
   "${project_root}/runtime-artifacts"
+"${project_root}/scripts/provision-runtime-volumes.sh"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
 "${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web

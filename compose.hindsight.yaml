@@ -140,7 +140,11 @@ services:
 
 volumes:
   hindsight-data:
+    name: a-tiny-civilization-hindsight-v1
+    external: true
   hindsight-model-cache:
+    name: a-tiny-civilization-hindsight-model-cache-v1
+    external: true
   local-cognition-models:
     name: atiny-ollama
     external: true
