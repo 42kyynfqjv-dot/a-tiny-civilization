@@ -17,7 +17,9 @@ unchanged. The repository gate checks the image pin, keyless extraction mode, di
 storage, and shared-memory capacity together so a later compose edit cannot silently restore the
 64 MiB default. The image supervisor receives a 900-second cold-start allowance because loading the
 retained local vector state and offline models exceeded its five-minute default on this host. A
-30-second compose stop grace period matches the image's documented embedded-PostgreSQL shutdown.
+matching 900-second model-initialization timeout prevents Hindsight's internal engine guard from
+ending earlier. A 30-second compose stop grace period matches the image's documented
+embedded-PostgreSQL shutdown.
 
 Memory delivery remains asynchronous and replay-external. Hindsight failure cannot alter or block a
 canonical tick, and undelivered records remain in the durable outbox for retry.

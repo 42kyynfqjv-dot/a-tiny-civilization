@@ -13,6 +13,7 @@ services:
       # Existing local vector state plus cold model initialization can exceed the
       # image's five-minute supervisor default on this host.
       HINDSIGHT_API_STARTUP_WAIT_SECONDS: "900"
+      HINDSIGHT_API_MODEL_INIT_TIMEOUT: "900"
       HF_HUB_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-0}
       TRANSFORMERS_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-0}
     expose:
