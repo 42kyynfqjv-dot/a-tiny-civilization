@@ -624,3 +624,10 @@ reroll. It intersects the modeled-range pool with a hash-pinned, research-grade,
 commercially reusable iNaturalist observation query within 75 kilometres of the committed origin.
 The retained evidence means reported local presence only—not abundance, native status, or habitat
 suitability—and initialization independently rederives the exact intersection before genesis.
+
+Canonical candidate v3 carries that intersection into a fresh ruleset-26 genesis and immutable
+world manifest. It passed isolated qualification at tick 1,560 with exact replay, every observer
+projection current, 3,937 error-free Hindsight deliveries, and one consumed local Qwen receipt.
+Its checksum-covered evidence supersedes candidate v2 for launch review while leaving candidate v2
+immutable. Deployment remains closed pending the scientific/assumption and observatory admission
+reviews.
