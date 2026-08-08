@@ -212,9 +212,10 @@ Ruleset 30 adds the first causal SoilGrids use under ADR 0126. The exact source-
 coarse-fragment volume fraction adds a checked proportional factor to the already terrain-adjusted
 private movement load. The canonical origin retains 30 source units per 1,000 complete-volume units;
 inhabitants receive no soil/property/use label and can encounter only the bodily consequence. The
-other eight SoilGrids properties and the JRC surface-water source code remain causally unread. A
-fresh same-seed ruleset-30 candidate and full qualification evidence must supersede, not mutate, the
-qualified ruleset-29 candidate before ruleset 30 can enter launch review.
+other eight SoilGrids properties and the JRC surface-water source code remain causally unread. The
+fresh same-seed ruleset-30 candidate passed the full 1,000-tick replay, Hindsight, local-model,
+projection, mechanics, and observer-smoke gate. Its immutable evidence supersedes, without
+mutating, the ruleset-29 launch evidence and now enters the separate launch-quality review.
 
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate

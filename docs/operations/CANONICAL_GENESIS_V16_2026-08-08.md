@@ -46,6 +46,40 @@ batch from source commit `0f6e417c4e6056214fc121bea44c75c3b062a4cc`:
   `c77534f6431c0d0e6a88290f4beeae84e86a4d71c81988b8508a5f7c58d23911`
 - verification: genesis replay equals snapshot plus tail equals the committed cursor
 
-No public or production world was changed. Full-duration Hindsight, cognition, mechanics,
-projection, replay, and observer-smoke qualification remains required before this candidate can
-supersede the retained ruleset-29 launch evidence.
+## Bounded qualification proof
+
+The same isolated candidate advanced through exactly 1,000 ticks only after a real zero-cost
+loopback Qwen result was durable before its fixed simulated-time deadline. Hindsight and Ollama
+remained on loopback, remote export was unapproved, and paid dispatch was disabled.
+
+- final sequence / tick: `1018 / 1000`
+- event head:
+  `7e556a3becb3149051206c569ef93c9e2dc7c3a00c1fa9ec526fcd84c53cce64`
+- state hash:
+  `2045f73ef3a5601b257de06d1862c9515a1ff2e4540b32d7762a7288ea7e06ff`
+- event batches / snapshots: `1018 / 17`
+- Hindsight memories: `4000` delivered, `0` pending, `0` errors
+- cognition: `17` requests, `16` due and completely latched/consumed, `2` actual model receipts,
+  `0` non-person requests
+- observer projections: all `5` current at sequence `1018`
+- observer content: `66` organisms, `67` timeline items, `6` deterministic findings, `23`
+  region-bound artifact traces
+- exercised mechanics include 10,161 directed moves, 20,293 varied signals, 3,768 learned
+  signal/action associations, 707 signal/motor associations, and 66,000 each of water-flux and
+  air-motion perceptions
+- machine-readable qualification: `passed: true`
+- observer candidate smoke: passed with nonempty timeline, findings, organisms, artifact archive,
+  and wiki; all five projection lags were zero and public commitments contained no event payloads
+
+The immutable retained bundle is
+`a-tiny-civilization-qualification-evidence/b3ea736d-7a5a-5161-a74b-fa8c4302d333-ruleset30-v16-tick1000`.
+Its `SHA256SUMS` digest is
+`b31d82abf6fd73c646e755cdfb289130d02cf2ad6ceddbc315a38eea6d23c444`; every covered file
+verifies. The bundle binds source commit `c66b1ba267a0995b96e435255fbdd5a9d7f36944`, the genesis
+manifest digest, and qualification-report digest
+`5341528eaf249ead702b7221d79d01b100b6ba542675982c81d846c8c3117cd7`, and declares that it
+contains no canonical event payloads.
+
+No public or production world was changed. This candidate supersedes the retained ruleset-29
+mechanical evidence for launch review but does not itself authorize deployment or claim scientific
+admission.

@@ -54,7 +54,7 @@ runner, append-only PostgreSQL history and snapshots, exact replay verification,
 structured memory behind a Hindsight adapter, bounded cognition, five rebuildable
 observer projections, a read-only API, an observatory, and its evidence-backed wiki.
 
-The fixed public seed now has a same-identity ruleset-29 launch candidate. Its exact
+The fixed public seed now has a same-identity ruleset-30 launch candidate. Its exact
 full-Earth input closure, genesis, 1,000 simulated ticks, Hindsight delivery, zero-cost
 local Qwen2.5 cognition, snapshot-plus-tail replay, projections, and observer privacy
 gate have passed in an isolated PostgreSQL database. The retained evidence bundle
@@ -94,6 +94,8 @@ explicit Alabama-paradox guard. Current rulesets add durable embodied movement,
 source-bound weather sensations, bodily regulation and mortality, neutral material
 handling and artifact traces, reproduction and heredity, imitation, variable sound,
 action/motor learning, Hindsight recall, bounded model input, and real terrain effects.
+The current ruleset also makes the real SoilGrids coarse-fragment median affect private movement
+load without emitting a soil label or built-in use knowledge.
 All private position, learning, cognition, and reproductive mechanisms remain absent
 from public projections.
 
