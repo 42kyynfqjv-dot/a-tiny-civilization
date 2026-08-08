@@ -1,5 +1,11 @@
 # An isolated restore-drill stack. Its project name and volume are deliberately
 # separate from the production Compose project, and it has no public edge network.
+x-local-logging: &local-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 x-walg-environment: &walg-environment
   WALG_S3_PREFIX: s3://${R2_BACKUP_BUCKET:-}/a-tiny-civilization/postgres
   AWS_ENDPOINT: https://${R2_ACCOUNT_ID:-}.r2.cloudflarestorage.com
@@ -43,6 +49,7 @@ services:
     networks:
       - restore
     restart: "no"
+    logging: *local-logging
 
   restore-verifier:
     image: a-tiny-civilization-app:local
@@ -63,6 +70,7 @@ services:
     networks:
       - restore
     restart: "no"
+    logging: *local-logging
 
 volumes:
   restore-data:

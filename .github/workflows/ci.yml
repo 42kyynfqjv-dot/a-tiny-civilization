@@ -82,6 +82,7 @@ jobs:
       - run: RESTORE_WORLD_ID=00000000-0000-0000-0000-000000000001 docker compose -f compose.restore.yaml config --quiet
       - run: ./scripts/check-production-boundaries.sh
       - run: ./scripts/verify-container-image-pins.sh
+      - run: ./scripts/verify-container-log-policy.sh
       - run: ./scripts/verify-production-runtime-gate.sh
       - run: ./scripts/verify-public-genesis-preflight.sh
       - run: ./scripts/verify-live-genesis-gate.sh

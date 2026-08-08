@@ -143,6 +143,12 @@ The serving runner holds a PostgreSQL session advisory lock for its lifetime. A 
 runner refuses startup instead of racing the canonical cursor; process or connection
 loss releases the lock automatically so the configured restart policy can recover.
 
+Every checked-in Compose service uses Docker's local `json-file` driver with a 10 MiB file and
+five-file rotation limit. CI composes every supported profile and rejects any service that omits
+that bound. Canonical PostgreSQL history remains durable in its named volume; container logs are
+operational diagnostics and are intentionally bounded so they cannot silently consume the history
+disk.
+
 ### Docker tunnel and backup profile
 
 From the repository checkout, load the protected environment file into the current

@@ -3,6 +3,12 @@ x-app-environment: &app-environment
   RUST_LOG: ${RUST_LOG:-info}
   DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
 
+x-local-logging: &local-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 x-rust-service: &rust-service
   image: a-tiny-civilization-app:local
   build:
@@ -13,6 +19,7 @@ x-rust-service: &rust-service
   networks:
     - backend
   init: true
+  logging: *local-logging
 
 services:
   db:
@@ -34,6 +41,7 @@ services:
     networks:
       - backend
     restart: unless-stopped
+    logging: *local-logging
 
   migrate:
     <<: *rust-service
@@ -154,6 +162,7 @@ services:
       - web-api
     init: true
     restart: unless-stopped
+    logging: *local-logging
 
 volumes:
   postgres-data:

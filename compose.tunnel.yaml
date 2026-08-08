@@ -1,6 +1,12 @@
 # Production edge overlay. It is deliberately separate from compose.yaml so a local
 # `make up` never creates a public route. Cloudflare manages the hostname-to-origin
 # mapping for this remotely managed tunnel; configure that route as http://web:3000.
+x-local-logging: &local-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   cloudflared:
     image: ${CLOUDFLARED_IMAGE:-cloudflare/cloudflared:2026.7.2@sha256:4f6655284ab3d252b7f28fedb19fe6c8fc82ee5b1295c20ac74d475e5398a52d}
@@ -17,3 +23,4 @@ services:
     security_opt:
       - no-new-privileges:true
     restart: unless-stopped
+    logging: *local-logging

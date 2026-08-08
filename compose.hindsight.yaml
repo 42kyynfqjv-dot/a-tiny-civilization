@@ -1,3 +1,9 @@
+x-local-logging: &local-logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
 services:
   local-cognition:
     image: ollama/ollama@sha256:b88c73ace3e115f8ec53dc8761ae1c0aabfa675406e3681786b98757ce050f42
@@ -15,6 +21,7 @@ services:
     networks:
       - backend
     restart: unless-stopped
+    logging: *local-logging
 
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:0.8.6@sha256:ffa391a77284e49f6b55e32c86f33529ac4257831407b14038a72b6a0a232039
@@ -50,6 +57,7 @@ services:
       - backend
     restart: unless-stopped
     stop_grace_period: 30s
+    logging: *local-logging
 
   runner:
     environment:
@@ -79,6 +87,7 @@ services:
       - backend
     init: true
     restart: unless-stopped
+    logging: *local-logging
 
   cognition-worker:
     image: a-tiny-civilization-app:local
@@ -111,6 +120,7 @@ services:
       - backend
     init: true
     restart: unless-stopped
+    logging: *local-logging
 
 volumes:
   hindsight-data:
