@@ -236,10 +236,10 @@ mod tests {
     use super::*;
     use world_domain::{
         BirthCategory, Digest, HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
+        LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
         METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, OffspringCategoryWeight,
         PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis,
-        REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
-        ReproductiveCategoryPair,
+        REPRODUCTIVE_PROBABILITY_SCALE, ReproductiveCategoryPair,
     };
 
     fn species(identifier: &str, scientific_name: &str) -> SpeciesIdentity {
@@ -286,13 +286,14 @@ mod tests {
                 thermal_recovery_seconds: 10_000,
             },
             reproductive_physiology: ReproductivePhysiologyCommitment {
-                commitment_schema_version: REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+                commitment_schema_version: LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
                 profile_id: "test-reproduction-v1".to_owned(),
                 profile_digest: Digest::sha256(b"reproduction profile"),
                 species: species.clone(),
                 evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
                 tick_duration_seconds: 300,
                 maturity_age_ticks: 10,
+                category_maturity: Vec::new(),
                 development_ticks: 3,
                 recovery_ticks: 4,
                 opportunity_interval_ticks: 1,

@@ -5,7 +5,8 @@ use thiserror::Error;
 
 use crate::{BirthCategory, Digest, PhysiologicalEvidenceBasis, SpeciesIdentity};
 
-pub const REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION: u16 = 2;
 pub const REPRODUCTIVE_PROBABILITY_SCALE: u32 = 1_000_000;
 
 /// Neutral internal outcome for a pending development that cannot reach birth.
@@ -31,6 +32,18 @@ pub struct OffspringCategoryWeight {
     pub weight: u32,
 }
 
+/// Category-specific maturity timing with an exact evidence or assumption address.
+/// This remains private engine metadata and is never exposed as an organism concept.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ReproductiveCategoryMaturityCommitment {
+    pub category: BirthCategory,
+    pub maturity_age_ticks: u64,
+    pub evidence_basis: PhysiologicalEvidenceBasis,
+    pub source_profile_set_digest: Digest,
+    pub source_record_id: String,
+    pub source_record_digest: Digest,
+}
+
 /// Immutable parameters for the first neutral reproductive-physiology driver.
 /// Durations are already converted into simulation ticks by a separately reviewable
 /// profile artifact; the engine never consults wall time or observer state.
@@ -43,6 +56,8 @@ pub struct ReproductivePhysiologyCommitment {
     pub evidence_basis: PhysiologicalEvidenceBasis,
     pub tick_duration_seconds: u32,
     pub maturity_age_ticks: u64,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub category_maturity: Vec<ReproductiveCategoryMaturityCommitment>,
     pub development_ticks: u64,
     pub recovery_ticks: u64,
     pub opportunity_interval_ticks: u64,
@@ -53,8 +68,16 @@ pub struct ReproductivePhysiologyCommitment {
 
 impl ReproductivePhysiologyCommitment {
     pub fn validate(&self) -> Result<(), ReproductionError> {
-        if self.commitment_schema_version != REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION {
-            return Err(ReproductionError::UnsupportedCommitmentSchema);
+        match self.commitment_schema_version {
+            LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION
+                if self.category_maturity.is_empty() => {}
+            REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION
+                if !self.category_maturity.is_empty() => {}
+            LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION
+            | REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION => {
+                return Err(ReproductionError::InvalidCommitment);
+            }
+            _ => return Err(ReproductionError::UnsupportedCommitmentSchema),
         }
         self.species
             .validate()
@@ -83,12 +106,42 @@ impl ReproductivePhysiologyCommitment {
         {
             return Err(ReproductionError::NonCanonicalOrder);
         }
+        if self
+            .category_maturity
+            .windows(2)
+            .any(|pair| pair[0].category >= pair[1].category)
+        {
+            return Err(ReproductionError::NonCanonicalOrder);
+        }
+        for maturity in &self.category_maturity {
+            if maturity.maturity_age_ticks == 0
+                || maturity.source_profile_set_digest == Digest::ZERO
+                || maturity.source_record_digest == Digest::ZERO
+                || !technical(&maturity.source_record_id)
+                || !self.supports_category(&maturity.category)
+            {
+                return Err(ReproductionError::InvalidCommitment);
+            }
+        }
         for pair in &self.compatible_pairs {
             if pair.first > pair.second
                 || (pair.developing_parent != pair.first && pair.developing_parent != pair.second)
             {
                 return Err(ReproductionError::InvalidPair);
             }
+        }
+        if self.commitment_schema_version == REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION
+            && self.compatible_pairs.iter().any(|pair| {
+                [&pair.first, &pair.second, &pair.developing_parent]
+                    .into_iter()
+                    .any(|category| {
+                        self.category_maturity
+                            .binary_search_by(|entry| entry.category.cmp(category))
+                            .is_err()
+                    })
+            })
+        {
+            return Err(ReproductionError::MissingCategoryMaturity);
         }
         let mut total_weight = 0_u64;
         for category in &self.offspring_categories {
@@ -113,6 +166,16 @@ impl ReproductivePhysiologyCommitment {
                 || pair.developing_parent == *category
         })
     }
+
+    #[must_use]
+    pub fn maturity_age_ticks_for(&self, category: &BirthCategory) -> u64 {
+        self.category_maturity
+            .binary_search_by(|entry| entry.category.cmp(category))
+            .ok()
+            .map_or(self.maturity_age_ticks, |index| {
+                self.category_maturity[index].maturity_age_ticks
+            })
+    }
 }
 
 fn technical(value: &str) -> bool {
@@ -136,6 +199,8 @@ pub enum ReproductionError {
     InvalidPair,
     #[error("invalid offspring category weight")]
     InvalidOffspringWeight,
+    #[error("reproductive commitment lacks maturity timing for a supported category")]
+    MissingCategoryMaturity,
 }
 
 #[cfg(test)]
@@ -161,6 +226,24 @@ mod tests {
             evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
             tick_duration_seconds: 300,
             maturity_age_ticks: 10,
+            category_maturity: vec![
+                ReproductiveCategoryMaturityCommitment {
+                    category: category("female"),
+                    maturity_age_ticks: 10,
+                    evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+                    source_profile_set_digest: Digest::sha256(b"female maturity profile"),
+                    source_record_id: "female-maturity-assumption".to_owned(),
+                    source_record_digest: Digest::sha256(b"female maturity record"),
+                },
+                ReproductiveCategoryMaturityCommitment {
+                    category: category("male"),
+                    maturity_age_ticks: 20,
+                    evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+                    source_profile_set_digest: Digest::sha256(b"male maturity profile"),
+                    source_record_id: "male-maturity-assumption".to_owned(),
+                    source_record_digest: Digest::sha256(b"male maturity record"),
+                },
+            ],
             development_ticks: 3,
             recovery_ticks: 4,
             opportunity_interval_ticks: 1,
@@ -206,6 +289,14 @@ mod tests {
         assert_eq!(
             invalid.validate(),
             Err(ReproductionError::NonCanonicalOrder)
+        );
+        assert_eq!(commitment().maturity_age_ticks_for(&category("female")), 10);
+        assert_eq!(commitment().maturity_age_ticks_for(&category("male")), 20);
+        let mut missing = commitment();
+        missing.category_maturity.pop();
+        assert_eq!(
+            missing.validate(),
+            Err(ReproductionError::MissingCategoryMaturity)
         );
     }
 }

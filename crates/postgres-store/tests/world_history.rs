@@ -415,13 +415,15 @@ fn cognition_initial_person(world_id: WorldId) -> InitialOrganism {
         thermal_recovery_seconds: 600,
     });
     person.reproductive_physiology = Some(ReproductivePhysiologyCommitment {
-        commitment_schema_version: world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+        commitment_schema_version:
+            world_domain::LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
         profile_id: "cognition-postgres-reproduction-v1".to_owned(),
         profile_digest: Digest::sha256(b"cognition PostgreSQL reproduction assumptions"),
         species: person.species.clone(),
         evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
         tick_duration_seconds: 300,
         maturity_age_ticks: 10,
+        category_maturity: Vec::new(),
         development_ticks: 2,
         recovery_ticks: 2,
         opportunity_interval_ticks: 1,

@@ -998,16 +998,24 @@ async fn init_provisional_full_earth_world(
         }
         initial_organisms.extend(fauna.initial_organisms);
     }
-    if let Some(profile_plan_digest) = apply_provisional_organism_body_profiles(
-        &mut initial_organisms,
-        ruleset_version,
-        tick_duration_seconds,
-        provisional_organism_profile_plan_path,
-    )? {
+    if let Some((profile_plan_digest, life_history_profile_set_digest)) =
+        apply_provisional_organism_body_profiles(
+            &mut initial_organisms,
+            ruleset_version,
+            tick_duration_seconds,
+            provisional_organism_profile_plan_path,
+        )?
+    {
         manifest.scientific_datasets.insert(
             "provisional_organism_body_profile_plan".to_owned(),
             profile_plan_digest.to_string(),
         );
+        if let Some(life_history_profile_set_digest) = life_history_profile_set_digest {
+            manifest.scientific_datasets.insert(
+                "provisional_fauna_life_history_profile_set".to_owned(),
+                life_history_profile_set_digest.to_string(),
+            );
+        }
     }
     let (material_resource_plan_digest, initial_materials) = load_provisional_material_resources(
         world_id,
@@ -1392,7 +1400,7 @@ fn apply_provisional_organism_body_profiles(
     ruleset_version: u32,
     tick_duration_seconds: u32,
     plan_path: Option<&std::path::Path>,
-) -> Result<Option<Digest>> {
+) -> Result<Option<(Digest, Option<Digest>)>> {
     if ruleset_version < BODILY_REGULATION_RULESET_VERSION {
         if plan_path.is_some() {
             anyhow::bail!(
@@ -1419,6 +1427,20 @@ fn apply_provisional_organism_body_profiles(
             plan.tick_duration_seconds
         );
     }
+
+    let life_history_digests = plan
+        .entries
+        .iter()
+        .flat_map(|entry| &entry.reproductive_physiology.category_maturity)
+        .filter(|entry| {
+            entry.evidence_basis != world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption
+        })
+        .map(|entry| entry.source_profile_set_digest)
+        .collect::<BTreeSet<_>>();
+    if life_history_digests.len() > 1 {
+        anyhow::bail!("one body-profile plan cannot mix multiple life-history profile sets");
+    }
+    let life_history_profile_set_digest = life_history_digests.into_iter().next();
 
     for organism in initial_organisms {
         let profile = plan.entry_for(&organism.species).with_context(|| {
@@ -1477,7 +1499,10 @@ fn apply_provisional_organism_body_profiles(
         };
     }
 
-    Ok(Some(Digest::sha256(&bytes)))
+    Ok(Some((
+        Digest::sha256(&bytes),
+        life_history_profile_set_digest,
+    )))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1945,13 +1970,14 @@ mod tests {
             },
             reproductive_physiology: world_domain::ReproductivePhysiologyCommitment {
                 commitment_schema_version:
-                    world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+                    world_domain::LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
                 profile_id: "runner-body-profile-test-reproduction".to_owned(),
                 profile_digest: Digest::sha256(b"runner body-profile test reproduction"),
                 species: species.clone(),
                 evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
                 tick_duration_seconds: 300,
                 maturity_age_ticks: 10,
+                category_maturity: Vec::new(),
                 development_ticks: 2,
                 recovery_ticks: 2,
                 opportunity_interval_ticks: 1,
@@ -2031,7 +2057,7 @@ mod tests {
             Some(&path),
         )
         .expect("apply profile plan");
-        assert_eq!(digest, Some(Digest::sha256(&bytes)));
+        assert_eq!(digest, Some((Digest::sha256(&bytes), None)));
         assert_eq!(organisms[0].initial_age_ticks, 20);
         assert!(organisms[0].metabolic_rate.is_some());
         assert!(organisms[0].physiological_regulation.is_some());

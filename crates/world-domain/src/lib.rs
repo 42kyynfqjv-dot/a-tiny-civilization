@@ -94,8 +94,9 @@ pub use material::{
     OralTransferEvidenceBasis,
 };
 pub use reproduction::{
-    OffspringCategoryWeight, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
-    REPRODUCTIVE_PROBABILITY_SCALE, ReproductionError, ReproductiveCategoryPair,
+    LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION, OffspringCategoryWeight,
+    REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
+    ReproductionError, ReproductiveCategoryMaturityCommitment, ReproductiveCategoryPair,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment,
 };
 pub use solar::{

@@ -58,10 +58,11 @@ use world_domain::{
     OralTransferCommitment, OralTransferEvidenceBasis,
     PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PhysiologicalEvidenceBasis,
     PhysiologicalRegulationCommitment, REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
-    ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2FaceUv,
-    SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldSeed,
-    decode_s2_face_ij, route_geographic_to_s2, route_half_arcsecond_to_s2, s2_face_ij_center_uv,
-    s2_face_ij_vertex_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
+    ReproductiveCategoryMaturityCommitment, ReproductiveCategoryPair,
+    ReproductivePhysiologyCommitment, S2CellId, S2FaceUv, SpeciesIdentity, TdbSecondsSinceJ2000,
+    WorldConfiguration, WorldId, WorldSeed, decode_s2_face_ij, route_geographic_to_s2,
+    route_half_arcsecond_to_s2, s2_face_ij_center_uv, s2_face_ij_vertex_uv, s2_face_uv_to_ray,
+    s2_ray_to_geographic_e7,
 };
 
 #[derive(Debug, Parser)]
@@ -601,6 +602,10 @@ enum DeriveCommand {
         /// metabolic commitments are explicitly engineering assumptions.
         #[arg(long, requires = "metabolic_profiles")]
         metabolic_rate_plan: Option<PathBuf>,
+        /// Canonical exact life-history profiles. Missing category/species values
+        /// remain explicit engineering assumptions.
+        #[arg(long)]
+        life_history_profiles: Option<PathBuf>,
         #[arg(long, default_value_t = 300)]
         tick_duration_seconds: u32,
         #[arg(long)]
@@ -1536,6 +1541,7 @@ async fn main() -> Result<()> {
                 origin_environment,
                 metabolic_profiles,
                 metabolic_rate_plan,
+                life_history_profiles,
                 tick_duration_seconds,
                 output,
             } => derive_provisional_organism_body_profile_plan(
@@ -1547,6 +1553,7 @@ async fn main() -> Result<()> {
                 },
                 metabolic_profiles.as_deref(),
                 metabolic_rate_plan.as_deref(),
+                life_history_profiles.as_deref(),
                 tick_duration_seconds,
                 &output,
             ),
@@ -2980,6 +2987,7 @@ fn engineering_body_profile_entry(
     metabolic_rate: MetabolicRateCommitment,
     tick_duration_seconds: u32,
     range_package: &str,
+    life_history_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
 ) -> ProvisionalOrganismBodyProfileEntry {
     let life_history = provisional_life_history(range_package);
     let profile_digest = Digest::sha256(
@@ -2991,6 +2999,58 @@ fn engineering_body_profile_entry(
     );
     let female = BirthCategory::new("female").expect("static valid birth category");
     let male = BirthCategory::new("male").expect("static valid birth category");
+    let category_maturity = [&female, &male]
+        .into_iter()
+        .map(|category| {
+            let trait_id = format!("{}-maturity", category.as_str());
+            let source = life_history_profiles.and_then(|(profiles, digest)| {
+                profiles
+                    .profiles
+                    .iter()
+                    .find(|profile| {
+                        profile.species.catalog == species.catalog
+                            && profile.species.identifier == species.identifier
+                            && profile.trait_id == trait_id
+                            && profile.value.unit == "d"
+                            && profile.value.decimal_places == 0
+                            && profile.value.value > 0
+                    })
+                    .map(|profile| (profile, *digest))
+            });
+            match source {
+                Some((profile, profile_set_digest)) => ReproductiveCategoryMaturityCommitment {
+                    category: category.clone(),
+                    maturity_age_ticks: duration_ticks(
+                        days(u64::try_from(profile.value.value).expect("positive maturity days")),
+                        tick_duration_seconds,
+                    ),
+                    evidence_basis: PhysiologicalEvidenceBasis::LiteratureApproximation,
+                    source_profile_set_digest: profile_set_digest,
+                    source_record_id: profile.source_record_id.clone(),
+                    source_record_digest: profile.source_record_digest,
+                },
+                None => ReproductiveCategoryMaturityCommitment {
+                    category: category.clone(),
+                    maturity_age_ticks: duration_ticks(
+                        life_history.maturity_age_seconds,
+                        tick_duration_seconds,
+                    ),
+                    evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+                    source_profile_set_digest: profile_digest,
+                    source_record_id: format!(
+                        "engineering-assumption-{}-maturity-v1",
+                        category.as_str()
+                    ),
+                    source_record_digest: profile_digest,
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+    let reproductive_profile_digest = Digest::sha256(
+        serde_json::to_vec(&category_maturity)
+            .expect("category maturity commitments serialize")
+            .as_slice(),
+    );
     ProvisionalOrganismBodyProfileEntry {
         species: species.clone(),
         initial_age_ticks: duration_ticks(life_history.initial_age_seconds, tick_duration_seconds),
@@ -2998,7 +3058,7 @@ fn engineering_body_profile_entry(
         physiological_regulation: PhysiologicalRegulationCommitment {
             commitment_schema_version: PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION,
             profile_id: "provisional-engineering-regulation-v1".to_owned(),
-            profile_digest,
+            profile_digest: reproductive_profile_digest,
             species: species.clone(),
             evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
             usable_energy_reserve_joules: 10_000_000,
@@ -3021,6 +3081,7 @@ fn engineering_body_profile_entry(
                 life_history.maturity_age_seconds,
                 tick_duration_seconds,
             ),
+            category_maturity,
             development_ticks: duration_ticks(
                 life_history.development_seconds,
                 tick_duration_seconds,
@@ -3094,6 +3155,7 @@ fn derive_provisional_organism_body_profile_plan(
     inputs: PopulationPlanInputPaths<'_>,
     metabolic_profiles_path: Option<&Path>,
     metabolic_rate_plan_path: Option<&Path>,
+    life_history_profiles_path: Option<&Path>,
     tick_duration_seconds: u32,
     output_path: &Path,
 ) -> Result<()> {
@@ -3136,6 +3198,15 @@ fn derive_provisional_organism_body_profile_plan(
             "metabolic profiles and metabolic-rate plan must be supplied together or both omitted"
         ),
     };
+    let life_history_profiles = life_history_profiles_path
+        .map(|path| {
+            let bytes = fs::read(path)
+                .with_context(|| format!("read life-history profiles {}", path.display()))?;
+            let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&bytes)
+                .context("validate life-history profile set")?;
+            Ok::<_, anyhow::Error>((profiles, Digest::sha256(&bytes)))
+        })
+        .transpose()?;
     let mut entries = Vec::with_capacity(population.entries.len() + 1);
     let human = SpeciesIdentity::new(
         "gbif",
@@ -3149,6 +3220,7 @@ fn derive_provisional_organism_body_profile_plan(
         engineering_metabolic_commitment(human),
         tick_duration_seconds,
         "homo_sapiens",
+        None,
     ));
     for fauna in &population.entries {
         let metabolic_rate = sourced_metabolic
@@ -3175,6 +3247,7 @@ fn derive_provisional_organism_body_profile_plan(
                 .find(|candidate| candidate.species == fauna.species)
                 .expect("validated population species belongs to its seeded selection")
                 .range_package,
+            life_history_profiles.as_ref(),
         ));
     }
     entries.sort_by(|left, right| {
@@ -3199,8 +3272,10 @@ fn derive_provisional_organism_body_profile_plan(
             "status": plan.status,
             "source_measured_fauna_metabolic_count": sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
             "engineering_assumption_fauna_metabolic_count": population.entries.len() - sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
-            "provisional_reproduction_pacing": "coarse source-package guardrails expressed in simulation time; Homo sapiens uses a separate human guardrail; all remain engineering assumptions pending species-level evidence admission",
-            "policy": "human metabolic rate plus regulation, reproduction, and heredity are engineering assumptions; fauna life-history pacing is a coarse source-package engineering assumption; every selected exact fauna metabolic observation is retained as source evidence and uncovered species remain explicit engineering assumptions",
+            "source_informed_category_maturity_count": plan.entries.iter().flat_map(|entry| &entry.reproductive_physiology.category_maturity).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
+            "engineering_assumption_category_maturity_count": plan.entries.iter().flat_map(|entry| &entry.reproductive_physiology.category_maturity).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
+            "provisional_reproduction_pacing": "each female and male category uses its exact retained species maturity aggregate when present; every missing category falls back independently to a coarse simulation-time engineering guardrail",
+            "policy": "human metabolism, regulation, reproduction, and heredity remain engineering assumptions; retained Amniote category maturity aggregates are source-addressed literature approximations, never raw observations; every uncovered category and metabolic rate remains an explicit engineering assumption",
         }))?
     );
     Ok(())
@@ -14399,6 +14474,73 @@ mod tests {
         let insect = provisional_life_history("insecta_4");
         assert_eq!(duration_ticks(insect.development_seconds, 300), 4_032);
         assert_eq!(duration_ticks(301, 300), 2);
+    }
+
+    #[test]
+    fn provisional_body_profiles_use_source_maturity_per_category_with_explicit_fallback() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("test species");
+        let source_record_digest = Digest::sha256(b"female maturity source row");
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: world_data::FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
+            source_artifact_digest: Digest::sha256(b"amniote source artifact"),
+            profiles: vec![world_data::FaunaPhysiologyProfile {
+                species: species.clone(),
+                trait_id: "female-maturity".to_owned(),
+                value: world_data::ScaledFaunaTraitValue {
+                    value: 123,
+                    decimal_places: 0,
+                    unit: "d".to_owned(),
+                },
+                source: world_data::FaunaEvidenceSource::AmnioteLifeHistoryAugust2015,
+                source_field: "female_maturity_d".to_owned(),
+                source_record_id: "gbif:2436436:female-maturity".to_owned(),
+                source_record_digest,
+                evidence_basis: world_data::FaunaEvidenceBasis::SourceCompiledSpeciesAggregate,
+            }],
+        };
+        profiles.validate().expect("valid test profile set");
+        let profile_set_digest = Digest::canonical(&profiles).expect("profile set digest");
+        let entry = engineering_body_profile_entry(
+            species.clone(),
+            engineering_metabolic_commitment(species),
+            300,
+            "homo_sapiens",
+            Some(&(profiles, profile_set_digest)),
+        );
+
+        let female = &entry.reproductive_physiology.category_maturity[0];
+        assert_eq!(female.category.as_str(), "female");
+        assert_eq!(female.maturity_age_ticks, duration_ticks(days(123), 300));
+        assert_eq!(
+            female.evidence_basis,
+            PhysiologicalEvidenceBasis::LiteratureApproximation
+        );
+        assert_eq!(female.source_profile_set_digest, profile_set_digest);
+        assert_eq!(female.source_record_digest, source_record_digest);
+
+        let male = &entry.reproductive_physiology.category_maturity[1];
+        assert_eq!(male.category.as_str(), "male");
+        assert_eq!(
+            male.evidence_basis,
+            PhysiologicalEvidenceBasis::EngineeringAssumption
+        );
+        assert_eq!(
+            male.maturity_age_ticks,
+            duration_ticks(
+                provisional_life_history("homo_sapiens").maturity_age_seconds,
+                300
+            )
+        );
+        entry
+            .reproductive_physiology
+            .validate()
+            .expect("mixed-evidence commitment is valid");
     }
 
     #[test]

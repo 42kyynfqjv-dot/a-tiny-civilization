@@ -2343,7 +2343,7 @@ impl EngineState {
         organism.is_alive()
             && organism
                 .age_ticks
-                .is_some_and(|age| age >= profile.maturity_age_ticks)
+                .is_some_and(|age| age >= profile.maturity_age_ticks_for(&organism.birth_category))
             && organism
                 .reproductive_available_at
                 .is_none_or(|available_at| available_at <= self.tick)
@@ -8089,13 +8089,14 @@ mod tests {
     fn reproductive_fixture_profile(species: SpeciesIdentity) -> ReproductivePhysiologyCommitment {
         ReproductivePhysiologyCommitment {
             commitment_schema_version:
-                world_domain::REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
+                world_domain::LEGACY_REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION,
             profile_id: "reproductive-fixture-v1".to_owned(),
             profile_digest: Digest::sha256(b"explicit reproductive fixture assumptions"),
             species,
             evidence_basis: world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption,
             tick_duration_seconds: 300,
             maturity_age_ticks: 10,
+            category_maturity: Vec::new(),
             development_ticks: 2,
             recovery_ticks: 2,
             opportunity_interval_ticks: 1,

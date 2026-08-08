@@ -223,7 +223,11 @@ genetic variation remain open. A canonical provisional body-profile plan now giv
 supported full-Earth initializer one exact, content-addressed source for every
 founder's and selected fauna taxon's initial age, metabolism, regulation, and
 reproductive commitment; later bodily rulesets fail closed when that plan or a taxon
-entry is absent.
+entry is absent. Reproductive commitment schema two now uses exact taxon/category
+maturity aggregates from the pinned Amniote Life-History profile set when retained,
+labels them as literature approximations, and gives every missing category its own
+explicit engineering-assumption fallback. These private values and their source-row
+digests never become organism concepts or public reproductive detail.
 
 Ruleset fifteen adds bounded individual variation over the same eleven use-neutral
 primitive actions. Founder dispositions derive from the world seed, stable identity,
@@ -631,3 +635,8 @@ projection current, 3,937 error-free Hindsight deliveries, and one consumed loca
 Its checksum-covered evidence supersedes candidate v2 for launch review while leaving candidate v2
 immutable. Deployment remains closed pending the scientific/assumption and observatory admission
 reviews.
+
+The next same-identity candidate additionally derives category-specific maturity timing from the
+pinned Amniote Life-History aggregates where exact taxon/category records exist. Missing values
+remain independently addressable assumptions; this is a provenance improvement rather than
+scientific admission.
