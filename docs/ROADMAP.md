@@ -692,3 +692,11 @@ into the same-identity manifest. Preparation and initialization independently pr
 Hindsight delivery, current projections, and one consumed local Qwen receipt. Its immutable
 evidence supersedes candidate v6 for launch review. ERA5 remains noncausal source evidence and does
 not authorize weather mechanics, scientific admission, or deployment.
+
+Canonical candidate v8 additionally pins deterministic fixed-point monthly ERA5 summaries derived
+from that exact evidence. Preparation and initialization independently reproduced both artifacts,
+and the runner verified their digest relationship before manifest commitment. The fresh candidate
+passed at tick 1,680 with exact replay, complete Hindsight delivery, current projections, and one
+consumed local Qwen receipt. Its immutable evidence supersedes candidate v7 for launch review. The
+normals remain noncausal and do not authorize weather mechanics, scientific admission, or
+deployment.
