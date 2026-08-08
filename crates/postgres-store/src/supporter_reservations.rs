@@ -1,9 +1,9 @@
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use observer_projection::{
-    CommittedBirth, MatchedBirth, OBSERVER_LABEL_POLICY_VERSION, ReservationRequest,
-    ReservationState, ReservationStoreError, ReservationTarget, SupporterReservation,
-    SupporterReservationStore,
+    AccountSupporterReservation, CommittedBirth, MatchedBirth, OBSERVER_LABEL_POLICY_VERSION,
+    ReservationRequest, ReservationState, ReservationStoreError, ReservationTarget,
+    SupporterRefundState, SupporterReservation, SupporterReservationStore,
 };
 use sqlx::FromRow;
 use uuid::Uuid;
@@ -35,6 +35,14 @@ struct ReservationRow {
     matched_event_sequence: Option<i64>,
     matched_tick: Option<i64>,
     matched_organism_id: Option<Uuid>,
+}
+
+#[derive(FromRow)]
+struct AccountReservationRow {
+    #[sqlx(flatten)]
+    reservation: ReservationRow,
+    refund_requested: bool,
+    refund_completed: bool,
 }
 
 #[async_trait]
@@ -234,6 +242,63 @@ impl SupporterReservationStore for PostgresStore {
         .map_err(operation_error)?;
         transaction.commit().await.map_err(operation_error)?;
         parse_reservation(row)
+    }
+
+    async fn list_account_reservations(
+        &self,
+        supporter_subject: &str,
+        limit: u16,
+    ) -> Result<Vec<AccountSupporterReservation>, ReservationStoreError> {
+        if supporter_subject.trim().is_empty()
+            || supporter_subject != supporter_subject.trim()
+            || supporter_subject.len() > 256
+            || supporter_subject.chars().any(char::is_control)
+            || limit == 0
+            || limit > 500
+        {
+            return Err(ReservationStoreError::Conflict(
+                "invalid account reservation query".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, AccountReservationRow>(
+            r#"
+            SELECT r.id, r.world_id, r.supporter_subject, r.observer_label, r.target_role,
+                r.species_catalog, r.species_identifier, r.species_scientific_name,
+                r.species_source_url, r.birth_category, r.state, r.payment_reference,
+                r.payment_verified_at, r.created_at, r.activated_at, r.matched_birth_event_id,
+                r.matched_event_sequence, r.matched_tick, r.matched_organism_id,
+                (f.reservation_id IS NOT NULL) AS refund_requested,
+                (f.stripe_refund_id IS NOT NULL) AS refund_completed
+            FROM supporter_reservations r
+            LEFT JOIN supporter_refunds f ON f.reservation_id=r.id
+            WHERE r.supporter_subject=$1
+            ORDER BY r.created_at DESC,r.id DESC
+            LIMIT $2
+            "#,
+        )
+        .bind(supporter_subject)
+        .bind(i64::from(limit))
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let refund_state = match (row.refund_requested, row.refund_completed) {
+                    (false, false) => None,
+                    (true, false) => Some(SupporterRefundState::Pending),
+                    (true, true) => Some(SupporterRefundState::Completed),
+                    (false, true) => {
+                        return Err(ReservationStoreError::Corrupt(
+                            "completed refund is missing request evidence".to_owned(),
+                        ));
+                    }
+                };
+                Ok(AccountSupporterReservation {
+                    reservation: parse_reservation(row.reservation)?,
+                    refund_state,
+                })
+            })
+            .collect()
     }
 
     async fn match_committed_birth(

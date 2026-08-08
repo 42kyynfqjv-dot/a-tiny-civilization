@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use observer_auth::ObserverSession;
 use observer_projection::{
-    ReservationRequest, ReservationState, ReservationStoreError, ReservationTarget,
-    SupporterReservation, SupporterReservationStore,
+    AccountSupporterReservation, ReservationRequest, ReservationState, ReservationStoreError,
+    ReservationTarget, SupporterReservation, SupporterReservationStore,
 };
 use stripe_adapter::{
     PreparedStripeRefund, StripeCheckoutError, StripeCheckoutGateway, StripeCheckoutSession,
@@ -146,6 +146,17 @@ impl SupporterCancellationService {
             reservation,
             stripe_refund_id: Some(stripe_refund_id),
         })
+    }
+
+    pub async fn list_account_reservations(
+        &self,
+        authenticated: &ObserverSession,
+        limit: u16,
+    ) -> Result<Vec<AccountSupporterReservation>, SupporterCancellationError> {
+        self.reservations
+            .list_account_reservations(&account_subject(authenticated), limit)
+            .await
+            .map_err(Into::into)
     }
 }
 

@@ -453,7 +453,9 @@ smaller than the former every-transition policy.
   rejection resumes the refund automatically. The public supporter UI remains.
   Authenticated supporters can also cancel their own unmatched reservations through a
   CSRF-protected, retry-safe route; paid cancellations automatically use the durable full-refund
-  path while unpaid cancellations never contact Stripe.
+  path while unpaid cancellations never contact Stripe. A bounded private account-history route
+  reports only the caller's reservation lifecycle and coarse refund state while withholding payment
+  identifiers, internal account subjects, and moderation evidence.
 
 ### 6. Public operations
 

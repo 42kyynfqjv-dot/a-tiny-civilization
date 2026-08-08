@@ -152,6 +152,8 @@ The authenticated API also supports account-owned cancellation at
 `POST /api/v1/supporters/{reservation_id}/cancel`. It requires the same session and CSRF proof as
 Checkout, refuses matched or foreign-account reservations, and automatically refunds paid
 cancellations. No additional owner credential is required beyond the existing Stripe setup.
+The corresponding private `GET /api/v1/supporters/reservations` route gives the signed-in supporter
+their own lifecycle and refund status without exposing Stripe or moderation identifiers.
 
 To activate that product, the owner will need to:
 

@@ -535,6 +535,19 @@ pub struct SupporterReservation {
     pub matched_birth: Option<MatchedBirth>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SupporterRefundState {
+    Pending,
+    Completed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AccountSupporterReservation {
+    pub reservation: SupporterReservation,
+    pub refund_state: Option<SupporterRefundState>,
+}
+
 /// Immutable link to a birth that had already entered canonical history.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct MatchedBirth {
@@ -618,6 +631,13 @@ pub trait SupporterReservationStore: Send + Sync {
         reservation_id: Uuid,
         supporter_subject: &str,
     ) -> Result<SupporterReservation, ReservationStoreError>;
+
+    /// Lists only reservations owned by one authenticated observer subject.
+    async fn list_account_reservations(
+        &self,
+        supporter_subject: &str,
+        limit: u16,
+    ) -> Result<Vec<AccountSupporterReservation>, ReservationStoreError>;
 
     /// Observer-side matching for a birth that has already committed in canonical history.
     async fn match_committed_birth(

@@ -117,6 +117,28 @@ async fn cancellation_route_requires_account_session_and_csrf_and_refunds_once(
         secrets.csrf_token()
     );
 
+    let unauthorized_list = app
+        .clone()
+        .oneshot(Request::get("/api/v1/supporters/reservations").body(Body::empty())?)
+        .await?;
+    assert_eq!(unauthorized_list.status(), StatusCode::UNAUTHORIZED);
+    let list = app
+        .clone()
+        .oneshot(
+            Request::get("/api/v1/supporters/reservations")
+                .header("cookie", &cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    assert_eq!(list.status(), StatusCode::OK);
+    let list_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(list.into_body(), 32_768).await?)?;
+    assert_eq!(list_body["reservations"].as_array().map(Vec::len), Some(1));
+    let listed = &list_body["reservations"][0];
+    assert_eq!(listed["reservation_id"], reservation_id.to_string());
+    assert!(listed.get("supporter_subject").is_none());
+    assert!(listed.get("payment_reference").is_none());
+
     let missing_csrf = app
         .clone()
         .oneshot(
@@ -141,8 +163,22 @@ async fn cancellation_route_requires_account_session_and_csrf_and_refunds_once(
     assert_eq!(body["refunded"], true);
     assert!(body.get("stripe_refund_id").is_none());
 
-    let retry = app.oneshot(request()?).await?;
+    let retry = app.clone().oneshot(request()?).await?;
     assert_eq!(retry.status(), StatusCode::OK);
     assert_eq!(refund.calls.load(Ordering::SeqCst), 1);
+    let after = app
+        .oneshot(
+            Request::get("/api/v1/supporters/reservations")
+                .header("cookie", &cookie)
+                .body(Body::empty())?,
+        )
+        .await?;
+    let after_body: serde_json::Value =
+        serde_json::from_slice(&to_bytes(after.into_body(), 32_768).await?)?;
+    assert_eq!(
+        after_body["reservations"][0]["state"],
+        "cancelled_by_supporter"
+    );
+    assert_eq!(after_body["reservations"][0]["refund_state"], "completed");
     Ok(())
 }

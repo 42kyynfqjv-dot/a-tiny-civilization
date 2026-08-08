@@ -153,6 +153,10 @@ pub fn router(state: ApiState) -> Router {
             post(supporter_checkout).layer(axum::extract::DefaultBodyLimit::max(16_384)),
         )
         .route(
+            "/api/v1/supporters/reservations",
+            get(supporter_reservations),
+        )
+        .route(
             "/api/v1/supporters/{reservation_id}/cancel",
             post(supporter_cancel),
         )
@@ -528,6 +532,61 @@ async fn supporter_cancel(
         state: cancellation.reservation.state,
         refunded: cancellation.stripe_refund_id.is_some(),
     }))
+}
+
+#[derive(Serialize)]
+struct AccountReservationResponse {
+    reservation_id: Uuid,
+    world_id: WorldId,
+    observer_label: String,
+    target: observer_projection::ReservationTarget,
+    birth_category: BirthCategory,
+    state: observer_projection::ReservationState,
+    created_at: DateTime<Utc>,
+    payment_verified_at: Option<DateTime<Utc>>,
+    activated_at: Option<DateTime<Utc>>,
+    matched_birth: Option<observer_projection::MatchedBirth>,
+    refund_state: Option<observer_projection::SupporterRefundState>,
+}
+
+#[derive(Serialize)]
+struct AccountReservationsResponse {
+    reservations: Vec<AccountReservationResponse>,
+}
+
+async fn supporter_reservations(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<AccountReservationsResponse>, ApiError> {
+    let auth = state.auth.as_ref().ok_or(ApiError::NotFound)?;
+    let service = state
+        .supporter_cancellation
+        .as_ref()
+        .ok_or(ApiError::NotFound)?;
+    let session = authenticate(auth, &headers, false)
+        .await?
+        .ok_or(ApiError::Unauthorized)?;
+    let reservations = service
+        .list_account_reservations(&session, query.limit.unwrap_or(100))
+        .await
+        .map_err(map_supporter_cancellation_error)?
+        .into_iter()
+        .map(|entry| AccountReservationResponse {
+            reservation_id: entry.reservation.request.reservation_id,
+            world_id: entry.reservation.request.world_id,
+            observer_label: entry.reservation.request.observer_label,
+            target: entry.reservation.request.target,
+            birth_category: entry.reservation.request.birth_category,
+            state: entry.reservation.state,
+            created_at: entry.reservation.created_at,
+            payment_verified_at: entry.reservation.payment_verified_at,
+            activated_at: entry.reservation.activated_at,
+            matched_birth: entry.reservation.matched_birth,
+            refund_state: entry.refund_state,
+        })
+        .collect();
+    Ok(Json(AccountReservationsResponse { reservations }))
 }
 
 async fn authenticate(
