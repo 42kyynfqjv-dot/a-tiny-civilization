@@ -17,7 +17,9 @@ response in a new ruleset; ruleset-19 history remains replayable as recorded.
 
 `public-artifact-v1` is an observer-only append-only projection. It joins the real cited material
 identity introduced at genesis to the first and latest surface-trace events and exposes only that
-provenance and accumulated trace. The term "artifact" is a filing choice made by the observatory,
+evidence and accumulated trace. Its public contract labels the physical trace as `world_fact` and
+the artifact filing as `observer_inference`; a single provenance label cannot conflate them. The
+term "artifact" is a filing choice made by the observatory,
 not knowledge in the world. The generic timeline, organism index, and finding aid continue to omit
 the private actor and mechanism event.
 
@@ -29,6 +31,8 @@ the private actor and mechanism event.
   missing or fabricated coupled events.
 - Snapshot/state schema 22 carries trace state; zero values are omitted for legacy hash stability.
 - The artifact projection has its own durable cursor and append-only database triggers.
+- `public-wiki-v1` is composed deterministically from the artifact and finding projections. Each
+  entry labels its interpretation separately from its cited events; it cannot accept authored text.
 - Backend readiness and pre-genesis qualification require all five projections to reach the world
   cursor.
 - The runner has no dependency on observer projection, API, supporter, authentication, or payment

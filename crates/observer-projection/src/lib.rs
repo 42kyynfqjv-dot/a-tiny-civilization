@@ -36,6 +36,7 @@ pub const PUBLIC_FINDING_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_FINDING_PROJECTION_NAME: &str = "public-finding-v1";
 pub const PUBLIC_ARTIFACT_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ARTIFACT_PROJECTION_NAME: &str = "public-artifact-v1";
+pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -362,7 +363,10 @@ pub struct PublicArtifact {
     pub world_id: WorldId,
     pub object_id: EntityId,
     pub material: MaterialIdentity,
-    pub provenance: ClaimProvenance,
+    /// The force-caused surface change is committed physical evidence.
+    pub trace_provenance: ClaimProvenance,
+    /// Filing the altered object as an "artifact" is an observer interpretation.
+    pub classification_provenance: ClaimProvenance,
     pub first_trace_event_id: EventId,
     pub first_trace_sequence: EventSequence,
     pub first_trace_tick: SimTick,
@@ -389,6 +393,133 @@ pub trait ObserverArtifactStore: Send + Sync {
         world_id: WorldId,
         limit: u16,
     ) -> Result<Vec<PublicArtifact>, ObserverProjectionStoreError>;
+}
+
+/// The kind of evidence-backed page exposed by the generated observer wiki.
+/// No variant asserts that the civilization has invented a corresponding concept.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicWikiEntryKind {
+    Finding,
+    AlteredMaterial,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicWikiEvidenceRole {
+    SourceEvent,
+    FirstPhysicalTrace,
+    LatestPhysicalTrace,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicWikiEvidence {
+    pub role: PublicWikiEvidenceRole,
+    pub provenance: ClaimProvenance,
+    pub event_id: EventId,
+    pub sequence: EventSequence,
+    pub tick: SimTick,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicWikiCitation {
+    pub label: String,
+    pub url: String,
+}
+
+/// A generated, read-only wiki entry. The entry's interpretation provenance is
+/// separate from the provenance of each piece of evidence it cites.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicWikiEntry {
+    pub index_version: u16,
+    pub world_id: WorldId,
+    pub entry_id: String,
+    pub kind: PublicWikiEntryKind,
+    pub title: String,
+    pub summary: String,
+    pub interpretation_provenance: ClaimProvenance,
+    pub evidence: Vec<PublicWikiEvidence>,
+    pub citations: Vec<PublicWikiCitation>,
+}
+
+/// Deterministically composes wiki pages from existing observer projections. It
+/// performs no canonical reads, model calls, or free-form narration.
+#[must_use]
+pub fn compose_public_wiki_entries(
+    findings: &[PublicFinding],
+    artifacts: &[PublicArtifact],
+) -> Vec<PublicWikiEntry> {
+    let mut entries = Vec::with_capacity(findings.len() + artifacts.len());
+    entries.extend(findings.iter().map(|finding| PublicWikiEntry {
+        index_version: PUBLIC_WIKI_INDEX_VERSION,
+        world_id: finding.world_id,
+        entry_id: format!("finding:{}", finding.finding_key),
+        kind: PublicWikiEntryKind::Finding,
+        title: finding.title.clone(),
+        summary: finding.summary.clone(),
+        interpretation_provenance: finding.provenance,
+        evidence: vec![PublicWikiEvidence {
+            role: PublicWikiEvidenceRole::SourceEvent,
+            provenance: ClaimProvenance::WorldFact,
+            event_id: finding.source_event_id,
+            sequence: finding.source_sequence,
+            tick: finding.source_tick,
+        }],
+        citations: Vec::new(),
+    }));
+    entries.extend(artifacts.iter().map(|artifact| {
+        let mut evidence = vec![PublicWikiEvidence {
+            role: PublicWikiEvidenceRole::FirstPhysicalTrace,
+            provenance: artifact.trace_provenance,
+            event_id: artifact.first_trace_event_id,
+            sequence: artifact.first_trace_sequence,
+            tick: artifact.first_trace_tick,
+        }];
+        if artifact.latest_trace_event_id != artifact.first_trace_event_id {
+            evidence.push(PublicWikiEvidence {
+                role: PublicWikiEvidenceRole::LatestPhysicalTrace,
+                provenance: artifact.trace_provenance,
+                event_id: artifact.latest_trace_event_id,
+                sequence: artifact.latest_trace_sequence,
+                tick: artifact.latest_trace_tick,
+            });
+        }
+        PublicWikiEntry {
+            index_version: PUBLIC_WIKI_INDEX_VERSION,
+            world_id: artifact.world_id,
+            entry_id: format!("altered-material:{}", artifact.object_id),
+            kind: PublicWikiEntryKind::AlteredMaterial,
+            title: format!("Altered {} object", artifact.material.canonical_name),
+            summary: format!(
+                "The physical record contains a force-caused surface trace of {} units. No purpose, symbol, or meaning is inferred.",
+                artifact.surface_trace_units
+            ),
+            interpretation_provenance: artifact.classification_provenance,
+            evidence,
+            citations: vec![PublicWikiCitation {
+                label: artifact.material.canonical_name.clone(),
+                url: artifact.material.source_url.clone(),
+            }],
+        }
+    }));
+    entries.sort_by(|left, right| {
+        let left_sequence = left
+            .evidence
+            .iter()
+            .map(|evidence| evidence.sequence)
+            .max()
+            .unwrap_or(EventSequence::ZERO);
+        let right_sequence = right
+            .evidence
+            .iter()
+            .map(|evidence| evidence.sequence)
+            .max()
+            .unwrap_or(EventSequence::ZERO);
+        right_sequence
+            .cmp(&left_sequence)
+            .then_with(|| left.entry_id.cmp(&right.entry_id))
+    });
+    entries
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,
@@ -995,6 +1126,64 @@ mod tests {
         for withheld in ["female", "parent", "location", "birth_category"] {
             assert!(!rendered.contains(withheld), "must withhold {withheld}");
         }
+    }
+
+    #[test]
+    fn wiki_composition_separates_physical_evidence_from_observer_classification() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(31));
+        let artifact = PublicArtifact {
+            projection_version: PUBLIC_ARTIFACT_PROJECTION_VERSION,
+            world_id,
+            object_id: EntityId::from_uuid(Uuid::from_u128(32)),
+            material: MaterialIdentity::new(
+                "pubchem",
+                "24261",
+                "silicon dioxide",
+                "https://pubchem.ncbi.nlm.nih.gov/compound/24261",
+            )
+            .expect("material identity"),
+            trace_provenance: ClaimProvenance::WorldFact,
+            classification_provenance: ClaimProvenance::ObserverInference,
+            first_trace_event_id: EventId::from_uuid(Uuid::from_u128(33)),
+            first_trace_sequence: EventSequence::new(7),
+            first_trace_tick: SimTick::new(6),
+            latest_trace_event_id: EventId::from_uuid(Uuid::from_u128(34)),
+            latest_trace_sequence: EventSequence::new(9),
+            latest_trace_tick: SimTick::new(8),
+            surface_trace_units: 12,
+        };
+        let finding = PublicFinding {
+            projection_version: PUBLIC_FINDING_PROJECTION_VERSION,
+            world_id,
+            source_event_id: EventId::from_uuid(Uuid::from_u128(35)),
+            source_sequence: EventSequence::new(8),
+            source_tick: SimTick::new(7),
+            kind: PublicFindingKind::First,
+            finding_key: "world_began".to_owned(),
+            provenance: ClaimProvenance::WorldFact,
+            title: "A world began".to_owned(),
+            summary: "Initial conditions were committed.".to_owned(),
+        };
+
+        let entries = compose_public_wiki_entries(&[finding], &[artifact]);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].kind, PublicWikiEntryKind::AlteredMaterial);
+        assert_eq!(
+            entries[0].interpretation_provenance,
+            ClaimProvenance::ObserverInference
+        );
+        assert!(
+            entries[0]
+                .evidence
+                .iter()
+                .all(|evidence| evidence.provenance == ClaimProvenance::WorldFact)
+        );
+        assert_eq!(entries[0].evidence.len(), 2);
+        assert_eq!(entries[1].kind, PublicWikiEntryKind::Finding);
+        assert_eq!(
+            compose_public_wiki_entries(&[], &[]),
+            Vec::<PublicWikiEntry>::new()
+        );
     }
 
     #[test]

@@ -29,6 +29,8 @@ type Organism = {
 type Artifact = {
   object_id: string;
   material: { canonical_name: string; source_url: string };
+  trace_provenance: "world_fact";
+  classification_provenance: "observer_inference";
   first_trace_sequence: string | number;
   first_trace_tick: string | number;
   latest_trace_sequence: string | number;
@@ -114,7 +116,7 @@ export function WikiIndex() {
         </article>
         <article id="artifact-archive">
           <h3>Altered material archive</h3>
-          {wiki.artifacts.length === 0 ? <p>No durable material alteration has entered the public record.</p> : <ul>{wiki.artifacts.map((artifact) => <li key={artifact.object_id}><a href={artifact.material.source_url} rel="noreferrer" target="_blank">{artifact.material.canonical_name}</a><span>Observed surface trace: {artifact.surface_trace_units} units</span><small>First evidence event {artifact.first_trace_sequence}, tick {artifact.first_trace_tick} · latest event {artifact.latest_trace_sequence}, tick {artifact.latest_trace_tick}</small></li>)}</ul>}
+          {wiki.artifacts.length === 0 ? <p>No durable material alteration has entered the public record.</p> : <ul>{wiki.artifacts.map((artifact) => <li key={artifact.object_id}><a href={artifact.material.source_url} rel="noreferrer" target="_blank">{artifact.material.canonical_name}</a><span>Observed surface trace: {artifact.surface_trace_units} units</span><small>Physical trace: world fact · artifact filing: observer inference</small><small>First evidence event {artifact.first_trace_sequence}, tick {artifact.first_trace_tick} · latest event {artifact.latest_trace_sequence}, tick {artifact.latest_trace_tick}</small></li>)}</ul>}
         </article>
       </div>
     </section>

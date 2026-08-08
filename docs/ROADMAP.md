@@ -540,3 +540,9 @@ the neutral material-handling path: 1,000 ticks produced no grasp or surface-tra
 reservoir transfer bypasses held objects. Provisional material-resource schema 2 now adds one finite,
 cited silicon-dioxide object with no oral response, affordance, or use label. ADR 0094 records the
 negative qualification and requires a fresh corrected history rather than changing it in place.
+
+ADR 0095 adds the first generated observer-wiki API over those projections. Its entries keep
+physical-event provenance separate from observer interpretation and retain exact event/tick/source
+citations. The corrected qualification world returned one silicon-dioxide altered-material entry
+plus six factual findings. No writing, symbolism, or purpose is claimed before the world supplies
+evidence for it.

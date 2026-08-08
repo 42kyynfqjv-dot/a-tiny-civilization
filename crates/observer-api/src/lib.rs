@@ -19,8 +19,8 @@ use observer_auth::{
 use observer_projection::{
     ObserverArtifactStore, ObserverFindingStore, ObserverHistoryCommitmentStore,
     ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicArtifact,
-    PublicFinding, PublicHistoryCommitmentPage, PublicOrganism, PublicTimelineItem, PublicWorld,
-    PublicWorldTelemetry,
+    PublicFinding, PublicHistoryCommitmentPage, PublicOrganism, PublicTimelineItem,
+    PublicWikiEntry, PublicWorld, PublicWorldTelemetry, compose_public_wiki_entries,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -182,6 +182,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/worlds/{world_id}/findings", get(public_findings))
         .route("/api/v1/worlds/{world_id}/artifacts", get(public_artifacts))
+        .route("/api/v1/worlds/{world_id}/wiki", get(public_wiki))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
@@ -1003,6 +1004,39 @@ struct FindingsResponse {
 struct ArtifactsResponse {
     projection_version: u16,
     artifacts: Vec<PublicArtifact>,
+}
+
+#[derive(Serialize)]
+struct WikiResponse {
+    index_version: u16,
+    entries: Vec<PublicWikiEntry>,
+}
+
+async fn public_wiki(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<WikiResponse>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let limit = query.limit.unwrap_or(50).clamp(1, 200);
+    let findings = state
+        .store
+        .list_public_findings(world_id, limit)
+        .await
+        .map_err(log_observer_error)?;
+    let artifacts = state
+        .store
+        .list_public_artifacts(world_id, limit)
+        .await
+        .map_err(log_observer_error)?;
+    let mut entries = compose_public_wiki_entries(&findings, &artifacts);
+    entries.truncate(usize::from(limit));
+    Ok(Json(WikiResponse {
+        index_version: observer_projection::PUBLIC_WIKI_INDEX_VERSION,
+        entries,
+    }))
 }
 
 async fn public_artifacts(

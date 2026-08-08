@@ -235,7 +235,8 @@ fn parse_row(row: ArtifactRow) -> Result<PublicArtifact, ObserverProjectionStore
             row.material_source_url,
         )
         .map_err(|error| ObserverProjectionStoreError::Corrupt(error.to_string()))?,
-        provenance: ClaimProvenance::WorldFact,
+        trace_provenance: ClaimProvenance::WorldFact,
+        classification_provenance: ClaimProvenance::ObserverInference,
         first_trace_event_id: EventId::from_uuid(row.first_event_id),
         first_trace_sequence: EventSequence::new(to_u64(row.first_sequence, "first sequence")?),
         first_trace_tick: SimTick::new(to_u64(row.first_tick, "first tick")?),
