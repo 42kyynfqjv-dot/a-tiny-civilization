@@ -99,6 +99,7 @@ jobs:
       - run: ./scripts/verify-live-genesis-gate.sh
       - run: python3 scripts/test_verify_launch_candidate_evidence.py
       - run: python3 scripts/test_verify_quality_world_admission.py
+      - run: python3 scripts/test_audit_canonical_science.py
       - run: python3 scripts/test_verify_public_observatory_admission.py
       - run: bash -n scripts/*.sh
       - run: >-
