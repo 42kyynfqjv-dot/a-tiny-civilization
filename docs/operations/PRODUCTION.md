@@ -199,18 +199,22 @@ ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY="/var/lib/a-tiny-civilization/sources/$W
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
 ```
 
-With `DATABASE_URL` loaded from the root-protected production environment, initialize
-all founders and material reservoirs in one append and immediately replay-verify it. The
-canonical wrapper refuses a database containing any different world, so use a fresh production
-database rather than the development/proof database. The initializer first applies the same
-idempotent embedded migration set used by the deployment migration service, allowing a genuinely
-empty canonical database without weakening the exclusive-world check:
+Do not initialize production from freshly prepared inputs. First run the isolated qualification
+world through the required bounded evidence path below and create its launch-evidence bundle. With
+`DATABASE_URL` then loaded from the root-protected production environment, the qualified activation
+wrapper reruns every offline evidence check before appending the tick-zero founders and reservoirs.
+It refuses a database containing any different world, so use a fresh production database rather
+than the development/proof database. The underlying initializer applies the same idempotent
+embedded migration set used by the deployment migration service, allowing a genuinely empty
+canonical database without weakening the exclusive-world check:
 
 ```bash
-./scripts/initialize-canonical-world.sh \
+./scripts/activate-qualified-canonical-world.sh activate \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
-  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID"
+  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" \
+  "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --confirm-experimental-genesis
 ```
 
 The second command is retry-safe only for byte-identical inputs. Do not enable or
@@ -276,6 +280,21 @@ This verifies every bundle checksum, the external genesis-manifest binding, abse
 canonical payloads, exact world/ruleset identity, replay and qualification status, minimum history,
 all five projections, complete Hindsight delivery, person-only model receipts, every boolean gate,
 and that the recorded source commit is an ancestor of the checked-out code.
+
+Use the qualified wrapper—not the low-level initializer—for a deliberate production genesis. Its
+read-only mode can be repeated without a database:
+
+```bash
+./scripts/activate-qualified-canonical-world.sh verify \
+  docs/operations/CANONICAL_SEED_COMMITMENT.json \
+  docs/operations/CANONICAL_SEED_RESOLUTION.json \
+  "$QUALIFICATION_GENESIS_DIRECTORY" "$QUALIFICATION_EVIDENCE_DIRECTORY"
+```
+
+The write mode requires `DATABASE_URL`, reruns every offline check, re-verifies the public seed, and
+accepts the literal final argument `--confirm-experimental-genesis` before invoking the exclusive
+canonical initializer. It commits tick zero only; it does not deploy containers or expose a site.
+This keeps evidence admission, world creation, and public deployment as three separate operations.
 
 For the standard private Compose Qwen2.5 1.5B service, set
 `LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1`. A host-run worker may use a loopback URL.
@@ -349,9 +368,9 @@ alerting to notify an operator for either failed service.
   evidence plus the complete point-scoped 1981–2010 ERA5 evidence and its deterministic fixed-point
   monthly summaries, embedded as the schema-5 local weather input and exposed only as
   label-free temperature, water-flux, and air-motion sensations, verified by `SHA256SUMS`,
-  independently rederived during initialization, atomically
-  initialized by `initialize-canonical-world.sh`, and replayed before the long-running
-  runner is enabled;
+  independently rederived during initialization, admitted by the offline qualification-evidence
+  verifier, atomically initialized by `activate-qualified-canonical-world.sh`, and replayed before
+  the long-running runner is enabled;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is

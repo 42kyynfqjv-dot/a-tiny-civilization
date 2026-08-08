@@ -60,10 +60,12 @@ ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY="/var/lib/a-tiny-civilization/sources/$W
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
 
-DATABASE_URL=... ./scripts/initialize-canonical-world.sh \
+DATABASE_URL=... ./scripts/activate-qualified-canonical-world.sh activate \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
-  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID"
+  "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" \
+  "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --confirm-experimental-genesis
 ```
 
 Retain both public seed artifacts beside the genesis checksums and launch evidence. If any later
