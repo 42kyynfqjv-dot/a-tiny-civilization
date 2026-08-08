@@ -42,9 +42,11 @@ cd "${project_root}"
 rederive_directory="$(mktemp -d)"
 rederived_candidates=""
 rederived_climate=""
+rederived_climate_normals=""
 cleanup() {
   if [[ -n "${rederived_candidates}" ]]; then rm -f "${rederived_candidates}"; fi
   if [[ -n "${rederived_climate}" ]]; then rm -f "${rederived_climate}"; fi
+  if [[ -n "${rederived_climate_normals}" ]]; then rm -f "${rederived_climate_normals}"; fi
   rmdir "${rederive_directory}"
 }
 trap cleanup EXIT
@@ -91,6 +93,20 @@ if ! cmp -s "${rederived_climate}" "${origin_climate}"; then
   exit 1
 fi
 
+origin_climate_normals="${genesis_directory}/origin-climate-normals.json"
+if [[ ! -f "${origin_climate_normals}" ]]; then
+  echo "provisional origin climate normals are required" >&2
+  exit 2
+fi
+rederived_climate_normals="${rederive_directory}/origin-climate-normals.json"
+"${data_executable}" derive provisional-origin-climate-normals \
+  --evidence "${origin_climate}" \
+  --output "${rederived_climate_normals}"
+if ! cmp -s "${rederived_climate_normals}" "${origin_climate_normals}"; then
+  echo "origin climate normals do not match the independently rederived ERA5 evidence summaries" >&2
+  exit 1
+fi
+
 # A canonical database is intentionally empty before first genesis. Apply the
 # repository's idempotent migration set before the exclusive-world guard queries
 # it; subsequent identical invocations are safe.
@@ -106,6 +122,7 @@ arguments=(
   --provisional-land-origin-selection "${genesis_directory}/origin-selection.json"
   --provisional-origin-environment "${genesis_directory}/origin-environment.json"
   --provisional-origin-climate-evidence "${origin_climate}"
+  --provisional-origin-climate-normals "${origin_climate_normals}"
   --fauna-range-candidates "${genesis_directory}/fauna-candidates.json"
   --fauna-seeded-selection "${genesis_directory}/fauna-selection.json"
   --fauna-origin-environment "${genesis_directory}/origin-environment.json"

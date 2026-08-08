@@ -37,7 +37,7 @@ use world_data::{
     FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection,
     ProvisionalLandOriginSelection, ProvisionalMaterialResourcePlan,
     ProvisionalOrganismBodyProfilePlan, ProvisionalOriginClimateEvidence,
-    ProvisionalOriginEnvironment,
+    ProvisionalOriginClimateNormals, ProvisionalOriginEnvironment,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -133,6 +133,11 @@ enum Command {
         /// pinned noncausal evidence and cannot affect weather or organism state.
         #[arg(long, requires = "provisional_land_origin_selection")]
         provisional_origin_climate_evidence: Option<PathBuf>,
+
+        /// Deterministic fixed-point monthly summaries derived from the exact ERA5
+        /// evidence. These remain noncausal and cannot affect world state.
+        #[arg(long, requires = "provisional_origin_climate_evidence")]
+        provisional_origin_climate_normals: Option<PathBuf>,
 
         /// Canonical point-scoped modeled-range candidates. Must be supplied with
         /// the seeded selection, origin environment, and population plan inputs.
@@ -344,6 +349,7 @@ async fn main() -> Result<()> {
             provisional_land_origin_selection,
             provisional_origin_environment,
             provisional_origin_climate_evidence,
+            provisional_origin_climate_normals,
             fauna_range_candidates,
             fauna_seeded_selection,
             fauna_origin_environment,
@@ -370,6 +376,7 @@ async fn main() -> Result<()> {
                 provisional_land_origin_selection.as_deref(),
                 provisional_origin_environment.as_deref(),
                 provisional_origin_climate_evidence.as_deref(),
+                provisional_origin_climate_normals.as_deref(),
                 fauna_range_candidates.as_deref(),
                 fauna_seeded_selection.as_deref(),
                 fauna_origin_environment.as_deref(),
@@ -849,6 +856,7 @@ async fn init_provisional_full_earth_world(
     provisional_land_origin_selection_path: Option<&std::path::Path>,
     provisional_origin_environment_path: Option<&std::path::Path>,
     provisional_origin_climate_evidence_path: Option<&std::path::Path>,
+    provisional_origin_climate_normals_path: Option<&std::path::Path>,
     fauna_range_candidates_path: Option<&std::path::Path>,
     fauna_seeded_selection_path: Option<&std::path::Path>,
     fauna_origin_environment_path: Option<&std::path::Path>,
@@ -953,13 +961,23 @@ async fn init_provisional_full_earth_world(
             origin_environment.digest.to_string(),
         );
     }
-    if let Some(origin_climate_digest) = load_provisional_origin_climate_evidence(
+    let origin_climate_evidence_digest = load_provisional_origin_climate_evidence(
         provisional_origin_climate_evidence_path,
         &initial_origin,
-    )? {
+    )?;
+    if let Some(origin_climate_digest) = origin_climate_evidence_digest.as_ref() {
         manifest.scientific_datasets.insert(
             "provisional_origin_climate_evidence".to_owned(),
             origin_climate_digest.to_string(),
+        );
+    }
+    if let Some(origin_climate_normals_digest) = load_provisional_origin_climate_normals(
+        provisional_origin_climate_normals_path,
+        origin_climate_evidence_digest.as_ref(),
+    )? {
+        manifest.scientific_datasets.insert(
+            "provisional_origin_climate_normals".to_owned(),
+            origin_climate_normals_digest.to_string(),
         );
     }
     let species = SpeciesIdentity::new(
@@ -1153,6 +1171,26 @@ fn load_provisional_origin_climate_evidence(
         || !evidence.selected_patch.contains(origin.patch)
     {
         anyhow::bail!("provisional origin climate evidence does not match the selected origin");
+    }
+    Ok(Some(Digest::sha256(&bytes)))
+}
+
+fn load_provisional_origin_climate_normals(
+    path: Option<&std::path::Path>,
+    evidence_digest: Option<&Digest>,
+) -> Result<Option<Digest>> {
+    let Some(path) = path else {
+        return Ok(None);
+    };
+    let evidence_digest = evidence_digest.context(
+        "--provisional-origin-climate-normals requires --provisional-origin-climate-evidence",
+    )?;
+    let bytes = fs::read(path)
+        .with_context(|| format!("read provisional origin climate normals {}", path.display()))?;
+    let normals = ProvisionalOriginClimateNormals::from_canonical_slice(&bytes)
+        .context("validate provisional origin climate normals")?;
+    if normals.origin_climate_evidence_digest != *evidence_digest {
+        anyhow::bail!("provisional origin climate normals do not match the supplied evidence");
     }
     Ok(Some(Digest::sha256(&bytes)))
 }
@@ -2049,11 +2087,14 @@ mod tests {
         FaunaMetabolicRatePlan, FaunaMetabolicRateSelection, FaunaPhysiologyProfile,
         FaunaPhysiologyProfileSet, FaunaPopulationPlan, FaunaPopulationPlanEntry,
         FaunaRangeCandidate, FaunaRangeQueryPoint, LandCoverClassCount, LandCoverEvidenceCell,
-        LandCoverSignedValueCount, OriginClimateSeries, OriginClimateSourceArtifact,
+        LandCoverSignedValueCount, OriginClimateNormalMonth, OriginClimateNormalSeries,
+        OriginClimateSeries, OriginClimateSourceArtifact,
         PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION,
-        PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
-        ProvisionalOriginClimateEvidence, ProvisionalWorldComposition, ScaledFaunaTraitValue,
-        SeasonalScalarFieldCell,
+        PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS,
+        PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION,
+        PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
+        ProvisionalOriginClimateEvidence, ProvisionalOriginClimateNormals,
+        ProvisionalWorldComposition, ScaledFaunaTraitValue, SeasonalScalarFieldCell,
     };
 
     fn candidate_set() -> FaunaRangeCandidateSet {
@@ -2842,11 +2883,66 @@ mod tests {
                 .expect("matching climate evidence"),
             Some(Digest::sha256(&bytes))
         );
+        let evidence_digest = Digest::sha256(&bytes);
+        let normals = ProvisionalOriginClimateNormals {
+            normals_schema_version: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION,
+            status: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS.to_owned(),
+            origin_climate_evidence_digest: evidence_digest,
+            conversion_policy:
+                "binary32-nearest-even-per-observation-then-nearest-even-monthly-mean-v1".to_owned(),
+            series: [
+                ("siconc", "fraction", 6),
+                ("sst", "degC", 3),
+                ("t2m", "degC", 3),
+                ("tp", "m", 6),
+                ("u10", "m/s", 3),
+                ("v10", "m/s", 3),
+            ]
+            .into_iter()
+            .map(
+                |(variable, unit, decimal_places)| OriginClimateNormalSeries {
+                    variable: variable.to_owned(),
+                    unit: unit.to_owned(),
+                    decimal_places,
+                    months: (1..=12)
+                        .map(|month| OriginClimateNormalMonth {
+                            month,
+                            observed_years: 30,
+                            minimum: Some(1),
+                            mean: Some(2),
+                            maximum: Some(3),
+                        })
+                        .collect(),
+                },
+            )
+            .collect(),
+        };
+        let normals_bytes = normals
+            .canonical_bytes()
+            .expect("canonical climate normals");
+        let normals_path = std::env::temp_dir().join(format!(
+            "atc-origin-climate-normals-{}.json",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&normals_path, &normals_bytes).expect("write climate normals");
+        assert_eq!(
+            load_provisional_origin_climate_normals(Some(&normals_path), Some(&evidence_digest))
+                .expect("matching climate normals"),
+            Some(Digest::sha256(&normals_bytes))
+        );
+        assert!(
+            load_provisional_origin_climate_normals(
+                Some(&normals_path),
+                Some(&Digest::sha256(b"different evidence")),
+            )
+            .is_err()
+        );
         let wrong_origin = ResolvedInitialOrigin {
             patch: embodied_patch,
             selection_digest: Some(Digest::sha256(b"different origin")),
         };
         assert!(load_provisional_origin_climate_evidence(Some(&path), &wrong_origin).is_err());
         std::fs::remove_file(path).expect("remove climate evidence");
+        std::fs::remove_file(normals_path).expect("remove climate normals");
     }
 }
