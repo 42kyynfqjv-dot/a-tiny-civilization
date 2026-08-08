@@ -29,6 +29,16 @@ const worker = {
   async fetch(request: Request, env: Env | undefined, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
 
+    // Cloudflare's zone-level Always Use HTTPS setting is the preferred first
+    // hop. Keep the same invariant at the application boundary so a missing or
+    // accidentally disabled edge toggle cannot serve the canonical hostname
+    // over plaintext after a release. A 308 preserves POST bodies for OAuth
+    // callbacks and other future non-GET routes.
+    if (url.hostname === "atinycivilization.com" && url.protocol === "http:") {
+      url.protocol = "https:";
+      return withSecurityHeaders(Response.redirect(url, 308), url.pathname);
+    }
+
     if (url.pathname.startsWith("/api/")) {
       // Cloudflare supplies bindings through `env`. Vinext's Node production
       // server does not, so retain the same explicit container setting as a

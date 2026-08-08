@@ -13,6 +13,30 @@ async function render(path = "/") {
   );
 }
 
+test("redirects the canonical public hostname to HTTPS without losing the request target", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("https-redirect", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  const response = await worker.fetch(
+    new Request("http://atinycivilization.com/api/v1/auth/apple/callback?state=fixture", {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: "code=single-use",
+    }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(response.status, 308);
+  assert.equal(
+    response.headers.get("location"),
+    "https://atinycivilization.com/api/v1/auth/apple/callback?state=fixture",
+  );
+  assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+  assert.equal(response.headers.get("cache-control"), "no-store");
+});
+
 test("server-renders the civilization observatory", async () => {
   const response = await render();
   assert.equal(response.status, 200);
