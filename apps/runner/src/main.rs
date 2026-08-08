@@ -662,10 +662,7 @@ async fn serve(
                     tracing::warn!(%error, "runner heartbeat failed; will retry without stopping");
                 }
             }
-            result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
-                    tracing::error!(%error, "failed to listen for shutdown signal");
-                }
+            _ = shutdown_signal() => {
                 tracing::info!("runner stopping");
                 break;
             }
@@ -2023,10 +2020,7 @@ async fn serve_memory_worker(
                     }
                 }
             }
-            result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
-                    tracing::error!(%error, "failed to listen for memory-worker shutdown signal");
-                }
+            _ = shutdown_signal() => {
                 tracing::info!(worker_id, "subjective-memory delivery worker stopping");
                 break;
             }
@@ -2209,10 +2203,7 @@ async fn serve_cognition_worker(
                     }
                 }
             }
-            result = tokio::signal::ctrl_c() => {
-                if let Err(error) = result {
-                    tracing::error!(%error, "failed to listen for cognition-worker shutdown signal");
-                }
+            _ = shutdown_signal() => {
                 tracing::info!(worker_id, "cognition worker stopping");
                 break;
             }
@@ -2224,6 +2215,39 @@ async fn serve_cognition_worker(
 fn retry_delay_seconds(attempt_count: u32) -> u32 {
     let shift = attempt_count.saturating_sub(1).min(8);
     (1_u32 << shift).min(300)
+}
+
+async fn shutdown_signal() {
+    #[cfg(unix)]
+    {
+        use tokio::signal::unix::{SignalKind, signal};
+
+        let mut interrupt = match signal(SignalKind::interrupt()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                tracing::error!(%error, "failed to install interrupt signal handler");
+                std::future::pending::<()>().await;
+                unreachable!();
+            }
+        };
+        let mut terminate = match signal(SignalKind::terminate()) {
+            Ok(signal) => signal,
+            Err(error) => {
+                tracing::error!(%error, "failed to install termination signal handler");
+                std::future::pending::<()>().await;
+                unreachable!();
+            }
+        };
+        tokio::select! {
+            _ = interrupt.recv() => {}
+            _ = terminate.recv() => {}
+        }
+    }
+
+    #[cfg(not(unix))]
+    if let Err(error) = tokio::signal::ctrl_c().await {
+        tracing::error!(%error, "failed to install shutdown signal handler");
+    }
 }
 
 fn init_tracing() {

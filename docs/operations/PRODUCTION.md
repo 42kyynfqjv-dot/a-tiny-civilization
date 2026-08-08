@@ -156,6 +156,12 @@ older volume: if a pre-genesis development volume fails this check, create a fre
 volume through an explicitly scoped operator procedure rather than weakening the gate. Never
 replace a volume after canonical tick zero.
 
+Docker stops services with `SIGTERM`. The API, runner, projector, memory worker, and cognition
+worker all install an explicit termination handler, and the canonical writers plus PostgreSQL have
+a 60-second shutdown grace period. An in-flight database transaction is therefore allowed to
+commit or roll back cleanly before the container runtime may force termination. CI verifies both
+the signal handlers and the composed grace periods.
+
 ### Docker tunnel and backup profile
 
 From the repository checkout, load the protected environment file into the current

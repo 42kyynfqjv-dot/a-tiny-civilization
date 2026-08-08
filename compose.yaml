@@ -20,6 +20,7 @@ x-rust-service: &rust-service
     - backend
   init: true
   logging: *local-logging
+  stop_grace_period: 60s
 
 services:
   db:
@@ -45,6 +46,7 @@ services:
       - backend
     restart: unless-stopped
     logging: *local-logging
+    stop_grace_period: 60s
 
   migrate:
     <<: *rust-service
@@ -166,6 +168,7 @@ services:
     init: true
     restart: unless-stopped
     logging: *local-logging
+    stop_grace_period: 30s
 
 volumes:
   postgres-data:
