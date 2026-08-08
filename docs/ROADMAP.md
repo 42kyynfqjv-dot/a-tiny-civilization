@@ -203,7 +203,10 @@ Ruleset 29 now makes the measured ETOPO relief range affect only private movemen
 the bodily consequence without an answer key. Event, snapshot, and state-hash schemas advance to
 29; JRC and SoilGrids remain committed but uninterpreted. The one-kilometre proportional reference
 is explicitly provisional and must be assessed during scientific validation rather than tuned in a
-running world.
+running world. The same-seed tick-zero PostgreSQL proof is recorded in
+`docs/operations/CANONICAL_GENESIS_V15_2026-08-08.md`. That same candidate now passes the complete
+1,000-tick replay, snapshot, Hindsight, local-model, projection, and mechanics qualification gate;
+it remains undeployed pending the separate launch-quality review and operations activation.
 
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate

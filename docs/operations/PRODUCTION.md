@@ -223,7 +223,7 @@ driver, but refuses `APP_ENV=production` and cannot change a public world's pace
 
 ```bash
 # Start the local memory and cognition workers first. This wrapper advances one
-# tick, waits for the free local result without advancing simulation time, then
+# tick, waits for a strictly free model result without advancing simulation time, then
 # completes the exact bounded run.
 ./scripts/advance-cognition-qualified-world.sh "$QUALIFICATION_WORLD_ID" 1000
 # After the bounded advance, a finite isolated-database drain avoids waiting on
@@ -242,7 +242,9 @@ Use a separate disposable database and a non-public world ID. The command accept
 million ticks per invocation and stops early with an error if the world reaches a terminal state.
 The cognition-qualified wrapper requires the exact tick-zero cursor, refuses resume from any other
 cursor, and fails rather than crossing the first fixed deadline without a durable model receipt.
-It does not start workers or alter the simulation clock while waiting.
+It does not start workers or alter the simulation clock while waiting. The receipt may come from
+the loopback model or a separately approved external free-allocation route, but its recorded billed
+cost must be exactly zero; the wrapper never enables the paid tail.
 `memory-worker --drain` forces a one-millisecond work cadence, exits successfully only after no
 ready outbox entry remains, and treats a delivery or store failure as fatal. It is for an isolated
 qualification database after bounded advancement; the normal production worker remains continuous

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Advance a tick-zero qualification world without racing the first local cognition
-# result past its immutable simulation deadline. Memory and cognition workers must
+# Advance a tick-zero qualification world without racing the first strictly free
+# cognition result past its immutable simulation deadline. Memory and cognition workers must
 # already be running. This wrapper never starts, initializes, or serves a world.
 
 if [[ $# -ne 2 ]]; then
@@ -104,10 +104,9 @@ while true; do
 SELECT jsonb_build_object(
   'tick', world.current_tick,
   'requests', COUNT(request.request_id),
-  'local_free_receipts', COUNT(result.request_id) FILTER (
+  'free_model_receipts', COUNT(result.request_id) FILTER (
     WHERE result.result_payload -> 'receipt' IS NOT NULL
       AND result.result_payload -> 'receipt' <> 'null'::JSONB
-      AND result.result_payload -> 'receipt' ->> 'provider' = 'local_openai'
       AND (result.result_payload -> 'receipt' ->> 'billed_micro_usd')::BIGINT = 0
   )
 )::TEXT
@@ -118,12 +117,12 @@ WHERE world.id = :'world_id'::UUID
 GROUP BY world.current_tick;
 SQL
 )"
-  if [[ "$readiness" == *'"tick": 1'* && "$readiness" == *'"local_free_receipts": 1'* ]]; then
+  if [[ "$readiness" == *'"tick": 1'* && "$readiness" == *'"free_model_receipts": 1'* ]]; then
     break
   fi
   now="$(date +%s)"
   if (( now - started_at >= timeout_seconds )); then
-    echo "first local cognition result was not prepared before wall timeout: ${readiness:-missing}" >&2
+    echo "first strictly free cognition result was not prepared before wall timeout: ${readiness:-missing}" >&2
     exit 1
   fi
   sleep "$poll_seconds"
@@ -131,4 +130,4 @@ done
 
 remaining_ticks=$((total_ticks - 1))
 DATABASE_URL="$DATABASE_URL" "$advance_executable" "$world_id" "$remaining_ticks"
-echo "advanced ${world_id} through ${total_ticks} ticks after a durable pre-deadline local model result"
+echo "advanced ${world_id} through ${total_ticks} ticks after a durable pre-deadline free model result"
