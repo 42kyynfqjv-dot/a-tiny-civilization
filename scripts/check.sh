@@ -30,12 +30,14 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/check-boundaries.sh
 ./scripts/verify-supporter-production-policy.sh
 ./scripts/verify-production-env-file.sh
+./scripts/verify-production-runtime-gate.sh
 ./scripts/verify-backend-status.sh
 ./scripts/verify-hindsight-runtime.sh
 ./scripts/verify-qualification-status.sh
 bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qualified-world.sh \
   ./scripts/observer-candidate-smoke.sh ./scripts/verify-observer-candidate-smoke.sh \
-  ./scripts/deploy-production-app.sh ./scripts/activate-qualified-canonical-world.sh
+  ./scripts/deploy-production-app.sh ./scripts/activate-qualified-canonical-world.sh \
+  ./scripts/verify-staged-runtime-artifacts.sh
 ./scripts/verify-observer-candidate-smoke.sh
 ./scripts/verify-create-qualification-evidence.sh
 ./scripts/verify-provisional-genesis-pins.sh

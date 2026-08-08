@@ -42,6 +42,9 @@ cd "$project_root"
 # Validate the exact file that Compose will consume. Keeping one validator prevents the
 # deployment helper and documented/manual preflight from silently accepting different setups.
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file"
+ATINY_CIVILIZATION_DATA_EXECUTABLE="${project_root}/target/release/civilization-data" \
+  "${project_root}/scripts/verify-staged-runtime-artifacts.sh" \
+  "${project_root}/runtime-artifacts"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
 "${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web

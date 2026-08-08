@@ -98,8 +98,10 @@ sudo ./scripts/deploy-production-app.sh \
 
 The helper first runs the complete production preflight against the exact root-protected env file
 that Compose will consume. The file must be an absolute, regular non-symlink owned by root (or the
-invoking operator for a manual preflight), with no group or other permissions. The helper then builds
-the application and web images, starts the database, migrations, pinned local model,
+invoking operator for a manual preflight), with no group or other permissions. Before Compose
+changes service state, the helper also retransverses the staged full-Earth composition, rejects
+mutable or symlinked paths, and rechecks both DE441 segments by byte length and SHA-256. It then
+builds the application and web images, starts the database, migrations, pinned local model,
 API, projector, and runner with `APP_ENV=production`, then updates the web container
 without allowing Compose defaults to recreate its API dependency. It waits for web and API
 responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
