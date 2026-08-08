@@ -57,4 +57,6 @@ grep -q -- '--ruleset-version 26' scripts/initialize-provisional-world.sh
 grep -qF 'ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY' scripts/prepare-canonical-genesis.sh
 grep -qF 'ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1' scripts/prepare-canonical-genesis.sh
 grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-world.sh
+grep -qF -- '--body-mass-profiles data/derived-cache/amniote-life-history-v1.json' \
+  scripts/prepare-provisional-genesis.sh
 echo "Ruleset-26 provisional genesis pins one verified composition and artifact revision."

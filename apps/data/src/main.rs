@@ -50,7 +50,8 @@ use world_data_filesystem::{
     verify_release_artifacts, verify_source_snapshot_artifact, verify_source_snapshot_artifacts,
 };
 use world_domain::{
-    BirthCategory, CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
+    ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION, AdultBodyMassCommitment, BirthCategory,
+    CartesianMillimetres, CelestialState, Digest, GeographicCoordinateE7,
     GeographicCoordinateHalfArcsecond, HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
     HeritableDispositionProfile, MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION, MAX_S2_LEVEL,
     METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, MaterialIdentity, MaterialReservoirCommitment,
@@ -606,6 +607,11 @@ enum DeriveCommand {
         /// remain explicit engineering assumptions.
         #[arg(long)]
         life_history_profiles: Option<PathBuf>,
+        /// Canonical source-compiled physiology profiles. Exact adult-body-mass
+        /// aggregates are retained as literature approximations; missing species
+        /// receive explicit non-evidentiary assumptions.
+        #[arg(long)]
+        body_mass_profiles: Option<PathBuf>,
         #[arg(long, default_value_t = 300)]
         tick_duration_seconds: u32,
         #[arg(long)]
@@ -1542,6 +1548,7 @@ async fn main() -> Result<()> {
                 metabolic_profiles,
                 metabolic_rate_plan,
                 life_history_profiles,
+                body_mass_profiles,
                 tick_duration_seconds,
                 output,
             } => derive_provisional_organism_body_profile_plan(
@@ -1554,6 +1561,7 @@ async fn main() -> Result<()> {
                 metabolic_profiles.as_deref(),
                 metabolic_rate_plan.as_deref(),
                 life_history_profiles.as_deref(),
+                body_mass_profiles.as_deref(),
                 tick_duration_seconds,
                 &output,
             ),
@@ -2988,7 +2996,8 @@ fn engineering_body_profile_entry(
     tick_duration_seconds: u32,
     range_package: &str,
     life_history_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
-) -> ProvisionalOrganismBodyProfileEntry {
+    body_mass_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
+) -> Result<ProvisionalOrganismBodyProfileEntry> {
     let life_history = provisional_life_history(range_package);
     let profile_digest = Digest::sha256(
         format!(
@@ -3051,7 +3060,67 @@ fn engineering_body_profile_entry(
             .expect("category maturity commitments serialize")
             .as_slice(),
     );
-    ProvisionalOrganismBodyProfileEntry {
+    let matching_mass_profiles = body_mass_profiles
+        .map(|(profiles, _)| {
+            profiles
+                .profiles
+                .iter()
+                .filter(|profile| {
+                    profile.species.catalog == species.catalog
+                        && profile.species.identifier == species.identifier
+                        && profile.trait_id == "adult-body-mass"
+                        && profile.value.unit == "g"
+                        && profile.value.value > 0
+                })
+                .collect::<Vec<_>>()
+        })
+        .unwrap_or_default();
+    if matching_mass_profiles.len() > 1 {
+        bail!(
+            "body-mass profile set has multiple exact adult-body-mass aggregates for {}:{}",
+            species.catalog,
+            species.identifier
+        );
+    }
+    let adult_body_mass = matching_mass_profiles.first().map_or_else(
+        || {
+            let assumption_digest = Digest::sha256(
+                format!(
+                    "a-tiny-civilization/adult-body-mass-assumption/v1/{}/{}/{}",
+                    range_package, species.catalog, species.identifier
+                )
+                .as_bytes(),
+            );
+            AdultBodyMassCommitment {
+                commitment_schema_version: ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+                species: species.clone(),
+                evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+                profile_set_digest: assumption_digest,
+                source_record_id: "engineering-assumption-adult-body-mass-v1".to_owned(),
+                source_record_digest: assumption_digest,
+                mass_grams_value: provisional_adult_body_mass_grams(range_package),
+                mass_grams_decimal_places: 0,
+            }
+        },
+        |profile| {
+            let (_, profile_set_digest) =
+                body_mass_profiles.expect("a matching profile requires its profile set");
+            AdultBodyMassCommitment {
+                commitment_schema_version: ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+                species: species.clone(),
+                evidence_basis: PhysiologicalEvidenceBasis::LiteratureApproximation,
+                profile_set_digest: *profile_set_digest,
+                source_record_id: profile.source_record_id.clone(),
+                source_record_digest: profile.source_record_digest,
+                mass_grams_value: profile.value.value,
+                mass_grams_decimal_places: profile.value.decimal_places,
+            }
+        },
+    );
+    adult_body_mass
+        .validate()
+        .context("validate provisional adult-body-mass commitment")?;
+    Ok(ProvisionalOrganismBodyProfileEntry {
         species: species.clone(),
         initial_age_ticks: duration_ticks(life_history.initial_age_seconds, tick_duration_seconds),
         metabolic_rate,
@@ -3108,6 +3177,7 @@ fn engineering_body_profile_entry(
                 },
             ],
         },
+        adult_body_mass: Some(adult_body_mass),
         heritable_disposition_profile: Some(HeritableDispositionProfile {
             profile_schema_version: HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
             profile_id: "provisional-engineering-heredity-v1".to_owned(),
@@ -3121,6 +3191,17 @@ fn engineering_body_profile_entry(
             mutation_probability_millionths: 100_000,
             mutation_max_step: 2,
         }),
+    })
+}
+
+fn provisional_adult_body_mass_grams(range_package: &str) -> i64 {
+    match range_package {
+        "homo_sapiens" => 70_000,
+        "mammalia" => 10_000,
+        "aves_1" => 500,
+        "reptilia" => 1_000,
+        "amphibia" => 100,
+        _ => 1_000,
     }
 }
 
@@ -3156,6 +3237,7 @@ fn derive_provisional_organism_body_profile_plan(
     metabolic_profiles_path: Option<&Path>,
     metabolic_rate_plan_path: Option<&Path>,
     life_history_profiles_path: Option<&Path>,
+    body_mass_profiles_path: Option<&Path>,
     tick_duration_seconds: u32,
     output_path: &Path,
 ) -> Result<()> {
@@ -3207,6 +3289,15 @@ fn derive_provisional_organism_body_profile_plan(
             Ok::<_, anyhow::Error>((profiles, Digest::sha256(&bytes)))
         })
         .transpose()?;
+    let body_mass_profiles = body_mass_profiles_path
+        .map(|path| {
+            let bytes = fs::read(path)
+                .with_context(|| format!("read body-mass profiles {}", path.display()))?;
+            let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&bytes)
+                .context("validate body-mass profile set")?;
+            Ok::<_, anyhow::Error>((profiles, Digest::sha256(&bytes)))
+        })
+        .transpose()?;
     let mut entries = Vec::with_capacity(population.entries.len() + 1);
     let human = SpeciesIdentity::new(
         "gbif",
@@ -3221,7 +3312,8 @@ fn derive_provisional_organism_body_profile_plan(
         tick_duration_seconds,
         "homo_sapiens",
         None,
-    ));
+        None,
+    )?);
     for fauna in &population.entries {
         let metabolic_rate = sourced_metabolic
             .as_ref()
@@ -3248,7 +3340,8 @@ fn derive_provisional_organism_body_profile_plan(
                 .expect("validated population species belongs to its seeded selection")
                 .range_package,
             life_history_profiles.as_ref(),
-        ));
+            body_mass_profiles.as_ref(),
+        )?);
     }
     entries.sort_by(|left, right| {
         (&left.species.catalog, &left.species.identifier)
@@ -3274,8 +3367,10 @@ fn derive_provisional_organism_body_profile_plan(
             "engineering_assumption_fauna_metabolic_count": population.entries.len() - sourced_metabolic.as_ref().map_or(0, |(_, plan)| plan.selections.len()),
             "source_informed_category_maturity_count": plan.entries.iter().flat_map(|entry| &entry.reproductive_physiology.category_maturity).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
             "engineering_assumption_category_maturity_count": plan.entries.iter().flat_map(|entry| &entry.reproductive_physiology.category_maturity).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
+            "source_informed_adult_body_mass_count": plan.entries.iter().filter_map(|entry| entry.adult_body_mass.as_ref()).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::LiteratureApproximation).count(),
+            "engineering_assumption_adult_body_mass_count": plan.entries.iter().filter_map(|entry| entry.adult_body_mass.as_ref()).filter(|entry| entry.evidence_basis == PhysiologicalEvidenceBasis::EngineeringAssumption).count(),
             "provisional_reproduction_pacing": "each female and male category uses its exact retained species maturity aggregate when present; every missing category falls back independently to a coarse simulation-time engineering guardrail",
-            "policy": "human metabolism, regulation, reproduction, and heredity remain engineering assumptions; retained Amniote category maturity aggregates are source-addressed literature approximations, never raw observations; every uncovered category and metabolic rate remains an explicit engineering assumption",
+            "policy": "human metabolism, regulation, reproduction, body mass, and heredity remain engineering assumptions; retained Amniote maturity and adult-body-mass aggregates are source-addressed literature approximations, never raw observations; every uncovered category, mass, and metabolic rate remains an explicit engineering assumption",
         }))?
     );
     Ok(())
@@ -14512,7 +14607,9 @@ mod tests {
             300,
             "homo_sapiens",
             Some(&(profiles, profile_set_digest)),
-        );
+            None,
+        )
+        .expect("body profile");
 
         let female = &entry.reproductive_physiology.category_maturity[0];
         assert_eq!(female.category.as_str(), "female");
@@ -14541,6 +14638,57 @@ mod tests {
             .reproductive_physiology
             .validate()
             .expect("mixed-evidence commitment is valid");
+    }
+
+    #[test]
+    fn provisional_body_profiles_retain_exact_taxon_body_mass_without_making_it_causal() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("test species");
+        let record_digest = Digest::sha256(b"Elton body-mass row");
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: world_data::FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
+            source_artifact_digest: Digest::sha256(b"Elton source artifact"),
+            profiles: vec![world_data::FaunaPhysiologyProfile {
+                species: species.clone(),
+                trait_id: "adult-body-mass".to_owned(),
+                value: world_data::ScaledFaunaTraitValue {
+                    value: 70_000,
+                    decimal_places: 0,
+                    unit: "g".to_owned(),
+                },
+                source: world_data::FaunaEvidenceSource::EltonTraitsV1_0,
+                source_field: "BodyMass-Value".to_owned(),
+                source_record_id: "elton-mammal-line-1".to_owned(),
+                source_record_digest: record_digest,
+                evidence_basis: world_data::FaunaEvidenceBasis::SourceCompiledSpeciesAggregate,
+            }],
+        };
+        profiles.validate().expect("valid test profile set");
+        let profile_set_digest = Digest::canonical(&profiles).expect("profile set digest");
+        let entry = engineering_body_profile_entry(
+            species.clone(),
+            engineering_metabolic_commitment(species),
+            300,
+            "homo_sapiens",
+            None,
+            Some(&(profiles, profile_set_digest)),
+        )
+        .expect("body profile");
+        let mass = entry.adult_body_mass.expect("adult body mass");
+        assert_eq!(mass.mass_grams_value, 70_000);
+        assert_eq!(mass.mass_grams_decimal_places, 0);
+        assert_eq!(mass.profile_set_digest, profile_set_digest);
+        assert_eq!(mass.source_record_digest, record_digest);
+        assert_eq!(
+            mass.evidence_basis,
+            PhysiologicalEvidenceBasis::LiteratureApproximation
+        );
+        mass.validate().expect("valid retained body mass");
     }
 
     #[test]

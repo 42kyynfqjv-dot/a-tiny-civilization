@@ -121,6 +121,7 @@ fi
   --metabolic-profiles data/derived-cache/animaltraits-metabolic-rate-v1.json \
   --metabolic-rate-plan "${fauna_metabolic_rates}" \
   --life-history-profiles data/derived-cache/amniote-life-history-v1.json \
+  --body-mass-profiles data/derived-cache/amniote-life-history-v1.json \
   --tick-duration-seconds 300 \
   --output "${body_profiles}"
 

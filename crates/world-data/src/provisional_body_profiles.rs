@@ -6,12 +6,13 @@
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use world_domain::{
-    HeritableDispositionProfile, MetabolicRateCommitment, PhysiologicalRegulationCommitment,
-    ReproductivePhysiologyCommitment, SpeciesIdentity,
+    AdultBodyMassCommitment, HeritableDispositionProfile, MetabolicRateCommitment,
+    PhysiologicalRegulationCommitment, ReproductivePhysiologyCommitment, SpeciesIdentity,
 };
 
 pub const LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION: u16 = 1;
-pub const PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION: u16 = 2;
+pub const HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION: u16 = 2;
+pub const PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION: u16 = 3;
 pub const PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.provisional-organism-body-profile-plan+json";
 pub const PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS: &str =
@@ -26,6 +27,8 @@ pub struct ProvisionalOrganismBodyProfileEntry {
     pub metabolic_rate: MetabolicRateCommitment,
     pub physiological_regulation: PhysiologicalRegulationCommitment,
     pub reproductive_physiology: ReproductivePhysiologyCommitment,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub adult_body_mass: Option<AdultBodyMassCommitment>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub heritable_disposition_profile: Option<HeritableDispositionProfile>,
 }
@@ -46,6 +49,7 @@ impl ProvisionalOrganismBodyProfilePlan {
         if !matches!(
             self.plan_schema_version,
             LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION
+                | HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION
                 | PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION
         ) {
             return Err(ProvisionalOrganismBodyProfilePlanError::UnsupportedSchema(
@@ -97,6 +101,13 @@ impl ProvisionalOrganismBodyProfilePlan {
                     error.to_string(),
                 )
             })?;
+            if let Some(mass) = &entry.adult_body_mass {
+                mass.validate().map_err(|error| {
+                    ProvisionalOrganismBodyProfilePlanError::InvalidAdultBodyMassCommitment(
+                        error.to_string(),
+                    )
+                })?;
+            }
             if let Some(profile) = &entry.heritable_disposition_profile {
                 profile.validate().map_err(|error| {
                     ProvisionalOrganismBodyProfilePlanError::InvalidHeritableDispositionProfile(
@@ -121,6 +132,15 @@ impl ProvisionalOrganismBodyProfilePlan {
                 ));
             }
             if entry
+                .adult_body_mass
+                .as_ref()
+                .is_some_and(|mass| mass.species != entry.species)
+            {
+                return Err(ProvisionalOrganismBodyProfilePlanError::SpeciesMismatch(
+                    "adult_body_mass",
+                ));
+            }
+            if entry
                 .heritable_disposition_profile
                 .as_ref()
                 .is_some_and(|profile| profile.species != entry.species)
@@ -134,13 +154,41 @@ impl ProvisionalOrganismBodyProfilePlan {
                 entry.heritable_disposition_profile.is_some(),
             ) {
                 (LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, false)
+                | (HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, true)
                 | (PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, true) => {}
                 (LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, true) => {
                     return Err(ProvisionalOrganismBodyProfilePlanError::HeredityRequiresSchemaTwo);
                 }
-                (PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, false) => {
+                (
+                    HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION
+                    | PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+                    false,
+                ) => {
                     return Err(
                         ProvisionalOrganismBodyProfilePlanError::MissingHeritableDispositionProfile,
+                    );
+                }
+                _ => unreachable!("plan schema checked above"),
+            }
+            match (self.plan_schema_version, entry.adult_body_mass.is_some()) {
+                (
+                    LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION
+                    | HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+                    false,
+                )
+                | (PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, true) => {}
+                (
+                    LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION
+                    | HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+                    true,
+                ) => {
+                    return Err(
+                        ProvisionalOrganismBodyProfilePlanError::BodyMassRequiresSchemaThree,
+                    );
+                }
+                (PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION, false) => {
+                    return Err(
+                        ProvisionalOrganismBodyProfilePlanError::MissingAdultBodyMassCommitment,
                     );
                 }
                 _ => unreachable!("plan schema checked above"),
@@ -213,12 +261,20 @@ pub enum ProvisionalOrganismBodyProfilePlanError {
     InvalidRegulationCommitment(String),
     #[error("invalid reproductive-physiology commitment: {0}")]
     InvalidReproductiveCommitment(String),
+    #[error("invalid adult-body-mass commitment: {0}")]
+    InvalidAdultBodyMassCommitment(String),
     #[error("invalid heritable-disposition profile: {0}")]
     InvalidHeritableDispositionProfile(String),
-    #[error("heritable-disposition profiles require body-profile plan schema two")]
+    #[error("heritable-disposition profiles require body-profile plan schema two or later")]
     HeredityRequiresSchemaTwo,
-    #[error("body-profile plan schema two requires a heritable-disposition profile per species")]
+    #[error(
+        "body-profile plan schema two or later requires a heritable-disposition profile per species"
+    )]
     MissingHeritableDispositionProfile,
+    #[error("adult-body-mass commitments require body-profile plan schema three")]
+    BodyMassRequiresSchemaThree,
+    #[error("body-profile plan schema three requires an adult-body-mass commitment per species")]
+    MissingAdultBodyMassCommitment,
     #[error("{0} commitment species does not exactly match its plan entry")]
     SpeciesMismatch(&'static str),
     #[error("reproductive tick duration {commitment} does not match plan tick duration {plan}")]
@@ -314,6 +370,16 @@ mod tests {
                     },
                 ],
             },
+            adult_body_mass: Some(AdultBodyMassCommitment {
+                commitment_schema_version: world_domain::ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+                species: species.clone(),
+                evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+                profile_set_digest: Digest::sha256(b"body-mass assumption set"),
+                source_record_id: "body-mass-assumption-v1".to_owned(),
+                source_record_digest: Digest::sha256(b"body-mass assumption"),
+                mass_grams_value: 1_000,
+                mass_grams_decimal_places: 0,
+            }),
             heritable_disposition_profile: Some(HeritableDispositionProfile {
                 profile_schema_version: HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
                 profile_id: "test-heritable-disposition-v1".to_owned(),
@@ -382,12 +448,32 @@ mod tests {
         plan.plan_schema_version = LEGACY_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION;
         for entry in &mut plan.entries {
             entry.heritable_disposition_profile = None;
+            entry.adult_body_mass = None;
         }
         let bytes = plan.canonical_bytes().expect("legacy canonical plan");
         assert!(
             !String::from_utf8(bytes.clone())
                 .expect("JSON")
                 .contains("heritable_disposition_profile")
+        );
+        assert_eq!(
+            ProvisionalOrganismBodyProfilePlan::from_canonical_slice(&bytes),
+            Ok(plan)
+        );
+    }
+
+    #[test]
+    fn schema_two_without_body_mass_remains_byte_canonical() {
+        let mut plan = plan();
+        plan.plan_schema_version = HERITABLE_PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION;
+        for entry in &mut plan.entries {
+            entry.adult_body_mass = None;
+        }
+        let bytes = plan.canonical_bytes().expect("schema-two canonical plan");
+        assert!(
+            !String::from_utf8(bytes.clone())
+                .expect("JSON")
+                .contains("adult_body_mass")
         );
         assert_eq!(
             ProvisionalOrganismBodyProfilePlan::from_canonical_slice(&bytes),

@@ -1006,22 +1006,26 @@ async fn init_provisional_full_earth_world(
         }
         initial_organisms.extend(fauna.initial_organisms);
     }
-    if let Some((profile_plan_digest, life_history_profile_set_digest)) =
-        apply_provisional_organism_body_profiles(
-            &mut initial_organisms,
-            ruleset_version,
-            tick_duration_seconds,
-            provisional_organism_profile_plan_path,
-        )?
-    {
+    if let Some(evidence) = apply_provisional_organism_body_profiles(
+        &mut initial_organisms,
+        ruleset_version,
+        tick_duration_seconds,
+        provisional_organism_profile_plan_path,
+    )? {
         manifest.scientific_datasets.insert(
             "provisional_organism_body_profile_plan".to_owned(),
-            profile_plan_digest.to_string(),
+            evidence.profile_plan_digest.to_string(),
         );
-        if let Some(life_history_profile_set_digest) = life_history_profile_set_digest {
+        if let Some(life_history_profile_set_digest) = evidence.life_history_profile_set_digest {
             manifest.scientific_datasets.insert(
                 "provisional_fauna_life_history_profile_set".to_owned(),
                 life_history_profile_set_digest.to_string(),
+            );
+        }
+        if let Some(body_mass_profile_set_digest) = evidence.body_mass_profile_set_digest {
+            manifest.scientific_datasets.insert(
+                "provisional_fauna_body_mass_profile_set".to_owned(),
+                body_mass_profile_set_digest.to_string(),
             );
         }
     }
@@ -1403,12 +1407,19 @@ fn load_provisional_fauna_initial_organisms(
     }))
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+struct AppliedBodyProfileEvidence {
+    profile_plan_digest: Digest,
+    life_history_profile_set_digest: Option<Digest>,
+    body_mass_profile_set_digest: Option<Digest>,
+}
+
 fn apply_provisional_organism_body_profiles(
     initial_organisms: &mut [InitialOrganism],
     ruleset_version: u32,
     tick_duration_seconds: u32,
     plan_path: Option<&std::path::Path>,
-) -> Result<Option<(Digest, Option<Digest>)>> {
+) -> Result<Option<AppliedBodyProfileEvidence>> {
     if ruleset_version < BODILY_REGULATION_RULESET_VERSION {
         if plan_path.is_some() {
             anyhow::bail!(
@@ -1449,6 +1460,19 @@ fn apply_provisional_organism_body_profiles(
         anyhow::bail!("one body-profile plan cannot mix multiple life-history profile sets");
     }
     let life_history_profile_set_digest = life_history_digests.into_iter().next();
+    let body_mass_digests = plan
+        .entries
+        .iter()
+        .filter_map(|entry| entry.adult_body_mass.as_ref())
+        .filter(|entry| {
+            entry.evidence_basis != world_domain::PhysiologicalEvidenceBasis::EngineeringAssumption
+        })
+        .map(|entry| entry.profile_set_digest)
+        .collect::<BTreeSet<_>>();
+    if body_mass_digests.len() > 1 {
+        anyhow::bail!("one body-profile plan cannot mix multiple body-mass profile sets");
+    }
+    let body_mass_profile_set_digest = body_mass_digests.into_iter().next();
 
     for organism in initial_organisms {
         let profile = plan.entry_for(&organism.species).with_context(|| {
@@ -1507,10 +1531,11 @@ fn apply_provisional_organism_body_profiles(
         };
     }
 
-    Ok(Some((
-        Digest::sha256(&bytes),
+    Ok(Some(AppliedBodyProfileEvidence {
+        profile_plan_digest: Digest::sha256(&bytes),
         life_history_profile_set_digest,
-    )))
+        body_mass_profile_set_digest,
+    }))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2006,6 +2031,16 @@ mod tests {
                     },
                 ],
             },
+            adult_body_mass: Some(world_domain::AdultBodyMassCommitment {
+                commitment_schema_version: world_domain::ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+                species: species.clone(),
+                evidence_basis: world_domain::PhysiologicalEvidenceBasis::LiteratureApproximation,
+                profile_set_digest: Digest::sha256(b"runner body-mass source set"),
+                source_record_id: "runner-body-mass-source-row-v1".to_owned(),
+                source_record_digest: Digest::sha256(b"runner body-mass source row"),
+                mass_grams_value: 70_000,
+                mass_grams_decimal_places: 0,
+            }),
             heritable_disposition_profile: Some(world_domain::HeritableDispositionProfile {
                 profile_schema_version: world_domain::HERITABLE_DISPOSITION_PROFILE_SCHEMA_VERSION,
                 profile_id: "runner-body-profile-test-heredity".to_owned(),
@@ -2065,7 +2100,14 @@ mod tests {
             Some(&path),
         )
         .expect("apply profile plan");
-        assert_eq!(digest, Some((Digest::sha256(&bytes), None)));
+        assert_eq!(
+            digest,
+            Some(AppliedBodyProfileEvidence {
+                profile_plan_digest: Digest::sha256(&bytes),
+                life_history_profile_set_digest: None,
+                body_mass_profile_set_digest: Some(Digest::sha256(b"runner body-mass source set")),
+            })
+        );
         assert_eq!(organisms[0].initial_age_ticks, 20);
         assert!(organisms[0].metabolic_rate.is_some());
         assert!(organisms[0].physiological_regulation.is_some());

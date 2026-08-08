@@ -35,6 +35,7 @@ pub struct MetabolicRateCommitment {
 pub const LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 1;
 pub const METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION: u16 = 2;
 pub const PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION: u16 = 1;
+pub const ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION: u16 = 1;
 
 impl MetabolicRateCommitment {
     pub fn validate(&self) -> Result<(), EmbodimentError> {
@@ -78,6 +79,40 @@ impl PhysiologicalEvidenceBasis {
     #[must_use]
     pub const fn is_source_measurement(&self) -> bool {
         matches!(self, Self::SourceMeasurement)
+    }
+}
+
+/// One exact species-bound adult body-mass value retained for later physical
+/// coupling. Merely retaining this commitment does not yet make mass causal.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct AdultBodyMassCommitment {
+    pub commitment_schema_version: u16,
+    pub species: SpeciesIdentity,
+    pub evidence_basis: PhysiologicalEvidenceBasis,
+    pub profile_set_digest: Digest,
+    pub source_record_id: String,
+    pub source_record_digest: Digest,
+    pub mass_grams_value: i64,
+    pub mass_grams_decimal_places: u8,
+}
+
+impl AdultBodyMassCommitment {
+    pub fn validate(&self) -> Result<(), EmbodimentError> {
+        if self.commitment_schema_version != ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION {
+            return Err(EmbodimentError::UnsupportedAdultBodyMassCommitmentSchema);
+        }
+        self.species
+            .validate()
+            .map_err(|_| EmbodimentError::InvalidAdultBodyMassCommitment)?;
+        if self.profile_set_digest == Digest::ZERO
+            || self.source_record_digest == Digest::ZERO
+            || !is_technical(&self.source_record_id)
+            || self.mass_grams_value <= 0
+            || self.mass_grams_decimal_places > 9
+        {
+            return Err(EmbodimentError::InvalidAdultBodyMassCommitment);
+        }
+        Ok(())
     }
 }
 
@@ -490,6 +525,10 @@ pub enum EmbodimentError {
     UnsupportedPhysiologicalRegulationSchema,
     #[error("invalid physiological-regulation commitment")]
     InvalidPhysiologicalRegulationCommitment,
+    #[error("unsupported adult-body-mass commitment schema")]
+    UnsupportedAdultBodyMassCommitmentSchema,
+    #[error("invalid adult-body-mass commitment")]
+    InvalidAdultBodyMassCommitment,
     #[error("unsupported action-value state schema")]
     UnsupportedActionValueSchema,
     #[error("invalid action-value state")]
@@ -716,6 +755,24 @@ mod tests {
             })
         );
         assert_eq!(needs.signal(NeedKind::Pain), None);
+
+        let mass = AdultBodyMassCommitment {
+            commitment_schema_version: ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
+            species: SpeciesIdentity::new(
+                "gbif",
+                "2436436",
+                "Homo sapiens",
+                "https://www.gbif.org/species/2436436",
+            )
+            .expect("real taxon"),
+            evidence_basis: PhysiologicalEvidenceBasis::EngineeringAssumption,
+            profile_set_digest: Digest::sha256(b"explicit body-mass assumption set"),
+            source_record_id: "human-body-mass-assumption-v1".to_owned(),
+            source_record_digest: Digest::sha256(b"explicit body-mass assumption"),
+            mass_grams_value: 70_000,
+            mass_grams_decimal_places: 0,
+        };
+        mass.validate().expect("valid explicit mass assumption");
     }
 
     #[test]

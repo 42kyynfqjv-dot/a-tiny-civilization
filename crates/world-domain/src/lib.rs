@@ -40,7 +40,8 @@ pub use configuration::{
     WorldDataBundleReference, WorldGeometry, WorldInputReference,
 };
 pub use embodiment::{
-    ACTION_VALUE_MAX, ACTION_VALUE_MIN, ACTION_VALUE_STATE_SCHEMA_VERSION, ActionValueState,
+    ACTION_VALUE_MAX, ACTION_VALUE_MIN, ACTION_VALUE_STATE_SCHEMA_VERSION,
+    ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION, ActionValueState, AdultBodyMassCommitment,
     BodilyNeedState, BodilyRegulationState, EmbodimentError,
     LEGACY_METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION, METABOLIC_RATE_COMMITMENT_SCHEMA_VERSION,
     MOVEMENT_DIRECTION_VALUE_SCHEMA_VERSION, MetabolicRateCommitment, MovementDirectionValueState,

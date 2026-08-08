@@ -227,7 +227,10 @@ entry is absent. Reproductive commitment schema two now uses exact taxon/categor
 maturity aggregates from the pinned Amniote Life-History profile set when retained,
 labels them as literature approximations, and gives every missing category its own
 explicit engineering-assumption fallback. These private values and their source-row
-digests never become organism concepts or public reproductive detail.
+digests never become organism concepts or public reproductive detail. Body-profile
+schema three also retains exact taxon-matched adult-body-mass aggregates with explicit
+assumption fallbacks. Mass is source-addressed but deliberately noncausal until a later
+ruleset specifies the allometry for movement, reserves, ingestion, and thermal physics.
 
 Ruleset fifteen adds bounded individual variation over the same eleven use-neutral
 primitive actions. Founder dispositions derive from the world seed, stable identity,
