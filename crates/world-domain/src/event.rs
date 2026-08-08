@@ -85,6 +85,9 @@ pub const LOCAL_WEATHER_EVENT_SCHEMA_VERSION: u16 = 27;
 /// Schema twenty-eight admits label-free local water-flux and air-motion
 /// readings derived from the source-bound weather-input contract.
 pub const LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION: u16 = 28;
+/// Schema twenty-nine changes movement fatigue through the committed local
+/// terrain-relief range. Payload shapes remain unchanged.
+pub const TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION: u16 = 29;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -532,6 +535,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
             | LOCAL_WEATHER_EVENT_SCHEMA_VERSION
             | LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
+            | TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }

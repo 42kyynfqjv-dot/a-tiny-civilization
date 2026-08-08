@@ -45,8 +45,8 @@ use world_domain::{
     SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
     SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
-    SpeciesIdentityError, TimeOverflow, WorldConfiguration, WorldConfigurationError, WorldId,
-    WorldManifest, WorldStatus, s2_edge_neighbors,
+    SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -135,6 +135,9 @@ pub const LOCAL_WEATHER_RULESET_VERSION: u32 = 27;
 /// Ruleset twenty-eight exposes label-free local water-flux and air-motion
 /// magnitudes from the source-bound atmospheric contract.
 pub const LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION: u32 = 28;
+/// Ruleset twenty-nine makes moving across the provisional local terrain range
+/// increase private bodily fatigue without exposing terrain or altitude labels.
+pub const TERRAIN_MOVEMENT_RULESET_VERSION: u32 = 29;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -163,6 +166,7 @@ pub const MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 25;
 pub const SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 26;
 pub const LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION: u16 = 27;
 pub const LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION: u16 = 28;
+pub const TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 29;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -203,6 +207,7 @@ const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
 const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
 const LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION: u16 = 27;
 const LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION: u16 = 28;
+const TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 29;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
@@ -319,6 +324,34 @@ fn integrate_load_with_recovery(
     let integrated = exposed.saturating_sub(recovery).min(u128::from(capacity));
     u64::try_from(integrated)
         .map_err(|_| EngineError::PhysiologicalArithmetic("body load exceeds u64".to_owned()))
+}
+
+/// Apply the provisional L10 relief range as a dimensionless movement-load
+/// multiplier relative to one kilometre. This never constructs a slope, path, or
+/// terrain label and uses only the source-bound extrema committed at genesis.
+fn terrain_adjusted_movement_exposure(
+    baseline_exposure: u128,
+    minimum_millimetres: i64,
+    maximum_millimetres: i64,
+) -> Result<u128, EngineError> {
+    const REFERENCE_RELIEF_MILLIMETRES: u128 = 1_000_000;
+    let spread = i128::from(maximum_millimetres)
+        .checked_sub(i128::from(minimum_millimetres))
+        .filter(|spread| *spread >= 0)
+        .ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic(
+                "terrain relief range is inverted or overflowed".to_owned(),
+            )
+        })?;
+    let spread = u128::try_from(spread).expect("nonnegative i128 fits u128");
+    let additional = baseline_exposure.checked_mul(spread).ok_or_else(|| {
+        EngineError::PhysiologicalArithmetic(
+            "terrain movement exposure numerator overflowed".to_owned(),
+        )
+    })? / REFERENCE_RELIEF_MILLIMETRES;
+    baseline_exposure.checked_add(additional).ok_or_else(|| {
+        EngineError::PhysiologicalArithmetic("terrain movement exposure overflowed".to_owned())
+    })
 }
 
 fn subtract_load(current: u64, amount: u128) -> u64 {
@@ -928,6 +961,10 @@ impl EngineState {
         self.manifest.ruleset_version >= LOCAL_ATMOSPHERIC_FLUX_RULESET_VERSION
     }
 
+    fn uses_terrain_movement_driver(&self) -> bool {
+        self.manifest.ruleset_version >= TERRAIN_MOVEMENT_RULESET_VERSION
+    }
+
     fn local_temperature_at_tick(
         &self,
         configuration: &WorldConfiguration,
@@ -1293,6 +1330,18 @@ impl EngineState {
             weather
                 .validate()
                 .map_err(|error| EngineError::InvalidLocalWeather(error.to_string()))?;
+        }
+        if self.uses_terrain_movement_driver() {
+            configuration
+                .as_ref()
+                .and_then(WorldConfiguration::local_surface_baseline)
+                .ok_or_else(|| {
+                    EngineError::InvalidLocalSurface(
+                        "terrain movement ruleset requires a local surface baseline".to_owned(),
+                    )
+                })?
+                .validate()
+                .map_err(|error| EngineError::InvalidLocalSurface(error.to_string()))?;
         }
         events.push(DomainEvent::WorldStarted {
             manifest: self.manifest.clone(),
@@ -3127,15 +3176,30 @@ impl EngineState {
                     })?,
             )
         } else {
+            let baseline_exposure = tick_seconds
+                .checked_mul(u128::from(regulation.fatigue_recovery_seconds))
+                .ok_or_else(|| {
+                    EngineError::PhysiologicalArithmetic("fatigue exposure overflowed".to_owned())
+                })?;
+            let exposure = if self.uses_terrain_movement_driver()
+                && action.kind == PrimitiveActionKind::Move
+            {
+                let surface = configuration.local_surface_baseline().ok_or_else(|| {
+                    EngineError::PhysiologicalArithmetic(
+                        "terrain movement requires a local surface baseline".to_owned(),
+                    )
+                })?;
+                terrain_adjusted_movement_exposure(
+                    baseline_exposure,
+                    surface.terrain_minimum_millimetres,
+                    surface.terrain_maximum_millimetres,
+                )?
+            } else {
+                baseline_exposure
+            };
             add_load(
                 organism.bodily_regulation.fatigue_load_second_squared,
-                tick_seconds
-                    .checked_mul(u128::from(regulation.fatigue_recovery_seconds))
-                    .ok_or_else(|| {
-                        EngineError::PhysiologicalArithmetic(
-                            "fatigue exposure overflowed".to_owned(),
-                        )
-                    })?,
+                exposure,
                 fatigue_capacity,
             )?
         };
@@ -5015,7 +5079,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_local_atmospheric_flux_driver() {
+        if self.uses_terrain_movement_driver() {
+            TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
         } else if self.uses_local_weather_driver() {
             LOCAL_WEATHER_EVENT_SCHEMA_VERSION
@@ -5100,7 +5166,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_local_atmospheric_flux_driver() {
+        if self.uses_terrain_movement_driver() {
+            TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_local_weather_driver() {
             LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION
@@ -6771,6 +6839,18 @@ impl EngineState {
                 .validate()
                 .map_err(|error| EngineError::InvalidLocalWeather(error.to_string()))?;
         }
+        if self.uses_terrain_movement_driver() && self.status != WorldStatus::Initializing {
+            self.configuration
+                .as_ref()
+                .and_then(WorldConfiguration::local_surface_baseline)
+                .ok_or_else(|| {
+                    EngineError::InvalidLocalSurface(
+                        "terrain movement ruleset requires a local surface baseline".to_owned(),
+                    )
+                })?
+                .validate()
+                .map_err(|error| EngineError::InvalidLocalSurface(error.to_string()))?;
+        }
         let mut heritable_profiles_by_species = BTreeMap::new();
         for (id, organism) in &self.organisms {
             if id != &organism.organism_id {
@@ -7355,7 +7435,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_local_atmospheric_flux_driver() {
+        let snapshot_schema_version = if state.uses_terrain_movement_driver() {
+            TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_local_weather_driver() {
             LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
@@ -7462,12 +7544,15 @@ impl Snapshot {
                 | SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
                 | LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
                 | LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
+                | TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_local_atmospheric_flux_driver() {
+        let expected_schema_version = if self.state.uses_terrain_movement_driver() {
+            TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_local_atmospheric_flux_driver() {
             LOCAL_ATMOSPHERIC_FLUX_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_local_weather_driver() {
             LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
@@ -7936,6 +8021,8 @@ pub enum EngineError {
     MissingLocalWeather,
     #[error("invalid local-weather baseline: {0}")]
     InvalidLocalWeather(String),
+    #[error("invalid local-surface baseline: {0}")]
+    InvalidLocalSurface(String),
     #[error("local atmospheric flux is unsupported by this ruleset")]
     LocalAtmosphericFluxUnsupported,
     #[error("physiological arithmetic failed: {0}")]
@@ -8105,9 +8192,9 @@ mod tests {
         CapacityExhaustionPolicy, CartesianMillimetres, CelestialState, EarthResolutionLevels,
         FullEarthGrid, PartitionedExecution, PerceptionChannel, PersonRepresentation,
         PrimitiveActionKind, PropertyReading, ProvisionalLocalEnvironmentBaseline,
-        ProvisionalLocalWeatherBaseline, ProvisionalWorldCompositionReference, S2Projection,
-        SchedulerKind, SituatedPerception, SpatialGrid, TdbSecondsSinceJ2000,
-        WorldDataBundleReference, WorldSeed, WorldStatus,
+        ProvisionalLocalSurfaceBaseline, ProvisionalLocalWeatherBaseline,
+        ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
+        SpatialGrid, TdbSecondsSinceJ2000, WorldDataBundleReference, WorldSeed, WorldStatus,
     };
 
     fn manifest() -> WorldManifest {
@@ -8298,6 +8385,47 @@ mod tests {
             },
         )
         .expect("weather provisional config")
+    }
+
+    fn surface_provisional_full_earth_configuration() -> WorldConfiguration {
+        let weather_configuration = weather_provisional_full_earth_configuration();
+        let environment = weather_configuration
+            .local_environment_baseline()
+            .expect("environment")
+            .clone();
+        let weather = weather_configuration
+            .local_weather_baseline()
+            .expect("weather")
+            .clone();
+        WorldConfiguration::new_provisional_full_earth_with_surface_baseline(
+            weather_configuration.tick_duration_seconds,
+            weather_configuration
+                .full_earth_grid()
+                .expect("grid")
+                .clone(),
+            weather_configuration
+                .provisional_world_composition()
+                .expect("composition")
+                .clone(),
+            weather_configuration
+                .partitioned_execution()
+                .expect("execution")
+                .clone(),
+            environment.clone(),
+            weather,
+            ProvisionalLocalSurfaceBaseline {
+                status: "provisional-surface-input-not-scientifically-admitted".to_owned(),
+                source_evidence_digest: environment.source_evidence_digest,
+                evidence_patch: environment.evidence_patch,
+                active_patch: environment.active_patch,
+                terrain_minimum_millimetres: 2_228_633,
+                terrain_mean_millimetres: 2_296_048,
+                terrain_maximum_millimetres: 2_364_719,
+                surface_water_occurrence_source_code: 0,
+                topsoil_source_quantiles: [[1, 2, 3]; 9],
+            },
+        )
+        .expect("surface provisional config")
     }
 
     fn full_earth_person(world_id: WorldId) -> InitialOrganism {
@@ -13270,5 +13398,99 @@ mod tests {
             })
         ));
         assert!(replay(manifest, &[genesis, death]).is_ok());
+    }
+
+    #[test]
+    fn terrain_relief_adds_only_proportional_movement_exposure() {
+        assert_eq!(
+            terrain_adjusted_movement_exposure(1_000, 5, 5).expect("flat relief"),
+            1_000
+        );
+        assert_eq!(
+            terrain_adjusted_movement_exposure(1_000_000, 2_228_633, 2_364_719)
+                .expect("canonical relief"),
+            1_136_086
+        );
+        assert!(terrain_adjusted_movement_exposure(1, 10, 9).is_err());
+    }
+
+    #[test]
+    fn ruleset_twenty_nine_binds_terrain_and_makes_movement_privately_costlier() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x129));
+        let terrain_manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed29),
+            TERRAIN_MOVEMENT_RULESET_VERSION,
+        );
+        let regulated_manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed29),
+            BODILY_REGULATION_RULESET_VERSION,
+        );
+        let initial = EngineState::new(regulated_manifest);
+        let person = regulated_full_earth_person(world_id, 0x229, 60_000, 60_000);
+        let events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                vec![person.clone()],
+            )
+            .expect("regulated genesis");
+        let (mut running, _) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, events)
+            .expect("regulated commit");
+        running.manifest = terrain_manifest.clone();
+        running.configuration = Some(surface_provisional_full_earth_configuration());
+        assert_eq!(
+            running.state_hash_schema_version(),
+            TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION
+        );
+        let organism = running
+            .organisms
+            .get(&person.organism_id)
+            .expect("initialized person");
+        let ordinary = running
+            .next_bodily_regulation(
+                organism,
+                &PrimitiveAction {
+                    kind: PrimitiveActionKind::ApplyForce,
+                    target_id: None,
+                    intensity: 1,
+                    contact_region: None,
+                    movement_direction: None,
+                },
+                OralRecovery::default(),
+            )
+            .expect("ordinary exposure");
+        let moving = running
+            .next_bodily_regulation(
+                organism,
+                &PrimitiveAction {
+                    kind: PrimitiveActionKind::Move,
+                    target_id: None,
+                    intensity: 1,
+                    contact_region: None,
+                    movement_direction: Some(0),
+                },
+                OralRecovery::default(),
+            )
+            .expect("terrain movement exposure");
+        assert!(
+            moving.fatigue_load_second_squared > ordinary.fatigue_load_second_squared,
+            "terrain affects only the private bodily outcome"
+        );
+        let empty_terrain_state = EngineState::new(terrain_manifest);
+        assert_eq!(
+            empty_terrain_state.event_schema_version(),
+            TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
+        );
+        let snapshot = Snapshot::new(empty_terrain_state, EventSequence::ZERO, Digest::ZERO)
+            .expect("terrain snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("terrain snapshot integrity");
     }
 }

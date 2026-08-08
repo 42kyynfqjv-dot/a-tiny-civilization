@@ -198,6 +198,13 @@ hash agree. The exact evidence is recorded in
 `docs/operations/CANONICAL_GENESIS_V14_2026-08-08.md`. Full-duration qualification remains attached
 to the next mechanics candidate rather than treating this configuration-only proof as admission.
 
+Ruleset 29 now makes the measured ETOPO relief range affect only private movement fatigue under ADR
+0125. It emits no terrain or altitude reading and lets the existing action/outcome learner discover
+the bodily consequence without an answer key. Event, snapshot, and state-hash schemas advance to
+29; JRC and SoilGrids remain committed but uninterpreted. The one-kilometre proportional reference
+is explicitly provisional and must be assessed during scientific validation rather than tuned in a
+running world.
+
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate
 selection uses only canonical world state, bodily pressure, exact local reachability,

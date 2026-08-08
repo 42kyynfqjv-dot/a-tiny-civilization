@@ -145,6 +145,13 @@ WITH selected_world AS (
                       -> 'local_weather_baseline' IS NOT NULL
            )::BIGINT AS weather_configurations,
            COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' = 'world_configured'
+                 AND (event -> 'event' -> 'data' -> 'configuration'
+                      ->> 'configuration_schema_version')::INTEGER = 6
+                 AND event -> 'event' -> 'data' -> 'configuration'
+                      -> 'local_surface_baseline' IS NOT NULL
+           )::BIGINT AS surface_configurations,
+           COUNT(*) FILTER (
                WHERE event -> 'event' ->> 'type' = 'organism_perceived'
                  AND jsonb_path_exists(
                        event -> 'event' -> 'data' -> 'perception' -> 'readings',
@@ -263,9 +270,13 @@ WITH selected_world AS (
                AS person_only_cognition
            , (ruleset_version < 27 OR weather_configurations = 1) AS local_weather_bound
            , (ruleset_version < 28 OR (
-                 minimum_event_schema = 28 AND maximum_event_schema = 28
+                 minimum_event_schema >= 28 AND maximum_event_schema >= 28
                  AND water_flux_perceptions > 0 AND air_motion_perceptions > 0
              )) AS local_atmospheric_flux_exercised
+           , (ruleset_version < 29 OR (
+                 minimum_event_schema = 29 AND maximum_event_schema = 29
+                 AND surface_configurations = 1
+             )) AS terrain_movement_bound
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -279,7 +290,8 @@ SELECT jsonb_build_object(
       AND acoustic_variation_exercised AND signal_action_association_exercised
       AND selectable_movement_exercised AND movement_direction_learning_exercised
       AND signal_motor_association_exercised AND person_only_cognition
-      AND local_weather_bound AND local_atmospheric_flux_exercised,
+      AND local_weather_bound AND local_atmospheric_flux_exercised
+      AND terrain_movement_bound,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -315,6 +327,7 @@ SELECT jsonb_build_object(
       , 'directed_moves', directed_moves
       , 'movement_direction_values', movement_direction_values
       , 'weather_configurations', weather_configurations
+      , 'surface_configurations', surface_configurations
       , 'water_flux_perceptions', water_flux_perceptions
       , 'air_motion_perceptions', air_motion_perceptions
     ),
@@ -338,6 +351,7 @@ SELECT jsonb_build_object(
       , 'person_only_cognition', person_only_cognition
       , 'local_weather_bound', local_weather_bound
       , 'local_atmospheric_flux_exercised', local_atmospheric_flux_exercised
+      , 'terrain_movement_bound', terrain_movement_bound
     )
 )::TEXT
 FROM checks;

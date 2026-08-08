@@ -315,7 +315,7 @@ alerting to notify an operator for either failed service.
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
-- a ruleset-28 genesis chain produced by `prepare-canonical-genesis.sh` from the
+- a ruleset-29 genesis chain produced by `prepare-canonical-genesis.sh` from the
   independently verified public seed resolution and required range-plus-local-occurrence fauna
   evidence plus the complete point-scoped 1981–2010 ERA5 evidence and its deterministic fixed-point
   monthly summaries, embedded as the schema-5 local weather input and exposed only as
