@@ -47,7 +47,8 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/observer-candidate-smoke.sh ./scripts/verify-observer-candidate-smoke.sh \
   ./scripts/deploy-production-app.sh ./scripts/activate-qualified-canonical-world.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \
-  ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh
+  ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh \
+  ./scripts/verify-public-edge.sh
 ./scripts/verify-observer-candidate-smoke.sh
 ./scripts/verify-create-qualification-evidence.sh
 ./scripts/verify-provisional-genesis-pins.sh
@@ -55,6 +56,8 @@ python3 scripts/verify-runtime-artifact-listing.py
 python3 -m py_compile scripts/verify-launch-candidate-evidence.py
 python3 scripts/test_verify_launch_candidate_evidence.py
 python3 -m py_compile scripts/verify-quality-world-admission.py
+python3 -m py_compile scripts/verify-public-edge-headers.py
+python3 scripts/test_verify_public_edge_headers.py
 python3 scripts/test_verify_quality_world_admission.py
 ./scripts/verify-demo.sh
 

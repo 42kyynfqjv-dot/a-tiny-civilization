@@ -8,11 +8,17 @@ runtime_verifier="${project_root}/scripts/verify-staged-runtime-artifacts.sh"
 preflight_line="$(rg -n -m1 'production-preflight\.sh.*--env-file' "$deployment")"
 runtime_line="$(rg -n -m1 'verify-staged-runtime-artifacts\.sh' "$deployment")"
 mutation_line="$(rg -n -m1 'compose_args\[@.*build migrate' "$deployment")"
+public_edge_line="$(rg -n -m1 'verify-public-edge\.sh.*https://atinycivilization\.com' "$deployment")"
 preflight_number="${preflight_line%%:*}"
 runtime_number="${runtime_line%%:*}"
 mutation_number="${mutation_line%%:*}"
+public_edge_number="${public_edge_line%%:*}"
 if ((preflight_number >= runtime_number || runtime_number >= mutation_number)); then
   echo "runtime artifact verification must follow env preflight and precede Compose mutation" >&2
+  exit 1
+fi
+if ((public_edge_number <= mutation_number)); then
+  echo "public edge verification must run after deployment mutation and local smoke checks" >&2
   exit 1
 fi
 if ! rg -q 'requires the literal --confirm-public-deployment argument' "$deployment"; then
@@ -34,4 +40,4 @@ for contract in "${required_contracts[@]}"; do
   fi
 done
 
-echo "Production deployment revalidates immutable Earth and celestial inputs before mutation."
+echo "Production deployment revalidates immutable inputs before mutation and the public edge after smoke checks."

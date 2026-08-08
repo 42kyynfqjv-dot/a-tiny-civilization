@@ -171,6 +171,13 @@ The `Production images` CI job additionally builds both final images, inspects t
 runtime users, executes the Rust image under the production restrictions, and boots plus HTTP-probes
 the web image on a random loopback port with a read-only root filesystem.
 
+After a deployment passes the private backend and observer smoke gates, the deploy helper also
+checks the real `atinycivilization.com` edge. HTTP must redirect to the one canonical HTTPS origin;
+the homepage, wiki, and observer status must return 200 with the complete security/no-store header
+contract; and the returned homepage and JSON must parse as the expected public product. A healthy
+loopback origin behind a broken tunnel or weakened edge policy is not reported as a successful
+deployment.
+
 The Compose project name and canonical PostgreSQL/Hindsight volume names are explicit and do not
 depend on the checkout directory. Those volumes are external to Compose, so `docker compose down
 -v` cannot delete them. `make up`, `make hindsight-up`, and the production deploy helper create

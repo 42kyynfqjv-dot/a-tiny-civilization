@@ -98,3 +98,5 @@ if ((${#running_worlds[@]} == 1)); then
   "${project_root}/scripts/observer-candidate-smoke.sh" \
     "http://${api_origin}" "$running_world_id" "$running_world_sequence"
 fi
+
+"${project_root}/scripts/verify-public-edge.sh" https://atinycivilization.com
