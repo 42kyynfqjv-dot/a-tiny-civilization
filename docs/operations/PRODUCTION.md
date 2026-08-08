@@ -367,6 +367,17 @@ alerting to notify an operator for either failed service.
 
 ## Required gates before public genesis
 
+Run the composed read-only gate as root before either canonical activation or deployment. It reads
+the protected environment, verifies the exact candidate and experimental quality admission, and
+streams the staged runtime inputs without creating a world or changing a service:
+
+```bash
+sudo ./scripts/public-genesis-preflight.sh \
+  --env-file /etc/a-tiny-civilization-production.env \
+  --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
+  --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY"
+```
+
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
 - a ruleset-30 genesis chain produced by `prepare-canonical-genesis.sh` from the
