@@ -279,9 +279,14 @@ export default function Home() {
           <SupporterPanel />
         </section>
 
-        <footer>
+        <footer className="site-footer">
           <p>A Tiny Civilization · Open source</p>
-          <p>A world to watch, not a game to win</p>
+          <nav aria-label="Project policies">
+            <Link href="/privacy">Privacy</Link>
+            <Link href="/terms">Terms</Link>
+            <Link href="/supporter-policy">Supporter policy</Link>
+            <Link href="/presentation-policy">Presentation</Link>
+          </nav>
         </footer>
       </main>
     </div>

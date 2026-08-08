@@ -57,6 +57,22 @@ test("server-renders the observer wiki as a separate read-only route", async () 
   assert.doesNotMatch(html, /create wiki claim|steering wheel/i);
 });
 
+for (const [path, title, marker] of [
+  ["/privacy", "Privacy notice", "Observer data is not sold"],
+  ["/terms", "Terms of use", "not a promise that civilization"],
+  ["/supporter-policy", "Supporter naming policy", "never creates, schedules, delays"],
+  ["/presentation-policy", "World presentation policy", "never presents sexual activity"],
+]) {
+  test(`server-renders public policy ${path}`, async () => {
+    const response = await render(path);
+    assert.equal(response.status, 200);
+    const html = await response.text();
+    assert.match(html, new RegExp(`<title>${title} · A Tiny Civilization</title>`, "i"));
+    assert.match(html, new RegExp(marker, "i"));
+    assert.match(html, /Public project policy/);
+  });
+}
+
 test("proxies only observer API paths when configured", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
   workerUrl.searchParams.set("proxy", `${process.pid}-${Date.now()}`);

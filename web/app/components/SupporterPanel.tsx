@@ -216,7 +216,7 @@ export function SupporterPanel() {
           {submitting ? "Opening secure checkout…" : "Continue to secure checkout"}
         </button>
       </form>
-      <p className="supporter-fine-print">Payment enters moderation; rejected or cancelled unmatched names receive a full refund. A reservation waits for a matching natural birth and never creates one.</p>
+      <p className="supporter-fine-print">Payment enters moderation; rejected or cancelled unmatched names receive a full refund. A reservation waits for a matching natural birth and never creates one. <a href="/supporter-policy">Read the naming policy.</a></p>
       {message ? <p className="supporter-message" role="status">{message}</p> : null}
       {panel.reservations.length > 0 ? (
         <div className="reservation-list">

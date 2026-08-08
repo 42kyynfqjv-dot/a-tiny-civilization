@@ -117,10 +117,12 @@ a strict requirement and refuses to run without the complete configuration.
 
 ### Stripe supporter purchases
 
-The repository now has reservation persistence, strict idempotent webhook admission, and an
-authenticated CSRF-protected Checkout-creation endpoint. The route stays indistinguishable from a
-missing route until observer sign-in, the Stripe webhook, and the fixed Stripe product are all
-configured. A live payment UI is still intentionally absent.
+The repository now has reservation persistence, strict idempotent webhook admission, an
+authenticated CSRF-protected Checkout-creation endpoint, and a public supporter panel. The panel
+discovers disabled integrations and shows a closed state until observer sign-in, the Stripe webhook,
+and the fixed Stripe product are all configured. When enabled, it supports person or individually
+recorded animal reservations, account history, unmatched cancellation, and redirect-only Stripe
+Checkout without exposing payment credentials to the site.
 
 The repository also includes an operator-only, durable full-refund command. It prepares immutable
 intent before Stripe is called, uses a reservation-scoped idempotency key, and records the returned
@@ -158,9 +160,9 @@ To activate that product, the owner will need to:
 3. Register every production payment domain and subdomain in Stripe. Stripe handles
    Apple Pay merchant validation, but Apple Pay and Google Pay still require the
    domains to be registered for embedded Elements or Checkout.
-4. Use Stripe's Payment Element or Express Checkout Element so eligible Apple Pay and
-   Google Pay customers see their wallets. This is a Stripe payment choice, not an
-   Apple or Google social-login setup.
+4. Enable Apple Pay and Google Pay in the Stripe-hosted Checkout configuration so eligible
+   customers see their wallets. This is a Stripe payment choice, not an Apple or Google
+   social-login setup; the site never embeds or handles wallet credentials.
 
 Stripe requires payment-method domain registration for Apple Pay and Google Pay, and
 handles Apple Pay merchant validation; see its
@@ -218,8 +220,8 @@ For now, it is enough to report the completion state, not the secret:
 - `Cloudflare tunnel created` (and hostname chosen),
 - `backup destination selected`,
 - `Stripe account ready` when supporter payments are ready to build,
-- `Google OAuth client ready` / `Apple Services ID ready` only after callback paths are
-  implemented.
+- `Google OAuth client ready` / `Apple Services ID ready` when the implemented callback paths are
+  registered in the provider dashboards.
 
 I will then verify the non-secret configuration and provide the next narrow deployment
 step. A secret itself should be typed by the owner directly into the production secret
