@@ -19,6 +19,20 @@ chmod 600 "$environment_file"
 
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" >/dev/null
 
+deadline_file="${temporary_directory}/deadline.env"
+cp "$environment_file" "$deadline_file"
+echo 'COGNITION_REQUEST_TIMEOUT_SECONDS=60' >> "$deadline_file"
+if "${project_root}/scripts/production-preflight.sh" --env-file "$deadline_file" \
+  >"${temporary_directory}/deadline.txt" 2>&1; then
+  echo "production preflight accepted a wall timeout at the cognition deadline" >&2
+  exit 1
+fi
+if ! grep -q 'must expire before the 60-tick cognition deadline' \
+  "${temporary_directory}/deadline.txt"; then
+  echo "production preflight rejected the cognition deadline for the wrong reason" >&2
+  exit 1
+fi
+
 {
   echo 'OPENROUTER_API_KEY=test-only-provider-key'
 } >> "$environment_file"

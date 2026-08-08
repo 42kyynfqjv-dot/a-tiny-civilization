@@ -123,6 +123,26 @@ case "${COGNITION_PAID_ENABLED:-false}" in
     ;;
 esac
 
+runner_tick_milliseconds="${RUNNER_TICK_MILLISECONDS:-1000}"
+cognition_timeout_seconds="${COGNITION_REQUEST_TIMEOUT_SECONDS:-45}"
+if [[ ! "$runner_tick_milliseconds" =~ ^[1-9][0-9]*$ ]] \
+   || ((runner_tick_milliseconds > 60000)); then
+  echo "RUNNER_TICK_MILLISECONDS must be an integer from 1 through 60000" >&2
+  exit 2
+fi
+if [[ ! "$cognition_timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
+   || ((cognition_timeout_seconds > 300)); then
+  echo "COGNITION_REQUEST_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
+  exit 2
+fi
+# Ruleset 26 commits a 60-tick response window. The wall-cost circuit breaker
+# must expire before that window at the configured target tick cadence so an
+# unavailable route can still be durably latched without racing the deadline.
+if ((cognition_timeout_seconds * 1000 >= 60 * runner_tick_milliseconds)); then
+  echo "COGNITION_REQUEST_TIMEOUT_SECONDS must expire before the 60-tick cognition deadline" >&2
+  exit 2
+fi
+
 if [[ -n "${GOOGLE_OAUTH_CLIENT_ID:-}" && -z "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]] \
    || [[ -z "${GOOGLE_OAUTH_CLIENT_ID:-}" && -n "${GOOGLE_OAUTH_CLIENT_SECRET:-}" ]]; then
   echo "Google OAuth client ID and secret must be configured together" >&2

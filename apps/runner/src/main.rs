@@ -50,6 +50,10 @@ use world_domain::{
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
 const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = PERSON_COGNITION_RULESET_VERSION;
+// The pinned CPU model needs more than 15 seconds to prefill a full bounded
+// cognition prompt on the production-class host. Keep this below the default
+// 60-second request-to-simulation-deadline window.
+const DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 45;
 const MAX_QUALIFICATION_TICKS: u64 = 1_000_000;
 
 #[derive(Debug, Parser)]
@@ -243,7 +247,11 @@ enum Command {
         #[arg(long, env = "COGNITION_CLAIM_LEASE_SECONDS", default_value_t = 60)]
         claim_lease_seconds: u32,
 
-        #[arg(long, env = "COGNITION_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
+        #[arg(
+            long,
+            env = "COGNITION_REQUEST_TIMEOUT_SECONDS",
+            default_value_t = DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS
+        )]
         request_timeout_seconds: u64,
 
         /// Explicit approval to send private cognition and recalled-memory context externally.
@@ -2400,6 +2408,31 @@ mod tests {
         assert!(is_production_environment(Some(" Production ")));
         assert!(!is_production_environment(Some("development")));
         assert!(!is_production_environment(None));
+    }
+
+    #[test]
+    fn local_cognition_default_allows_cpu_prefill_before_the_simulation_deadline() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "--database-url",
+            "postgres://example",
+            "cognition-worker",
+            "--hindsight-base-url",
+            "http://127.0.0.1:8888",
+        ])
+        .expect("parse cognition worker command");
+        let Some(Command::CognitionWorker {
+            request_timeout_seconds,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected cognition worker command");
+        };
+        assert_eq!(
+            request_timeout_seconds,
+            DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS
+        );
+        assert!(request_timeout_seconds < 60);
     }
 
     #[test]
