@@ -13,7 +13,7 @@ if [[ "${1:-}" == "compose" && "${2:-}" == "version" ]]; then
   exit 0
 fi
 if [[ " $* " == *" exec -T db "* ]]; then
-  echo "${FAKE_HEARTBEAT_COUNT:-4}"
+  echo "${FAKE_BACKEND_DATA_STATUS:-4|1|4|0|0|0}"
 fi
 exit 0
 EOF
@@ -35,10 +35,31 @@ chmod 600 "$environment_file"
 PATH="${temporary_directory}/bin:${PATH}" \
   "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" >/dev/null
 
-if PATH="${temporary_directory}/bin:${PATH}" FAKE_HEARTBEAT_COUNT=3 \
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='3|1|4|0|0|0' \
   "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
   >"${temporary_directory}/stale.txt" 2>&1; then
   echo "backend status accepted a missing service heartbeat" >&2
+  exit 1
+fi
+
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|4|101|0|0' \
+  "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
+  >"${temporary_directory}/projection.txt" 2>&1; then
+  echo "backend status accepted excessive projection lag" >&2
+  exit 1
+fi
+
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|4|0|1|0' \
+  "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
+  >"${temporary_directory}/memory.txt" 2>&1; then
+  echo "backend status accepted stale memory delivery" >&2
+  exit 1
+fi
+
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_BACKEND_DATA_STATUS='4|1|4|0|0|1' \
+  "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
+  >"${temporary_directory}/cognition.txt" 2>&1; then
+  echo "backend status accepted a stuck cognition dispatch" >&2
   exit 1
 fi
 if ! grep -q 'backend is not ready' "${temporary_directory}/stale.txt"; then

@@ -232,6 +232,11 @@ Verify locally that `http://127.0.0.1:3000/` and `http://127.0.0.1:8080/health/r
 work, then verify only the intended hostname through Cloudflare. Confirm that direct
 public connections to PostgreSQL and the observer API fail.
 
+`backend-status.sh` defaults to at most 100 sequences of observer-projection lag and five minutes
+for incomplete memory delivery or a stuck cognition dispatch. Override those only with bounded
+`BACKEND_PROJECTION_MAX_LAG_SEQUENCES` and `BACKEND_ASYNC_MAX_AGE_SECONDS` values in the monitor
+environment; changing them does not alter canonical history.
+
 ## Deferred offsite backup checks
 
 After the first successful encrypted base backup, install the checked-in systemd units

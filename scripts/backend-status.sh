@@ -23,6 +23,8 @@ while (($#)); do
 done
 
 maximum_age_seconds="${BACKEND_HEARTBEAT_MAX_AGE_SECONDS:-60}"
+maximum_projection_lag="${BACKEND_PROJECTION_MAX_LAG_SEQUENCES:-100}"
+maximum_async_age_seconds="${BACKEND_ASYNC_MAX_AGE_SECONDS:-300}"
 if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]] || ((wait_seconds > 300)); then
   echo "--wait-seconds must be an integer from 0 through 300" >&2
   exit 2
@@ -30,6 +32,15 @@ fi
 if [[ ! "$maximum_age_seconds" =~ ^[1-9][0-9]*$ ]] \
    || ((maximum_age_seconds < 15 || maximum_age_seconds > 300)); then
   echo "BACKEND_HEARTBEAT_MAX_AGE_SECONDS must be an integer from 15 through 300" >&2
+  exit 2
+fi
+if [[ ! "$maximum_projection_lag" =~ ^[0-9]+$ ]] || ((maximum_projection_lag > 100000)); then
+  echo "BACKEND_PROJECTION_MAX_LAG_SEQUENCES must be an integer from 0 through 100000" >&2
+  exit 2
+fi
+if [[ ! "$maximum_async_age_seconds" =~ ^[1-9][0-9]*$ ]] \
+   || ((maximum_async_age_seconds < 60 || maximum_async_age_seconds > 3600)); then
+  echo "BACKEND_ASYNC_MAX_AGE_SECONDS must be an integer from 60 through 3600" >&2
   exit 2
 fi
 
@@ -50,18 +61,66 @@ check_once() {
     >/dev/null || return 1
   "${compose_command[@]}" "${compose_args[@]}" exec -T hindsight \
     curl --fail --silent http://127.0.0.1:8888/health >/dev/null || return 1
-  heartbeat_count="$("${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
-    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -Atc \"SELECT COUNT(DISTINCT service_name) FROM service_heartbeats WHERE service_name IN ('simulation-runner','observer-projector','memory-worker','cognition-worker') AND last_seen_at >= NOW() - make_interval(secs => ${maximum_age_seconds})\"")" || return 1
-  [[ "$heartbeat_count" == "4" ]]
+  data_status="$("${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
+    "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \"
+      WITH active_world AS (
+        SELECT id,current_sequence FROM worlds
+        WHERE status IN ('initializing','running','extinct')
+      ), projection AS (
+        SELECT COUNT(projection_offset.*) FILTER (WHERE projection_offset.projection_name IN (
+                 'public-timeline-v1','public-organism-v1',
+                 'public-finding-v1','public-world-telemetry-v1'
+               ))::BIGINT AS required_count,
+               COALESCE(MAX(ABS(world.current_sequence - projection_offset.through_sequence)),0)::BIGINT AS maximum_lag
+        FROM active_world world
+        LEFT JOIN projection_offsets projection_offset ON projection_offset.world_id=world.id
+          AND projection_offset.projection_name IN (
+            'public-timeline-v1','public-organism-v1',
+            'public-finding-v1','public-world-telemetry-v1'
+          )
+      )
+      SELECT
+        (SELECT COUNT(DISTINCT service_name) FROM service_heartbeats
+         WHERE service_name IN ('simulation-runner','observer-projector','memory-worker','cognition-worker')
+           AND last_seen_at >= NOW() - make_interval(secs => ${maximum_age_seconds})),
+        (SELECT COUNT(*) FROM active_world),
+        projection.required_count,
+        projection.maximum_lag,
+        (SELECT COUNT(*) FROM memory_outbox memory JOIN active_world world ON world.id=memory.world_id
+         WHERE memory.completed_at IS NULL
+           AND memory.created_at < NOW() - make_interval(secs => ${maximum_async_age_seconds})),
+        (SELECT COUNT(*) FROM cognition_route_attempts attempt
+         JOIN cognition_requests request USING(request_id)
+         JOIN active_world world ON world.id=request.world_id
+         WHERE attempt.dispatch_state='dispatched'
+           AND attempt.dispatched_at < NOW() - make_interval(secs => ${maximum_async_age_seconds}))
+          +
+        (SELECT COUNT(*) FROM cognition_requests request
+         JOIN active_world world ON world.id=request.world_id
+         LEFT JOIN cognition_results result USING(request_id)
+         LEFT JOIN cognition_deadline_latches latch USING(request_id)
+         WHERE result.request_id IS NULL AND latch.request_id IS NULL
+           AND request.claimed_at < NOW() - make_interval(secs => ${maximum_async_age_seconds}))
+      FROM projection\"")" || return 1
+  IFS='|' read -r heartbeat_count active_world_count projection_count projection_lag \
+    stale_memory_count stuck_cognition_count <<<"$data_status"
+  [[ "$heartbeat_count" == "4" ]] || return 1
+  [[ "$active_world_count" == "0" || "$active_world_count" == "1" ]] || return 1
+  if [[ "$active_world_count" == "1" ]]; then
+    [[ "$projection_count" == "4" ]] || return 1
+    ((projection_lag <= maximum_projection_lag)) || return 1
+    [[ "$stale_memory_count" == "0" ]] || return 1
+    [[ "$stuck_cognition_count" == "0" ]] || return 1
+  fi
 }
 
 deadline=$((SECONDS + wait_seconds))
 while ! check_once; do
   if ((SECONDS >= deadline)); then
-    echo "backend is not ready: web, API, Hindsight, or a required service heartbeat is unavailable" >&2
+    echo "backend is not ready: an endpoint, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
     exit 1
   fi
   sleep 1
 done
 
-echo "Backend ready: web, API, Hindsight, runner, projector, memory, and cognition are live."
+echo "Backend ready: services are live and the active world's projections, memory, and cognition are within bounds."

@@ -11,6 +11,7 @@ deployment and during normal operation. It validates the exact protected product
 checks the web, observer API, and Hindsight endpoints from their containers, and requires fresh
 PostgreSQL heartbeats for the simulation runner, observer projector, memory worker, and cognition
 worker. Heartbeat age is bounded to a configurable 15–300 seconds and defaults to 60 seconds.
+ADR 0091 extends this gate with bounded projection lag and stale durable-work checks.
 
 The deployment helper waits up to sixty seconds on this command. A hardened systemd oneshot and
 two-minute timer run the same check after deployment, leaving a failed unit for host alerting.
