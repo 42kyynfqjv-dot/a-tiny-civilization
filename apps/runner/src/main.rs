@@ -8,9 +8,10 @@ use std::{
 
 use anyhow::{Context, Result};
 use application::{
-    AgentMemory, CognitionModel, CognitionProviderId, CognitionWorkerConfiguration,
-    CognitionWorkerStep, FoundationStore, MemoryOutboxStore, ServiceHeartbeat, WorldRuntimeError,
-    WorldSession, WorldStore, advance_world, advance_world_with_celestial,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CognitionModel, CognitionModelRoute,
+    CognitionProviderId, CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore,
+    MemoryOutboxStore, ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession,
+    WorldStore, advance_world, advance_world_with_celestial,
     advance_world_with_celestial_and_cognition,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
     process_next_cognition_job, resume_world, resume_world_from_snapshot, schedule_world_cognition,
@@ -39,10 +40,10 @@ use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
 use world_domain::{
-    BirthCategory, CapacityExhaustionPolicy, CelestialState, Digest, EntityId, OrganismRole,
-    PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline, S2CellId,
-    SchedulerKind, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId,
-    WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, BodilyNeedState, CapacityExhaustionPolicy, CelestialState, Digest, EntityId,
+    OrganismRole, PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline,
+    S2CellId, SchedulerKind, SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration,
+    WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
@@ -57,7 +58,7 @@ struct Cli {
     command: Option<Command>,
 
     #[arg(long, env = "DATABASE_URL", hide_env_values = true)]
-    database_url: String,
+    database_url: Option<String>,
 
     #[arg(long, env = "DATABASE_MAX_CONNECTIONS", default_value_t = 5)]
     database_max_connections: u32,
@@ -184,6 +185,14 @@ enum Command {
         #[arg(long)]
         ticks: u64,
     },
+    /// Send a fixed synthetic request through OpenRouter's dynamic free route.
+    ProbeOpenrouterFree {
+        #[arg(long, env = "OPENROUTER_API_KEY", hide_env_values = true)]
+        api_key: String,
+
+        #[arg(long, default_value_t = 30)]
+        request_timeout_seconds: u64,
+    },
     /// Deliver committed subjective-memory records without blocking simulation ticks.
     MemoryWorker {
         #[arg(long, env = "HINDSIGHT_BASE_URL")]
@@ -264,7 +273,18 @@ async fn main() -> Result<()> {
     dotenvy::dotenv().ok();
     init_tracing();
     let cli = Cli::parse();
-    let store = PostgresStore::connect(&cli.database_url, cli.database_max_connections)
+    if let Some(Command::ProbeOpenrouterFree {
+        api_key,
+        request_timeout_seconds,
+    }) = &cli.command
+    {
+        return probe_openrouter_free(api_key, *request_timeout_seconds).await;
+    }
+    let database_url = cli
+        .database_url
+        .as_deref()
+        .context("--database-url or DATABASE_URL is required except for probe-openrouter-free")?;
+    let store = PostgresStore::connect(database_url, cli.database_max_connections)
         .await
         .context("connect runner to PostgreSQL")?;
 
@@ -330,6 +350,9 @@ async fn main() -> Result<()> {
         Command::AdvanceQualification { world_id, ticks } => {
             advance_qualification_world(&store, world_id, ticks).await
         }
+        Command::ProbeOpenrouterFree { .. } => {
+            unreachable!("synthetic provider probe returns before database connection")
+        }
         Command::MemoryWorker {
             hindsight_base_url,
             hindsight_api_key,
@@ -392,6 +415,56 @@ async fn main() -> Result<()> {
             )
             .await
         }
+    }
+}
+
+async fn probe_openrouter_free(api_key: &str, request_timeout_seconds: u64) -> Result<()> {
+    let adapter = OpenAiCompatibleCognition::new(
+        CognitionProviderId::openrouter(),
+        "https://openrouter.ai/api/v1",
+        api_key.to_owned(),
+        Duration::from_secs(request_timeout_seconds.max(1)),
+    )
+    .context("configure synthetic OpenRouter probe")?;
+    let request = synthetic_cognition_probe_request();
+    let route = CognitionModelRoute::openrouter_free();
+    let receipt = adapter
+        .infer(&route, &request)
+        .await
+        .context("execute synthetic OpenRouter free-route probe")?;
+    println!(
+        "synthetic OpenRouter free route passed: resolved_model={}, prompt_tokens={}, completion_tokens={}, billed_micro_usd={}",
+        receipt.resolved_model,
+        receipt.usage.prompt_tokens,
+        receipt.usage.completion_tokens,
+        receipt.billed_micro_usd
+    );
+    Ok(())
+}
+
+fn synthetic_cognition_probe_request() -> ModelCognitionRequest {
+    let world_id = WorldId::from_uuid(Uuid::from_u128(0x4154_494e_5950_524f_4245));
+    let agent_id = EntityId::deterministic(world_id, b"synthetic-provider-contract-probe");
+    let selected_at_tick = SimTick::new(20);
+    let ordinal = 0;
+    ModelCognitionRequest {
+        contract_version: COGNITION_MODEL_CONTRACT_VERSION,
+        request_id: application::cognition_request_id(
+            world_id,
+            agent_id,
+            selected_at_tick,
+            ordinal,
+        ),
+        world_id,
+        agent_id,
+        ordinal,
+        selected_at_tick,
+        deadline_tick: SimTick::new(32),
+        bodily_needs: BodilyNeedState::default(),
+        readings: Vec::new(),
+        action_values: Vec::new(),
+        recalled_memories: Vec::new(),
+        max_output_tokens: 32,
     }
 }
 
@@ -2225,6 +2298,29 @@ mod tests {
         validate_cognition_export_approval(0, false).expect("local fallback needs no export");
         validate_cognition_export_approval(1, true).expect("explicitly approved provider");
         assert!(validate_cognition_export_approval(1, false).is_err());
+    }
+
+    #[test]
+    fn provider_probe_contains_only_fixed_synthetic_state() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "probe-openrouter-free",
+            "--api-key",
+            "test-only-key",
+        ])
+        .expect("parse database-free provider probe");
+        assert!(matches!(
+            cli.command,
+            Some(Command::ProbeOpenrouterFree { .. })
+        ));
+
+        let first = synthetic_cognition_probe_request();
+        let second = synthetic_cognition_probe_request();
+        assert_eq!(first, second);
+        assert!(first.readings.is_empty());
+        assert!(first.action_values.is_empty());
+        assert!(first.recalled_memories.is_empty());
+        assert_eq!(first.bodily_needs, BodilyNeedState::default());
     }
 
     #[test]

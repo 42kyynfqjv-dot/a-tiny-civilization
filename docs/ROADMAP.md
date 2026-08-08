@@ -521,3 +521,7 @@ advanced precisely ten ticks and replayed at the resulting cursor.
 Remote cognition now has a second independent activation boundary: provider credentials and cost
 authorization are insufficient unless `COGNITION_EXTERNAL_EXPORT_APPROVED=true` is set. Runtime and
 production-preflight tests enforce ADR 0087 before any private cognition payload can leave the host.
+
+ADR 0088 adds a database-free, fixed synthetic OpenRouter probe. The dynamic free endpoint passed
+the production schema and zero-cost checks without reading world or Hindsight data; live cognition
+export remains separately gated.

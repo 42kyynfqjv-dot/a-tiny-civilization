@@ -90,3 +90,9 @@ ruleset 18 after ADR 0085 removed minute-scale life-history placeholders:
 This is still a small-population qualification, not a scale promise. It does establish that the
 current real-input runner, memory boundary, cognition deadline, projection, and replay paths work
 together before provider export or public genesis.
+
+Provider connectivity was subsequently qualified without changing this world: the fixed synthetic
+OpenRouter free-route probe returned a schema-valid result from
+`google/gemma-4-26b-a4b-it:free` with 412 prompt tokens, 8 completion tokens, and zero billed
+micro-USD. It read neither PostgreSQL nor Hindsight and is therefore protocol evidence, not a
+live-cognition export test.

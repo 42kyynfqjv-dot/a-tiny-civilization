@@ -93,6 +93,11 @@ After that approval is made, set `COGNITION_EXTERNAL_EXPORT_APPROVED=true` in th
 production environment. The runtime worker and production preflight both refuse a configured
 provider while the value is absent or false.
 
+OpenRouter authentication, the dynamic free router, strict response schema, resolved-model receipt,
+and zero-cost enforcement have been qualified with the fixed synthetic command from ADR 0088. That
+probe sent no civilization or Hindsight data. Live-world provider qualification remains separate and
+requires the explicit export approval above.
+
 Report only which provider is configured. The application preflight checks presence
 and pairing without printing the value.
 

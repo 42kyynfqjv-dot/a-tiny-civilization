@@ -198,6 +198,17 @@ civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
 Use a separate disposable database and a non-public world ID. The command accepts at most one
 million ticks per invocation and stops early with an error if the world reaches a terminal state.
 
+Provider authentication and response compatibility can be tested separately without a database or
+world-data export. This sends only the fixed synthetic request specified by ADR 0088 and still
+requires the provider key in the protected process environment:
+
+```bash
+civilization-runner probe-openrouter-free
+```
+
+A successful synthetic probe does not authorize live cognition export; the long-running cognition
+worker still requires `COGNITION_EXTERNAL_EXPORT_APPROVED=true` whenever any provider is configured.
+
 The static preflight rejects missing core settings, an absent cognition provider or separate
 external-export approval, the
 documented development password, a non-production environment, partial paid, backup,
