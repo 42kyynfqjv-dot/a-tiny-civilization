@@ -650,3 +650,11 @@ independently addressable assumptions. The same-identity candidate passed at tic
 replay, current projections, complete Hindsight delivery, and one fixed-deadline local Qwen receipt.
 Its immutable evidence supersedes candidate v3 for launch review; this remains a provenance and
 mechanical improvement rather than scientific admission or deployment approval.
+
+Canonical candidate v5 adds a separate, immutable adult-body-mass selection plan and pins the
+corrected physiology catalog v3 without changing the public seed, origin, or selected taxa. Five
+fauna masses are exact source-addressed literature approximations; every uncovered value remains an
+explicit assumption, and mass remains noncausal. The fresh candidate passed at tick 1,680 with
+exact replay, 3,939 error-free Hindsight deliveries, current projections, and one pre-deadline
+loopback Qwen receipt with paid dispatch disabled. Its immutable evidence supersedes candidate v4
+for launch review but does not authorize deployment or scientific admission.
