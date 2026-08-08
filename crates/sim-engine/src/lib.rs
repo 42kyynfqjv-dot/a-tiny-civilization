@@ -7685,6 +7685,16 @@ pub fn replay_from_snapshot(
     )
 }
 
+fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
+    if state.uses_terrain_movement_driver() {
+        Some(TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION)
+    } else if state.uses_local_atmospheric_flux_driver() {
+        Some(LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION)
+    } else {
+        None
+    }
+}
+
 fn replay_from_cursor(
     mut state: EngineState,
     mut through_sequence: EventSequence,
@@ -7757,8 +7767,8 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_local_atmospheric_flux_driver() {
-            LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION
+        let expected_schema = if let Some(schema) = latest_ruleset_event_schema_for_replay(&state) {
+            schema
         } else if state.uses_local_weather_driver() {
             LOCAL_WEATHER_EVENT_SCHEMA_VERSION
         } else if state.uses_signal_motor_association_driver() {
@@ -13482,6 +13492,10 @@ mod tests {
         assert_eq!(
             empty_terrain_state.event_schema_version(),
             TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&empty_terrain_state),
+            Some(TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION)
         );
         let snapshot = Snapshot::new(empty_terrain_state, EventSequence::ZERO, Digest::ZERO)
             .expect("terrain snapshot");
