@@ -26,7 +26,7 @@ use serde_json::json;
 use sim_engine::{
     BODILY_REGULATION_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    MATERIAL_RESERVOIR_RULESET_VERSION, PERSON_COGNITION_RULESET_VERSION,
+    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -45,13 +45,13 @@ use world_data_filesystem::{
 use world_domain::{
     BirthCategory, BodilyNeedState, CapacityExhaustionPolicy, CelestialState, Digest, EntityId,
     OrganismRole, PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline,
-    S2CellId, SchedulerKind, SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration,
-    WorldId, WorldManifest, WorldSeed, WorldStatus,
+    ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind, SimTick, SpeciesIdentity,
+    TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = PERSON_COGNITION_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = LOCAL_WEATHER_RULESET_VERSION;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
 // 60-second request-to-simulation-deadline window.
@@ -910,6 +910,15 @@ async fn init_provisional_full_earth_world(
         &composition,
         &initial_origin,
     )?;
+    let origin_climate_evidence = load_provisional_origin_climate_evidence(
+        provisional_origin_climate_evidence_path,
+        &initial_origin,
+    )?;
+    let origin_climate_normals = load_provisional_origin_climate_normals(
+        provisional_origin_climate_normals_path,
+        origin_climate_evidence.as_ref(),
+        &initial_origin,
+    )?;
     let partition_level = composition.full_earth_grid.levels.planetary_aggregate;
     let composition_reference = composition
         .execution_reference()
@@ -922,8 +931,18 @@ async fn init_provisional_full_earth_world(
         capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
         max_events_per_partition_transition,
     };
-    let configuration = match origin_environment.as_ref() {
-        Some(environment) => {
+    let configuration = match (origin_environment.as_ref(), origin_climate_normals.as_ref()) {
+        (Some(environment), Some(weather)) if ruleset_version >= LOCAL_WEATHER_RULESET_VERSION => {
+            WorldConfiguration::new_provisional_full_earth_with_weather_baseline(
+                tick_duration_seconds,
+                composition.full_earth_grid.clone(),
+                composition_reference.clone(),
+                execution,
+                environment.baseline.clone(),
+                weather.baseline.clone(),
+            )
+        }
+        (Some(environment), _) => {
             WorldConfiguration::new_provisional_full_earth_with_environment_baseline(
                 tick_duration_seconds,
                 composition.full_earth_grid.clone(),
@@ -932,7 +951,7 @@ async fn init_provisional_full_earth_world(
                 environment.baseline.clone(),
             )
         }
-        None => WorldConfiguration::new_provisional_full_earth(
+        (None, _) => WorldConfiguration::new_provisional_full_earth(
             tick_duration_seconds,
             composition.full_earth_grid.clone(),
             composition_reference.clone(),
@@ -945,6 +964,13 @@ async fn init_provisional_full_earth_world(
     {
         anyhow::bail!(
             "ruleset {ruleset_version} requires --provisional-origin-environment for canonical bodily regulation"
+        );
+    }
+    if ruleset_version >= LOCAL_WEATHER_RULESET_VERSION
+        && configuration.local_weather_baseline().is_none()
+    {
+        anyhow::bail!(
+            "ruleset {ruleset_version} requires complete --provisional-origin-climate-evidence and --provisional-origin-climate-normals"
         );
     }
 
@@ -961,23 +987,16 @@ async fn init_provisional_full_earth_world(
             origin_environment.digest.to_string(),
         );
     }
-    let origin_climate_evidence_digest = load_provisional_origin_climate_evidence(
-        provisional_origin_climate_evidence_path,
-        &initial_origin,
-    )?;
-    if let Some(origin_climate_digest) = origin_climate_evidence_digest.as_ref() {
+    if let Some(origin_climate_evidence) = origin_climate_evidence.as_ref() {
         manifest.scientific_datasets.insert(
             "provisional_origin_climate_evidence".to_owned(),
-            origin_climate_digest.to_string(),
+            origin_climate_evidence.digest.to_string(),
         );
     }
-    if let Some(origin_climate_normals_digest) = load_provisional_origin_climate_normals(
-        provisional_origin_climate_normals_path,
-        origin_climate_evidence_digest.as_ref(),
-    )? {
+    if let Some(origin_climate_normals) = origin_climate_normals.as_ref() {
         manifest.scientific_datasets.insert(
             "provisional_origin_climate_normals".to_owned(),
-            origin_climate_normals_digest.to_string(),
+            origin_climate_normals.digest.to_string(),
         );
     }
     let species = SpeciesIdentity::new(
@@ -1149,10 +1168,20 @@ struct VerifiedProvisionalOriginEnvironment {
     baseline: ProvisionalLocalEnvironmentBaseline,
 }
 
+struct VerifiedProvisionalOriginClimateEvidence {
+    digest: Digest,
+    selected_patch: S2CellId,
+}
+
+struct VerifiedProvisionalOriginClimateNormals {
+    digest: Digest,
+    baseline: ProvisionalLocalWeatherBaseline,
+}
+
 fn load_provisional_origin_climate_evidence(
     path: Option<&std::path::Path>,
     origin: &ResolvedInitialOrigin,
-) -> Result<Option<Digest>> {
+) -> Result<Option<VerifiedProvisionalOriginClimateEvidence>> {
     let Some(path) = path else {
         return Ok(None);
     };
@@ -1172,27 +1201,92 @@ fn load_provisional_origin_climate_evidence(
     {
         anyhow::bail!("provisional origin climate evidence does not match the selected origin");
     }
-    Ok(Some(Digest::sha256(&bytes)))
+    Ok(Some(VerifiedProvisionalOriginClimateEvidence {
+        digest: Digest::sha256(&bytes),
+        selected_patch: evidence.selected_patch,
+    }))
 }
 
 fn load_provisional_origin_climate_normals(
     path: Option<&std::path::Path>,
-    evidence_digest: Option<&Digest>,
-) -> Result<Option<Digest>> {
+    evidence: Option<&VerifiedProvisionalOriginClimateEvidence>,
+    origin: &ResolvedInitialOrigin,
+) -> Result<Option<VerifiedProvisionalOriginClimateNormals>> {
     let Some(path) = path else {
         return Ok(None);
     };
-    let evidence_digest = evidence_digest.context(
+    let evidence = evidence.context(
         "--provisional-origin-climate-normals requires --provisional-origin-climate-evidence",
     )?;
     let bytes = fs::read(path)
         .with_context(|| format!("read provisional origin climate normals {}", path.display()))?;
     let normals = ProvisionalOriginClimateNormals::from_canonical_slice(&bytes)
         .context("validate provisional origin climate normals")?;
-    if normals.origin_climate_evidence_digest != *evidence_digest {
+    if normals.origin_climate_evidence_digest != evidence.digest {
         anyhow::bail!("provisional origin climate normals do not match the supplied evidence");
     }
-    Ok(Some(Digest::sha256(&bytes)))
+    let digest = Digest::sha256(&bytes);
+    let series = |variable: &str| {
+        normals
+            .series
+            .iter()
+            .find(|series| series.variable == variable)
+            .with_context(|| format!("climate normals are missing {variable}"))
+    };
+    let values = |variable: &str,
+                  select: fn(&world_data::OriginClimateNormalMonth) -> Option<i64>|
+     -> Result<[i64; 12]> {
+        let series = series(variable)?;
+        let complete = series
+            .months
+            .iter()
+            .map(|month| {
+                select(month).with_context(|| {
+                    format!(
+                        "climate normals {variable} month {} is missing and cannot drive weather",
+                        month.month
+                    )
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        complete.try_into().map_err(|values: Vec<i64>| {
+            anyhow::anyhow!(
+                "climate normals {variable} require 12 months, found {}",
+                values.len()
+            )
+        })
+    };
+    let t2m = series("t2m")?;
+    let precipitation = series("tp")?;
+    let eastward_wind = series("u10")?;
+    let northward_wind = series("v10")?;
+    let baseline = ProvisionalLocalWeatherBaseline {
+        status: "provisional-weather-input-not-scientifically-admitted".to_owned(),
+        source_normals_digest: digest,
+        evidence_patch: evidence.selected_patch,
+        active_patch: origin.patch,
+        air_temperature_unit: t2m.unit.clone(),
+        air_temperature_decimal_places: t2m.decimal_places,
+        air_temperature_normal_minimum: values("t2m", |month| month.minimum)?,
+        air_temperature_normal_mean: values("t2m", |month| month.mean)?,
+        air_temperature_normal_maximum: values("t2m", |month| month.maximum)?,
+        precipitation_unit: precipitation.unit.clone(),
+        precipitation_decimal_places: precipitation.decimal_places,
+        precipitation_normal_mean: values("tp", |month| month.mean)?,
+        eastward_wind_unit: eastward_wind.unit.clone(),
+        eastward_wind_decimal_places: eastward_wind.decimal_places,
+        eastward_wind_normal_mean: values("u10", |month| month.mean)?,
+        northward_wind_unit: northward_wind.unit.clone(),
+        northward_wind_decimal_places: northward_wind.decimal_places,
+        northward_wind_normal_mean: values("v10", |month| month.mean)?,
+    };
+    baseline
+        .validate()
+        .context("validate causal provisional local-weather baseline")?;
+    Ok(Some(VerifiedProvisionalOriginClimateNormals {
+        digest,
+        baseline,
+    }))
 }
 
 fn load_provisional_origin_environment(
@@ -2671,7 +2765,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, PERSON_COGNITION_RULESET_VERSION);
+        assert_eq!(ruleset_version, LOCAL_WEATHER_RULESET_VERSION);
         assert!(refuse_other_worlds);
     }
 
@@ -2821,7 +2915,7 @@ mod tests {
     }
 
     #[test]
-    fn origin_climate_evidence_is_pinned_without_changing_world_state() {
+    fn origin_climate_normals_become_a_source_bound_weather_configuration() {
         let selected_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
         let embodied_patch = selected_patch.descendants_at(11).expect("L11 patches")[0];
         let selection_digest = Digest::sha256(b"origin climate selection");
@@ -2878,11 +2972,11 @@ mod tests {
         ));
         std::fs::write(&path, &bytes).expect("write climate evidence");
 
-        assert_eq!(
-            load_provisional_origin_climate_evidence(Some(&path), &origin)
-                .expect("matching climate evidence"),
-            Some(Digest::sha256(&bytes))
-        );
+        let verified_evidence = load_provisional_origin_climate_evidence(Some(&path), &origin)
+            .expect("matching climate evidence")
+            .expect("verified evidence");
+        assert_eq!(verified_evidence.digest, Digest::sha256(&bytes));
+        assert_eq!(verified_evidence.selected_patch, selected_patch);
         let evidence_digest = Digest::sha256(&bytes);
         let normals = ProvisionalOriginClimateNormals {
             normals_schema_version: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION,
@@ -2925,15 +3019,28 @@ mod tests {
             Uuid::new_v4()
         ));
         std::fs::write(&normals_path, &normals_bytes).expect("write climate normals");
+        let verified_normals = load_provisional_origin_climate_normals(
+            Some(&normals_path),
+            Some(&verified_evidence),
+            &origin,
+        )
+        .expect("matching climate normals")
+        .expect("verified normals");
+        assert_eq!(verified_normals.digest, Digest::sha256(&normals_bytes));
+        assert_eq!(verified_normals.baseline.evidence_patch, selected_patch);
+        assert_eq!(verified_normals.baseline.active_patch, embodied_patch);
         assert_eq!(
-            load_provisional_origin_climate_normals(Some(&normals_path), Some(&evidence_digest))
-                .expect("matching climate normals"),
-            Some(Digest::sha256(&normals_bytes))
+            verified_normals.baseline.air_temperature_normal_mean,
+            [2; 12]
         );
         assert!(
             load_provisional_origin_climate_normals(
                 Some(&normals_path),
-                Some(&Digest::sha256(b"different evidence")),
+                Some(&VerifiedProvisionalOriginClimateEvidence {
+                    digest: Digest::sha256(b"different evidence"),
+                    selected_patch,
+                }),
+                &origin,
             )
             .is_err()
         );

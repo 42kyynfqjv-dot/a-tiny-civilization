@@ -78,6 +78,10 @@ pub const MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION: u16 = 25;
 /// Schema twenty-six lets a private sound association retain the exact movement
 /// motor coordinate that followed. It still commits no word or meaning.
 pub const SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION: u16 = 26;
+/// Schema twenty-seven binds source-normalized local weather inputs and changes
+/// physical temperature readings to a seeded daily process. Event payload shapes
+/// remain unchanged; the version makes the semantic boundary explicit.
+pub const LOCAL_WEATHER_EVENT_SCHEMA_VERSION: u16 = 27;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -523,6 +527,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION
             | MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
             | SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
+            | LOCAL_WEATHER_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }

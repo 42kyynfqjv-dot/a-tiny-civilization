@@ -53,7 +53,7 @@ if grep -qF 'full-earth-breadth-first-0.1.0.json' \
   exit 1
 fi
 
-grep -q -- '--ruleset-version 26' scripts/initialize-provisional-world.sh
+grep -q -- '--ruleset-version 27' scripts/initialize-provisional-world.sh
 grep -qF 'ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY' scripts/prepare-canonical-genesis.sh
 grep -qF 'ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1' scripts/prepare-canonical-genesis.sh
 grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-world.sh
@@ -72,4 +72,4 @@ grep -qF -- '--provisional-origin-climate-normals "${origin_climate_normals}"' \
 grep -qF -- '--fauna-ecology-plan "${genesis_directory}/fauna-ecology-plan.json"' \
   scripts/initialize-provisional-world.sh
 grep -qF -- '--body-mass-plan "${fauna_body_masses}"' scripts/prepare-provisional-genesis.sh
-echo "Ruleset-26 provisional genesis pins one verified composition and artifact revision."
+echo "Ruleset-27 provisional genesis pins one verified composition and artifact revision."

@@ -10,6 +10,7 @@ use crate::{Digest, S2CellId};
 
 pub const NORMAL_YEAR_PHASE_COUNT: usize = 12;
 const PROVISIONAL_STATUS: &str = "provisional-evidence-only";
+const PROVISIONAL_WEATHER_STATUS: &str = "provisional-weather-input-not-scientifically-admitted";
 
 /// Pinned, physical evidence at one active patch. Values are temperature normals,
 /// not weather, habitat suitability, food availability, or an organism's beliefs.
@@ -25,6 +26,32 @@ pub struct ProvisionalLocalEnvironmentBaseline {
     pub air_temperature_normal_minimum: [i64; NORMAL_YEAR_PHASE_COUNT],
     pub air_temperature_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
     pub air_temperature_normal_maximum: [i64; NORMAL_YEAR_PHASE_COUNT],
+}
+
+/// Fixed-point normal-period inputs for a deterministic provisional weather
+/// driver. These are source-bound physical dimensions, not a forecast, habitat
+/// classification, or anything an organism can recognize by name.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ProvisionalLocalWeatherBaseline {
+    pub status: String,
+    pub source_normals_digest: Digest,
+    pub evidence_patch: S2CellId,
+    pub active_patch: S2CellId,
+    pub air_temperature_unit: String,
+    pub air_temperature_decimal_places: u8,
+    pub air_temperature_normal_minimum: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub air_temperature_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub air_temperature_normal_maximum: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub precipitation_unit: String,
+    pub precipitation_decimal_places: u8,
+    pub precipitation_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub eastward_wind_unit: String,
+    pub eastward_wind_decimal_places: u8,
+    pub eastward_wind_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
+    pub northward_wind_unit: String,
+    pub northward_wind_decimal_places: u8,
+    pub northward_wind_normal_mean: [i64; NORMAL_YEAR_PHASE_COUNT],
 }
 
 impl ProvisionalLocalEnvironmentBaseline {
@@ -61,6 +88,65 @@ impl ProvisionalLocalEnvironmentBaseline {
     }
 }
 
+impl ProvisionalLocalWeatherBaseline {
+    pub fn validate(&self) -> Result<(), LocalEnvironmentError> {
+        if self.status != PROVISIONAL_WEATHER_STATUS
+            || self.source_normals_digest == Digest::ZERO
+            || self.evidence_patch.level() != 10
+            || self.active_patch.level() < self.evidence_patch.level()
+            || !self.evidence_patch.contains(self.active_patch)
+        {
+            return Err(LocalEnvironmentError::InvalidWeatherIdentity);
+        }
+        if self.air_temperature_unit != "degC"
+            || self.air_temperature_decimal_places != 3
+            || self.precipitation_unit != "m"
+            || self.precipitation_decimal_places != 6
+            || self.eastward_wind_unit != "m/s"
+            || self.eastward_wind_decimal_places != 3
+            || self.northward_wind_unit != "m/s"
+            || self.northward_wind_decimal_places != 3
+        {
+            return Err(LocalEnvironmentError::InvalidWeatherUnit);
+        }
+        if self
+            .air_temperature_normal_minimum
+            .iter()
+            .zip(self.air_temperature_normal_mean.iter())
+            .zip(self.air_temperature_normal_maximum.iter())
+            .any(|((minimum, mean), maximum)| minimum > mean || mean > maximum)
+            || self
+                .precipitation_normal_mean
+                .iter()
+                .any(|value| *value < 0)
+        {
+            return Err(LocalEnvironmentError::InvalidWeatherRange);
+        }
+        Ok(())
+    }
+
+    pub fn temperature_range_at_normal_phase(
+        &self,
+        phase: usize,
+    ) -> Result<(i64, i64, i64), LocalEnvironmentError> {
+        self.validate()?;
+        Ok((
+            *self
+                .air_temperature_normal_minimum
+                .get(phase)
+                .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
+            *self
+                .air_temperature_normal_mean
+                .get(phase)
+                .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
+            *self
+                .air_temperature_normal_maximum
+                .get(phase)
+                .ok_or(LocalEnvironmentError::NormalPhaseOutOfRange(phase))?,
+        ))
+    }
+}
+
 fn unit(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 64
@@ -77,6 +163,12 @@ pub enum LocalEnvironmentError {
     InvalidTemperatureUnit,
     #[error("local-environment temperature normal has an invalid range")]
     InvalidTemperatureRange,
+    #[error("invalid provisional local-weather identity or spatial binding")]
+    InvalidWeatherIdentity,
+    #[error("invalid provisional local-weather physical unit contract")]
+    InvalidWeatherUnit,
+    #[error("provisional local-weather normals have an invalid range")]
+    InvalidWeatherRange,
     #[error("normal-year phase {0} is out of range")]
     NormalPhaseOutOfRange(usize),
 }
@@ -119,6 +211,40 @@ mod tests {
         assert_eq!(
             baseline.validate(),
             Err(LocalEnvironmentError::InvalidIdentity)
+        );
+    }
+
+    #[test]
+    fn weather_baseline_requires_physical_units_ranges_and_source_binding() {
+        let evidence_patch: S2CellId = "1000010000000000".parse().expect("L10 patch");
+        let mut weather = ProvisionalLocalWeatherBaseline {
+            status: PROVISIONAL_WEATHER_STATUS.to_owned(),
+            source_normals_digest: Digest::sha256(b"ERA5 fixed-point normals"),
+            evidence_patch,
+            active_patch: evidence_patch.children().expect("children")[0],
+            air_temperature_unit: "degC".to_owned(),
+            air_temperature_decimal_places: 3,
+            air_temperature_normal_minimum: [10_000; NORMAL_YEAR_PHASE_COUNT],
+            air_temperature_normal_mean: [15_000; NORMAL_YEAR_PHASE_COUNT],
+            air_temperature_normal_maximum: [20_000; NORMAL_YEAR_PHASE_COUNT],
+            precipitation_unit: "m".to_owned(),
+            precipitation_decimal_places: 6,
+            precipitation_normal_mean: [1_000; NORMAL_YEAR_PHASE_COUNT],
+            eastward_wind_unit: "m/s".to_owned(),
+            eastward_wind_decimal_places: 3,
+            eastward_wind_normal_mean: [500; NORMAL_YEAR_PHASE_COUNT],
+            northward_wind_unit: "m/s".to_owned(),
+            northward_wind_decimal_places: 3,
+            northward_wind_normal_mean: [-500; NORMAL_YEAR_PHASE_COUNT],
+        };
+        assert_eq!(
+            weather.temperature_range_at_normal_phase(0),
+            Ok((10_000, 15_000, 20_000))
+        );
+        weather.precipitation_normal_mean[0] = -1;
+        assert_eq!(
+            weather.validate(),
+            Err(LocalEnvironmentError::InvalidWeatherRange)
         );
     }
 }

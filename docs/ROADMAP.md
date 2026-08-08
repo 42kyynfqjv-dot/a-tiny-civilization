@@ -700,3 +700,12 @@ passed at tick 1,680 with exact replay, complete Hindsight delivery, current pro
 consumed local Qwen receipt. Its immutable evidence supersedes candidate v7 for launch review. The
 normals remain noncausal and do not authorize weather mechanics, scientific admission, or
 deployment.
+
+Ruleset 27 makes only the defensible first weather dimension causal. Genesis configuration schema 5
+binds the complete fixed-point ERA5 temperature, precipitation, and wind normal contract to the
+committed origin, while the engine derives seeded daily temperature anchors and integer
+interpolation from simulation time alone. Bodily regulation and direct physical perception now use
+that changing temperature without exposing weather, month, season, or survival labels. Wind and
+precipitation remain pinned but noncausal until their temporal distributions and covariance are
+defined. Fresh genesis and qualification default to ruleset 27; ruleset-26 history remains
+byte-compatible. ADR 0120 records the provisional boundary.

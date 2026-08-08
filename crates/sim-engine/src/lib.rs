@@ -28,7 +28,7 @@ use world_domain::{
     EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
     HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
     HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
-    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION, LOCAL_WEATHER_EVENT_SCHEMA_VERSION,
     MATERIAL_HANDLING_EVENT_SCHEMA_VERSION, MATERIAL_INGESTION_EVENT_SCHEMA_VERSION,
     MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION,
     MATERIAL_SURFACE_REGIONS_EVENT_SCHEMA_VERSION, MATERIAL_SURFACE_TRACE_EVENT_SCHEMA_VERSION,
@@ -128,6 +128,9 @@ pub const SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION: u32 = 25;
 /// the complete deterministic embodied policy, learning, communication, and
 /// reproduction paths but cannot consume the civilization's model budget.
 pub const PERSON_COGNITION_RULESET_VERSION: u32 = 26;
+/// Ruleset twenty-seven derives replay-stable, smoothly interpolated local
+/// physical weather readings from the source-bound ERA5 normal-period contract.
+pub const LOCAL_WEATHER_RULESET_VERSION: u32 = 27;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -154,6 +157,7 @@ pub const MATERIAL_SURFACE_REGIONS_SNAPSHOT_SCHEMA_VERSION: u16 = 23;
 pub const SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 24;
 pub const MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION: u16 = 25;
 pub const SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION: u16 = 26;
+pub const LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION: u16 = 27;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -192,6 +196,7 @@ const SOCIAL_LEARNING_STATE_HASH_SCHEMA_VERSION: u16 = 21;
 const MATERIAL_SURFACE_TRACE_STATE_HASH_SCHEMA_VERSION: u16 = 22;
 const MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION: u16 = 23;
 const SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION: u16 = 24;
+const LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION: u16 = 27;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = 8;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize = 8 * HERITABLE_ACTION_KINDS.len();
@@ -399,6 +404,14 @@ struct HeritableDispositionDraw<'a> {
     parent_ids: &'a [EntityId],
     profile_fingerprint: Digest,
     action_kind: PrimitiveActionKind,
+}
+
+#[derive(Serialize)]
+struct LocalTemperatureDraw {
+    driver_version: u16,
+    world_seed: u64,
+    source_normals_digest: Digest,
+    day_index: u64,
 }
 
 fn first_digest_u64(digest: Digest) -> u64 {
@@ -892,6 +905,108 @@ pub struct EngineState {
 }
 
 impl EngineState {
+    fn uses_local_weather_driver(&self) -> bool {
+        self.manifest.ruleset_version >= LOCAL_WEATHER_RULESET_VERSION
+    }
+
+    fn local_temperature_at_tick(
+        &self,
+        configuration: &WorldConfiguration,
+    ) -> Result<(i64, u8), EngineError> {
+        if !self.uses_local_weather_driver() {
+            let baseline = configuration.local_environment_baseline().ok_or_else(|| {
+                EngineError::PhysiologicalArithmetic(
+                    "local temperature requires an environment baseline".to_owned(),
+                )
+            })?;
+            return Ok((
+                baseline
+                    .mean_at_normal_phase(normal_year_phase(
+                        self.tick,
+                        configuration.tick_duration_seconds,
+                    ))
+                    .map_err(|error| EngineError::PhysiologicalArithmetic(error.to_string()))?,
+                baseline.air_temperature_decimal_places,
+            ));
+        }
+
+        const DAY_SECONDS: u64 = 86_400;
+        let weather = configuration.local_weather_baseline().ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic(
+                "local-weather ruleset requires a weather baseline".to_owned(),
+            )
+        })?;
+        let elapsed_seconds = self
+            .tick
+            .get()
+            .checked_mul(u64::from(configuration.tick_duration_seconds))
+            .ok_or_else(|| {
+                EngineError::PhysiologicalArithmetic(
+                    "local-weather elapsed time overflowed".to_owned(),
+                )
+            })?;
+        let day_index = elapsed_seconds / DAY_SECONDS;
+        let second_in_day = elapsed_seconds % DAY_SECONDS;
+        let anchor = |day: u64| -> Result<i64, EngineError> {
+            let phase = usize::try_from((day / 30) % 12).expect("normal phase fits usize");
+            let (minimum, _, maximum) = weather
+                .temperature_range_at_normal_phase(phase)
+                .map_err(|error| EngineError::PhysiologicalArithmetic(error.to_string()))?;
+            let span = i128::from(maximum)
+                .checked_sub(i128::from(minimum))
+                .and_then(|value| value.checked_add(1))
+                .ok_or_else(|| {
+                    EngineError::PhysiologicalArithmetic(
+                        "local-weather temperature range overflowed".to_owned(),
+                    )
+                })?;
+            let span = u128::try_from(span).map_err(|_| {
+                EngineError::PhysiologicalArithmetic(
+                    "local-weather temperature range is negative".to_owned(),
+                )
+            })?;
+            let digest = Digest::canonical(&LocalTemperatureDraw {
+                driver_version: 1,
+                world_seed: self.manifest.seed.get(),
+                source_normals_digest: weather.source_normals_digest,
+                day_index: day,
+            })?;
+            let draw = (u128::from(first_digest_u64(digest)) << 64
+                | u128::from(second_digest_u64(digest)))
+                % span;
+            i64::try_from(
+                i128::from(minimum)
+                    + i128::try_from(draw).map_err(|_| {
+                        EngineError::PhysiologicalArithmetic(
+                            "local-weather draw exceeds signed range".to_owned(),
+                        )
+                    })?,
+            )
+            .map_err(|_| {
+                EngineError::PhysiologicalArithmetic(
+                    "local-weather temperature exceeds i64".to_owned(),
+                )
+            })
+        };
+        let current = anchor(day_index)?;
+        let next = anchor(day_index.checked_add(1).ok_or_else(|| {
+            EngineError::PhysiologicalArithmetic("local-weather day overflowed".to_owned())
+        })?)?;
+        let delta = i128::from(next) - i128::from(current);
+        // Interpolate in source fixed point. Integer division truncates toward zero;
+        // this exact policy is versioned by LocalTemperatureDraw::driver_version.
+        let interpolated =
+            i128::from(current) + delta * i128::from(second_in_day) / i128::from(DAY_SECONDS);
+        Ok((
+            i64::try_from(interpolated).map_err(|_| {
+                EngineError::PhysiologicalArithmetic(
+                    "interpolated local temperature exceeds i64".to_owned(),
+                )
+            })?,
+            weather.air_temperature_decimal_places,
+        ))
+    }
+
     #[must_use]
     pub fn new(manifest: WorldManifest) -> Self {
         Self {
@@ -1079,6 +1194,15 @@ impl EngineState {
                     baseline.air_temperature_unit.clone(),
                 ));
             }
+        }
+        if self.uses_local_weather_driver() {
+            let weather = configuration
+                .as_ref()
+                .and_then(WorldConfiguration::local_weather_baseline)
+                .ok_or(EngineError::MissingLocalWeather)?;
+            weather
+                .validate()
+                .map_err(|error| EngineError::InvalidLocalWeather(error.to_string()))?;
         }
         events.push(DomainEvent::WorldStarted {
             manifest: self.manifest.clone(),
@@ -2926,24 +3050,8 @@ impl EngineState {
             )?
         };
 
-        let baseline = configuration.local_environment_baseline().ok_or_else(|| {
-            EngineError::PhysiologicalArithmetic(
-                "bodily regulation requires a local temperature baseline".to_owned(),
-            )
-        })?;
-        if baseline.air_temperature_unit != "degC" {
-            return Err(EngineError::UnsupportedTemperatureUnit(
-                baseline.air_temperature_unit.clone(),
-            ));
-        }
-        let temperature = baseline
-            .mean_at_normal_phase(normal_year_phase(
-                self.tick,
-                configuration.tick_duration_seconds,
-            ))
-            .map_err(|error| EngineError::PhysiologicalArithmetic(error.to_string()))?;
-        let temperature =
-            decimal_to_millicelsius(temperature, baseline.air_temperature_decimal_places)?;
+        let (temperature, decimal_places) = self.local_temperature_at_tick(configuration)?;
+        let temperature = decimal_to_millicelsius(temperature, decimal_places)?;
         let temperature = i128::from(temperature);
         let minimum = i128::from(regulation.thermoneutral_min_millicelsius);
         let maximum = i128::from(regulation.thermoneutral_max_millicelsius);
@@ -3250,19 +3358,8 @@ impl EngineState {
                                             "environmental ruleset has no configuration".to_owned(),
                                         )
                                     })?;
-                                let baseline = configuration
-                                    .local_environment_baseline()
-                                    .ok_or_else(|| {
-                                        EngineError::PartitionScheduleState(
-                                            "environmental ruleset has no local baseline"
-                                                .to_owned(),
-                                        )
-                                    })?;
-                                let temperature = baseline
-                                    .mean_at_normal_phase(normal_year_phase(
-                                        self.tick,
-                                        configuration.tick_duration_seconds,
-                                    ))
+                                let (temperature, _) = self
+                                    .local_temperature_at_tick(configuration)
                                     .map_err(|error| {
                                         EngineError::PartitionScheduleState(error.to_string())
                                     })?;
@@ -4789,7 +4886,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_signal_motor_association_driver() {
+        if self.uses_local_weather_driver() {
+            LOCAL_WEATHER_EVENT_SCHEMA_VERSION
+        } else if self.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
         } else if self.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
@@ -4870,7 +4969,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_signal_action_association_driver() {
+        if self.uses_local_weather_driver() {
+            LOCAL_WEATHER_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_signal_action_association_driver() {
             SIGNAL_ACTION_ASSOCIATION_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_material_surface_regions_driver() {
             MATERIAL_SURFACE_REGIONS_STATE_HASH_SCHEMA_VERSION
@@ -6529,6 +6630,14 @@ impl EngineState {
                 ));
             }
         }
+        if self.uses_local_weather_driver() && self.status != WorldStatus::Initializing {
+            self.configuration
+                .as_ref()
+                .and_then(WorldConfiguration::local_weather_baseline)
+                .ok_or(EngineError::MissingLocalWeather)?
+                .validate()
+                .map_err(|error| EngineError::InvalidLocalWeather(error.to_string()))?;
+        }
         let mut heritable_profiles_by_species = BTreeMap::new();
         for (id, organism) in &self.organisms {
             if id != &organism.organism_id {
@@ -7113,7 +7222,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_signal_motor_association_driver() {
+        let snapshot_schema_version = if state.uses_local_weather_driver() {
+            LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
@@ -7214,12 +7325,15 @@ impl Snapshot {
                 | SIGNAL_ACTION_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
                 | MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
                 | SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
+                | LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_signal_motor_association_driver() {
+        let expected_schema_version = if self.state.uses_local_weather_driver() {
+            LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_SNAPSHOT_SCHEMA_VERSION
@@ -7420,7 +7534,9 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if state.uses_signal_motor_association_driver() {
+        let expected_schema = if state.uses_local_weather_driver() {
+            LOCAL_WEATHER_EVENT_SCHEMA_VERSION
+        } else if state.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION
         } else if state.uses_movement_direction_learning_driver() {
             MOVEMENT_DIRECTION_LEARNING_EVENT_SCHEMA_VERSION
@@ -7722,6 +7838,10 @@ pub enum EngineError {
     MissingLocalEnvironmentForRegulation,
     #[error("bodily regulation does not support temperature unit {0:?}")]
     UnsupportedTemperatureUnit(String),
+    #[error("local-weather ruleset requires a tick-zero source-bound weather baseline")]
+    MissingLocalWeather,
+    #[error("invalid local-weather baseline: {0}")]
+    InvalidLocalWeather(String),
     #[error("physiological arithmetic failed: {0}")]
     PhysiologicalArithmetic(String),
     #[error("organism {0} has an invalid bodily-regulation state")]
@@ -7889,8 +8009,9 @@ mod tests {
         CapacityExhaustionPolicy, CartesianMillimetres, CelestialState, EarthResolutionLevels,
         FullEarthGrid, PartitionedExecution, PerceptionChannel, PersonRepresentation,
         PrimitiveActionKind, PropertyReading, ProvisionalLocalEnvironmentBaseline,
-        ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
-        SpatialGrid, TdbSecondsSinceJ2000, WorldDataBundleReference, WorldSeed, WorldStatus,
+        ProvisionalLocalWeatherBaseline, ProvisionalWorldCompositionReference, S2Projection,
+        SchedulerKind, SituatedPerception, SpatialGrid, TdbSecondsSinceJ2000,
+        WorldDataBundleReference, WorldSeed, WorldStatus,
     };
 
     fn manifest() -> WorldManifest {
@@ -8041,6 +8162,48 @@ mod tests {
         .expect("environmental provisional config")
     }
 
+    fn weather_provisional_full_earth_configuration() -> WorldConfiguration {
+        let environmental = environmental_provisional_full_earth_configuration();
+        let environment = environmental
+            .local_environment_baseline()
+            .expect("environment")
+            .clone();
+        WorldConfiguration::new_provisional_full_earth_with_weather_baseline(
+            environmental.tick_duration_seconds,
+            environmental.full_earth_grid().expect("grid").clone(),
+            environmental
+                .provisional_world_composition()
+                .expect("composition")
+                .clone(),
+            environmental
+                .partitioned_execution()
+                .expect("execution")
+                .clone(),
+            environment.clone(),
+            ProvisionalLocalWeatherBaseline {
+                status: "provisional-weather-input-not-scientifically-admitted".to_owned(),
+                source_normals_digest: Digest::sha256(b"fixed point ERA5 normals"),
+                evidence_patch: environment.evidence_patch,
+                active_patch: environment.active_patch,
+                air_temperature_unit: "degC".to_owned(),
+                air_temperature_decimal_places: 3,
+                air_temperature_normal_minimum: [10_000; 12],
+                air_temperature_normal_mean: [15_000; 12],
+                air_temperature_normal_maximum: [20_000; 12],
+                precipitation_unit: "m".to_owned(),
+                precipitation_decimal_places: 6,
+                precipitation_normal_mean: [1_000; 12],
+                eastward_wind_unit: "m/s".to_owned(),
+                eastward_wind_decimal_places: 3,
+                eastward_wind_normal_mean: [500; 12],
+                northward_wind_unit: "m/s".to_owned(),
+                northward_wind_decimal_places: 3,
+                northward_wind_normal_mean: [-500; 12],
+            },
+        )
+        .expect("weather provisional config")
+    }
+
     fn full_earth_person(world_id: WorldId) -> InitialOrganism {
         let mut person = initial_person(world_id);
         let patch: S2CellId = "0000000000004000".parse().expect("valid L23 S2 cell");
@@ -8084,6 +8247,73 @@ mod tests {
             thermal_recovery_seconds: 600,
         });
         person
+    }
+
+    #[test]
+    fn ruleset_twenty_seven_temperature_is_seeded_bounded_and_replay_stable() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x127));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed27),
+            LOCAL_WEATHER_RULESET_VERSION,
+        );
+        let configuration = weather_provisional_full_earth_configuration();
+        let mut first = EngineState::new(manifest.clone());
+        let mut second = EngineState::new(manifest);
+        let mut readings = Vec::new();
+        for tick in 0..=288 {
+            first.tick = SimTick::new(tick);
+            second.tick = SimTick::new(tick);
+            let first_reading = first
+                .local_temperature_at_tick(&configuration)
+                .expect("first temperature");
+            let second_reading = second
+                .local_temperature_at_tick(&configuration)
+                .expect("replayed temperature");
+            assert_eq!(first_reading, second_reading);
+            assert_eq!(first_reading.1, 3);
+            assert!((10_000..=20_000).contains(&first_reading.0));
+            readings.push(first_reading.0);
+        }
+        assert!(
+            readings
+                .windows(2)
+                .all(|pair| pair[0].abs_diff(pair[1]) <= 35)
+        );
+
+        let snapshot = Snapshot::new(
+            EngineState::new(WorldManifest::new(
+                world_id,
+                WorldSeed::new(0x005e_ed27),
+                LOCAL_WEATHER_RULESET_VERSION,
+            )),
+            EventSequence::ZERO,
+            Digest::ZERO,
+        )
+        .expect("weather schema snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            LOCAL_WEATHER_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("weather snapshot integrity");
+    }
+
+    #[test]
+    fn ruleset_twenty_six_retains_the_environment_normal_temperature() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x126));
+        let state = EngineState::new(WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x005e_ed26),
+            PERSON_COGNITION_RULESET_VERSION,
+        ));
+        assert_eq!(
+            state
+                .local_temperature_at_tick(&environmental_provisional_full_earth_configuration())
+                .expect("legacy normal temperature"),
+            (2, 1)
+        );
     }
 
     fn reproductive_fixture_profile(species: SpeciesIdentity) -> ReproductivePhysiologyCommitment {
