@@ -191,6 +191,13 @@ same L10 and embodied patches as environment and weather. Older configuration sh
 the new field. No engine rule reads it yet; the next ruleset must define label-free physical effects
 behind new event, snapshot, and state-hash versions.
 
+The same-seed v14 genesis chain and disposable `canonical_candidate_v13` now prove this boundary
+against the real canonical origin. All 147,466 provisional references were traversed before an
+atomic schema-6 tick-zero commit; genesis replay, snapshot-plus-tail replay, and the committed state
+hash agree. The exact evidence is recorded in
+`docs/operations/CANONICAL_GENESIS_V14_2026-08-08.md`. Full-duration qualification remains attached
+to the next mechanics candidate rather than treating this configuration-only proof as admission.
+
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate
 selection uses only canonical world state, bodily pressure, exact local reachability,
