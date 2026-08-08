@@ -137,6 +137,11 @@ handles Apple Pay merchant validation; see its
 [domain-registration guide](https://docs.stripe.com/payments/payment-methods/pmd-registration)
 and [Payment Element documentation](https://docs.stripe.com/payments/payment-element).
 
+The backend webhook verifier is implemented without live credentials. At activation time, configure
+the Stripe endpoint secret only in the deployment secret store; never paste it into repository files.
+The endpoint must subscribe only to `checkout.session.completed` and
+`checkout.session.async_payment_succeeded` for the configured Checkout product.
+
 ### Google sign-in
 
 Google sign-in is not implemented yet. Once the account service has a defined HTTPS
