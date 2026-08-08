@@ -51,6 +51,24 @@ impl PostgresStore {
     pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
+
+    /// Holds the database-wide canonical-writer lease for the life of the returned
+    /// connection. PostgreSQL releases this operational lock on connection loss.
+    pub async fn acquire_runner_writer_lock(&self) -> Result<sqlx::PgConnection, StoreError> {
+        const RUNNER_WRITER_LOCK_KEY: i64 = 0x4154_494E_5957_5249;
+        let mut connection = self.pool.acquire().await.map_err(unavailable)?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(RUNNER_WRITER_LOCK_KEY)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(unavailable)?;
+        if !acquired {
+            return Err(StoreError::Conflict(
+                "another simulation runner holds the canonical-writer lock".to_owned(),
+            ));
+        }
+        Ok(connection.detach())
+    }
 }
 
 async fn lock_projection_cursor(

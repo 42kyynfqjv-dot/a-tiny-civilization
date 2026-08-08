@@ -408,6 +408,10 @@ async fn serve(
     tick_milliseconds: u64,
     heartbeat_seconds: u64,
 ) -> Result<()> {
+    let _writer_lock = store
+        .acquire_runner_writer_lock()
+        .await
+        .context("acquire the database canonical-writer lock")?;
     let instance_id = Uuid::new_v4();
     let heartbeat = ServiceHeartbeat {
         service_name: "simulation-runner".to_owned(),

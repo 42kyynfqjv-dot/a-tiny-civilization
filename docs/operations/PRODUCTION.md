@@ -94,6 +94,10 @@ without allowing Compose defaults to recreate its API dependency. It waits for t
 observer API readiness check. It deliberately does **not** configure a tunnel or
 off-site backups; those remain separate operational changes.
 
+The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second
+runner refuses startup instead of racing the canonical cursor; process or connection
+loss releases the lock automatically so the configured restart policy can recover.
+
 ### Docker tunnel and backup profile
 
 From the repository checkout, load the protected environment file into the current

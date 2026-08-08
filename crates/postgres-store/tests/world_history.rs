@@ -47,6 +47,21 @@ use world_domain::{
     WorldManifest, WorldSeed, WorldStatus,
 };
 
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPool) -> Result<()> {
+    let first = PostgresStore::from_pool(pool.clone());
+    let second = PostgresStore::from_pool(pool);
+    let held = first.acquire_runner_writer_lock().await?;
+    assert!(matches!(
+        second.acquire_runner_writer_lock().await,
+        Err(StoreError::Conflict(message)) if message.contains("canonical-writer lock")
+    ));
+    drop(held);
+    let reacquired = second.acquire_runner_writer_lock().await?;
+    drop(reacquired);
+    Ok(())
+}
+
 fn manifest(seed: u64) -> WorldManifest {
     WorldManifest::new(
         WorldId::from_uuid(Uuid::new_v4()),
