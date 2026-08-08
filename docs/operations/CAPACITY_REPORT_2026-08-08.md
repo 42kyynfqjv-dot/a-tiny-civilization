@@ -66,3 +66,27 @@ Before public genesis, run reproducible release-profile sweeps at increasing fou
 counts and active fractions, recording tick latency percentiles, event bytes, database
 growth, memory and cognition rates, projection lag, restart time, and the first clean
 capacity stop. The resumed history must match an uninterrupted reference byte for byte.
+
+## Corrected ruleset-18 qualification
+
+A later release-build run on the same host exercised the actual composition-0.1.1 closure and
+ruleset 18 after ADR 0085 removed minute-scale life-history placeholders:
+
+- 66 founders (two people and 64 real-species fauna), with zero post-genesis births through tick
+  2,347 (8.15 simulation days);
+- 2,388 committed batches and 998,085 canonical events;
+- 39 sparse snapshots, with the newest anchor at tick 2,328;
+- 2,812 Hindsight memory deliveries completed with zero recorded delivery errors;
+- 40 cognition requests, one locally prepared replay-safe recall/result, and 39 deadline-latch
+  consumptions; no private cognition payload was sent to an external provider;
+- observer projections current through sequence 2,388 with 66 organisms, 67 safe timeline items,
+  and six deterministic finding aids;
+- 90,821,939 bytes of PostgreSQL JSONB event payload storage and a 124,032,691-byte disposable
+  database at the measured boundary; observer telemetry counted 350,115,477 canonical payload
+  bytes before PostgreSQL representation/compression;
+- exact genesis replay, snapshot-plus-tail resume, continuous-run restart, and the bounded
+  ten-tick qualification command all reached their committed state hashes.
+
+This is still a small-population qualification, not a scale promise. It does establish that the
+current real-input runner, memory boundary, cognition deadline, projection, and replay paths work
+together before provider export or public genesis.

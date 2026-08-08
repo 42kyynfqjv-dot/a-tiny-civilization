@@ -81,6 +81,14 @@ configured Cloudflare Workers AI, Groq, Cerebras, and OpenRouter routes. Keep
 and is bounded by the canonical three-dollar monthly hard stop. Hindsight itself runs
 keylessly on the private application network.
 
+A configured remote provider receives the selected individual's private cognition request and the
+bounded recalled-memory context. That payload is never public, but sending it is still an external
+data transfer. Before live provider-path qualification or public activation, the owner must
+explicitly approve that transfer to the chosen provider and the privacy policy must disclose it.
+Possession of an API key or approval of a spending cap does not by itself authorize exporting the
+payload. Local Hindsight delivery, recall persistence, route accounting, deterministic fallback,
+deadline latching, and replay have been qualified without external export.
+
 Report only which provider is configured. The application preflight checks presence
 and pairing without printing the value.
 

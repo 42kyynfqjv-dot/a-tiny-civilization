@@ -182,6 +182,20 @@ The second command is retry-safe only for byte-identical inputs. Do not enable o
 restart the long-running runner until the printed replay hashes and the public seed
 commitment have been recorded in the launch evidence.
 
+For disposable pre-genesis evidence only, an exact bounded runner path avoids relying on process
+signal timing. It uses the real writer lock, snapshot resume, cognition scheduling, and DE441
+driver, but refuses `APP_ENV=production` and cannot change a public world's pace:
+
+```bash
+APP_ENV=development civilization-runner advance-qualification \
+  --world-id "$QUALIFICATION_WORLD_ID" --ticks 1000
+civilization-runner verify-world --world-id "$QUALIFICATION_WORLD_ID"
+civilization-projector once --world-id "$QUALIFICATION_WORLD_ID"
+```
+
+Use a separate disposable database and a non-public world ID. The command accepts at most one
+million ticks per invocation and stops early with an error if the world reaches a terminal state.
+
 The static preflight rejects missing core settings, an absent cognition provider, the
 documented development password, a non-production environment, partial paid, backup,
 or tunnel configuration, mutable `cloudflared` image references, and invalid Compose
@@ -229,7 +243,8 @@ alerting to notify an operator for either failed service.
   deferred for this genesis by explicit owner decision;
 - public privacy, moderation, supporter refund/transfer, and presentation policies;
 - Hindsight plus at least one configured free-first cognition provider, with paid
-  fallback disabled unless deliberately enabled;
+  fallback disabled unless deliberately enabled; enabling a remote provider also requires explicit
+  approval to export private cognition requests and recalled-memory context to that provider;
 - production credentials for features actually enabled at launch, with least privilege
   and rotation procedures.
 

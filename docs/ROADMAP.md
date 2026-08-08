@@ -514,4 +514,6 @@ The first real-input ruleset-18 qualification now covers initialization against 
 provisional references, DE441-driven canonical advancement, stop/restart at the exact stored
 cursor, genesis and snapshot-plus-tail replay, and complete observer projection. It also caught and
 removed arbitrary tick-count life-history placeholders before any public genesis; ADR 0085 records
-the corrected simulation-time guardrails and the 1,271-tick regression run.
+the corrected simulation-time guardrails and the 1,271-tick regression run. ADR 0086 adds an exact,
+writer-locked `advance-qualification` command that refuses production; its first bounded proof
+advanced precisely ten ticks and replayed at the resulting cursor.

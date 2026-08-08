@@ -48,6 +48,7 @@ use world_domain::{
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
 const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = SOCIAL_LEARNING_RULESET_VERSION;
+const MAX_QUALIFICATION_TICKS: u64 = 1_000_000;
 
 #[derive(Debug, Parser)]
 #[command(version, about = "A Tiny Civilization simulation runner")]
@@ -174,6 +175,14 @@ enum Command {
     VerifyWorld {
         #[arg(long)]
         world_id: WorldId,
+    },
+    /// Advance exactly N simulation ticks for a non-production qualification world.
+    AdvanceQualification {
+        #[arg(long)]
+        world_id: WorldId,
+
+        #[arg(long)]
+        ticks: u64,
     },
     /// Deliver committed subjective-memory records without blocking simulation ticks.
     MemoryWorker {
@@ -310,6 +319,9 @@ async fn main() -> Result<()> {
             .await
         }
         Command::VerifyWorld { world_id } => verify_world(&store, world_id).await,
+        Command::AdvanceQualification { world_id, ticks } => {
+            advance_qualification_world(&store, world_id, ticks).await
+        }
         Command::MemoryWorker {
             hindsight_base_url,
             hindsight_api_key,
@@ -390,6 +402,56 @@ async fn verify_world(store: &PostgresStore, world_id: WorldId) -> Result<()> {
         }
     }
     unreachable!("bounded verification loop returns on success or final error")
+}
+
+async fn advance_qualification_world(
+    store: &PostgresStore,
+    world_id: WorldId,
+    ticks: u64,
+) -> Result<()> {
+    if is_production_environment(std::env::var("APP_ENV").ok().as_deref()) {
+        anyhow::bail!("advance-qualification is prohibited when APP_ENV=production");
+    }
+    if ticks == 0 || ticks > MAX_QUALIFICATION_TICKS {
+        anyhow::bail!("qualification tick count must be between 1 and {MAX_QUALIFICATION_TICKS}");
+    }
+    let _writer_lock = store
+        .acquire_runner_writer_lock()
+        .await
+        .context("acquire the database canonical-writer lock")?;
+    let mut session = resume_world_from_snapshot(store, world_id)
+        .await
+        .context("verify qualification world before bounded advancement")?;
+    if session.world.status != WorldStatus::Running {
+        anyhow::bail!("qualification world is not running");
+    }
+    let start_tick = session.world.cursor.tick.get();
+    let target_tick = start_tick
+        .checked_add(ticks)
+        .context("qualification target tick overflow")?;
+    let start_sequence = session.world.cursor.sequence;
+    while session.world.cursor.tick.get() < target_tick {
+        session = advance_one_world_once(store, &session)
+            .await
+            .context("advance one bounded qualification cycle")?;
+        if session.world.status != WorldStatus::Running
+            && session.world.cursor.tick.get() < target_tick
+        {
+            anyhow::bail!(
+                "qualification world stopped at tick {} before target {target_tick}",
+                session.world.cursor.tick
+            );
+        }
+    }
+    println!(
+        "advanced qualification world {world_id} by {ticks} ticks (sequence {} to {}, tick {start_tick} to {target_tick})",
+        start_sequence, session.world.cursor.sequence
+    );
+    print_verified_world(world_id, session)
+}
+
+fn is_production_environment(value: Option<&str>) -> bool {
+    value.is_some_and(|value| value.trim().eq_ignore_ascii_case("production"))
 }
 
 fn print_verified_world(world_id: WorldId, session: WorldSession) -> Result<()> {
@@ -490,42 +552,52 @@ async fn advance_running_worlds(
                 session
             }
         };
-        if current.state.ruleset_version() >= COGNITION_RULESET_VERSION
-            && let Some(selected) = schedule_world_cognition(store, &current).await?
-        {
+        let previous_tick = current.world.cursor.tick;
+        let next = advance_one_world_once(store, &current).await?;
+        if next.world.cursor.tick == previous_tick {
             tracing::info!(
                 %world_id,
-                sequence = %selected.world.cursor.sequence,
-                tick = %selected.world.cursor.tick,
+                sequence = %next.world.cursor.sequence,
+                tick = %next.world.cursor.tick,
                 "committed deterministic world-selected cognition request"
             );
-            sessions.insert(world_id, selected);
-            continue;
-        }
-        let next = if current.state.ruleset_version() >= COGNITION_RULESET_VERSION {
-            let celestial = evaluate_pinned_de441(&current)
-                .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
-            advance_world_with_celestial_and_cognition(store, &current, celestial).await?
-        } else if current.state.ruleset_version() >= CELESTIAL_DRIVER_RULESET_VERSION {
-            let celestial = evaluate_pinned_de441(&current)
-                .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
-            advance_world_with_celestial(store, &current, celestial).await?
         } else {
-            advance_world(store, &current).await?
-        };
-        tracing::info!(
-            %world_id,
-            sequence = %next.world.cursor.sequence,
-            tick = %next.world.cursor.tick,
-            status = ?next.world.status,
-            state_hash = %next.world.cursor.state_hash,
-            "committed deterministic transition"
-        );
+            tracing::info!(
+                %world_id,
+                sequence = %next.world.cursor.sequence,
+                tick = %next.world.cursor.tick,
+                status = ?next.world.status,
+                state_hash = %next.world.cursor.state_hash,
+                "committed deterministic transition"
+            );
+        }
         if next.world.status == WorldStatus::Running {
             sessions.insert(world_id, next);
         }
     }
     Ok(())
+}
+
+async fn advance_one_world_once(
+    store: &PostgresStore,
+    current: &WorldSession,
+) -> Result<WorldSession, WorldRuntimeError> {
+    if current.state.ruleset_version() >= COGNITION_RULESET_VERSION
+        && let Some(selected) = schedule_world_cognition(store, current).await?
+    {
+        return Ok(selected);
+    }
+    if current.state.ruleset_version() >= COGNITION_RULESET_VERSION {
+        let celestial = evaluate_pinned_de441(current)
+            .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+        advance_world_with_celestial_and_cognition(store, current, celestial).await
+    } else if current.state.ruleset_version() >= CELESTIAL_DRIVER_RULESET_VERSION {
+        let celestial = evaluate_pinned_de441(current)
+            .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+        advance_world_with_celestial(store, current, celestial).await
+    } else {
+        advance_world(store, current).await
+    }
 }
 
 #[derive(Debug, Deserialize)]
@@ -2101,6 +2173,29 @@ mod tests {
             panic!("expected provisional initialization command");
         };
         assert_eq!(ruleset_version, SOCIAL_LEARNING_RULESET_VERSION);
+    }
+
+    #[test]
+    fn bounded_qualification_command_is_explicit_and_production_refusing() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "--database-url",
+            "postgres://example",
+            "advance-qualification",
+            "--world-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--ticks",
+            "250",
+        ])
+        .expect("parse bounded qualification command");
+        let Some(Command::AdvanceQualification { ticks, .. }) = cli.command else {
+            panic!("expected qualification command");
+        };
+        assert_eq!(ticks, 250);
+        assert!(is_production_environment(Some("production")));
+        assert!(is_production_environment(Some(" Production ")));
+        assert!(!is_production_environment(Some("development")));
+        assert!(!is_production_environment(None));
     }
 
     #[test]
