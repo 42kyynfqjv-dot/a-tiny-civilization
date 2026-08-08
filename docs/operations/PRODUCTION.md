@@ -172,7 +172,8 @@ for the provisional integration path only; it does not authorize canonical genes
 
 ### Prepare and initialize the canonical provisional world
 
-After publishing the seed by the committed, unpreviewed procedure, build the two
+After publishing and resolving the future-beacon commitment in
+[Public canonical seed procedure](PUBLIC_SEED.md), build the two
 one-time operator binaries and derive the entire seed-bound chain into a new directory.
 The preparation script resolves the selected L10 centre itself, queries the pinned
 iNaturalist range release, and refuses to replace any output.

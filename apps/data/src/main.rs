@@ -6,11 +6,12 @@ use std::{
     path::{Component, Path, PathBuf},
     process::{Command as ProcessCommand, Stdio},
     thread,
-    time::{Duration, Instant},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
+use drand_verify::{G2PubkeyRfc, Pubkey, derive_randomness};
 use netcdf_reader::{NcAttrValue, NcFile, NcSliceInfo, NcSliceInfoElem, NcType};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -97,6 +98,29 @@ enum Command {
     Derive {
         #[command(subcommand)]
         command: DeriveCommand,
+    },
+    /// Commit to and resolve one unpreviewed public world seed from future drand randomness.
+    Seed {
+        #[command(subcommand)]
+        command: SeedCommand,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum SeedCommand {
+    /// Publish a future quicknet round before its randomness can exist.
+    Commit {
+        #[arg(long)]
+        round: u64,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Verify the committed future beacon and derive the one accepted world seed.
+    Resolve {
+        #[arg(long)]
+        commitment: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
     },
 }
 
@@ -796,6 +820,284 @@ enum DeriveCommand {
     },
 }
 
+const PUBLIC_SEED_SCHEMA_VERSION: u16 = 1;
+const QUICKNET_CHAIN_HASH: &str =
+    "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971";
+const QUICKNET_PUBLIC_KEY: &str = "83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a";
+const QUICKNET_SCHEME: &str = "bls-unchained-g1-rfc9380";
+const QUICKNET_GENESIS_UNIX_SECONDS: u64 = 1_692_803_367;
+const QUICKNET_PERIOD_SECONDS: u64 = 3;
+const MINIMUM_UNREVEALED_ROUNDS: u64 = 200;
+const PUBLIC_SEED_DERIVATION_DOMAIN: &str = "a-tiny-civilization/world-seed/v1";
+const DRAND_RESPONSE_LIMIT_BYTES: usize = 16 * 1024;
+const DRAND_RELAYS: [&str; 2] = ["https://api.drand.sh", "https://drand.cloudflare.com"];
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct DrandBeacon {
+    round: u64,
+    randomness: String,
+    signature: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    previous_signature: Option<String>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct PublicSeedCommitment {
+    schema_version: u16,
+    chain_hash: String,
+    public_key: String,
+    scheme: String,
+    period_seconds: u64,
+    genesis_unix_seconds: u64,
+    target_round: u64,
+    target_unix_seconds: u64,
+    minimum_unrevealed_rounds: u64,
+    observed_beacon: DrandBeacon,
+    derivation_domain: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+struct ResolvedPublicSeed {
+    schema_version: u16,
+    commitment_digest: Digest,
+    target_beacon: DrandBeacon,
+    derivation_domain: String,
+    derivation_digest: Digest,
+    world_seed: WorldSeed,
+    verified_relays: [String; 2],
+}
+
+async fn commit_public_world_seed(round: u64, output: &Path) -> Result<()> {
+    let latest = fetch_latest_verified_quicknet_beacon().await?;
+    let minimum_round = latest
+        .round
+        .checked_add(MINIMUM_UNREVEALED_ROUNDS)
+        .context("minimum future drand round overflow")?;
+    if round < minimum_round {
+        bail!(
+            "target drand round {round} must be at least {MINIMUM_UNREVEALED_ROUNDS} rounds after verified round {}",
+            latest.round
+        );
+    }
+    let commitment = PublicSeedCommitment {
+        schema_version: PUBLIC_SEED_SCHEMA_VERSION,
+        chain_hash: QUICKNET_CHAIN_HASH.to_owned(),
+        public_key: QUICKNET_PUBLIC_KEY.to_owned(),
+        scheme: QUICKNET_SCHEME.to_owned(),
+        period_seconds: QUICKNET_PERIOD_SECONDS,
+        genesis_unix_seconds: QUICKNET_GENESIS_UNIX_SECONDS,
+        target_round: round,
+        target_unix_seconds: quicknet_round_unix_seconds(round)?,
+        minimum_unrevealed_rounds: MINIMUM_UNREVEALED_ROUNDS,
+        observed_beacon: latest,
+        derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
+    };
+    validate_public_seed_commitment(&commitment)?;
+    write_pretty_json_artifact(output, &commitment)?;
+    println!(
+        "committed future quicknet round {} at Unix second {}; publish this artifact before resolution",
+        commitment.target_round, commitment.target_unix_seconds
+    );
+    Ok(())
+}
+
+async fn resolve_public_world_seed(commitment_path: &Path, output: &Path) -> Result<()> {
+    let bytes = fs::read(commitment_path)
+        .with_context(|| format!("failed to read {}", commitment_path.display()))?;
+    let commitment: PublicSeedCommitment = serde_json::from_slice(&bytes)
+        .with_context(|| format!("failed to decode {}", commitment_path.display()))?;
+    validate_public_seed_commitment(&commitment)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("system clock precedes Unix epoch")?
+        .as_secs();
+    if now < commitment.target_unix_seconds {
+        bail!(
+            "committed drand round {} is not due until Unix second {}",
+            commitment.target_round,
+            commitment.target_unix_seconds
+        );
+    }
+    let beacon = fetch_matching_quicknet_round(commitment.target_round).await?;
+    let (world_seed, derivation_digest) = derive_public_world_seed(&beacon)?;
+    let resolved = ResolvedPublicSeed {
+        schema_version: PUBLIC_SEED_SCHEMA_VERSION,
+        commitment_digest: Digest::canonical(&commitment)?,
+        target_beacon: beacon,
+        derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
+        derivation_digest,
+        world_seed,
+        verified_relays: DRAND_RELAYS.map(str::to_owned),
+    };
+    write_pretty_json_artifact(output, &resolved)?;
+    println!(
+        "resolved committed round {} to world seed {}",
+        resolved.target_beacon.round, resolved.world_seed
+    );
+    Ok(())
+}
+
+async fn fetch_latest_verified_quicknet_beacon() -> Result<DrandBeacon> {
+    let latest = fetch_quicknet_beacon(DRAND_RELAYS[0], "latest").await?;
+    let matching = fetch_matching_quicknet_round(latest.round).await?;
+    if latest != matching {
+        bail!("latest drand response differs from the verified exact-round response");
+    }
+    Ok(matching)
+}
+
+async fn fetch_matching_quicknet_round(round: u64) -> Result<DrandBeacon> {
+    let resource = round.to_string();
+    let first = fetch_quicknet_beacon(DRAND_RELAYS[0], &resource).await?;
+    let second = fetch_quicknet_beacon(DRAND_RELAYS[1], &resource).await?;
+    if first != second {
+        bail!("drand relays returned different bytes for quicknet round {round}");
+    }
+    verify_quicknet_beacon(&first)?;
+    Ok(first)
+}
+
+async fn fetch_quicknet_beacon(relay: &str, resource: &str) -> Result<DrandBeacon> {
+    let endpoint = format!("{relay}/{QUICKNET_CHAIN_HASH}/public/{resource}");
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(20))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .context("build drand HTTP client")?;
+    let response = client
+        .get(&endpoint)
+        .header("Accept", "application/json")
+        .send()
+        .await
+        .with_context(|| format!("request drand relay {relay}"))?
+        .error_for_status()
+        .with_context(|| format!("drand relay {relay} rejected the request"))?;
+    if response
+        .content_length()
+        .is_some_and(|length| length > DRAND_RESPONSE_LIMIT_BYTES as u64)
+    {
+        bail!("drand relay response exceeds the bounded size");
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .with_context(|| format!("read drand relay {relay}"))?;
+    if bytes.len() > DRAND_RESPONSE_LIMIT_BYTES {
+        bail!("drand relay response exceeds the bounded size");
+    }
+    serde_json::from_slice(&bytes).with_context(|| format!("decode drand relay {relay}"))
+}
+
+fn validate_public_seed_commitment(commitment: &PublicSeedCommitment) -> Result<()> {
+    if commitment.schema_version != PUBLIC_SEED_SCHEMA_VERSION
+        || commitment.chain_hash != QUICKNET_CHAIN_HASH
+        || commitment.public_key != QUICKNET_PUBLIC_KEY
+        || commitment.scheme != QUICKNET_SCHEME
+        || commitment.period_seconds != QUICKNET_PERIOD_SECONDS
+        || commitment.genesis_unix_seconds != QUICKNET_GENESIS_UNIX_SECONDS
+        || commitment.minimum_unrevealed_rounds != MINIMUM_UNREVEALED_ROUNDS
+        || commitment.derivation_domain != PUBLIC_SEED_DERIVATION_DOMAIN
+    {
+        bail!("public seed commitment differs from the pinned procedure");
+    }
+    if commitment.target_unix_seconds != quicknet_round_unix_seconds(commitment.target_round)? {
+        bail!("public seed commitment has an inconsistent target time");
+    }
+    verify_quicknet_beacon(&commitment.observed_beacon)?;
+    let minimum_round = commitment
+        .observed_beacon
+        .round
+        .checked_add(MINIMUM_UNREVEALED_ROUNDS)
+        .context("committed future round overflow")?;
+    if commitment.target_round < minimum_round {
+        bail!("public seed commitment did not precede its beacon by the required interval");
+    }
+    Ok(())
+}
+
+fn quicknet_round_unix_seconds(round: u64) -> Result<u64> {
+    let elapsed_rounds = round
+        .checked_sub(1)
+        .context("drand round zero is invalid")?;
+    QUICKNET_GENESIS_UNIX_SECONDS
+        .checked_add(
+            elapsed_rounds
+                .checked_mul(QUICKNET_PERIOD_SECONDS)
+                .context("drand round time overflow")?,
+        )
+        .context("drand round time overflow")
+}
+
+fn verify_quicknet_beacon(beacon: &DrandBeacon) -> Result<()> {
+    if beacon.round == 0
+        || beacon
+            .previous_signature
+            .as_deref()
+            .is_some_and(|value| !value.is_empty())
+    {
+        bail!("quicknet beacon must be a nonzero unchained round");
+    }
+    let public_key = decode_hex_length(QUICKNET_PUBLIC_KEY, 96, "quicknet public key")?;
+    let signature = decode_hex_length(&beacon.signature, 48, "quicknet signature")?;
+    let randomness = decode_hex_length(&beacon.randomness, 32, "quicknet randomness")?;
+    let public_key = G2PubkeyRfc::from_variable(&public_key)
+        .map_err(|error| anyhow::anyhow!("invalid quicknet public key: {error}"))?;
+    let verified = public_key
+        .verify(beacon.round, b"", &signature)
+        .map_err(|error| anyhow::anyhow!("quicknet signature verification failed: {error}"))?;
+    if !verified {
+        bail!("quicknet signature does not verify");
+    }
+    if derive_randomness(&signature).as_slice() != randomness.as_slice() {
+        bail!("quicknet randomness is not SHA-256 of its verified signature");
+    }
+    Ok(())
+}
+
+fn derive_public_world_seed(beacon: &DrandBeacon) -> Result<(WorldSeed, Digest)> {
+    verify_quicknet_beacon(beacon)?;
+    let preimage = seed_derivation_preimage(beacon)?;
+    let digest: [u8; 32] = Sha256::digest(preimage).into();
+    let seed_bytes: [u8; 8] = digest[..8]
+        .try_into()
+        .context("world seed derivation prefix has the wrong length")?;
+    Ok((
+        WorldSeed::new(u64::from_be_bytes(seed_bytes)),
+        Digest::from_bytes(digest),
+    ))
+}
+
+fn seed_derivation_preimage(beacon: &DrandBeacon) -> Result<Vec<u8>> {
+    let chain_hash = decode_hex_length(QUICKNET_CHAIN_HASH, 32, "quicknet chain hash")?;
+    let randomness = decode_hex_length(&beacon.randomness, 32, "quicknet randomness")?;
+    let mut preimage = Vec::with_capacity(PUBLIC_SEED_DERIVATION_DOMAIN.len() + 1 + 32 + 8 + 32);
+    preimage.extend_from_slice(PUBLIC_SEED_DERIVATION_DOMAIN.as_bytes());
+    preimage.push(0);
+    preimage.extend_from_slice(&chain_hash);
+    preimage.extend_from_slice(&beacon.round.to_be_bytes());
+    preimage.extend_from_slice(&randomness);
+    Ok(preimage)
+}
+
+fn decode_hex_length(value: &str, expected_bytes: usize, field: &str) -> Result<Vec<u8>> {
+    if value.len() != expected_bytes * 2
+        || !value.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || value.bytes().any(|byte| byte.is_ascii_uppercase())
+    {
+        bail!("{field} is not canonical lowercase hex of the required length");
+    }
+    hex::decode(value).with_context(|| format!("decode {field}"))
+}
+
+fn write_pretty_json_artifact(output: &Path, value: &impl Serialize) -> Result<()> {
+    let mut bytes = serde_json::to_vec_pretty(value).context("encode public seed artifact")?;
+    bytes.push(b'\n');
+    write_new_artifact(output, &bytes)
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     let cli = Cli::parse();
@@ -808,6 +1110,12 @@ async fn main() -> Result<()> {
             composition,
             artifact_root,
         } => validate_provisional_world(&composition, &artifact_root),
+        Command::Seed { command } => match command {
+            SeedCommand::Commit { round, output } => commit_public_world_seed(round, &output).await,
+            SeedCommand::Resolve { commitment, output } => {
+                resolve_public_world_seed(&commitment, &output).await
+            }
+        },
         Command::Source { command } => match command {
             SourceCommand::Validate {
                 manifest,
@@ -13707,5 +14015,63 @@ mod tests {
         let insect = provisional_life_history("insecta_4");
         assert_eq!(duration_ticks(insect.development_seconds, 300), 4_032);
         assert_eq!(duration_ticks(301, 300), 2);
+    }
+
+    #[test]
+    fn quicknet_signature_and_world_seed_derivation_are_pinned() {
+        let signature = "b75c69d0b72a5d906e854e808ba7e2accb1542ac355ae486d591aa9d43765482e26cd02df835d3546d23c4b13e0dfc92";
+        let beacon = DrandBeacon {
+            round: 123,
+            randomness: hex::encode(derive_randomness(
+                &hex::decode(signature).expect("fixed signature hex"),
+            )),
+            signature: signature.to_owned(),
+            previous_signature: None,
+        };
+        verify_quicknet_beacon(&beacon).expect("verified quicknet test vector");
+        let (seed, digest) = derive_public_world_seed(&beacon).expect("derived seed");
+        assert_eq!(
+            seed,
+            WorldSeed::new(16_962_325_827_322_022_972),
+            "world-seed byte order and truncation are protocol"
+        );
+        assert_eq!(
+            digest.to_string(),
+            "eb6649783df68c3c9f31428147d2e93cfdcc46c8f187193a5bfcd8fdd3952ab9"
+        );
+
+        let mut changed = beacon;
+        changed.randomness.replace_range(0..2, "00");
+        assert!(verify_quicknet_beacon(&changed).is_err());
+    }
+
+    #[test]
+    fn public_seed_commitment_requires_a_future_verified_round() {
+        let signature = "b75c69d0b72a5d906e854e808ba7e2accb1542ac355ae486d591aa9d43765482e26cd02df835d3546d23c4b13e0dfc92";
+        let observed_beacon = DrandBeacon {
+            round: 123,
+            randomness: hex::encode(derive_randomness(
+                &hex::decode(signature).expect("fixed signature hex"),
+            )),
+            signature: signature.to_owned(),
+            previous_signature: None,
+        };
+        let mut commitment = PublicSeedCommitment {
+            schema_version: PUBLIC_SEED_SCHEMA_VERSION,
+            chain_hash: QUICKNET_CHAIN_HASH.to_owned(),
+            public_key: QUICKNET_PUBLIC_KEY.to_owned(),
+            scheme: QUICKNET_SCHEME.to_owned(),
+            period_seconds: QUICKNET_PERIOD_SECONDS,
+            genesis_unix_seconds: QUICKNET_GENESIS_UNIX_SECONDS,
+            target_round: 323,
+            target_unix_seconds: quicknet_round_unix_seconds(323).expect("round time"),
+            minimum_unrevealed_rounds: MINIMUM_UNREVEALED_ROUNDS,
+            observed_beacon,
+            derivation_domain: PUBLIC_SEED_DERIVATION_DOMAIN.to_owned(),
+        };
+        validate_public_seed_commitment(&commitment).expect("valid future commitment");
+        commitment.target_round = 322;
+        commitment.target_unix_seconds = quicknet_round_unix_seconds(322).expect("round time");
+        assert!(validate_public_seed_commitment(&commitment).is_err());
     }
 }
