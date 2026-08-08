@@ -123,7 +123,13 @@ pub struct FaunaBodyMassPlan {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaEcologyPlanEntry {
     pub species: SpeciesIdentity,
-    pub source_record_ids: Vec<String>,
+    pub profiles: Vec<FaunaEcologyProfileSelection>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaEcologyProfileSelection {
+    pub trait_id: String,
+    pub source_record_id: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -150,15 +156,17 @@ impl FaunaEcologyPlan {
                 .species
                 .validate()
                 .map_err(|_| FaunaPhysiologyProfileError::InvalidEcologyPlan)?;
-            if entry.source_record_ids.is_empty()
+            if entry.profiles.is_empty()
+                || entry.profiles.iter().any(|value| {
+                    (!value.trait_id.starts_with("diet-")
+                        && !value.trait_id.starts_with("activity-"))
+                        || !slug(&value.trait_id)
+                        || !technical(&value.source_record_id)
+                })
                 || entry
-                    .source_record_ids
-                    .iter()
-                    .any(|value| !technical(value))
-                || entry
-                    .source_record_ids
+                    .profiles
                     .windows(2)
-                    .any(|pair| pair[0] >= pair[1])
+                    .any(|pair| ecology_profile_key(&pair[0]) >= ecology_profile_key(&pair[1]))
             {
                 return Err(FaunaPhysiologyProfileError::InvalidEcologyPlan);
             }
@@ -176,15 +184,14 @@ impl FaunaEcologyPlan {
         }
         let mut resolved = Vec::new();
         for entry in &self.entries {
-            for record_id in &entry.source_record_ids {
+            for selected in &entry.profiles {
                 let profile = profiles
                     .profiles
                     .iter()
                     .find(|profile| {
                         same_catalog_taxon(&profile.species, &entry.species)
-                            && profile.source_record_id == *record_id
-                            && (profile.trait_id.starts_with("diet-")
-                                || profile.trait_id.starts_with("activity-"))
+                            && profile.trait_id == selected.trait_id
+                            && profile.source_record_id == selected.source_record_id
                     })
                     .ok_or(FaunaPhysiologyProfileError::SelectedEcologyProfileMissing)?;
                 resolved.push(profile);
@@ -525,6 +532,10 @@ fn ecology_entry_key(entry: &FaunaEcologyPlanEntry) -> (&str, &str) {
     (&entry.species.catalog, &entry.species.identifier)
 }
 
+fn ecology_profile_key(selection: &FaunaEcologyProfileSelection) -> (&str, &str) {
+    (&selection.trait_id, &selection.source_record_id)
+}
+
 fn same_catalog_taxon(left: &SpeciesIdentity, right: &SpeciesIdentity) -> bool {
     left.catalog == right.catalog && left.identifier == right.identifier
 }
@@ -819,7 +830,10 @@ mod tests {
             ),
             entries: vec![FaunaEcologyPlanEntry {
                 species,
-                source_record_ids: vec![profile.source_record_id.clone()],
+                profiles: vec![FaunaEcologyProfileSelection {
+                    trait_id: profile.trait_id.clone(),
+                    source_record_id: profile.source_record_id.clone(),
+                }],
             }],
         };
         assert_eq!(plan.resolve(&profiles), Ok(vec![&profile]));

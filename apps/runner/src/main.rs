@@ -1,5 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
+    fs,
     path::PathBuf,
     process::Command as ProcessCommand,
     sync::Arc,
@@ -32,10 +33,10 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use url::Url;
 use uuid::Uuid;
 use world_data::{
-    DataLayerKind, FaunaMetabolicRatePlan, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
-    FaunaRangeCandidateSet, FaunaSeededSelection, ProvisionalLandOriginSelection,
-    ProvisionalMaterialResourcePlan, ProvisionalOrganismBodyProfilePlan,
-    ProvisionalOriginEnvironment,
+    DataLayerKind, FaunaEcologyPlan, FaunaMetabolicRatePlan, FaunaPhysiologyProfileSet,
+    FaunaPopulationPlan, FaunaRangeCandidateSet, FaunaSeededSelection,
+    ProvisionalLandOriginSelection, ProvisionalMaterialResourcePlan,
+    ProvisionalOrganismBodyProfilePlan, ProvisionalOriginEnvironment,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -152,6 +153,14 @@ enum Command {
         /// One deliberately selected retained rate for every planned fauna taxon.
         #[arg(long)]
         fauna_metabolic_rate_plan: Option<PathBuf>,
+
+        /// Retained exact diet/activity profiles used only as noncausal evidence.
+        #[arg(long, requires = "fauna_ecology_plan")]
+        fauna_ecology_profile_set: Option<PathBuf>,
+
+        /// Canonical per-world selection of exact noncausal fauna ecology rows.
+        #[arg(long, requires = "fauna_ecology_profile_set")]
+        fauna_ecology_plan: Option<PathBuf>,
 
         /// Canonical provisional body profiles for every founder and planned fauna
         /// species. Required by rulesets with canonical bodily regulation.
@@ -334,6 +343,8 @@ async fn main() -> Result<()> {
             fauna_population_plan,
             fauna_metabolic_profile_set,
             fauna_metabolic_rate_plan,
+            fauna_ecology_profile_set,
+            fauna_ecology_plan,
             provisional_organism_profile_plan,
             provisional_material_resource_plan,
             predecessor_world_id,
@@ -357,6 +368,8 @@ async fn main() -> Result<()> {
                 fauna_population_plan.as_deref(),
                 fauna_metabolic_profile_set.as_deref(),
                 fauna_metabolic_rate_plan.as_deref(),
+                fauna_ecology_profile_set.as_deref(),
+                fauna_ecology_plan.as_deref(),
                 provisional_organism_profile_plan.as_deref(),
                 provisional_material_resource_plan.as_deref(),
                 predecessor_world_id,
@@ -833,6 +846,8 @@ async fn init_provisional_full_earth_world(
     fauna_population_plan_path: Option<&std::path::Path>,
     fauna_metabolic_profile_set_path: Option<&std::path::Path>,
     fauna_metabolic_rate_plan_path: Option<&std::path::Path>,
+    fauna_ecology_profile_set_path: Option<&std::path::Path>,
+    fauna_ecology_plan_path: Option<&std::path::Path>,
     provisional_organism_profile_plan_path: Option<&std::path::Path>,
     provisional_material_resource_plan_path: Option<&std::path::Path>,
     predecessor_world_id: Option<WorldId>,
@@ -1006,6 +1021,20 @@ async fn init_provisional_full_earth_world(
         }
         initial_organisms.extend(fauna.initial_organisms);
     }
+    if let Some(ecology) = load_provisional_fauna_ecology_evidence(
+        fauna_ecology_profile_set_path,
+        fauna_ecology_plan_path,
+        &initial_organisms,
+    )? {
+        manifest.scientific_datasets.insert(
+            "provisional_fauna_ecology_plan".to_owned(),
+            ecology.plan_digest.to_string(),
+        );
+        manifest.scientific_datasets.insert(
+            "provisional_fauna_ecology_profile_set".to_owned(),
+            ecology.profile_set_digest.to_string(),
+        );
+    }
     if let Some(evidence) = apply_provisional_organism_body_profiles(
         &mut initial_organisms,
         ruleset_version,
@@ -1146,6 +1175,60 @@ fn load_provisional_origin_environment(
                     )
                 })?,
         },
+    }))
+}
+
+struct AppliedFaunaEcologyEvidence {
+    plan_digest: Digest,
+    profile_set_digest: Digest,
+}
+
+fn load_provisional_fauna_ecology_evidence(
+    profile_set_path: Option<&std::path::Path>,
+    plan_path: Option<&std::path::Path>,
+    initial_organisms: &[InitialOrganism],
+) -> Result<Option<AppliedFaunaEcologyEvidence>> {
+    let (profile_set_path, plan_path) = match (profile_set_path, plan_path) {
+        (None, None) => return Ok(None),
+        (Some(profile_set_path), Some(plan_path)) => (profile_set_path, plan_path),
+        _ => anyhow::bail!(
+            "fauna ecology profile set and ecology plan must be supplied together or both omitted"
+        ),
+    };
+    let profile_bytes = fs::read(profile_set_path)
+        .with_context(|| format!("read fauna ecology profiles {}", profile_set_path.display()))?;
+    let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&profile_bytes)
+        .context("validate fauna ecology profile set")?;
+    let plan_bytes = fs::read(plan_path)
+        .with_context(|| format!("read fauna ecology plan {}", plan_path.display()))?;
+    let plan = FaunaEcologyPlan::from_canonical_slice(&plan_bytes)
+        .context("validate fauna ecology plan")?;
+    plan.resolve(&profiles)
+        .context("resolve exact fauna ecology source rows")?;
+    let fauna_species = initial_organisms
+        .iter()
+        .filter(|organism| organism.role == OrganismRole::Fauna)
+        .map(|organism| {
+            (
+                organism.species.catalog.as_str(),
+                organism.species.identifier.as_str(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    for entry in &plan.entries {
+        if !fauna_species.contains(&(
+            entry.species.catalog.as_str(),
+            entry.species.identifier.as_str(),
+        )) {
+            anyhow::bail!(
+                "fauna ecology plan contains unplanned species {}",
+                entry.species.scientific_name
+            );
+        }
+    }
+    Ok(Some(AppliedFaunaEcologyEvidence {
+        plan_digest: Digest::sha256(&plan_bytes),
+        profile_set_digest: Digest::sha256(&profile_bytes),
     }))
 }
 
@@ -1917,12 +2000,13 @@ mod tests {
     use super::*;
     use world_data::{
         FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
-        FaunaBirthCategoryCount, FaunaEvidenceBasis, FaunaEvidenceSource, FaunaMetabolicRatePlan,
-        FaunaMetabolicRateSelection, FaunaPhysiologyProfile, FaunaPhysiologyProfileSet,
-        FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeQueryPoint,
-        LandCoverClassCount, LandCoverEvidenceCell, LandCoverSignedValueCount,
-        PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION, ProvisionalWorldComposition,
-        ScaledFaunaTraitValue, SeasonalScalarFieldCell,
+        FaunaBirthCategoryCount, FaunaEcologyPlan, FaunaEcologyPlanEntry,
+        FaunaEcologyProfileSelection, FaunaEvidenceBasis, FaunaEvidenceSource,
+        FaunaMetabolicRatePlan, FaunaMetabolicRateSelection, FaunaPhysiologyProfile,
+        FaunaPhysiologyProfileSet, FaunaPopulationPlan, FaunaPopulationPlanEntry,
+        FaunaRangeCandidate, FaunaRangeQueryPoint, LandCoverClassCount, LandCoverEvidenceCell,
+        LandCoverSignedValueCount, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
+        ProvisionalWorldComposition, ScaledFaunaTraitValue, SeasonalScalarFieldCell,
     };
 
     fn candidate_set() -> FaunaRangeCandidateSet {
@@ -2148,6 +2232,80 @@ mod tests {
             .is_err()
         );
         std::fs::remove_file(path).expect("remove body-profile plan");
+    }
+
+    #[test]
+    fn fauna_ecology_is_source_resolved_but_never_applied_to_organisms() {
+        let world_id = WorldId::from_uuid(Uuid::new_v4());
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "12",
+            "Canis lupus",
+            "https://www.gbif.org/species/12",
+        )
+        .expect("fauna species");
+        let profile = FaunaPhysiologyProfile {
+            species: species.clone(),
+            trait_id: "diet-terrestrial-vertebrate-share-percent".to_owned(),
+            value: ScaledFaunaTraitValue {
+                value: 80,
+                decimal_places: 0,
+                unit: "percent".to_owned(),
+            },
+            source: FaunaEvidenceSource::EltonTraitsV1_0,
+            source_field: "VertEnd".to_owned(),
+            source_record_id: "elton-mammal-line-7".to_owned(),
+            source_record_digest: Digest::sha256(b"ecology row"),
+            evidence_basis: FaunaEvidenceBasis::SourceCompiledSpeciesAggregate,
+        };
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: world_data::FAUNA_PHYSIOLOGY_PROFILE_SET_SCHEMA_VERSION,
+            source_artifact_digest: Digest::sha256(b"Elton source"),
+            profiles: vec![profile.clone()],
+        };
+        let profile_bytes = profiles.canonical_bytes().expect("canonical profiles");
+        let plan = FaunaEcologyPlan {
+            plan_schema_version: world_data::FAUNA_ECOLOGY_PLAN_SCHEMA_VERSION,
+            profile_set_digest: Digest::sha256(&profile_bytes),
+            entries: vec![FaunaEcologyPlanEntry {
+                species: species.clone(),
+                profiles: vec![FaunaEcologyProfileSelection {
+                    trait_id: profile.trait_id,
+                    source_record_id: profile.source_record_id,
+                }],
+            }],
+        };
+        let plan_bytes = plan.canonical_bytes().expect("canonical ecology plan");
+        let stem = format!("atc-runner-ecology-{}", Uuid::new_v4());
+        let profile_path = std::env::temp_dir().join(format!("{stem}-profiles.json"));
+        let plan_path = std::env::temp_dir().join(format!("{stem}-plan.json"));
+        std::fs::write(&profile_path, &profile_bytes).expect("write profiles");
+        std::fs::write(&plan_path, &plan_bytes).expect("write plan");
+        let organisms = vec![InitialOrganism {
+            organism_id: EntityId::deterministic(world_id, b"ecology-fauna"),
+            species,
+            role: OrganismRole::Fauna,
+            birth_category: BirthCategory::new("female").expect("category"),
+            initial_age_ticks: 0,
+            location_id: None,
+            embodied_patch: Some("0000000000004000".parse().expect("L23 patch")),
+            metabolic_rate: None,
+            physiological_regulation: None,
+            reproductive_physiology: None,
+            heritable_disposition_profile: None,
+        }];
+        let evidence = load_provisional_fauna_ecology_evidence(
+            Some(&profile_path),
+            Some(&plan_path),
+            &organisms,
+        )
+        .expect("source-resolved evidence")
+        .expect("present evidence");
+        assert_eq!(evidence.plan_digest, Digest::sha256(&plan_bytes));
+        assert_eq!(evidence.profile_set_digest, Digest::sha256(&profile_bytes));
+        assert_eq!(organisms[0].role, OrganismRole::Fauna);
+        std::fs::remove_file(profile_path).expect("remove profiles");
+        std::fs::remove_file(plan_path).expect("remove plan");
     }
 
     fn origin_environment(

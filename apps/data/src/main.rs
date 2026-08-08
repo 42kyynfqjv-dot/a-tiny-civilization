@@ -24,7 +24,8 @@ use uuid::Uuid;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
-    FaunaBirthCategoryCount, FaunaBodyMassPlan, FaunaBodyMassSelection, FaunaMetabolicRatePlan,
+    FaunaBirthCategoryCount, FaunaBodyMassPlan, FaunaBodyMassSelection, FaunaEcologyPlan,
+    FaunaEcologyPlanEntry, FaunaEcologyProfileSelection, FaunaMetabolicRatePlan,
     FaunaMetabolicRateSelection, FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet,
     FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
     LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION, LandCoverClassCount, LandCoverEvidenceCell,
@@ -595,6 +596,22 @@ enum DeriveCommand {
         origin_environment: PathBuf,
         #[arg(long)]
         body_mass_profiles: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Pin exact retained diet/activity rows for each covered planned fauna taxon.
+    /// This evidence does not create behavior, habitat suitability, or food labels.
+    FaunaEcologyPlan {
+        #[arg(long)]
+        population_plan: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
+        #[arg(long)]
+        ecology_profiles: PathBuf,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1573,6 +1590,21 @@ async fn main() -> Result<()> {
                 &selection,
                 &origin_environment,
                 &body_mass_profiles,
+                &output,
+            ),
+            DeriveCommand::FaunaEcologyPlan {
+                population_plan,
+                candidates,
+                selection,
+                origin_environment,
+                ecology_profiles,
+                output,
+            } => derive_fauna_ecology_plan(
+                &population_plan,
+                &candidates,
+                &selection,
+                &origin_environment,
+                &ecology_profiles,
                 &output,
             ),
             DeriveCommand::ProvisionalOrganismBodyProfilePlan {
@@ -2990,6 +3022,79 @@ fn derive_fauna_body_mass_plan(
             "source_measured_species_count": plan.selections.len(),
             "uncovered_species_count": population.entries.len() - plan.selections.len(),
             "policy": "first canonical exact positive adult-body-mass observation for each covered planned species; the explicit selection is pinned and observations are never averaged",
+        }))?
+    );
+    Ok(())
+}
+
+fn derive_fauna_ecology_plan(
+    population_plan_path: &Path,
+    candidates_path: &Path,
+    selection_path: &Path,
+    origin_environment_path: &Path,
+    ecology_profiles_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let (_, _, _, population) = load_population_plan_inputs(
+        candidates_path,
+        selection_path,
+        origin_environment_path,
+        population_plan_path,
+    )?;
+    let (profiles, profile_set_digest) = load_metabolic_profiles(ecology_profiles_path)?;
+    let mut entries = population
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let mut selected = profiles
+                .profiles
+                .iter()
+                .filter(|profile| {
+                    profile.species.catalog == entry.species.catalog
+                        && profile.species.identifier == entry.species.identifier
+                        && (profile.trait_id.starts_with("diet-")
+                            || profile.trait_id.starts_with("activity-"))
+                })
+                .map(|profile| FaunaEcologyProfileSelection {
+                    trait_id: profile.trait_id.clone(),
+                    source_record_id: profile.source_record_id.clone(),
+                })
+                .collect::<Vec<_>>();
+            selected.sort_by(|left, right| {
+                (&left.trait_id, &left.source_record_id)
+                    .cmp(&(&right.trait_id, &right.source_record_id))
+            });
+            (!selected.is_empty()).then(|| FaunaEcologyPlanEntry {
+                species: entry.species.clone(),
+                profiles: selected,
+            })
+        })
+        .collect::<Vec<_>>();
+    entries.sort_by(|left, right| {
+        (&left.species.catalog, &left.species.identifier)
+            .cmp(&(&right.species.catalog, &right.species.identifier))
+    });
+    let plan = FaunaEcologyPlan {
+        plan_schema_version: world_data::FAUNA_ECOLOGY_PLAN_SCHEMA_VERSION,
+        profile_set_digest,
+        entries,
+    };
+    let resolved = plan
+        .resolve(&profiles)
+        .context("resolve fauna ecology evidence plan")?;
+    let bytes = plan
+        .canonical_bytes()
+        .context("encode fauna ecology evidence plan")?;
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "planned_species_count": population.entries.len(),
+            "source_covered_species_count": plan.entries.len(),
+            "uncovered_species_count": population.entries.len() - plan.entries.len(),
+            "retained_profile_count": resolved.len(),
+            "policy": "exact stable-taxon diet/activity source rows only; evidence remains noncausal and creates no behavior, preference, affordance, habitat, or food label",
         }))?
     );
     Ok(())

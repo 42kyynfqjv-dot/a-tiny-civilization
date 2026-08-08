@@ -81,6 +81,8 @@ arguments=(
   --fauna-seeded-selection "${genesis_directory}/fauna-selection.json"
   --fauna-origin-environment "${genesis_directory}/origin-environment.json"
   --fauna-population-plan "${genesis_directory}/fauna-population-plan.json"
+  --fauna-ecology-profile-set data/derived-cache/eltontraits-ecology-v1.json
+  --fauna-ecology-plan "${genesis_directory}/fauna-ecology-plan.json"
   --provisional-organism-profile-plan "${genesis_directory}/organism-body-profile-plan.json"
   --provisional-material-resource-plan "${genesis_directory}/material-resource-plan.json"
   --tick-duration-seconds 300

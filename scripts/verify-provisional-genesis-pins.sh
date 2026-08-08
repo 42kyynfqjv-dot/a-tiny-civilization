@@ -60,5 +60,8 @@ grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-w
 grep -qF -- '--body-mass-profiles data/derived-cache/amniote-life-history-v1.json' \
   scripts/prepare-provisional-genesis.sh
 grep -qF 'derive fauna-body-mass-plan' scripts/prepare-provisional-genesis.sh
+grep -qF 'derive fauna-ecology-plan' scripts/prepare-provisional-genesis.sh
+grep -qF -- '--fauna-ecology-plan "${genesis_directory}/fauna-ecology-plan.json"' \
+  scripts/initialize-provisional-world.sh
 grep -qF -- '--body-mass-plan "${fauna_body_masses}"' scripts/prepare-provisional-genesis.sh
 echo "Ruleset-26 provisional genesis pins one verified composition and artifact revision."

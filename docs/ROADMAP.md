@@ -662,5 +662,7 @@ for launch review but does not authorize deployment or scientific admission.
 The next noncausal evidence boundary is now typed for fauna ecology. A canonical plan can retain
 exact EltonTraits diet/activity source rows by stable taxon identity while being structurally unable
 to create an agent drive, action, affordance, habitat decision, or food label. The committed-origin
-source currently covers 23 of 32 selected fauna taxa; derivation and manifest wiring are the next
-integration step, followed only later by separately reviewed causal ecology.
+source covers 23 of 32 selected fauna taxa and contributes 257 exact trait/row pairs. Canonical
+preparation derives the plan, and initialization re-resolves every pair before pinning both plan and
+profile-set digests in the immutable world manifest. Separately reviewed causal ecology remains a
+later step.
