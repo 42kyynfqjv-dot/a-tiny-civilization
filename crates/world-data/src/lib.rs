@@ -78,8 +78,10 @@ pub use origin_climate::{
     ProvisionalOriginClimateNormals,
 };
 pub use origin_environment::{
+    LEGACY_PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
     PROVISIONAL_ORIGIN_ENVIRONMENT_MEDIA_TYPE, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
     ProvisionalOriginEnvironment, ProvisionalOriginEnvironmentError,
+    ProvisionalOriginSurfaceEvidence,
 };
 
 pub use physiology::{

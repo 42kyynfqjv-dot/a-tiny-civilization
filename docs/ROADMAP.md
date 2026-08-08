@@ -176,6 +176,14 @@ regulation profile. Engineering-assumption profiles may participate only in an
 explicitly labelled experimental genesis under ADR 0049 and must remain visible in the
 public assumption ledger.
 
+Provisional origin-environment schema 2 now joins the exact canonical L10 cells from the pinned
+ETOPO terrain, JRC surface-water occurrence-code, and nine-property SoilGrids topsoil releases in
+addition to the existing Copernicus land-cover and CHELSA temperature cells. Each value retains its
+global root and containing-tile digest; soil also retains ordered quantile-source provenance. The
+join is deliberately noninterpretive and noncausal under ADR 0123: inhabitants receive no source
+codes, soil-property names, habitat labels, or implied uses. Schema-1 archives remain byte-readable.
+The next causal surface checkpoint must version and justify each physical mapping independently.
+
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate
 selection uses only canonical world state, bodily pressure, exact local reachability,

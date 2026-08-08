@@ -46,11 +46,12 @@ use world_data::{
     ProvisionalLandOriginSelection, ProvisionalMaterialResourcePlan,
     ProvisionalMaterialResourceSource, ProvisionalOrganismBodyProfileEntry,
     ProvisionalOrganismBodyProfilePlan, ProvisionalOriginClimateEvidence,
-    ProvisionalOriginClimateNormals, ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE,
-    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
-    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
-    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
-    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
+    ProvisionalOriginClimateNormals, ProvisionalOriginEnvironment,
+    ProvisionalOriginSurfaceEvidence, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
+    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
+    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
+    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
+    WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -676,7 +677,7 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
-    /// Join the pinned land-cover and climate cells at a seed-derived origin into
+    /// Join the pinned land-cover, climate, terrain, surface-water, and topsoil cells at a seed-derived origin into
     /// one canonical evidence artifact. This is not a habitat or population plan.
     ProvisionalOriginEnvironment {
         #[arg(long)]
@@ -4052,11 +4053,10 @@ fn inspect_fauna_population_plan(
     Ok(())
 }
 
-/// Join just two already-pinned full-Earth layers at the selected L10 origin.
+/// Join the already-pinned full-Earth evidence layers at the selected L10 origin.
 ///
-/// This intentionally stops at evidence. In particular, a surface class and a
-/// temperature normal are not a habitat model, and a habitat model is not an
-/// abundance or species-occurrence model.
+/// This intentionally stops at evidence. Source values are not a habitat model, and
+/// a habitat model is not an abundance or species-occurrence model.
 fn inspect_provisional_origin_environment(
     origin_selection_path: &Path,
     composition_path: &Path,
@@ -4110,6 +4110,21 @@ fn derive_provisional_origin_environment(
         .iter()
         .find(|layer| layer.kind == DataLayerKind::Climate)
         .context("provisional composition has no climate layer")?;
+    let elevation = composition
+        .earth_layers
+        .iter()
+        .find(|layer| layer.kind == DataLayerKind::Elevation)
+        .context("provisional composition has no elevation layer")?;
+    let hydrography = composition
+        .earth_layers
+        .iter()
+        .find(|layer| layer.kind == DataLayerKind::Hydrography)
+        .context("provisional composition has no hydrography layer")?;
+    let soil = composition
+        .earth_layers
+        .iter()
+        .find(|layer| layer.kind == DataLayerKind::Soil)
+        .context("provisional composition has no soil layer")?;
 
     let habitat_root = read_pinned_provisional_root(artifact_root, &habitat.release)?;
     let habitat_tile_root = provisional_tile_tree_parent(artifact_root, &habitat.release)?;
@@ -4153,8 +4168,76 @@ fn derive_provisional_origin_environment(
         .find(|cell| cell.s2_cell_id == origin.selected_patch)
         .context("temperature tile does not contain selected origin")?;
 
+    let terrain_root = read_pinned_provisional_root(artifact_root, &elevation.release)?;
+    let terrain_tile_root = provisional_tile_tree_parent(artifact_root, &elevation.release)?;
+    let terrain_entry = find_tile_entry_for_target(
+        &terrain_tile_root,
+        &terrain_root,
+        "bedrock-relief",
+        origin.selected_patch,
+    )?;
+    let terrain_bytes = read_tile_tree_artifact(&terrain_tile_root, &terrain_entry)?;
+    let terrain_tile = PackedScalarTerrainTile::from_canonical_slice(&terrain_bytes)
+        .context("decode bedrock-relief tile")?;
+    if terrain_tile.layer_id != "bedrock-relief" || terrain_tile.target_s2_level != 10 {
+        bail!("terrain tile has an unexpected layer or target level");
+    }
+    let terrain = terrain_tile
+        .cells
+        .into_iter()
+        .find(|cell| cell.s2_cell_id == origin.selected_patch)
+        .context("terrain tile does not contain selected origin")?;
+
+    let water_root = read_pinned_provisional_root(artifact_root, &hydrography.release)?;
+    let water_tile_root = provisional_tile_tree_parent(artifact_root, &hydrography.release)?;
+    let water_entry = find_tile_entry_for_target(
+        &water_tile_root,
+        &water_root,
+        "observed-water-occurrence-source-code",
+        origin.selected_patch,
+    )?;
+    let water_bytes = read_tile_tree_artifact(&water_tile_root, &water_entry)?;
+    let water_tile = PackedScalarFieldTile::from_canonical_slice(&water_bytes)
+        .context("decode observed-water-occurrence source-code tile")?;
+    if water_tile.layer_id != "observed-water-occurrence-source-code"
+        || water_tile.target_s2_level != 10
+    {
+        bail!("surface-water tile has an unexpected layer or target level");
+    }
+    let surface_water_unit = water_tile.unit.clone();
+    let surface_water_decimal_places = water_tile.decimal_places;
+    let surface_water = water_tile
+        .cells
+        .into_iter()
+        .find(|cell| cell.s2_cell_id == origin.selected_patch)
+        .context("surface-water tile does not contain selected origin")?;
+
+    let soil_root = read_pinned_provisional_root(artifact_root, &soil.release)?;
+    let soil_tile_root = provisional_tile_tree_parent(artifact_root, &soil.release)?;
+    let soil_entry = find_tile_entry_for_target(
+        &soil_tile_root,
+        &soil_root,
+        "soilgrids-topsoil",
+        origin.selected_patch,
+    )?;
+    let soil_bytes = read_tile_tree_artifact(&soil_tile_root, &soil_entry)?;
+    let soil_tile = PackedSoilGridsTopsoilTile::from_canonical_slice(&soil_bytes)
+        .context("decode SoilGrids topsoil tile")?;
+    if soil_tile.layer_id != "soilgrids-topsoil" || soil_tile.target_s2_level != 10 {
+        bail!("topsoil tile has an unexpected layer or target level");
+    }
+    let topsoil_depth = soil_tile.depth;
+    let topsoil_source_set_digest = soil_tile.source_set_digest;
+    let topsoil_property_sources = soil_tile.property_sources.clone();
+    let topsoil_sampling_reprojection_method = soil_tile.sampling_reprojection_method.clone();
+    let topsoil = soil_tile
+        .cells
+        .into_iter()
+        .find(|cell| cell.s2_cell_id == origin.selected_patch)
+        .context("topsoil tile does not contain selected origin")?;
+
     let environment = ProvisionalOriginEnvironment {
-        environment_schema_version: 1,
+        environment_schema_version: 2,
         status: "evidence-only-not-habitat-suitability-or-population".to_owned(),
         origin_selection_digest: Digest::sha256(&origin_bytes),
         composition_digest: Digest::sha256(&composition_bytes),
@@ -4168,6 +4251,23 @@ fn derive_provisional_origin_environment(
         air_temperature_normal_unit: climate_tile.unit,
         air_temperature_normal_decimal_places: climate_tile.decimal_places,
         air_temperature_normal,
+        local_surface: Some(ProvisionalOriginSurfaceEvidence {
+            terrain_root_digest: elevation.release.content_hash,
+            terrain_tile_digest: Digest::sha256(&terrain_bytes),
+            terrain,
+            surface_water_root_digest: hydrography.release.content_hash,
+            surface_water_tile_digest: Digest::sha256(&water_bytes),
+            surface_water_unit,
+            surface_water_decimal_places,
+            surface_water,
+            topsoil_root_digest: soil.release.content_hash,
+            topsoil_tile_digest: Digest::sha256(&soil_bytes),
+            topsoil_depth,
+            topsoil_source_set_digest,
+            topsoil_property_sources,
+            topsoil_sampling_reprojection_method,
+            topsoil,
+        }),
     };
     environment
         .validate()

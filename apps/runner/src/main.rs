@@ -2207,9 +2207,9 @@ mod tests {
         PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION,
         PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS,
         PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION,
-        PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
-        ProvisionalOriginClimateEvidence, ProvisionalOriginClimateNormals,
-        ProvisionalWorldComposition, ScaledFaunaTraitValue, SeasonalScalarFieldCell,
+        PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS, ProvisionalOriginClimateEvidence,
+        ProvisionalOriginClimateNormals, ProvisionalWorldComposition, ScaledFaunaTraitValue,
+        SeasonalScalarFieldCell,
     };
 
     fn candidate_set() -> FaunaRangeCandidateSet {
@@ -2516,7 +2516,7 @@ mod tests {
         selected_embodied_patch: S2CellId,
     ) -> ProvisionalOriginEnvironment {
         ProvisionalOriginEnvironment {
-            environment_schema_version: PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,
+            environment_schema_version: 1,
             status: "evidence-only-not-habitat-suitability-or-population".to_owned(),
             origin_selection_digest: world_domain::Digest::sha256(b"origin"),
             composition_digest: world_domain::Digest::sha256(b"composition"),
@@ -2557,6 +2557,7 @@ mod tests {
                 mean_values: vec![2; 12],
                 maximum_values: vec![3; 12],
             },
+            local_surface: None,
         }
     }
 
