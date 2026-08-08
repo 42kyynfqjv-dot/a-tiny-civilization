@@ -4,7 +4,7 @@ set -euo pipefail
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 compose_file="${project_root}/compose.hindsight.yaml"
 
-grep -qF 'image: ghcr.io/vectorize-io/hindsight:0.8.6' "$compose_file"
+grep -qF 'image: ghcr.io/vectorize-io/hindsight:0.8.6@sha256:ffa391a77284e49f6b55e32c86f33529ac4257831407b14038a72b6a0a232039' "$compose_file"
 grep -qE '^[[:space:]]+shm_size:[[:space:]]+1gb$' "$compose_file"
 grep -qF 'HINDSIGHT_API_STARTUP_WAIT_SECONDS: "900"' "$compose_file"
 grep -qF 'HINDSIGHT_API_MODEL_INIT_TIMEOUT: "900"' "$compose_file"
