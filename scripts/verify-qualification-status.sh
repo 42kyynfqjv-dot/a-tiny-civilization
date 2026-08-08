@@ -6,6 +6,14 @@ grep -qF "result.result_payload -> 'receipt' <> 'null'::JSONB" \
   "${project_root}/scripts/qualification-status.sh"
 grep -qF "ruleset_version < 26 OR non_person_requests = 0" \
   "${project_root}/scripts/qualification-status.sh"
+grep -qF "distinct_metabolic_powers > 1" \
+  "${project_root}/scripts/qualification-status.sh"
+grep -qF "invalid_energy_reserves = 0" \
+  "${project_root}/scripts/qualification-status.sh"
+grep -qF "distinct_oral_portions > 1" \
+  "${project_root}/scripts/qualification-status.sh"
+grep -qF "oral_transfers > 0" \
+  "${project_root}/scripts/qualification-status.sh"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 mkdir -p "${temporary_directory}/bin"

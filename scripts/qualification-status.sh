@@ -168,6 +168,67 @@ WITH selected_world AS (
     FROM event_batches batch
     CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
     WHERE batch.world_id = :'world_id'::UUID
+), organism_commitment_state AS (
+    SELECT COUNT(*)::BIGINT AS organism_initializations,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' -> 'data' -> 'metabolic_rate' IS NOT NULL
+                 AND event -> 'event' -> 'data' -> 'physiological_regulation' IS NOT NULL
+           )::BIGINT AS embodied_organism_commitments,
+           COUNT(DISTINCT (
+               event -> 'event' -> 'data' -> 'metabolic_rate' ->> 'measured_power_value',
+               event -> 'event' -> 'data' -> 'metabolic_rate'
+                 ->> 'measured_power_decimal_places'
+           )) FILTER (
+               WHERE event -> 'event' -> 'data' -> 'metabolic_rate' IS NOT NULL
+           )::BIGINT AS distinct_metabolic_powers,
+           COUNT(*) FILTER (
+               WHERE CEIL(
+                   (event -> 'event' -> 'data' -> 'metabolic_rate'
+                     ->> 'measured_power_value')::NUMERIC * 604800
+                   / POWER(
+                       10::NUMERIC,
+                       (event -> 'event' -> 'data' -> 'metabolic_rate'
+                         ->> 'measured_power_decimal_places')::INTEGER
+                     )
+                 ) <> (event -> 'event' -> 'data' -> 'physiological_regulation'
+                         ->> 'usable_energy_reserve_joules')::NUMERIC
+           )::BIGINT AS invalid_energy_reserves
+    FROM event_batches batch
+    CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
+    WHERE batch.world_id = :'world_id'::UUID
+      AND event -> 'event' ->> 'type' IN ('organism_initialized', 'organism_born')
+), oral_commitment_state AS (
+    SELECT COUNT(DISTINCT event -> 'event' -> 'data' ->> 'object_id') FILTER (
+               WHERE event -> 'event' ->> 'type' = 'material_instance_initialized'
+                 AND jsonb_array_length(
+                       COALESCE(
+                         event -> 'event' -> 'data' -> 'oral_transfer_profiles',
+                         '[]'::JSONB
+                       )
+                     ) > 0
+           )::BIGINT AS oral_profiled_materials,
+           COUNT(DISTINCT profile ->> 'transfer_mass_milligrams') FILTER (
+               WHERE profile IS NOT NULL
+           )::BIGINT AS distinct_oral_portions,
+           COUNT(*) FILTER (
+               WHERE event -> 'event' ->> 'type' IN (
+                   'material_oral_portion_transferred',
+                   'material_reservoir_oral_portion_transferred'
+               )
+           )::BIGINT AS oral_transfers
+    FROM event_batches batch
+    CROSS JOIN LATERAL jsonb_array_elements(batch.payload -> 'events') AS event
+    LEFT JOIN LATERAL jsonb_array_elements(
+      CASE
+        WHEN event -> 'event' ->> 'type' = 'material_instance_initialized'
+          THEN COALESCE(
+            event -> 'event' -> 'data' -> 'oral_transfer_profiles',
+            '[]'::JSONB
+          )
+        ELSE '[]'::JSONB
+      END
+    ) AS profile ON TRUE
+    WHERE batch.world_id = :'world_id'::UUID
 ), projection_state AS (
     SELECT COUNT(*) FILTER (
                WHERE projection_name IN (
@@ -225,6 +286,7 @@ WITH selected_world AS (
          AND contact_region IS NOT NULL)::BIGINT AS regional_artifact_traces
 ), facts AS (
     SELECT world.*, event_state.*, snapshot_state.*, canonical_feature_state.*,
+           organism_commitment_state.*, oral_commitment_state.*,
            projection_state.required_count AS projection_required_count,
            projection_state.current_count AS projection_current_count,
            memory_state.total AS memory_total,
@@ -235,6 +297,8 @@ WITH selected_world AS (
     CROSS JOIN event_state
     CROSS JOIN snapshot_state
     CROSS JOIN canonical_feature_state
+    CROSS JOIN organism_commitment_state
+    CROSS JOIN oral_commitment_state
     CROSS JOIN projection_state
     CROSS JOIN memory_state
     CROSS JOIN cognition_state
@@ -278,6 +342,17 @@ WITH selected_world AS (
                  AND maximum_event_schema = ruleset_version
                  AND surface_configurations = 1
              )) AS surface_movement_bound
+           , (ruleset_version < 31 OR (
+                 organism_initializations > 0
+                 AND embodied_organism_commitments = organism_initializations
+                 AND distinct_metabolic_powers > 1
+                 AND invalid_energy_reserves = 0
+             )) AS mass_scaled_metabolism_bound
+           , (ruleset_version < 31 OR (
+                 oral_profiled_materials > 0
+                 AND distinct_oral_portions > 1
+                 AND oral_transfers > 0
+             )) AS mass_scaled_oral_route_exercised
     FROM facts
 )
 SELECT jsonb_build_object(
@@ -292,7 +367,8 @@ SELECT jsonb_build_object(
       AND selectable_movement_exercised AND movement_direction_learning_exercised
       AND signal_motor_association_exercised AND person_only_cognition
       AND local_weather_bound AND local_atmospheric_flux_exercised
-      AND surface_movement_bound,
+      AND surface_movement_bound AND mass_scaled_metabolism_bound
+      AND mass_scaled_oral_route_exercised,
     'replay_verified', true,
     'world', jsonb_build_object(
       'status', status, 'ruleset_version', ruleset_version,
@@ -331,6 +407,13 @@ SELECT jsonb_build_object(
       , 'surface_configurations', surface_configurations
       , 'water_flux_perceptions', water_flux_perceptions
       , 'air_motion_perceptions', air_motion_perceptions
+      , 'embodied_organism_commitments', embodied_organism_commitments
+      , 'organism_initializations', organism_initializations
+      , 'distinct_metabolic_powers', distinct_metabolic_powers
+      , 'invalid_energy_reserves', invalid_energy_reserves
+      , 'oral_profiled_materials', oral_profiled_materials
+      , 'distinct_oral_portions', distinct_oral_portions
+      , 'oral_transfers', oral_transfers
     ),
     'checks', jsonb_build_object(
       'running', running, 'expected_ruleset', expected_ruleset,
@@ -353,6 +436,8 @@ SELECT jsonb_build_object(
       , 'local_weather_bound', local_weather_bound
       , 'local_atmospheric_flux_exercised', local_atmospheric_flux_exercised
       , 'surface_movement_bound', surface_movement_bound
+      , 'mass_scaled_metabolism_bound', mass_scaled_metabolism_bound
+      , 'mass_scaled_oral_route_exercised', mass_scaled_oral_route_exercised
     )
 )::TEXT
 FROM checks;

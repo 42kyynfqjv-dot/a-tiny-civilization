@@ -830,3 +830,10 @@ mass. Weakest-evidence propagation keeps nine mass-derived metabolic values clas
 engineering assumptions and 24 as literature approximations. The compiler emits pinned integer
 microwatts, so replay performs no floating-point allometry. ADR 0136 records the remaining
 assumptions and the distinct event, state-hash, and snapshot schema boundary.
+
+Ruleset-31 qualification now verifies the same causal boundary from the stored canonical event
+history: initialized and born organisms must contain more than one committed metabolic power, every
+usable energy reserve must equal exactly seven days of that power, oral profiles must contain varied
+body-scaled portions, and at least one physical oral transfer must occur. This database-side proof
+complements the launch-evidence verifier's exact mass/profile arithmetic and prevents an input bundle
+that was compiled correctly but never exercised by the world from passing production admission.
