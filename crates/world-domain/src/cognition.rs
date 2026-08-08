@@ -180,6 +180,8 @@ pub struct CognitionModelEvidence {
     pub completion_tokens: u32,
     pub billed_micro_usd: u64,
     pub action_kind: PrimitiveActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_region: Option<u8>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -312,6 +314,9 @@ impl CognitionDeadlineInput {
                     || evidence.adapter_version.trim() != evidence.adapter_version
                     || evidence.adapter_version.len() > MAX_COGNITION_ADAPTER_VERSION_BYTES
                     || evidence.completion_tokens > u32::from(MAX_COGNITION_SELECTION_OUTPUT_TOKENS)
+                    || evidence.contact_region.is_some_and(|region| {
+                        evidence.action_kind != PrimitiveActionKind::ApplyForce || region >= 8
+                    })
                     || self.recall_outcome_hash == Digest::ZERO
                     || self.route_registry_hash == Digest::ZERO
                     || self.result_hash == Digest::ZERO
@@ -362,6 +367,14 @@ impl CognitionDeadlineInput {
     pub const fn action_kind(&self) -> Option<PrimitiveActionKind> {
         match &self.outcome {
             CognitionInputOutcome::Model(evidence) => Some(evidence.action_kind),
+            CognitionInputOutcome::Unavailable { .. } => None,
+        }
+    }
+
+    #[must_use]
+    pub const fn contact_region(&self) -> Option<u8> {
+        match &self.outcome {
+            CognitionInputOutcome::Model(evidence) => evidence.contact_region,
             CognitionInputOutcome::Unavailable { .. } => None,
         }
     }
@@ -482,11 +495,27 @@ mod tests {
                 completion_tokens: 1,
                 billed_micro_usd: 0,
                 action_kind: PrimitiveActionKind::Orient,
+                contact_region: None,
             },
         )
         .expect("valid model input");
         assert_eq!(input.action_kind(), Some(PrimitiveActionKind::Orient));
+        assert_eq!(input.contact_region(), None);
         assert_ne!(input.canonical_hash().expect("input hash"), Digest::ZERO);
+
+        let mut invalid_region = input.clone();
+        if let CognitionInputOutcome::Model(evidence) = &mut invalid_region.outcome {
+            evidence.contact_region = Some(8);
+        }
+        assert!(matches!(
+            invalid_region.validate(),
+            Err(CognitionContractError::InvalidModelEvidence)
+        ));
+        if let CognitionInputOutcome::Model(evidence) = &mut invalid_region.outcome {
+            evidence.action_kind = PrimitiveActionKind::ApplyForce;
+            evidence.contact_region = Some(7);
+        }
+        assert!(invalid_region.validate().is_ok());
 
         let mut forged_selection = selection.clone();
         forged_selection.model_max_output_tokens = 1;

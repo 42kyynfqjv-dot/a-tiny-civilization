@@ -1090,6 +1090,7 @@ fn build_deadline_input(
                         completion_tokens: receipt.usage.completion_tokens,
                         billed_micro_usd: receipt.billed_micro_usd,
                         action_kind: receipt.action_kind,
+                        contact_region: receipt.contact_region,
                     },
                 )
                 .map_err(corrupt)

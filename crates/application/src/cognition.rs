@@ -493,6 +493,8 @@ pub struct ModelCognitionReceipt {
     pub usage: ModelTokenUsage,
     pub billed_micro_usd: u64,
     pub action_kind: PrimitiveActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contact_region: Option<u8>,
     pub provider_response_hash: Digest,
     pub adapter_version: String,
 }
@@ -522,6 +524,9 @@ impl ModelCognitionReceipt {
             || self.adapter_version.trim().is_empty()
             || self.adapter_version.len() > MAX_ADAPTER_VERSION_BYTES
             || self.usage.completion_tokens > u32::from(request.max_output_tokens)
+            || self.contact_region.is_some_and(|region| {
+                self.action_kind != PrimitiveActionKind::ApplyForce || region >= 8
+            })
         {
             return Err(CognitionContractError::InvalidReceipt);
         }

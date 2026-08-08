@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{Digest, PrimitiveActionKind};
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v1";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v2";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -316,7 +316,7 @@ fn api_request(
         "messages": [
             {
                 "role": "system",
-                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
+                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be an integer from 0 through 7 to bias one directly sensed motor contact region; otherwise it must be null. A region is only a motor coordinate, never a symbol or named use. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
             },
             {
                 "role": "user",
@@ -341,9 +341,15 @@ fn api_request(
                                 "apply_force", "bite", "chew", "swallow", "rest",
                                 "emit_signal"
                             ]
+                        },
+                        "contact_region": {
+                            "anyOf": [
+                                {"type": "integer", "minimum": 0, "maximum": 7},
+                                {"type": "null"}
+                            ]
                         }
                     },
-                    "required": ["action_kind"],
+                    "required": ["action_kind", "contact_region"],
                     "additionalProperties": false
                 }
             }
@@ -397,6 +403,8 @@ struct Usage {
 #[serde(deny_unknown_fields)]
 struct BoundedAction {
     action_kind: PrimitiveActionKind,
+    #[serde(default)]
+    contact_region: Option<u8>,
 }
 
 fn parse_response(
@@ -460,6 +468,7 @@ fn parse_response(
         },
         billed_micro_usd,
         action_kind: action.action_kind,
+        contact_region: action.contact_region,
         provider_response_hash: response_hash,
         adapter_version: MODEL_ADAPTER_VERSION.to_owned(),
     };
@@ -595,6 +604,7 @@ mod tests {
                     },
                     billed_micro_usd: 0,
                     action_kind,
+                    contact_region: None,
                     provider_response_hash: Digest::sha256(b"fake-response"),
                     adapter_version: "fake-v1".to_owned(),
                 }),
@@ -699,6 +709,37 @@ mod tests {
         assert_eq!(seen["provider"]["require_parameters"], true);
         assert_eq!(seen["response_format"]["json_schema"]["strict"], true);
         assert_eq!(seen["include_reasoning"], false);
+    }
+
+    #[tokio::test]
+    async fn apply_force_may_select_one_bounded_motor_region() {
+        let response = json!({
+            "id": "generation-region",
+            "model": "openai/gpt-oss-120b:free",
+            "choices": [{"message": {"content": "{\"action_kind\":\"apply_force\",\"contact_region\":3}"}}],
+            "usage": {"prompt_tokens": 91, "completion_tokens": 9, "cost": 0}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter(), response).await;
+        let receipt = adapter
+            .infer(&CognitionModelRoute::openrouter_free(), &request())
+            .await
+            .expect("valid bounded region");
+        assert_eq!(receipt.action_kind, PrimitiveActionKind::ApplyForce);
+        assert_eq!(receipt.contact_region, Some(3));
+
+        let invalid = json!({
+            "id": "generation-invalid-region",
+            "model": "openai/gpt-oss-120b:free",
+            "choices": [{"message": {"content": "{\"action_kind\":\"move\",\"contact_region\":3}"}}],
+            "usage": {"prompt_tokens": 91, "completion_tokens": 9, "cost": 0}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter(), invalid).await;
+        assert!(matches!(
+            adapter
+                .infer(&CognitionModelRoute::openrouter_free(), &request())
+                .await,
+            Err(CognitionModelError::InvalidResponse(_))
+        ));
     }
 
     #[tokio::test]

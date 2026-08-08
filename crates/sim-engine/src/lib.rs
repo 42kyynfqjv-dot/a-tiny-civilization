@@ -1603,7 +1603,7 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         age_ticks: u64,
-        cognition_action_kind: Option<PrimitiveActionKind>,
+        cognition_preference: Option<(PrimitiveActionKind, Option<u8>)>,
     ) -> Result<Vec<PolicyCandidate>, EngineError> {
         let patch = organism
             .embodied_patch
@@ -1830,9 +1830,12 @@ impl EngineState {
             }
         }
 
-        if let Some(cognition_action_kind) = cognition_action_kind {
+        if let Some((cognition_action_kind, cognition_contact_region)) = cognition_preference {
             for candidate in &mut candidates {
-                if candidate.action.kind == cognition_action_kind {
+                if candidate.action.kind == cognition_action_kind
+                    && cognition_contact_region
+                        .is_none_or(|region| candidate.action.contact_region == Some(region))
+                {
                     candidate.weight = candidate
                         .weight
                         .checked_add(COGNITION_ACTION_WEIGHT_BONUS)
@@ -1857,12 +1860,12 @@ impl EngineState {
         &self,
         organism: &OrganismState,
         age_ticks: u64,
-        cognition_action_kind: Option<PrimitiveActionKind>,
+        cognition_preference: Option<(PrimitiveActionKind, Option<u8>)>,
     ) -> Result<PrimitiveAction, EngineError> {
         let candidates = self.deterministic_policy_candidates_with_cognition(
             organism,
             age_ticks,
-            cognition_action_kind,
+            cognition_preference,
         )?;
         let needs = organism.bodily_regulation.needs;
 
@@ -3005,13 +3008,17 @@ impl EngineState {
                                 2
                             };
                             if self.uses_deterministic_policy_driver() {
-                                let cognition_action_kind = cognition_input
+                                let cognition_preference = cognition_input
                                     .filter(|input| input.organism_id == organism.organism_id)
-                                    .and_then(CognitionDeadlineInput::action_kind);
+                                    .and_then(|input| {
+                                        input
+                                            .action_kind()
+                                            .map(|kind| (kind, input.contact_region()))
+                                    });
                                 let action = self.deterministic_policy_action_with_cognition(
                                     organism,
                                     to_age_ticks,
-                                    cognition_action_kind,
+                                    cognition_preference,
                                 )?;
                                 let action_kind = action.kind;
                                 let resolved_action =
@@ -10585,6 +10592,38 @@ mod tests {
             instance.surface_trace_units()
         );
         assert!(instance.surface_trace_units() > 0);
+        let organism = state.organisms.get(&organism_id).expect("founder");
+        let base_candidates = state
+            .deterministic_policy_candidates_with_cognition(organism, 1, None)
+            .expect("surface-region candidates");
+        let region_biased = state
+            .deterministic_policy_candidates_with_cognition(
+                organism,
+                1,
+                Some((PrimitiveActionKind::ApplyForce, Some(3))),
+            )
+            .expect("region-biased candidates");
+        assert_eq!(base_candidates.len(), region_biased.len());
+        for (base, biased) in base_candidates.iter().zip(&region_biased) {
+            let receives_bonus = base.action.kind == PrimitiveActionKind::ApplyForce
+                && base.action.contact_region == Some(3);
+            assert_eq!(
+                biased.weight,
+                base.weight
+                    + if receives_bonus {
+                        COGNITION_ACTION_WEIGHT_BONUS
+                    } else {
+                        0
+                    }
+            );
+        }
+        assert_eq!(
+            base_candidates
+                .iter()
+                .filter(|candidate| candidate.action.kind == PrimitiveActionKind::ApplyForce)
+                .count(),
+            MATERIAL_SURFACE_REGION_COUNT
+        );
         assert!(
             state
                 .organisms
@@ -10673,7 +10712,7 @@ mod tests {
             .deterministic_policy_candidates_with_cognition(
                 organism,
                 21,
-                Some(PrimitiveActionKind::Rest),
+                Some((PrimitiveActionKind::Rest, None)),
             )
             .expect("biased candidates");
         assert_eq!(base.len(), biased.len());
