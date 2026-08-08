@@ -215,7 +215,11 @@ inhabitants receive no soil/property/use label and can encounter only the bodily
 other eight SoilGrids properties and the JRC surface-water source code remain causally unread. The
 fresh same-seed ruleset-30 candidate passed the full 1,000-tick replay, Hindsight, local-model,
 projection, mechanics, and observer-smoke gate. Its immutable evidence supersedes, without
-mutating, the ruleset-29 launch evidence and now enters the separate launch-quality review.
+mutating, the ruleset-29 launch evidence. The exact genesis and qualification-manifest digests are
+now bound to a machine-verifiable experimental quality-world admission covering seven required
+dimensions. That admission explicitly does not claim scientific admission or authorize public
+deployment; production configuration, activation, live verification, and deployment remain
+separate operations.
 
 Ruleset eleven replaces the four-step integration cadence with a seeded, situated,
 need-responsive baseline policy over the existing label-free action grammar. Candidate

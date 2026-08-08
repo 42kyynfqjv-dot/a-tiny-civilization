@@ -6,18 +6,18 @@ data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/re
 expected_ruleset="${ATINY_LAUNCH_RULESET_VERSION:-30}"
 
 usage() {
-  echo "usage: $0 verify COMMITMENT.json RESOLUTION.json GENESIS_DIRECTORY EVIDENCE_DIRECTORY" >&2
-  echo "       $0 activate COMMITMENT.json RESOLUTION.json GENESIS_DIRECTORY EVIDENCE_DIRECTORY --confirm-experimental-genesis" >&2
+  echo "usage: $0 verify COMMITMENT.json RESOLUTION.json GENESIS_DIRECTORY EVIDENCE_DIRECTORY QUALITY_ADMISSION.json" >&2
+  echo "       $0 activate COMMITMENT.json RESOLUTION.json GENESIS_DIRECTORY EVIDENCE_DIRECTORY QUALITY_ADMISSION.json --confirm-experimental-genesis" >&2
   exit 2
 }
 
 mode="${1:-}"
 case "$mode" in
   verify)
-    [[ $# -eq 5 ]] || usage
+    [[ $# -eq 6 ]] || usage
     ;;
   activate)
-    [[ $# -eq 6 && "${6:-}" == "--confirm-experimental-genesis" ]] || usage
+    [[ $# -eq 7 && "${7:-}" == "--confirm-experimental-genesis" ]] || usage
     ;;
   *) usage ;;
 esac
@@ -26,6 +26,7 @@ commitment="$2"
 resolution="$3"
 genesis_directory="$4"
 evidence_directory="$5"
+quality_admission="$6"
 if [[ ! "$expected_ruleset" =~ ^[1-9][0-9]*$ ]]; then
   echo "ATINY_LAUNCH_RULESET_VERSION must be a positive integer" >&2
   exit 2
@@ -50,6 +51,22 @@ fi
   --evidence-directory "$evidence_directory" \
   --expected-ruleset "$expected_ruleset" \
   --minimum-tick 1000
+
+genesis_manifest_digest="$(sha256sum -- "${genesis_directory}/SHA256SUMS")"
+genesis_manifest_digest="${genesis_manifest_digest%% *}"
+evidence_manifest_digest="$(sha256sum -- "${evidence_directory}/SHA256SUMS")"
+evidence_manifest_digest="${evidence_manifest_digest%% *}"
+if [[ ! "$genesis_manifest_digest" =~ ^[0-9a-f]{64}$ \
+      || ! "$evidence_manifest_digest" =~ ^[0-9a-f]{64}$ ]]; then
+  echo "candidate checksum manifest digest has an unexpected representation" >&2
+  exit 1
+fi
+"${project_root}/scripts/verify-quality-world-admission.py" \
+  --admission "$quality_admission" \
+  --world-id "$world_id" \
+  --expected-ruleset "$expected_ruleset" \
+  --genesis-sha256s-sha256 "$genesis_manifest_digest" \
+  --evidence-sha256s-sha256 "$evidence_manifest_digest"
 
 if [[ "$mode" == "verify" ]]; then
   echo "Qualified canonical world ${world_id} is ready for a separate deliberate activation."

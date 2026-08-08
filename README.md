@@ -59,9 +59,10 @@ full-Earth input closure, genesis, 1,000 simulated ticks, Hindsight delivery, ze
 local Qwen2.5 cognition, snapshot-plus-tail replay, projections, and observer privacy
 gate have passed in an isolated PostgreSQL database. The retained evidence bundle
 contains hashes and qualification reports but no canonical event payloads. The world
-is not deployed: production activation and the explicit launch-quality review remain
-separate gates, while the integrated scientific review is intentionally deferred under
-the experimental-world policy.
+is not deployed: the exact candidate now has a machine-verifiable experimental quality-world
+admission, while production configuration, activation, and public deployment remain separate
+gates. Integrated scientific admission is intentionally deferred under the experimental-world
+policy.
 
 No API key is required for the qualified local cognition path. Remote model providers
 remain optional, disabled, and require separate approval before private context may be

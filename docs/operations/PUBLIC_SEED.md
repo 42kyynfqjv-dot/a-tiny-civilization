@@ -65,6 +65,7 @@ DATABASE_URL=... ./scripts/activate-qualified-canonical-world.sh activate \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" \
   "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json \
   --confirm-experimental-genesis
 ```
 

@@ -42,6 +42,8 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
 python3 scripts/verify-runtime-artifact-listing.py
 python3 -m py_compile scripts/verify-launch-candidate-evidence.py
 python3 scripts/test_verify_launch_candidate_evidence.py
+python3 -m py_compile scripts/verify-quality-world-admission.py
+python3 scripts/test_verify_quality_world_admission.py
 ./scripts/verify-demo.sh
 
 cd web

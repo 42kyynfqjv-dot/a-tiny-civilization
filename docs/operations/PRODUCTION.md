@@ -214,6 +214,7 @@ canonical database without weakening the exclusive-world check:
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" \
   "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json \
   --confirm-experimental-genesis
 ```
 
@@ -288,13 +289,16 @@ read-only mode can be repeated without a database:
 ./scripts/activate-qualified-canonical-world.sh verify \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
-  "$QUALIFICATION_GENESIS_DIRECTORY" "$QUALIFICATION_EVIDENCE_DIRECTORY"
+  "$QUALIFICATION_GENESIS_DIRECTORY" "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json
 ```
 
-The write mode requires `DATABASE_URL`, reruns every offline check, re-verifies the public seed, and
-accepts the literal final argument `--confirm-experimental-genesis` before invoking the exclusive
-canonical initializer. It commits tick zero only; it does not deploy containers or expose a site.
-This keeps evidence admission, world creation, and public deployment as three separate operations.
+Both modes also verify the exact experimental quality-world admission and its binding to the two
+checksum manifests. The write mode requires `DATABASE_URL`, reruns every offline check, re-verifies
+the public seed, and accepts the literal final argument `--confirm-experimental-genesis` before
+invoking the exclusive canonical initializer. It commits tick zero only; it does not deploy
+containers or expose a site. This keeps quality admission, world creation, and public deployment as
+three separate operations.
 
 For the standard private Compose Qwen2.5 1.5B service, set
 `LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1`. A host-run worker may use a loopback URL.
@@ -371,6 +375,9 @@ alerting to notify an operator for either failed service.
   independently rederived during initialization, admitted by the offline qualification-evidence
   verifier, atomically initialized by `activate-qualified-canonical-world.sh`, and replayed before
   the long-running runner is enabled;
+- the exact ruleset-30 genesis and qualification manifest digests admitted by
+  `QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json`; that experimental quality admission does not
+  by itself authorize deployment or claim scientific admission;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is

@@ -81,5 +81,7 @@ manifest digest, and qualification-report digest
 contains no canonical event payloads.
 
 No public or production world was changed. This candidate supersedes the retained ruleset-29
-mechanical evidence for launch review but does not itself authorize deployment or claim scientific
-admission.
+mechanical evidence. Its exact checksum manifests now have the separate, machine-verifiable
+experimental quality-world admission recorded in
+`QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json`; neither record authorizes deployment or claims
+scientific admission.
