@@ -50,6 +50,22 @@ fi
 echo 'COGNITION_EXTERNAL_EXPORT_APPROVED=true' >> "$environment_file"
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" >/dev/null
 
+canonical_environment='/etc/a-tiny-civilization-production.env'
+for unit in \
+  ops/systemd/a-tiny-civilization-backend-status.service \
+  ops/systemd/a-tiny-civilization-backup.service \
+  ops/systemd/a-tiny-civilization-backup-status.service \
+  ops/systemd/a-tiny-civilization-moderation-status.service; do
+  if ! grep -Fxq "EnvironmentFile=${canonical_environment}" "$unit"; then
+    echo "$unit does not use the one canonical production environment file" >&2
+    exit 1
+  fi
+done
+if rg -q '/etc/a-tiny-civilization/production\.env' ops docs scripts; then
+  echo "legacy split production environment path remains in the repository" >&2
+  exit 1
+fi
+
 chmod 640 "$environment_file"
 if "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" \
   >"${temporary_directory}/unsafe.txt" 2>&1; then

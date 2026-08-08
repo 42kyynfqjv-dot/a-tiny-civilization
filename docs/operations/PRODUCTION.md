@@ -408,7 +408,7 @@ world-specific check.
 
 After the first successful encrypted base backup, install the checked-in systemd units
 on the host. They assume the repository is deployed at `/opt/a-tiny-civilization` and
-the root-readable secret environment is `/etc/a-tiny-civilization/production.env`;
+the root-readable secret environment is `/etc/a-tiny-civilization-production.env`;
 change both paths in the copied unit files if the deployment uses another location.
 
 ```bash
