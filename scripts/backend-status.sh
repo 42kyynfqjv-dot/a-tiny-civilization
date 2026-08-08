@@ -25,6 +25,7 @@ done
 maximum_age_seconds="${BACKEND_HEARTBEAT_MAX_AGE_SECONDS:-60}"
 maximum_projection_lag="${BACKEND_PROJECTION_MAX_LAG_SEQUENCES:-100}"
 maximum_async_age_seconds="${BACKEND_ASYNC_MAX_AGE_SECONDS:-300}"
+minimum_free_mib="${BACKEND_MIN_FREE_MIB:-10240}"
 if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]] || ((wait_seconds > 300)); then
   echo "--wait-seconds must be an integer from 0 through 300" >&2
   exit 2
@@ -43,6 +44,11 @@ if [[ ! "$maximum_async_age_seconds" =~ ^[1-9][0-9]*$ ]] \
   echo "BACKEND_ASYNC_MAX_AGE_SECONDS must be an integer from 60 through 3600" >&2
   exit 2
 fi
+if [[ ! "$minimum_free_mib" =~ ^[1-9][0-9]*$ ]] \
+   || ((minimum_free_mib < 1024 || minimum_free_mib > 1048576)); then
+  echo "BACKEND_MIN_FREE_MIB must be an integer from 1024 through 1048576" >&2
+  exit 2
+fi
 
 cd "$project_root"
 "${project_root}/scripts/production-preflight.sh" --env-file "$environment_file" >/dev/null
@@ -54,6 +60,10 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 
 check_once() {
+  read -r available_kib used_percent < <(df -Pk -- "$project_root" | awk 'NR == 2 { print $4, $5 }')
+  [[ "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+%$ ]] || return 1
+  ((available_kib >= minimum_free_mib * 1024)) || return 1
+  ((10#${used_percent%%%} < 95)) || return 1
   "${compose_command[@]}" "${compose_args[@]}" exec -T api \
     curl --fail --silent http://localhost:8080/health/ready >/dev/null || return 1
   "${compose_command[@]}" "${compose_args[@]}" exec -T web \
@@ -123,10 +133,10 @@ check_once() {
 deadline=$((SECONDS + wait_seconds))
 while ! check_once; do
   if ((SECONDS >= deadline)); then
-    echo "backend is not ready: an endpoint, local model, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
+    echo "backend is not ready: disk capacity, an endpoint, local model, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
     exit 1
   fi
   sleep 1
 done
 
-echo "Backend ready: services are live and the active world's projections, memory, and cognition are within bounds."
+echo "Backend ready: disk capacity and services are healthy, and the active world's projections, memory, and cognition are within bounds."

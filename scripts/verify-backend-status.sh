@@ -26,6 +26,18 @@ exit 0
 EOF
 chmod 755 "${temporary_directory}/bin/docker"
 
+cat > "${temporary_directory}/bin/df" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [[ -n "${FAKE_DISK_STATUS:-}" ]]; then
+  printf 'Filesystem 1024-blocks Used Available Capacity Mounted on\n'
+  printf '/dev/test 100000000 99000000 %s %s /test\n' $FAKE_DISK_STATUS
+else
+  exec /usr/bin/df "$@"
+fi
+EOF
+chmod 755 "${temporary_directory}/bin/df"
+
 environment_file="${temporary_directory}/production.env"
 touch "$environment_file"
 chmod 600 "$environment_file"
@@ -77,6 +89,13 @@ if PATH="${temporary_directory}/bin:${PATH}" FAKE_LOCAL_MODEL_STATUS='{"models":
   "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
   >"${temporary_directory}/model.txt" 2>&1; then
   echo "backend status accepted a missing or changed local model" >&2
+  exit 1
+fi
+
+if PATH="${temporary_directory}/bin:${PATH}" FAKE_DISK_STATUS='1024 99%' \
+  "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" \
+  >"${temporary_directory}/disk.txt" 2>&1; then
+  echo "backend status accepted exhausted disk capacity" >&2
   exit 1
 fi
 

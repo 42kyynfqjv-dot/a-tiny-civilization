@@ -128,9 +128,11 @@ sudo systemctl start a-tiny-civilization-backend-status.service
 systemctl status a-tiny-civilization-backend-status.service
 ```
 
-It fails when the web edge, API, Hindsight, or exact pinned local model is unreachable, or when any
-required Rust-service heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). Configure
-host alerting for the failed unit before genesis.
+It fails when the project filesystem has less than 10 GiB free or is at least 95% full, when the web
+edge, API, Hindsight, or exact pinned local model is unreachable, or when any required Rust-service
+heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). The free-space
+floor may be raised with bounded `BACKEND_MIN_FREE_MIB`; configure host alerting for the failed unit
+before genesis.
 
 The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second
 runner refuses startup instead of racing the canonical cursor; process or connection
