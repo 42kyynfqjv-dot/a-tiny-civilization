@@ -82,8 +82,66 @@ cd "$project_root"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
 "${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web
+
+# Bring up only the private persistence/cognition foundation first. Public-serving and canonical
+# processes must not start until this database is already bound to the exact admitted world. A
+# first genesis is prepared privately with db+migrate, activated through the qualified wrapper,
+# and only then passed to this deployment command.
+"${compose_command[@]}" "${compose_args[@]}" up -d db migrate local-cognition hindsight
+
+expected_world_id="$(python3 -c '
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    value = json.load(source).get("world_id")
+if not isinstance(value, str):
+    raise SystemExit("qualification evidence world identity is absent")
+print(value)
+' "${evidence_directory}/evidence.json")"
+expected_ruleset="$(python3 -c '
+import json
+import sys
+with open(sys.argv[1], encoding="utf-8") as source:
+    value = json.load(source).get("ruleset_version")
+if not isinstance(value, int) or isinstance(value, bool) or value <= 0:
+    raise SystemExit("quality admission ruleset is absent")
+print(value)
+' "${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json")"
+
+world_rows=""
+for _ in $(seq 1 60); do
+  if world_rows="$(
+    "${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
+      "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \
+        \"SELECT id::text,ruleset_version::text,current_tick::text,current_sequence::text,status::text
+          FROM worlds ORDER BY id\""
+  )"; then
+    break
+  fi
+  sleep 1
+done
+worlds=()
+if [[ -n "$world_rows" ]]; then
+  mapfile -t worlds <<<"$world_rows"
+fi
+if ((${#worlds[@]} != 1)); then
+  echo "public deployment requires exactly one privately activated qualified world; found ${#worlds[@]}" >&2
+  echo "start only db+migrate, run activate-qualified-canonical-world.sh, then retry deployment" >&2
+  exit 1
+fi
+IFS='|' read -r deployed_world_id deployed_ruleset deployed_tick deployed_sequence deployed_status \
+  <<<"${worlds[0]}"
+if [[ "$deployed_world_id" != "$expected_world_id" \
+   || "$deployed_ruleset" != "$expected_ruleset" \
+   || ! "$deployed_tick" =~ ^[0-9]+$ \
+   || ! "$deployed_sequence" =~ ^[1-9][0-9]*$ \
+   || "$deployed_status" != "running" ]]; then
+  echo "production database is not the exact running qualified world" >&2
+  exit 1
+fi
+
 "${compose_command[@]}" "${compose_args[@]}" up -d \
-  db migrate local-cognition hindsight api projector runner memory-worker cognition-worker
+  api projector runner memory-worker cognition-worker
 # Avoid recreating API dependencies with accidental Compose defaults while updating the
 # public web container. Never use --remove-orphans: the application and any separately
 # managed tunnel may span more than one Compose profile.
@@ -104,19 +162,21 @@ running_worlds=()
 if [[ -n "$running_world_rows" ]]; then
   mapfile -t running_worlds <<<"$running_world_rows"
 fi
-if ((${#running_worlds[@]} > 1)); then
-  echo "deployment contains more than one running world" >&2
+if ((${#running_worlds[@]} != 1)); then
+  echo "deployment lost its single running world after service startup" >&2
   exit 1
 fi
-if ((${#running_worlds[@]} == 1)); then
-  IFS='|' read -r running_world_id running_world_sequence <<<"${running_worlds[0]}"
-  api_origin="$("${compose_command[@]}" "${compose_args[@]}" port api 8080)"
-  if [[ ! "$api_origin" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then
-    echo "observer API must publish exactly one IPv4 loopback port, found: ${api_origin:-none}" >&2
-    exit 1
-  fi
-  "${project_root}/scripts/observer-candidate-smoke.sh" \
-    "http://${api_origin}" "$running_world_id" "$running_world_sequence"
+IFS='|' read -r running_world_id running_world_sequence <<<"${running_worlds[0]}"
+if [[ "$running_world_id" != "$expected_world_id" ]]; then
+  echo "deployment world identity changed after service startup" >&2
+  exit 1
 fi
+api_origin="$("${compose_command[@]}" "${compose_args[@]}" port api 8080)"
+if [[ ! "$api_origin" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then
+  echo "observer API must publish exactly one IPv4 loopback port, found: ${api_origin:-none}" >&2
+  exit 1
+fi
+"${project_root}/scripts/observer-candidate-smoke.sh" \
+  "http://${api_origin}" "$running_world_id" "$running_world_sequence"
 
 "${project_root}/scripts/verify-public-edge.sh" https://atinycivilization.com

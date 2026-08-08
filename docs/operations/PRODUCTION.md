@@ -105,8 +105,11 @@ file must be an absolute, regular non-symlink owned by root (or the invoking ope
 preflight), with no group or other permissions. Before Compose changes service state, the helper
 revalidates the candidate and both admissions, retransverses the staged full-Earth composition,
 rejects mutable or symlinked paths, and rechecks both DE441 segments by byte length and SHA-256. It then
-builds the application and web images, starts the database, migrations, pinned local model,
-API, projector, and runner with `APP_ENV=production`, then updates the web container
+builds the application and web images, starts only the private database, migrations, pinned local
+model, and Hindsight foundation, and then requires that PostgreSQL already contain exactly the
+running world and ruleset named by the admitted evidence. Only after that check does it start the
+API, projector, runner, memory worker, and cognition worker with `APP_ENV=production`, then update
+the web container
 without allowing Compose defaults to recreate its API dependency. It waits for web and API
 responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
 worker, and cognition worker. It deliberately does **not** configure a tunnel or
@@ -119,6 +122,14 @@ requires the legacy development stack to be stopped during the deliberate cutove
 volume and 139,382-tick development world are retained, not promoted or deleted.
 The same guard rejects foreign running containers attached to any production data volume or the
 shared `atiny-ollama` model volume. This prevents concurrent local-model writers during cutover.
+
+For a first genesis, stop the legacy development stack during the deliberate cutover, provision the
+production volumes, and start only `db` and `migrate` with the protected environment. Run
+`activate-qualified-canonical-world.sh activate` while the database is still private, record its
+tick-zero replay hashes, and only then invoke the deployment helper above. The helper now refuses an
+empty database instead of publishing a pre-genesis shell, and it refuses a different world,
+ruleset, terminal status, zero sequence, or multiple worlds before any canonical service or web
+container starts.
 
 Before the first deployment, populate the external local-model volume. The provisioner uses a
 pinned Ollama image, host networking only while downloading, a loopback-bound API, and verifies the
@@ -403,12 +414,12 @@ for incomplete memory delivery or a stuck cognition dispatch. Override those onl
 `BACKEND_PROJECTION_MAX_LAG_SEQUENCES` and `BACKEND_ASYNC_MAX_AGE_SECONDS` values in the monitor
 environment; changing them does not alter canonical history.
 
-The deployment helper additionally resolves the committed cursor for any running world and runs
+The deployment helper additionally resolves the committed cursor for the required running world and runs
 the full observer-candidate smoke gate through the API's loopback binding. A deploy fails if more
 than one world is running, the API is not bound only to IPv4 loopback, a projection is behind or
 empty, private/explicit mechanism data appears publicly, or the audit endpoint exposes event
-payloads rather than commitments. A pre-genesis deployment with no running world skips only this
-world-specific check.
+payloads rather than commitments. A pre-genesis deployment is rejected; the world-specific smoke
+gate is mandatory rather than conditional.
 
 ## Deferred offsite backup checks
 
