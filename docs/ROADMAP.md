@@ -440,7 +440,8 @@ smaller than the former every-transition policy.
   payment/match history cannot affect canonical events or runner dependencies;
 - human and enabled-animal birth matching only after a paid reservation is valid;
 - strict idempotent Stripe webhook verification and its transactional append-only event ledger are
-  implemented; authenticated Checkout creation and Apple Pay/Google Pay presentation remain;
+  implemented; the server-side, fixed-Price, reservation-idempotent Checkout client is implemented
+  but remains unexposed until account authentication can supply a trusted supporter subject;
 - Apple and Google sign-in, refunds/transfers, and extinction handling.
 
 ### 6. Public operations

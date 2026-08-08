@@ -2636,12 +2636,16 @@ name = "stripe-adapter"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "axum",
  "hex",
  "hmac",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2",
  "thiserror",
+ "tokio",
+ "url",
  "uuid",
  "world-domain",
 ]

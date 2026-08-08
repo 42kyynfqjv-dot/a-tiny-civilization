@@ -1162,6 +1162,13 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
     };
     let pending = store.create_reservation(&request).await?;
     assert_eq!(pending.state, ReservationState::PendingPayment);
+    assert_eq!(store.create_reservation(&request).await?, pending);
+    let mut conflicting_request = request.clone();
+    conflicting_request.observer_label = "Different label".to_owned();
+    assert!(matches!(
+        store.create_reservation(&conflicting_request).await,
+        Err(observer_projection::ReservationStoreError::Conflict(_))
+    ));
 
     let birth = CommittedBirth {
         world_id: manifest.world_id,

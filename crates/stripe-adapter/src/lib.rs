@@ -1,10 +1,13 @@
 //! Minimal, raw-body Stripe webhook verification for observer-only supporter payments.
 
+use std::{fmt, time::Duration};
+
 use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
 use thiserror::Error;
+use url::Url;
 use uuid::Uuid;
 use world_domain::Digest;
 
@@ -12,6 +15,176 @@ const SUPPORTED_EVENT_TYPES: [&str; 2] = [
     "checkout.session.completed",
     "checkout.session.async_payment_succeeded",
 ];
+const MAX_STRIPE_ERROR_BYTES: usize = 2_048;
+
+#[derive(Clone)]
+pub struct StripeCheckoutClient {
+    client: reqwest::Client,
+    endpoint: Url,
+    secret_key: String,
+    price_id: String,
+    success_url: Url,
+    cancel_url: Url,
+}
+
+impl fmt::Debug for StripeCheckoutClient {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        formatter
+            .debug_struct("StripeCheckoutClient")
+            .field("endpoint", &self.endpoint)
+            .field("has_secret_key", &true)
+            .field("price_id", &self.price_id)
+            .field("success_url", &self.success_url)
+            .field("cancel_url", &self.cancel_url)
+            .finish()
+    }
+}
+
+impl StripeCheckoutClient {
+    pub fn new(
+        api_base_url: &str,
+        secret_key: impl Into<String>,
+        price_id: impl Into<String>,
+        success_url: &str,
+        cancel_url: &str,
+        timeout: Duration,
+    ) -> Result<Self, StripeCheckoutError> {
+        let api_base = Url::parse(api_base_url)
+            .map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
+        let endpoint = api_base
+            .join("v1/checkout/sessions")
+            .map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
+        let success_url = checkout_return_url(success_url)?;
+        let cancel_url = checkout_return_url(cancel_url)?;
+        let secret_key = secret_key.into();
+        let price_id = price_id.into();
+        if secret_key.is_empty() || !valid_prefixed_id(&price_id, "price_") {
+            return Err(StripeCheckoutError::Configuration(
+                "secret key and valid Stripe price ID are required".to_owned(),
+            ));
+        }
+        let client = reqwest::Client::builder()
+            .timeout(timeout.max(Duration::from_secs(1)))
+            .build()
+            .map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
+        Ok(Self {
+            client,
+            endpoint,
+            secret_key,
+            price_id,
+            success_url,
+            cancel_url,
+        })
+    }
+
+    pub async fn create_session(
+        &self,
+        reservation_id: Uuid,
+    ) -> Result<StripeCheckoutSession, StripeCheckoutError> {
+        let reservation = reservation_id.to_string();
+        let body = url::form_urlencoded::Serializer::new(String::new())
+            .append_pair("mode", "payment")
+            .append_pair("line_items[0][price]", &self.price_id)
+            .append_pair("line_items[0][quantity]", "1")
+            .append_pair("client_reference_id", &reservation)
+            .append_pair("metadata[reservation_id]", &reservation)
+            .append_pair(
+                "payment_intent_data[metadata][reservation_id]",
+                &reservation,
+            )
+            .append_pair("success_url", self.success_url.as_str())
+            .append_pair("cancel_url", self.cancel_url.as_str())
+            .finish();
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .bearer_auth(&self.secret_key)
+            .header(
+                "Idempotency-Key",
+                format!("atiny-checkout-{reservation_id}"),
+            )
+            .header("Content-Type", "application/x-www-form-urlencoded")
+            .body(body)
+            .send()
+            .await
+            .map_err(|error| StripeCheckoutError::Unavailable(error.to_string()))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let mut body = response.text().await.unwrap_or_default();
+            body.truncate(MAX_STRIPE_ERROR_BYTES);
+            return Err(StripeCheckoutError::Rejected { status, body });
+        }
+        let wire: CheckoutSessionWire = response
+            .json()
+            .await
+            .map_err(|error| StripeCheckoutError::InvalidResponse(error.to_string()))?;
+        if !valid_prefixed_id(&wire.id, "cs_") {
+            return Err(StripeCheckoutError::InvalidResponse(
+                "invalid Checkout session ID".to_owned(),
+            ));
+        }
+        let checkout_url = Url::parse(&wire.url)
+            .map_err(|error| StripeCheckoutError::InvalidResponse(error.to_string()))?;
+        if checkout_url.scheme() != "https" {
+            return Err(StripeCheckoutError::InvalidResponse(
+                "Checkout URL must use HTTPS".to_owned(),
+            ));
+        }
+        Ok(StripeCheckoutSession {
+            session_id: wire.id,
+            checkout_url,
+        })
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct StripeCheckoutSession {
+    pub session_id: String,
+    pub checkout_url: Url,
+}
+
+#[derive(Debug, Error)]
+pub enum StripeCheckoutError {
+    #[error("invalid Stripe Checkout configuration: {0}")]
+    Configuration(String),
+    #[error("Stripe Checkout is unavailable: {0}")]
+    Unavailable(String),
+    #[error("Stripe rejected Checkout with HTTP {status}: {body}")]
+    Rejected {
+        status: reqwest::StatusCode,
+        body: String,
+    },
+    #[error("Stripe returned an invalid Checkout response: {0}")]
+    InvalidResponse(String),
+}
+
+#[derive(Deserialize)]
+struct CheckoutSessionWire {
+    id: String,
+    url: String,
+}
+
+fn checkout_return_url(value: &str) -> Result<Url, StripeCheckoutError> {
+    let url =
+        Url::parse(value).map_err(|error| StripeCheckoutError::Configuration(error.to_string()))?;
+    let local_http =
+        url.scheme() == "http" && matches!(url.host_str(), Some("localhost") | Some("127.0.0.1"));
+    if url.scheme() != "https" && !local_http {
+        return Err(StripeCheckoutError::Configuration(
+            "Checkout return URLs must use HTTPS outside localhost".to_owned(),
+        ));
+    }
+    Ok(url)
+}
+
+fn valid_prefixed_id(value: &str, prefix: &str) -> bool {
+    value.starts_with(prefix)
+        && value.len() > prefix.len()
+        && value.len() <= 255
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
 
 #[derive(Clone)]
 pub struct StripeWebhookVerifier {
@@ -305,6 +478,11 @@ fn validate_identifier(value: &str, kind: &str) -> Result<(), StripeWebhookError
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::{Json, Router, body::Bytes, extract::State, http::HeaderMap, routing::post};
+    use std::{
+        collections::BTreeMap,
+        sync::{Arc, Mutex},
+    };
 
     const SECRET: &str = "whsec_fixture";
     const NOW: i64 = 1_800_000_000;
@@ -340,6 +518,81 @@ mod tests {
 
     fn verifier() -> StripeWebhookVerifier {
         StripeWebhookVerifier::new(SECRET, 300, false, "usd", 500).expect("valid verifier")
+    }
+
+    #[tokio::test]
+    async fn checkout_creation_is_server_side_metadata_bound_and_idempotent() {
+        #[derive(Clone, Default)]
+        struct Capture(Arc<Mutex<Option<(HeaderMap, Bytes)>>>);
+
+        async fn create(
+            State(capture): State<Capture>,
+            headers: HeaderMap,
+            body: Bytes,
+        ) -> Json<serde_json::Value> {
+            *capture.0.lock().expect("capture lock") = Some((headers, body));
+            Json(serde_json::json!({
+                "id": "cs_test_fixture_1",
+                "url": "https://checkout.stripe.com/c/pay/cs_test_fixture_1"
+            }))
+        }
+
+        let capture = Capture::default();
+        let app = Router::new()
+            .route("/v1/checkout/sessions", post(create))
+            .with_state(capture.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind fake Stripe");
+        let address = listener.local_addr().expect("fake Stripe address");
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.expect("serve fake Stripe");
+        });
+
+        let client = StripeCheckoutClient::new(
+            &format!("http://{address}/"),
+            "sk_test_fixture",
+            "price_fixture_1",
+            "http://localhost:3000/support/complete",
+            "http://localhost:3000/support",
+            Duration::from_secs(2),
+        )
+        .expect("checkout client");
+        let reservation_id = Uuid::parse_str(RESERVATION).expect("reservation UUID");
+        let session = client
+            .create_session(reservation_id)
+            .await
+            .expect("create Checkout session");
+        assert_eq!(session.session_id, "cs_test_fixture_1");
+
+        let (headers, body) = capture
+            .0
+            .lock()
+            .expect("capture lock")
+            .take()
+            .expect("captured request");
+        assert_eq!(
+            headers.get("idempotency-key").expect("idempotency header"),
+            &format!("atiny-checkout-{reservation_id}")
+        );
+        assert_eq!(
+            headers.get("authorization").expect("authorization"),
+            "Bearer sk_test_fixture"
+        );
+        let form = url::form_urlencoded::parse(&body)
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(form["mode"], "payment");
+        assert_eq!(form["line_items[0][price]"], "price_fixture_1");
+        assert_eq!(form["line_items[0][quantity]"], "1");
+        assert_eq!(form["client_reference_id"], reservation_id.to_string());
+        assert_eq!(form["metadata[reservation_id]"], reservation_id.to_string());
+        assert_eq!(
+            form["payment_intent_data[metadata][reservation_id]"],
+            reservation_id.to_string()
+        );
+        assert!(!format!("{client:?}").contains("sk_test_fixture"));
+        server.abort();
     }
 
     #[test]

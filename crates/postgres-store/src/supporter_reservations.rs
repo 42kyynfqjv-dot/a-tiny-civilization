@@ -51,6 +51,7 @@ impl SupporterReservationStore for PostgresStore {
                 birth_category, state
             )
             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, 'pending_payment')
+            ON CONFLICT (id) DO NOTHING
             RETURNING id, world_id, supporter_subject, observer_label, target_role,
                 species_catalog, species_identifier, species_scientific_name, species_source_url,
                 birth_category, state, payment_reference, created_at, activated_at,
@@ -67,10 +68,23 @@ impl SupporterReservationStore for PostgresStore {
         .bind(species.map(|value| value.scientific_name.as_str()))
         .bind(species.map(|value| value.source_url.as_str()))
         .bind(request.birth_category.as_str())
-        .fetch_one(self.pool())
+        .fetch_optional(self.pool())
         .await
         .map_err(operation_error)?;
-        parse_reservation(row)
+        match row {
+            Some(row) => parse_reservation(row),
+            None => {
+                let existing = load_reservation(self, request.reservation_id).await?;
+                if existing.request == *request {
+                    Ok(existing)
+                } else {
+                    Err(ReservationStoreError::Conflict(format!(
+                        "reservation {} was already created with different request fields",
+                        request.reservation_id
+                    )))
+                }
+            }
+        }
     }
 
     async fn record_verified_payment(
