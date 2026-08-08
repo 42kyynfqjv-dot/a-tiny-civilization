@@ -77,7 +77,7 @@ impl StripeCheckoutClient {
         })
     }
 
-    pub async fn create_session(
+    async fn create_session_inner(
         &self,
         reservation_id: Uuid,
     ) -> Result<StripeCheckoutSession, StripeCheckoutError> {
@@ -134,6 +134,24 @@ impl StripeCheckoutClient {
             session_id: wire.id,
             checkout_url,
         })
+    }
+}
+
+#[async_trait]
+pub trait StripeCheckoutGateway: Send + Sync {
+    async fn create_session(
+        &self,
+        reservation_id: Uuid,
+    ) -> Result<StripeCheckoutSession, StripeCheckoutError>;
+}
+
+#[async_trait]
+impl StripeCheckoutGateway for StripeCheckoutClient {
+    async fn create_session(
+        &self,
+        reservation_id: Uuid,
+    ) -> Result<StripeCheckoutSession, StripeCheckoutError> {
+        self.create_session_inner(reservation_id).await
     }
 }
 

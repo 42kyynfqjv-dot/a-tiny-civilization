@@ -443,7 +443,9 @@ smaller than the former every-transition policy.
   implemented; the server-side, fixed-Price, reservation-idempotent Checkout client is implemented
   but remains unexposed until account authentication can supply a trusted supporter subject;
 - provider-neutral accounts plus hashed, expiring, revocable browser sessions are implemented;
-  Apple/Google authorization-code adapters, refunds/transfers, and extinction handling remain.
+  account-bound reservation/Checkout orchestration is also implemented and retry-safe; Apple/Google
+  authorization-code adapters, CSRF-protected HTTP composition, refunds/transfers, and extinction
+  handling remain.
 
 ### 6. Public operations
 

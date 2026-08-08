@@ -1,0 +1,27 @@
+[package]
+name = "supporter-application"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+observer-auth = { path = "../observer-auth" }
+observer-projection = { path = "../observer-projection" }
+stripe-adapter = { path = "../stripe-adapter" }
+thiserror.workspace = true
+uuid.workspace = true
+world-domain = { path = "../world-domain" }
+
+[dev-dependencies]
+anyhow.workspace = true
+application = { path = "../application" }
+async-trait.workspace = true
+chrono.workspace = true
+postgres-store = { path = "../postgres-store" }
+sqlx.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true
