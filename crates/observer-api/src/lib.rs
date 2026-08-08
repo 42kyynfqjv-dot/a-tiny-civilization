@@ -5,10 +5,11 @@ use std::{sync::Arc, time::Instant};
 use application::FoundationStore;
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{Path, Query, State},
-    http::StatusCode,
+    http::{HeaderMap, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
 };
 use chrono::{DateTime, Utc};
 use observer_projection::{
@@ -17,6 +18,10 @@ use observer_projection::{
 };
 use serde::Deserialize;
 use serde::Serialize;
+use stripe_adapter::{
+    StripeWebhookDisposition, StripeWebhookError, StripeWebhookStore, StripeWebhookStoreError,
+    StripeWebhookVerifier,
+};
 use tower_http::trace::TraceLayer;
 use world_domain::{EntityId, WorldId};
 
@@ -44,6 +49,7 @@ pub struct ApiState {
     store: Arc<dyn ObserverReadStore>,
     environment: Arc<str>,
     started_at: Instant,
+    stripe: Option<Arc<StripeWebhookRuntime>>,
 }
 
 impl ApiState {
@@ -53,8 +59,24 @@ impl ApiState {
             store,
             environment: environment.into(),
             started_at: Instant::now(),
+            stripe: None,
         }
     }
+
+    #[must_use]
+    pub fn with_stripe(
+        mut self,
+        verifier: StripeWebhookVerifier,
+        store: Arc<dyn StripeWebhookStore>,
+    ) -> Self {
+        self.stripe = Some(Arc::new(StripeWebhookRuntime { verifier, store }));
+        self
+    }
+}
+
+struct StripeWebhookRuntime {
+    verifier: StripeWebhookVerifier,
+    store: Arc<dyn StripeWebhookStore>,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -62,6 +84,10 @@ pub fn router(state: ApiState) -> Router {
         .route("/health/live", get(live))
         .route("/health/ready", get(ready))
         .route("/api/v1/status", get(status))
+        .route(
+            "/api/v1/supporters/stripe/webhook",
+            post(stripe_webhook).layer(axum::extract::DefaultBodyLimit::max(65_536)),
+        )
         .route("/api/v1/worlds", get(public_worlds))
         .route(
             "/api/v1/worlds/{world_id}/telemetry",
@@ -77,6 +103,73 @@ pub fn router(state: ApiState) -> Router {
         .fallback(not_found)
         .layer(TraceLayer::new_for_http())
         .with_state(state)
+}
+
+#[derive(Serialize)]
+struct StripeWebhookResponse {
+    received: bool,
+    disposition: &'static str,
+}
+
+async fn stripe_webhook(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<StripeWebhookResponse>, ApiError> {
+    let runtime = state.stripe.as_ref().ok_or(ApiError::NotFound)?;
+    let signature = headers
+        .get("Stripe-Signature")
+        .and_then(|value| value.to_str().ok())
+        .ok_or(ApiError::BadRequest(
+            "invalid_webhook_signature",
+            "Stripe webhook signature is invalid",
+        ))?;
+    let event = runtime
+        .verifier
+        .verify(signature, &body, Utc::now().timestamp())
+        .map_err(map_stripe_verification_error)?;
+    let disposition = runtime
+        .store
+        .record_verified_stripe_event(&event)
+        .await
+        .map_err(map_stripe_store_error)?;
+    let disposition = match disposition {
+        StripeWebhookDisposition::PaymentRecorded => "payment_recorded",
+        StripeWebhookDisposition::Duplicate => "duplicate",
+        StripeWebhookDisposition::Ignored => "ignored",
+    };
+    Ok(Json(StripeWebhookResponse {
+        received: true,
+        disposition,
+    }))
+}
+
+fn map_stripe_verification_error(error: StripeWebhookError) -> ApiError {
+    tracing::warn!(error = %error, "Stripe webhook verification rejected");
+    ApiError::BadRequest("invalid_webhook", "Stripe webhook verification failed")
+}
+
+fn map_stripe_store_error(error: StripeWebhookStoreError) -> ApiError {
+    match error {
+        StripeWebhookStoreError::Unavailable(message) => {
+            tracing::error!(error = %message, "Stripe webhook persistence unavailable");
+            ApiError::Unavailable
+        }
+        StripeWebhookStoreError::ReservationNotFound(reservation_id) => {
+            tracing::warn!(%reservation_id, "Stripe webhook references unknown reservation");
+            ApiError::Conflict(
+                "unknown_reservation",
+                "payment does not match an existing reservation",
+            )
+        }
+        StripeWebhookStoreError::Conflict(message) => {
+            tracing::warn!(error = %message, "Stripe webhook evidence conflict");
+            ApiError::Conflict(
+                "payment_conflict",
+                "payment conflicts with existing evidence",
+            )
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -288,6 +381,8 @@ async fn not_found() -> ApiError {
 
 enum ApiError {
     NotFound,
+    BadRequest(&'static str, &'static str),
+    Conflict(&'static str, &'static str),
     Unavailable,
 }
 
@@ -295,6 +390,8 @@ impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
             Self::NotFound => (StatusCode::NOT_FOUND, "not_found", "resource not found"),
+            Self::BadRequest(code, message) => (StatusCode::BAD_REQUEST, code, message),
+            Self::Conflict(code, message) => (StatusCode::CONFLICT, code, message),
             Self::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 "service_unavailable",

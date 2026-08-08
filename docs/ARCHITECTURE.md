@@ -51,7 +51,8 @@ world-domain <- sim-engine <- application
   all-or-nothing barrier.
 - `application`: use cases and ports for persistence, memory, cognition, clocks,
   and projections.
-- adapters: PostgreSQL, Hindsight, HTTP, model providers, and later payments/auth.
+- adapters: PostgreSQL, Hindsight, HTTP, model providers, and isolated Stripe webhook admission;
+  account authentication and Checkout creation remain observer-side additions.
 - binaries: configuration and dependency wiring only.
 
 ## Durable event flow
@@ -72,7 +73,9 @@ The first projector is `civilization-projector`: it derives a bounded public tim
 from committed batches, atomically advances a versioned projection cursor, and stores
 append-only observer rows. It withholds reproductive, heritable-disposition,
 mortality-mechanism, parentage, location, and internal-identity detail from public
-copy. The observer API only reads that projection. See
+  copy. Public world routes only read those projections. The separately composed Stripe webhook
+  route may atomically write observer-only payment evidence and reservations but cannot reach the
+  runner or canonical tables. See
 [ADR 0018](adr/0018-public-timeline-projection.md).
 
 World progress and read-model freshness use a separate incremental telemetry

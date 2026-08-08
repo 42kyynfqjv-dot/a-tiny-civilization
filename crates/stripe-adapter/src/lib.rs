@@ -1,5 +1,6 @@
 //! Minimal, raw-body Stripe webhook verification for observer-only supporter payments.
 
+use async_trait::async_trait;
 use hmac::{Hmac, Mac};
 use serde::Deserialize;
 use sha2::Sha256;
@@ -173,6 +174,33 @@ pub struct VerifiedIgnoredEvent {
     pub event_id: String,
     pub event_type: String,
     pub payload_hash: Digest,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum StripeWebhookDisposition {
+    PaymentRecorded,
+    Duplicate,
+    Ignored,
+}
+
+/// Observer-side durable admission port. Implementations must atomically deduplicate the event and,
+/// for a paid event, transition only the pre-existing reservation named in signed metadata.
+#[async_trait]
+pub trait StripeWebhookStore: Send + Sync {
+    async fn record_verified_stripe_event(
+        &self,
+        event: &VerifiedStripeEvent,
+    ) -> Result<StripeWebhookDisposition, StripeWebhookStoreError>;
+}
+
+#[derive(Debug, Error)]
+pub enum StripeWebhookStoreError {
+    #[error("Stripe webhook references an unknown reservation: {0}")]
+    ReservationNotFound(Uuid),
+    #[error("Stripe webhook conflicts with durable payment evidence: {0}")]
+    Conflict(String),
+    #[error("Stripe webhook persistence is unavailable: {0}")]
+    Unavailable(String),
 }
 
 #[derive(Debug, Error, Eq, PartialEq)]

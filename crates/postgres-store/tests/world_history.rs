@@ -32,6 +32,10 @@ use std::{
         atomic::{AtomicUsize, Ordering},
     },
 };
+use stripe_adapter::{
+    StripeWebhookDisposition, StripeWebhookStore, StripeWebhookStoreError, VerifiedCheckoutPayment,
+    VerifiedStripeEvent,
+};
 use uuid::Uuid;
 use world_domain::{
     BirthCategory, CapacityExhaustionPolicy, CartesianMillimetres, CelestialState,
@@ -1237,6 +1241,118 @@ async fn supporter_reservations_are_observer_only_paid_moderated_and_birth_match
                 .await?;
         assert_eq!(state, "expired");
     }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn verified_stripe_events_are_atomic_append_only_and_idempotent(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(405);
+    store.create_world(&manifest, None).await?;
+    let reservation_id = Uuid::new_v4();
+    store
+        .create_reservation(&ReservationRequest {
+            reservation_id,
+            world_id: manifest.world_id,
+            supporter_subject: "apple-subject-fixture".to_owned(),
+            observer_label: "Grace".to_owned(),
+            target: ReservationTarget::Person,
+            birth_category: BirthCategory::new("female").expect("valid category"),
+        })
+        .await?;
+
+    let payment = VerifiedCheckoutPayment {
+        event_id: "evt_atomic_fixture_1".to_owned(),
+        event_type: "checkout.session.completed".to_owned(),
+        checkout_session_id: "cs_atomic_fixture_1".to_owned(),
+        reservation_id,
+        amount_minor: 500,
+        currency: "usd".to_owned(),
+        live_mode: false,
+        payload_hash: Digest::sha256(b"first exact raw Stripe body"),
+    };
+    let event = VerifiedStripeEvent::Paid(payment.clone());
+    let competing_store = store.clone();
+    let competing_event = event.clone();
+    let (first_delivery, concurrent_delivery) = tokio::join!(
+        store.record_verified_stripe_event(&event),
+        competing_store.record_verified_stripe_event(&competing_event)
+    );
+    let mut concurrent_dispositions = [first_delivery?, concurrent_delivery?];
+    concurrent_dispositions.sort_by_key(|disposition| match disposition {
+        StripeWebhookDisposition::PaymentRecorded => 0,
+        StripeWebhookDisposition::Duplicate => 1,
+        StripeWebhookDisposition::Ignored => 2,
+    });
+    assert_eq!(
+        concurrent_dispositions,
+        [
+            StripeWebhookDisposition::PaymentRecorded,
+            StripeWebhookDisposition::Duplicate
+        ]
+    );
+    assert_eq!(
+        store.record_verified_stripe_event(&event).await?,
+        StripeWebhookDisposition::Duplicate
+    );
+    let state: String = sqlx::query_scalar("SELECT state FROM supporter_reservations WHERE id=$1")
+        .bind(reservation_id)
+        .fetch_one(&pool)
+        .await?;
+    assert_eq!(state, "pending_moderation");
+
+    let mut retried_as_new_event = payment.clone();
+    retried_as_new_event.event_id = "evt_atomic_fixture_2".to_owned();
+    retried_as_new_event.event_type = "checkout.session.async_payment_succeeded".to_owned();
+    retried_as_new_event.payload_hash = Digest::sha256(b"second Stripe event, same checkout");
+    assert_eq!(
+        store
+            .record_verified_stripe_event(&VerifiedStripeEvent::Paid(retried_as_new_event))
+            .await?,
+        StripeWebhookDisposition::Duplicate
+    );
+
+    let mut forged_reuse = payment.clone();
+    forged_reuse.payload_hash = Digest::sha256(b"different body under reused event ID");
+    assert!(matches!(
+        store
+            .record_verified_stripe_event(&VerifiedStripeEvent::Paid(forged_reuse))
+            .await,
+        Err(StripeWebhookStoreError::Conflict(_))
+    ));
+
+    let mut unknown = payment;
+    unknown.event_id = "evt_unknown_reservation".to_owned();
+    unknown.checkout_session_id = "cs_unknown_reservation".to_owned();
+    unknown.reservation_id = Uuid::new_v4();
+    unknown.payload_hash = Digest::sha256(b"unknown reservation body");
+    assert!(matches!(
+        store
+            .record_verified_stripe_event(&VerifiedStripeEvent::Paid(unknown))
+            .await,
+        Err(StripeWebhookStoreError::ReservationNotFound(_))
+    ));
+    let unknown_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM stripe_webhook_events WHERE event_id='evt_unknown_reservation'",
+    )
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(
+        unknown_count, 0,
+        "failed admission rolls back its ledger row"
+    );
+
+    let deletion =
+        sqlx::query("DELETE FROM stripe_webhook_events WHERE event_id='evt_atomic_fixture_1'")
+            .execute(&pool)
+            .await;
+    assert!(deletion.is_err());
+    let canonical_events: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM event_batches WHERE world_id=$1")
+            .bind(manifest.world_id.as_uuid())
+            .fetch_one(&pool)
+            .await?;
+    assert_eq!(canonical_events, 0, "payments cannot write world history");
     Ok(())
 }
 

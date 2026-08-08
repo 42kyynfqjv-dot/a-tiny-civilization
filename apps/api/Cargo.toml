@@ -13,6 +13,7 @@ clap.workspace = true
 dotenvy.workspace = true
 observer-api = { path = "../../crates/observer-api" }
 postgres-store = { path = "../../crates/postgres-store" }
+stripe-adapter = { path = "../../crates/stripe-adapter" }
 tokio.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true

@@ -439,7 +439,8 @@ smaller than the former every-transition policy.
   moderation, approved reservations match only already committed births, and immutable
   payment/match history cannot affect canonical events or runner dependencies;
 - human and enabled-animal birth matching only after a paid reservation is valid;
-- idempotent Stripe webhooks and Apple Pay/Google Pay through Stripe;
+- strict idempotent Stripe webhook verification and its transactional append-only event ledger are
+  implemented; authenticated Checkout creation and Apple Pay/Google Pay presentation remain;
 - Apple and Google sign-in, refunds/transfers, and extinction handling.
 
 ### 6. Public operations

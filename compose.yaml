@@ -59,6 +59,11 @@ services:
     environment:
       <<: *app-environment
       API_BIND: 0.0.0.0:8080
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:-}
+      STRIPE_WEBHOOK_TOLERANCE_SECONDS: ${STRIPE_WEBHOOK_TOLERANCE_SECONDS:-300}
+      STRIPE_LIVE_MODE: ${STRIPE_LIVE_MODE:-false}
+      STRIPE_SUPPORTER_CURRENCY: ${STRIPE_SUPPORTER_CURRENCY:-usd}
+      STRIPE_SUPPORTER_AMOUNT_MINOR: ${STRIPE_SUPPORTER_AMOUNT_MINOR:-500}
     depends_on:
       migrate:
         condition: service_healthy

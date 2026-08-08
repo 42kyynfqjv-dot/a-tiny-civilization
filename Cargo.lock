@@ -326,6 +326,7 @@ dependencies = [
  "dotenvy",
  "observer-api",
  "postgres-store",
+ "stripe-adapter",
  "tokio",
  "tracing",
  "tracing-subscriber",
@@ -1607,6 +1608,7 @@ dependencies = [
  "observer-projection",
  "serde",
  "serde_json",
+ "stripe-adapter",
  "tower-http",
  "tracing",
  "world-domain",
@@ -1753,6 +1755,8 @@ dependencies = [
  "serde_json",
  "sim-engine",
  "sqlx",
+ "stripe-adapter",
+ "tokio",
  "uuid",
  "world-domain",
 ]
@@ -2631,6 +2635,7 @@ dependencies = [
 name = "stripe-adapter"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "hex",
  "hmac",
  "serde",

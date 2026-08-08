@@ -2,8 +2,8 @@
 
 ## Status
 
-Accepted on 2026-08-06. The queue is implemented without a payment provider, account
-UI, or public checkout endpoint.
+Accepted on 2026-08-06 and extended by ADRs 0064–0065. The queue and transactional
+Stripe webhook admission are implemented without account UI or a public checkout-creation endpoint.
 
 ## Decision
 
@@ -27,7 +27,7 @@ UI, or public checkout endpoint.
 
 ## Consequences
 
-The first site can truthfully show a disabled supporter preview. Stripe, Apple Pay,
-Google Pay, auth, moderation tools, refund/transfer policy, and a webhook adapter can
-be added later without giving them a path into canonical history. Observer projections
+The first site can truthfully show a disabled supporter preview. Checkout creation,
+Apple Pay/Google Pay presentation, auth, moderation tools, and refund/transfer policy
+can be added without giving them a path into canonical history. Observer projections
 must call matching only after consuming durable committed birth events.

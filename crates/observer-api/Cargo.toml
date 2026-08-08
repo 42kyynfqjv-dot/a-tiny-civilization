@@ -13,6 +13,7 @@ axum.workspace = true
 chrono.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+stripe-adapter = { path = "../stripe-adapter" }
 tower-http.workspace = true
 tracing.workspace = true
 world-domain = { path = "../world-domain" }

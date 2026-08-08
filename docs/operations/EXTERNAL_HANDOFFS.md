@@ -117,8 +117,9 @@ a strict requirement and refuses to run without the complete configuration.
 
 ### Stripe supporter purchases
 
-The repository does **not** yet accept payments or create supporter reservations.
-When that product is implemented, the owner will need to:
+The repository now has reservation persistence plus strict, idempotent webhook admission, but no
+authenticated Checkout-creation endpoint or live payment UI is enabled. To activate that product,
+the owner will need to:
 
 1. Create and verify a Stripe account; decide price, currency, refund/transfer policy,
    tax posture, and the moderation/fulfilment policy before enabling live mode.
@@ -137,10 +138,11 @@ handles Apple Pay merchant validation; see its
 [domain-registration guide](https://docs.stripe.com/payments/payment-methods/pmd-registration)
 and [Payment Element documentation](https://docs.stripe.com/payments/payment-element).
 
-The backend webhook verifier is implemented without live credentials. At activation time, configure
-the Stripe endpoint secret only in the deployment secret store; never paste it into repository files.
-The endpoint must subscribe only to `checkout.session.completed` and
-`checkout.session.async_payment_succeeded` for the configured Checkout product.
+At activation time, configure the Stripe endpoint secret only in the deployment secret store; never
+paste it into repository files. Set the exact product amount/currency and test/live mode alongside
+it. The endpoint must subscribe only to `checkout.session.completed` and
+`checkout.session.async_payment_succeeded` for that Checkout product. Signed events are admitted at
+`POST /api/v1/supporters/stripe/webhook`; the endpoint acts as 404 while the secret is absent.
 
 ### Google sign-in
 

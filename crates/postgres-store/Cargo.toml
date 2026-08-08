@@ -14,11 +14,13 @@ chrono.workspace = true
 serde_json.workspace = true
 sim-engine = { path = "../sim-engine" }
 sqlx.workspace = true
+stripe-adapter = { path = "../stripe-adapter" }
 uuid.workspace = true
 world-domain = { path = "../world-domain" }
 
 [dev-dependencies]
 anyhow.workspace = true
+tokio.workspace = true
 
 [lints]
 workspace = true
