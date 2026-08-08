@@ -78,11 +78,13 @@ presented as pristine or prehistoric Earth. See the
 
 The [Lower Buffalo–Ozark river valley](docs/science/FIRST_BIOME.md) is the first sourced
 high-resolution conformance tile, not a world boundary or selected starting site.
-The next public genesis may use an openly labelled experimental, not-scientifically-
+The first public genesis may use the openly labelled experimental, not-scientifically-
 admitted bundle under [ADR 0049](docs/adr/0049-experimental-genesis-science-policy.md).
-It remains blocked until that complete content-addressed provisional global bundle,
-causal refinement, deterministic partition scheduler, replay, privacy, and operational
-gates pass; exhaustive scientific calibration moves to a successor world.
+Its complete content-addressed provisional global bundle, causal refinement,
+deterministic partition scheduler, replay, privacy, and implementation-facing quality gates now
+pass for the retained ruleset-30 candidate. The world remains unactivated and undeployed by owner
+decision while final release operations are completed; exhaustive scientific calibration moves to
+a successor world.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network,
 including exhaustive content-hash traversal of global tile indexes and leaves.
@@ -116,9 +118,11 @@ generalized cartographic land cross-check, explicitly not a coastline or a compl
 ecological bundle.
 
 All twelve CHELSA-BIOCLIM+ v2.1 monthly 1981–2010 land-temperature normals are also
-pinned with exact hashes and a shared-grid inspection gate. They are annual climate
-evidence, not a weather model or a complete climate layer; ocean forcing,
-precipitation, wind, and ecological coupling remain required.
+pinned with exact hashes and a shared-grid inspection gate. They remain an independent global
+land-climate reference. The canonical candidate separately pins the complete 1981–2010 ERA5
+origin evidence and fixed-point temperature, precipitation, and wind summaries; ruleset 30 exposes
+only bounded physical temperature, water-flux, and air-motion effects. Cross-variable scientific
+calibration and causal ecology remain deferred rather than silently asserted.
 
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never
