@@ -32,7 +32,8 @@ Any species offered for supporter naming must use durable individual identity be
 that feature is enabled. Observer aliases never become world state.
 
 The first candidate identity tier is `ranged-tetrapod-individuals-v1`: source-ranged
-tetrapods may become durable founders, while smaller fauna remain ecological evidence
+tetrapods with separately retained local-occurrence corroboration may become durable founders,
+while smaller fauna remain ecological evidence
 until cohort and life-stage mechanics exist. This is an identity policy, not a claim
 of abundance, native status, habitat suitability, or scientific admission.
 
@@ -617,3 +618,9 @@ in an exclusive local candidate database and passed the same fail-closed ruleset
 1,560, including complete Hindsight delivery and one latched, consumed, replayed local Qwen receipt.
 The retained evidence bundle contains no canonical event payloads. This qualifies the mechanical
 launch path; deployment remains closed for the scientific/assumption and public-observatory reviews.
+
+Canonical fauna preparation now closes the false-positive range gap without an authored list or
+reroll. It intersects the modeled-range pool with a hash-pinned, research-grade, non-captive,
+commercially reusable iNaturalist observation query within 75 kilometres of the committed origin.
+The retained evidence means reported local presence only—not abundance, native status, or habitat
+suitability—and initialization independently rederives the exact intersection before genesis.

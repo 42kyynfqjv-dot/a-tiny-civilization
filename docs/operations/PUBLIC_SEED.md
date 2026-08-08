@@ -49,7 +49,13 @@ read -r WORLD_ID WORLD_SEED < <(
     --commitment docs/operations/CANONICAL_SEED_COMMITMENT.json \
     --resolution docs/operations/CANONICAL_SEED_RESOLUTION.json
 )
-./scripts/prepare-canonical-genesis.sh \
+./scripts/acquire-inaturalist-origin-observations.py \
+  --latitude-e7 236449522 \
+  --longitude-e7 -1034974258 \
+  --radius-kilometers 75 \
+  --output-directory "/var/lib/a-tiny-civilization/sources/$WORLD_ID-local-fauna"
+ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY="/var/lib/a-tiny-civilization/sources/$WORLD_ID-local-fauna" \
+  ./scripts/prepare-canonical-genesis.sh \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
@@ -63,3 +69,8 @@ DATABASE_URL=... ./scripts/initialize-canonical-world.sh \
 Retain both public seed artifacts beside the genesis checksums and launch evidence. If any later
 gate fails, fix the gate and rerun against the same seed and derived world ID; never select another
 seed to obtain a more interesting outcome.
+
+The coordinates above are the exact geographic centre of the already committed L10 origin. The
+bounded observation query is presence corroboration only; it is not an abundance, native-status,
+or habitat-suitability source. Canonical preparation refuses to proceed without it, and
+initialization independently rederives the range/occurrence intersection.

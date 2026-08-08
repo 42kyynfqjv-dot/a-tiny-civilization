@@ -6,6 +6,7 @@ mod fauna_evidence;
 mod fauna_ranges;
 mod gbif_catalog;
 mod land_cover;
+mod local_occurrences;
 mod origin;
 mod origin_environment;
 mod physiology;
@@ -35,12 +36,13 @@ pub use fauna_evidence::{
 };
 
 pub use fauna_ranges::{
-    FAUNA_POPULATION_PLAN_MEDIA_TYPE, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
-    FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE, FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
-    FAUNA_SEEDED_SELECTION_MEDIA_TYPE, FAUNA_SEEDED_SELECTION_SCHEMA_VERSION,
-    FaunaBirthCategoryCount, FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidate,
-    FaunaRangeCandidateSet, FaunaRangeCandidateSetError, FaunaRangeQueryPoint,
-    FaunaSeededSelection, LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
+    CORROBORATED_FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION, FAUNA_POPULATION_PLAN_MEDIA_TYPE,
+    FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE,
+    FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION, FAUNA_SEEDED_SELECTION_MEDIA_TYPE,
+    FAUNA_SEEDED_SELECTION_SCHEMA_VERSION, FaunaBirthCategoryCount, FaunaPopulationPlan,
+    FaunaPopulationPlanEntry, FaunaRangeCandidate, FaunaRangeCandidateSet,
+    FaunaRangeCandidateSetError, FaunaRangeQueryPoint, FaunaSeededSelection,
+    LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
 };
 
 pub use gbif_catalog::{
@@ -53,6 +55,11 @@ pub use land_cover::{
     LandCoverEvidenceTileError, LandCoverSignedValueCount,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_SCHEMA_VERSION,
     PackedLandCoverEvidenceTile,
+};
+
+pub use local_occurrences::{
+    LOCAL_FAUNA_OCCURRENCE_EVIDENCE_MEDIA_TYPE, LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION,
+    LocalFaunaOccurrenceEvidenceError, LocalFaunaOccurrenceEvidenceSet, LocalFaunaOccurrenceRecord,
 };
 
 pub use origin::{

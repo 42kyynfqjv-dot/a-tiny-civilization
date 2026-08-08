@@ -966,6 +966,12 @@ async fn init_provisional_full_earth_world(
             "inaturalist_fauna_range_candidate_set".to_owned(),
             fauna.candidate_set_digest.to_string(),
         );
+        if let Some(local_occurrence_evidence_digest) = fauna.local_occurrence_evidence_digest {
+            manifest.scientific_datasets.insert(
+                "local_fauna_occurrence_evidence".to_owned(),
+                local_occurrence_evidence_digest.to_string(),
+            );
+        }
         manifest.scientific_datasets.insert(
             "provisional_fauna_seeded_selection".to_owned(),
             fauna.selection_digest.to_string(),
@@ -1186,6 +1192,7 @@ fn resolve_provisional_initial_origin(
 
 struct ProvisionalFaunaGenesis {
     candidate_set_digest: world_domain::Digest,
+    local_occurrence_evidence_digest: Option<world_domain::Digest>,
     selection_digest: world_domain::Digest,
     origin_environment_digest: world_domain::Digest,
     population_plan_digest: world_domain::Digest,
@@ -1277,6 +1284,7 @@ fn load_provisional_fauna_initial_organisms(
         anyhow::bail!("provisional fauna population plan targets another embodied patch");
     }
     let candidate_set_digest = world_domain::Digest::sha256(&candidate_bytes);
+    let local_occurrence_evidence_digest = candidates.source_local_occurrence_evidence_digest;
     let selection_digest = world_domain::Digest::sha256(&selection_bytes);
     let origin_environment_digest = world_domain::Digest::sha256(&environment_bytes);
     let population_plan_digest = world_domain::Digest::sha256(&population_plan_bytes);
@@ -1369,6 +1377,7 @@ fn load_provisional_fauna_initial_organisms(
     }
     Ok(Some(ProvisionalFaunaGenesis {
         candidate_set_digest,
+        local_occurrence_evidence_digest,
         selection_digest,
         origin_environment_digest,
         population_plan_digest,
@@ -1870,6 +1879,7 @@ mod tests {
             source_crosswalk_digest: world_domain::Digest::sha256(b"crosswalk"),
             source_gbif_catalog_digest: world_domain::Digest::sha256(b"catalog"),
             source_inaturalist_taxonomy_digest: world_domain::Digest::sha256(b"taxonomy"),
+            source_local_occurrence_evidence_digest: None,
             candidates: vec![
                 FaunaRangeCandidate {
                     species: SpeciesIdentity::new(

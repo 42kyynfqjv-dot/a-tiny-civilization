@@ -20,6 +20,7 @@ predecessor_world_id="${4:-}"
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 migration_executable="${ATINY_CIVILIZATION_MIGRATION_EXECUTABLE:-${project_root}/target/release/civilization-api}"
+data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/release/civilization-data}"
 
 if [[ ! "${world_seed}" =~ ^[0-9]+$ ]]; then
   echo "WORLD_SEED must be an unsigned decimal integer" >&2
@@ -37,6 +38,30 @@ fi
 cd "${genesis_directory}"
 sha256sum --check --strict SHA256SUMS
 cd "${project_root}"
+
+modeled_candidates="${genesis_directory}/fauna-modeled-range-candidates.json"
+occurrence_evidence="${genesis_directory}/local-fauna-occurrence-evidence.json"
+if [[ -e "${modeled_candidates}" || -e "${occurrence_evidence}" ]]; then
+  if [[ ! -f "${modeled_candidates}" || ! -f "${occurrence_evidence}" ]]; then
+    echo "local-occurrence corroboration requires both modeled candidates and occurrence evidence" >&2
+    exit 2
+  fi
+  if [[ ! -x "${data_executable}" ]]; then
+    echo "missing executable civilization-data binary: ${data_executable}" >&2
+    exit 2
+  fi
+  rederive_directory="$(mktemp -d)"
+  rederived_candidates="${rederive_directory}/fauna-candidates.json"
+  trap 'rm -f "${rederived_candidates}"; rmdir "${rederive_directory}"' EXIT
+  "${data_executable}" derive corroborated-fauna-candidates \
+    --candidates "${modeled_candidates}" \
+    --occurrence-evidence "${occurrence_evidence}" \
+    --output "${rederived_candidates}"
+  if ! cmp -s "${rederived_candidates}" "${genesis_directory}/fauna-candidates.json"; then
+    echo "fauna candidates do not match the independently rederived occurrence intersection" >&2
+    exit 1
+  fi
+fi
 
 # A canonical database is intentionally empty before first genesis. Apply the
 # repository's idempotent migration set before the exclusive-world guard queries

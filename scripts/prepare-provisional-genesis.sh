@@ -33,6 +33,8 @@ install -d -m 0750 "${output_directory}"
 origin_selection="${output_directory}/origin-selection.json"
 origin_environment="${output_directory}/origin-environment.json"
 fauna_candidates="${output_directory}/fauna-candidates.json"
+fauna_modeled_candidates="${output_directory}/fauna-modeled-range-candidates.json"
+fauna_occurrences="${output_directory}/local-fauna-occurrence-evidence.json"
 fauna_selection="${output_directory}/fauna-selection.json"
 fauna_population="${output_directory}/fauna-population-plan.json"
 fauna_metabolic_rates="${output_directory}/fauna-metabolic-rate-plan.json"
@@ -56,13 +58,39 @@ coordinate_json="$("${data_executable}" inspect s2-geographic --s2-cell-id "${se
 latitude_e7="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["latitude_e7"])' "${coordinate_json}")"
 longitude_e7="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["longitude_e7"])' "${coordinate_json}")"
 
+occurrence_source="${ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY:-}"
+require_occurrences="${ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE:-0}"
+if [[ "${require_occurrences}" != "0" && "${require_occurrences}" != "1" ]]; then
+  echo "ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE must be 0 or 1" >&2
+  exit 2
+fi
+if [[ "${require_occurrences}" == "1" && -z "${occurrence_source}" ]]; then
+  echo "canonical preparation requires ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY" >&2
+  exit 2
+fi
+candidate_output="${fauna_candidates}"
+if [[ -n "${occurrence_source}" ]]; then
+  occurrence_source="$(realpath "${occurrence_source}")"
+  candidate_output="${fauna_modeled_candidates}"
+fi
+
 python3 scripts/query-inaturalist-range-candidates.py \
   --artifact-root data/source-cache \
   --crosswalk data/derived-cache/inaturalist-gbif-animalia-range-crosswalk-v2-20.json \
   --latitude-e7 "${latitude_e7}" \
   --longitude-e7 "${longitude_e7}" \
   --all-crosswalked-species \
-  --output "${fauna_candidates}"
+  --output "${candidate_output}"
+
+if [[ -n "${occurrence_source}" ]]; then
+  "${data_executable}" derive local-fauna-occurrence-evidence \
+    --source-directory "${occurrence_source}" \
+    --output "${fauna_occurrences}"
+  "${data_executable}" derive corroborated-fauna-candidates \
+    --candidates "${fauna_modeled_candidates}" \
+    --occurrence-evidence "${fauna_occurrences}" \
+    --output "${fauna_candidates}"
+fi
 
 "${data_executable}" derive fauna-seeded-selection \
   --candidates "${fauna_candidates}" \

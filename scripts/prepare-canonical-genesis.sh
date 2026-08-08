@@ -17,6 +17,10 @@ if [[ ! -x "$data_executable" ]]; then
   echo "civilization-data executable is absent: $data_executable" >&2
   exit 2
 fi
+if [[ -z "${ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY:-}" ]]; then
+  echo "canonical preparation requires ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY" >&2
+  exit 2
+fi
 
 identity="$($data_executable seed verify --commitment "$commitment" --resolution "$resolution")"
 read -r world_id world_seed extra <<<"$identity"
@@ -28,6 +32,7 @@ if [[ -n "${extra:-}" \
 fi
 
 ATINY_CIVILIZATION_DATA_EXECUTABLE="$data_executable" \
+ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1 \
   "${project_root}/scripts/prepare-provisional-genesis.sh" \
   "$world_seed" "$output_directory" "$species_limit"
 

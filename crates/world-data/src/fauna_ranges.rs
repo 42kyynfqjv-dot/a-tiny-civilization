@@ -10,9 +10,10 @@ use world_domain::{
     BirthCategory, Digest, GeographicCoordinateE7, S2CellId, SpeciesIdentity, WorldSeed,
 };
 
-use crate::ProvisionalOriginEnvironment;
+use crate::{LocalFaunaOccurrenceEvidenceSet, ProvisionalOriginEnvironment};
 
 pub const FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION: u16 = 1;
+pub const CORROBORATED_FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION: u16 = 2;
 pub const FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-range-candidate-set+json";
 const INATURALIST_RANGE_RELEASE: &str = "2.20";
@@ -59,6 +60,8 @@ pub struct FaunaRangeCandidateSet {
     pub source_crosswalk_digest: Digest,
     pub source_gbif_catalog_digest: Digest,
     pub source_inaturalist_taxonomy_digest: Digest,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_local_occurrence_evidence_digest: Option<Digest>,
     pub candidates: Vec<FaunaRangeCandidate>,
 }
 
@@ -118,10 +121,18 @@ pub struct FaunaPopulationPlan {
 
 impl FaunaRangeCandidateSet {
     pub fn validate(&self) -> Result<(), FaunaRangeCandidateSetError> {
-        if self.candidate_set_schema_version != FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION {
-            return Err(FaunaRangeCandidateSetError::UnsupportedSchema(
-                self.candidate_set_schema_version,
-            ));
+        match self.candidate_set_schema_version {
+            FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION
+                if self.source_local_occurrence_evidence_digest.is_none() => {}
+            CORROBORATED_FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION
+                if self
+                    .source_local_occurrence_evidence_digest
+                    .is_some_and(|digest| digest != Digest::ZERO) => {}
+            FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION
+            | CORROBORATED_FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION => {
+                return Err(FaunaRangeCandidateSetError::InvalidIdentity);
+            }
+            version => return Err(FaunaRangeCandidateSetError::UnsupportedSchema(version)),
         }
         if !slug(&self.candidate_set_id) || self.inaturalist_release != INATURALIST_RANGE_RELEASE {
             return Err(FaunaRangeCandidateSetError::InvalidIdentity);
@@ -149,6 +160,53 @@ impl FaunaRangeCandidateSet {
         self.validate()?;
         serde_json::to_vec(self)
             .map_err(|error| FaunaRangeCandidateSetError::Encoding(error.to_string()))
+    }
+
+    pub fn corroborated_by_local_occurrences(
+        &self,
+        evidence: &LocalFaunaOccurrenceEvidenceSet,
+    ) -> Result<Self, FaunaRangeCandidateSetError> {
+        self.validate()?;
+        evidence
+            .validate()
+            .map_err(|_| FaunaRangeCandidateSetError::InvalidOccurrenceEvidence)?;
+        if self.candidate_set_schema_version != FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION
+            || self.source_local_occurrence_evidence_digest.is_some()
+            || self.query_point.latitude_e7 != evidence.query_latitude_e7
+            || self.query_point.longitude_e7 != evidence.query_longitude_e7
+        {
+            return Err(FaunaRangeCandidateSetError::InvalidOccurrenceEvidence);
+        }
+        let evidence_digest = Digest::sha256(
+            &evidence
+                .canonical_bytes()
+                .map_err(|_| FaunaRangeCandidateSetError::InvalidOccurrenceEvidence)?,
+        );
+        let candidates = self
+            .candidates
+            .iter()
+            .filter(|candidate| evidence.corroborates_taxon(candidate.inaturalist_taxon_id))
+            .cloned()
+            .collect::<Vec<_>>();
+        if candidates.is_empty() {
+            return Err(FaunaRangeCandidateSetError::EmptyCorroboratedCandidates);
+        }
+        let corroborated = Self {
+            candidate_set_schema_version: CORROBORATED_FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION,
+            candidate_set_id: format!(
+                "{}-occurrence-r{}km",
+                self.candidate_set_id, evidence.radius_kilometers
+            ),
+            inaturalist_release: self.inaturalist_release.clone(),
+            query_point: self.query_point,
+            source_crosswalk_digest: self.source_crosswalk_digest,
+            source_gbif_catalog_digest: self.source_gbif_catalog_digest,
+            source_inaturalist_taxonomy_digest: self.source_inaturalist_taxonomy_digest,
+            source_local_occurrence_evidence_digest: Some(evidence_digest),
+            candidates,
+        };
+        corroborated.validate()?;
+        Ok(corroborated)
     }
 
     pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, FaunaRangeCandidateSetError> {
@@ -515,6 +573,10 @@ pub enum FaunaRangeCandidateSetError {
     InvalidSpecies(String),
     #[error("invalid source-backed fauna range candidate")]
     InvalidCandidate,
+    #[error("local occurrence evidence does not match this fauna candidate set")]
+    InvalidOccurrenceEvidence,
+    #[error("local occurrence evidence corroborated no fauna range candidates")]
+    EmptyCorroboratedCandidates,
     #[error("invalid fauna range query point")]
     InvalidQueryPoint,
     #[error("fauna range candidates must be strictly ordered by numeric GBIF taxon key")]
@@ -574,6 +636,7 @@ mod tests {
             source_crosswalk_digest: Digest::sha256(b"crosswalk"),
             source_gbif_catalog_digest: Digest::sha256(b"gbif"),
             source_inaturalist_taxonomy_digest: Digest::sha256(b"taxonomy"),
+            source_local_occurrence_evidence_digest: None,
             candidates: vec![
                 candidate(12, "Canis lupus"),
                 candidate(2441176, "Bison bison"),
@@ -613,6 +676,48 @@ mod tests {
         assert_eq!(
             FaunaRangeCandidateSet::from_canonical_slice(&noncanonical),
             Err(FaunaRangeCandidateSetError::NonCanonicalEncoding)
+        );
+    }
+
+    #[test]
+    fn local_occurrences_corroborate_candidates_without_claiming_abundance() {
+        let candidate_set = set();
+        let evidence = LocalFaunaOccurrenceEvidenceSet {
+            evidence_schema_version: 1,
+            source_manifest_digest: Digest::sha256(b"retained observation query"),
+            query_latitude_e7: candidate_set.query_point.latitude_e7,
+            query_longitude_e7: candidate_set.query_point.longitude_e7,
+            radius_kilometers: 75,
+            records: vec![crate::LocalFaunaOccurrenceRecord {
+                observation_id: 100,
+                inaturalist_taxon_id: 13,
+                scientific_name: "Canis lupus".to_owned(),
+                observed_on: "2025-01-02".to_owned(),
+                observation_license: "cc0".to_owned(),
+                source_url: "https://www.inaturalist.org/observations/100".to_owned(),
+                positional_accuracy_meters: Some(10),
+            }],
+        };
+        let corroborated = candidate_set
+            .corroborated_by_local_occurrences(&evidence)
+            .expect("corroborated candidates");
+        assert_eq!(
+            corroborated.candidate_set_schema_version,
+            CORROBORATED_FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION
+        );
+        assert_eq!(corroborated.candidates, vec![candidate(12, "Canis lupus")]);
+        assert_eq!(
+            corroborated.source_local_occurrence_evidence_digest,
+            Some(Digest::sha256(
+                &evidence.canonical_bytes().expect("canonical evidence")
+            ))
+        );
+
+        let mut wrong_point = evidence;
+        wrong_point.query_latitude_e7 += 1;
+        assert_eq!(
+            candidate_set.corroborated_by_local_occurrences(&wrong_point),
+            Err(FaunaRangeCandidateSetError::InvalidOccurrenceEvidence)
         );
     }
 

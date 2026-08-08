@@ -187,7 +187,13 @@ read -r WORLD_ID WORLD_SEED < <(
     --commitment docs/operations/CANONICAL_SEED_COMMITMENT.json \
     --resolution docs/operations/CANONICAL_SEED_RESOLUTION.json
 )
-./scripts/prepare-canonical-genesis.sh \
+./scripts/acquire-inaturalist-origin-observations.py \
+  --latitude-e7 236449522 \
+  --longitude-e7 -1034974258 \
+  --radius-kilometers 75 \
+  --output-directory "/var/lib/a-tiny-civilization/sources/$WORLD_ID-local-fauna"
+ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY="/var/lib/a-tiny-civilization/sources/$WORLD_ID-local-fauna" \
+  ./scripts/prepare-canonical-genesis.sh \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" 32
@@ -297,7 +303,8 @@ alerting to notify an operator for either failed service.
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
 - a ruleset-26 genesis chain produced by `prepare-canonical-genesis.sh` from the
-  independently verified public seed resolution, verified by `SHA256SUMS`, atomically
+  independently verified public seed resolution and required range-plus-local-occurrence fauna
+  evidence, verified by `SHA256SUMS`, independently rederived during initialization, atomically
   initialized by `initialize-canonical-world.sh`, and replayed before the long-running
   runner is enabled;
 - accelerated replay, restart, cognition-deadline, provider-failure,

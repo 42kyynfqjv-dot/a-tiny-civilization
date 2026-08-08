@@ -26,12 +26,13 @@ use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
     FaunaBirthCategoryCount, FaunaMetabolicRatePlan, FaunaMetabolicRateSelection,
     FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
-    FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection, LandCoverClassCount,
-    LandCoverEvidenceCell, LandCoverSignedValueCount, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
-    PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
-    PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION,
-    PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS,
+    FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
+    LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION, LandCoverClassCount, LandCoverEvidenceCell,
+    LandCoverSignedValueCount, LocalFaunaOccurrenceEvidenceSet, LocalFaunaOccurrenceRecord,
+    PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
+    PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE, PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE,
+    PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE, PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE,
+    PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION, PROVISIONAL_MATERIAL_RESOURCE_PLAN_STATUS,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS, PackedBooleanFieldTile,
     PackedLandCoverEvidenceTile, PackedScalarFieldTile, PackedScalarTerrainTile,
@@ -541,6 +542,25 @@ enum DeriveCommand {
         selection: PathBuf,
         #[arg(long)]
         origin_environment: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Normalize retained research-grade, wild, commercially licensed iNaturalist
+    /// observations near one point. This corroborates presence, never abundance,
+    /// native status, habitat suitability, or an organism-creation decision.
+    LocalFaunaOccurrenceEvidence {
+        #[arg(long)]
+        source_directory: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Intersect modeled-range candidates with retained local observations.
+    /// The result remains presence evidence, never abundance or native status.
+    CorroboratedFaunaCandidates {
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        occurrence_evidence: PathBuf,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1485,6 +1505,15 @@ async fn main() -> Result<()> {
                 &origin_environment,
                 &output,
             ),
+            DeriveCommand::LocalFaunaOccurrenceEvidence {
+                source_directory,
+                output,
+            } => derive_local_fauna_occurrence_evidence(&source_directory, &output),
+            DeriveCommand::CorroboratedFaunaCandidates {
+                candidates,
+                occurrence_evidence,
+                output,
+            } => derive_corroborated_fauna_candidates(&candidates, &occurrence_evidence, &output),
             DeriveCommand::FaunaMetabolicRatePlan {
                 population_plan,
                 candidates,
@@ -2508,6 +2537,283 @@ fn derive_provisional_fauna_population_plan(
             "initial_individual_count": plan.entries.len() * 2,
             "status": plan.status,
             "policy": "every species in the bounded seed-derived selection receives one female and one male provisional founder; range candidates are not abundance measurements",
+        }))?
+    );
+    Ok(())
+}
+
+#[derive(Debug, Deserialize)]
+struct InaturalistOccurrenceSourceManifest {
+    manifest_schema_version: u16,
+    endpoint: String,
+    query: BTreeMap<String, String>,
+    semantics: InaturalistOccurrenceSemantics,
+    total_results: u64,
+    pages: Vec<InaturalistOccurrencePageReference>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InaturalistOccurrenceSemantics {
+    candidate_use: String,
+    commercial_observation_licenses: Vec<String>,
+    wild_filter: String,
+}
+
+#[derive(Debug, Deserialize)]
+struct InaturalistOccurrencePageReference {
+    byte_length: u64,
+    content_hash: Digest,
+    page: u32,
+    path: String,
+    result_count: u32,
+}
+
+#[derive(Debug, Deserialize)]
+struct InaturalistOccurrencePage {
+    total_results: u64,
+    results: Vec<InaturalistRawObservation>,
+}
+
+#[derive(Debug, Deserialize)]
+struct InaturalistRawObservation {
+    id: u64,
+    license_code: Option<String>,
+    quality_grade: String,
+    captive: bool,
+    observed_on: Option<String>,
+    positional_accuracy: Option<u64>,
+    taxon: InaturalistRawTaxon,
+}
+
+#[derive(Debug, Deserialize)]
+struct InaturalistRawTaxon {
+    id: u64,
+    name: String,
+}
+
+fn parse_source_e7(value: &str, field: &str) -> Result<i32> {
+    let (negative, unsigned) = value
+        .strip_prefix('-')
+        .map_or((false, value), |unsigned| (true, unsigned));
+    let (whole, fractional) = unsigned
+        .split_once('.')
+        .with_context(|| format!("{field} must use an exact seven-place decimal"))?;
+    if whole.is_empty()
+        || fractional.len() != 7
+        || !whole.bytes().all(|byte| byte.is_ascii_digit())
+        || !fractional.bytes().all(|byte| byte.is_ascii_digit())
+    {
+        bail!("{field} must use an exact seven-place decimal");
+    }
+    let magnitude = whole
+        .parse::<i64>()?
+        .checked_mul(10_000_000)
+        .and_then(|scaled| fractional.parse::<i64>().ok()?.checked_add(scaled))
+        .context("source coordinate overflow")?;
+    let signed = if negative { -magnitude } else { magnitude };
+    i32::try_from(signed).context("source coordinate exceeds E7 range")
+}
+
+fn source_child(directory: &Path, relative: &str) -> Result<PathBuf> {
+    let path = Path::new(relative);
+    if path.components().count() != 1
+        || !matches!(path.components().next(), Some(Component::Normal(_)))
+    {
+        bail!("occurrence source page path is not one portable filename");
+    }
+    let joined = directory.join(path);
+    let metadata = fs::symlink_metadata(&joined)
+        .with_context(|| format!("inspect occurrence source page {}", joined.display()))?;
+    if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+        bail!("occurrence source page is not a regular file");
+    }
+    Ok(joined)
+}
+
+fn derive_local_fauna_occurrence_evidence(
+    source_directory: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let manifest_path = source_directory.join("manifest.json");
+    let manifest_bytes = fs::read(&manifest_path).with_context(|| {
+        format!(
+            "read occurrence source manifest {}",
+            manifest_path.display()
+        )
+    })?;
+    let manifest: InaturalistOccurrenceSourceManifest =
+        serde_json::from_slice(&manifest_bytes).context("decode occurrence source manifest")?;
+    if manifest.manifest_schema_version != 1
+        || manifest.endpoint != "https://api.inaturalist.org/v1/observations"
+        || manifest.semantics.candidate_use
+            != "corroborated-local-presence-not-abundance-or-native-status"
+        || manifest.semantics.commercial_observation_licenses != ["cc0", "cc-by"]
+        || manifest.semantics.wild_filter != "captive=false"
+        || manifest.pages.is_empty()
+        || manifest.total_results == 0
+        || manifest.total_results > 10_000
+    {
+        bail!("occurrence source manifest has unsupported semantics");
+    }
+    let expected_query = [
+        ("captive", "false"),
+        ("license", "cc0,cc-by"),
+        ("order", "asc"),
+        ("order_by", "id"),
+        ("per_page", "200"),
+        ("quality_grade", "research"),
+        ("taxon_id", "1"),
+    ];
+    for (key, value) in expected_query {
+        if manifest.query.get(key).map(String::as_str) != Some(value) {
+            bail!("occurrence source query changed required filter {key}");
+        }
+    }
+    if manifest.query.len() != expected_query.len() + 3 {
+        bail!("occurrence source query contains an unknown parameter");
+    }
+    let latitude_e7 = parse_source_e7(
+        manifest
+            .query
+            .get("lat")
+            .context("source query lacks lat")?,
+        "lat",
+    )?;
+    let longitude_e7 = parse_source_e7(
+        manifest
+            .query
+            .get("lng")
+            .context("source query lacks lng")?,
+        "lng",
+    )?;
+    GeographicCoordinateE7::new(latitude_e7, longitude_e7)
+        .context("source query coordinate is outside WGS84")?;
+    let radius_kilometers = manifest
+        .query
+        .get("radius")
+        .context("source query lacks radius")?
+        .parse::<u16>()?;
+    if !(1..=100).contains(&radius_kilometers) {
+        bail!("source query radius is outside the admitted bound");
+    }
+
+    let mut records = Vec::new();
+    for (index, reference) in manifest.pages.iter().enumerate() {
+        if reference.page != u32::try_from(index + 1)?
+            || reference.path != format!("page-{:05}.json", index + 1)
+        {
+            bail!("occurrence source pages are not contiguous and canonical");
+        }
+        let page_path = source_child(source_directory, &reference.path)?;
+        let page_bytes = fs::read(&page_path)
+            .with_context(|| format!("read occurrence source page {}", page_path.display()))?;
+        if u64::try_from(page_bytes.len())? != reference.byte_length
+            || Digest::sha256(&page_bytes) != reference.content_hash
+        {
+            bail!("occurrence source page bytes do not match their manifest");
+        }
+        let page: InaturalistOccurrencePage =
+            serde_json::from_slice(&page_bytes).context("decode occurrence source page")?;
+        if page.total_results != manifest.total_results
+            || page.results.len() != usize::try_from(reference.result_count)?
+            || page.results.len() > 200
+        {
+            bail!("occurrence source page envelope changed during acquisition");
+        }
+        for raw in page.results {
+            if raw.id == 0
+                || raw.taxon.id == 0
+                || raw.quality_grade != "research"
+                || raw.captive
+                || !matches!(raw.license_code.as_deref(), Some("cc0" | "cc-by"))
+            {
+                bail!("occurrence source contains a record outside the admitted filters");
+            }
+            let positional_accuracy_meters = raw
+                .positional_accuracy
+                .map(u32::try_from)
+                .transpose()
+                .context("occurrence positional accuracy exceeds portable range")?;
+            records.push(LocalFaunaOccurrenceRecord {
+                observation_id: raw.id,
+                inaturalist_taxon_id: raw.taxon.id,
+                scientific_name: raw.taxon.name,
+                observed_on: raw
+                    .observed_on
+                    .context("research-grade occurrence lacks observation date")?,
+                observation_license: raw.license_code.expect("validated license presence"),
+                source_url: format!("https://www.inaturalist.org/observations/{}", raw.id),
+                positional_accuracy_meters,
+            });
+        }
+    }
+    if u64::try_from(records.len())? != manifest.total_results {
+        bail!("occurrence source pages do not cover the declared result count");
+    }
+    records.sort_by_key(|record| record.observation_id);
+    let evidence = LocalFaunaOccurrenceEvidenceSet {
+        evidence_schema_version: LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION,
+        source_manifest_digest: Digest::sha256(&manifest_bytes),
+        query_latitude_e7: latitude_e7,
+        query_longitude_e7: longitude_e7,
+        radius_kilometers,
+        records,
+    };
+    let bytes = evidence
+        .canonical_bytes()
+        .context("encode local fauna occurrence evidence")?;
+    write_new_artifact(output_path, &bytes)?;
+    let corroborated_taxon_count = evidence
+        .records
+        .iter()
+        .map(|record| record.inaturalist_taxon_id)
+        .collect::<BTreeSet<_>>()
+        .len();
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "observation_count": evidence.records.len(),
+            "corroborated_taxon_count": corroborated_taxon_count,
+            "radius_kilometers": evidence.radius_kilometers,
+            "status": "corroborated-local-presence-not-abundance-or-native-status",
+        }))?
+    );
+    Ok(())
+}
+
+fn derive_corroborated_fauna_candidates(
+    candidates_path: &Path,
+    occurrence_evidence_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let candidate_bytes = fs::read(candidates_path)
+        .with_context(|| format!("read fauna candidates {}", candidates_path.display()))?;
+    let candidates = FaunaRangeCandidateSet::from_canonical_slice(&candidate_bytes)
+        .context("validate modeled-range fauna candidates")?;
+    let evidence_bytes = fs::read(occurrence_evidence_path).with_context(|| {
+        format!(
+            "read local fauna occurrence evidence {}",
+            occurrence_evidence_path.display()
+        )
+    })?;
+    let evidence = LocalFaunaOccurrenceEvidenceSet::from_canonical_slice(&evidence_bytes)
+        .context("validate local fauna occurrence evidence")?;
+    let corroborated = candidates
+        .corroborated_by_local_occurrences(&evidence)
+        .context("intersect modeled range and local occurrence evidence")?;
+    let bytes = corroborated
+        .canonical_bytes()
+        .context("encode corroborated fauna candidates")?;
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "candidate_count": corroborated.candidates.len(),
+            "modeled_range_candidate_count": candidates.candidates.len(),
+            "local_occurrence_evidence_digest": Digest::sha256(&evidence_bytes),
+            "status": "modeled-range-and-local-occurrence-corroborated-not-abundance-or-native-status",
         }))?
     );
     Ok(())
