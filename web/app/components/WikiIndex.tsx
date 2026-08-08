@@ -26,11 +26,21 @@ type Organism = {
   ended_event_id: string | null;
 };
 
+type Artifact = {
+  object_id: string;
+  material: { canonical_name: string; source_url: string };
+  first_trace_sequence: string | number;
+  first_trace_tick: string | number;
+  latest_trace_sequence: string | number;
+  latest_trace_tick: string | number;
+  surface_trace_units: number;
+};
+
 type WikiState =
   | { state: "loading" }
   | { state: "empty" }
   | { state: "error" }
-  | { state: "ready"; world: World; findings: Finding[]; organisms: Organism[] };
+  | { state: "ready"; world: World; findings: Finding[]; organisms: Organism[]; artifacts: Artifact[] };
 
 /**
  * A read-only index over public observer projections. It intentionally cannot create
@@ -54,14 +64,16 @@ export function WikiIndex() {
         }
 
         const worldId = encodeURIComponent(world.world_id);
-        const [findingsResponse, organismsResponse] = await Promise.all([
+        const [findingsResponse, organismsResponse, artifactsResponse] = await Promise.all([
           fetch(`/api/v1/worlds/${worldId}/findings?limit=24`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${worldId}/organisms?limit=24`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${worldId}/artifacts?limit=24`, { cache: "no-store" }),
         ]);
-        if (!findingsResponse.ok || !organismsResponse.ok) throw new Error("wiki records unavailable");
+        if (!findingsResponse.ok || !organismsResponse.ok || !artifactsResponse.ok) throw new Error("wiki records unavailable");
         const findings = (await findingsResponse.json()) as { findings: Finding[] };
         const organisms = (await organismsResponse.json()) as { organisms: Organism[] };
-        if (active) setWiki({ state: "ready", world, findings: findings.findings, organisms: organisms.organisms });
+        const artifacts = (await artifactsResponse.json()) as { artifacts: Artifact[] };
+        if (active) setWiki({ state: "ready", world, findings: findings.findings, organisms: organisms.organisms, artifacts: artifacts.artifacts });
       } catch {
         if (active) setWiki({ state: "error" });
       }
@@ -99,6 +111,10 @@ export function WikiIndex() {
         <article>
           <h3>Lives cited in the record</h3>
           {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a><small>Introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
+        </article>
+        <article id="artifact-archive">
+          <h3>Altered material archive</h3>
+          {wiki.artifacts.length === 0 ? <p>No durable material alteration has entered the public record.</p> : <ul>{wiki.artifacts.map((artifact) => <li key={artifact.object_id}><a href={artifact.material.source_url} rel="noreferrer" target="_blank">{artifact.material.canonical_name}</a><span>Observed surface trace: {artifact.surface_trace_units} units</span><small>First evidence event {artifact.first_trace_sequence}, tick {artifact.first_trace_tick} · latest event {artifact.latest_trace_sequence}, tick {artifact.latest_trace_tick}</small></li>)}</ul>}
         </article>
       </div>
     </section>

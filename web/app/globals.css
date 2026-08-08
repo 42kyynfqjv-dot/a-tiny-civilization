@@ -652,7 +652,7 @@ input {
 .live-record-cursor { align-items: center; color: #657067; display: flex; font-family: var(--font-geist-mono), monospace; font-size: 10px; gap: 7px; margin: 0; text-transform: uppercase; }
 .live-record-cursor span { animation: pulse 1.6s ease-in-out infinite; background: #60a37b; border-radius: 50%; height: 7px; width: 7px; }
 .live-record-intro { color: var(--ink-soft); font-size: 14px; line-height: 1.6; margin: 22px 0 0; max-width: 760px; }
-.world-now { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); margin-top: 24px; }
+.world-now { border-bottom: 1px solid var(--line); border-top: 1px solid var(--line); display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); margin-top: 24px; }
 .world-now article { min-width: 0; padding: 16px 18px; }
 .world-now article + article { border-left: 1px solid var(--line); }
 .world-now span, .world-now small { color: #707971; display: block; font-size: 9px; letter-spacing: .09em; text-transform: uppercase; }
@@ -723,7 +723,7 @@ input {
 .wiki-index-status { border-top: 1px solid var(--line); color: var(--ink-soft); font-size: 14px; line-height: 1.6; padding: 28px 24px; }
 .wiki-live-heading { align-items: end; display: flex; gap: 24px; justify-content: space-between; }
 .wiki-live-heading h2 { font-size: 24px; letter-spacing: -.045em; margin: 7px 0 0; }
-.wiki-live-grid { display: grid; gap: 44px; grid-template-columns: 1fr 1fr; margin-top: 25px; }
+.wiki-live-grid { display: grid; gap: 32px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 25px; }
 .wiki-live-grid article { border-top: 1px solid var(--line); padding-top: 14px; }
 .wiki-live-grid h3 { font-size: 12px; margin: 0 0 12px; }
 .wiki-live-grid p { color: var(--ink-soft); font-size: 12px; line-height: 1.55; margin: 0; }

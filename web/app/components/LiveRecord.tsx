@@ -26,15 +26,26 @@ type Organism = {
   role: "person" | "fauna";
   species: { scientific_name: string; source_url: string };
   ended_event_id: string | null;
+  introduced_tick: string | number;
 };
 
 type Finding = { finding_key: string; title: string; summary: string; kind: "first" | "record" | "streak" };
+
+type Artifact = {
+  object_id: string;
+  material: { canonical_name: string; source_url: string };
+  first_trace_sequence: string | number;
+  first_trace_tick: string | number;
+  latest_trace_sequence: string | number;
+  latest_trace_tick: string | number;
+  surface_trace_units: number;
+};
 
 type RecordState =
   | { state: "loading" }
   | { state: "empty" }
   | { state: "error" }
-  | { state: "ready"; world: World; timeline: TimelineItem[]; organisms: Organism[]; findings: Finding[] };
+  | { state: "ready"; world: World; timeline: TimelineItem[]; organisms: Organism[]; findings: Finding[]; artifacts: Artifact[] };
 
 export function LiveRecord() {
   const [record, setRecord] = useState<RecordState>({ state: "loading" });
@@ -52,16 +63,18 @@ export function LiveRecord() {
           return;
         }
         const encoded = encodeURIComponent(world.world_id);
-        const [timelineResponse, organismsResponse, findingsResponse] = await Promise.all([
+        const [timelineResponse, organismsResponse, findingsResponse, artifactsResponse] = await Promise.all([
           fetch(`/api/v1/worlds/${encoded}/timeline?limit=12`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${encoded}/organisms?limit=50`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${encoded}/findings?limit=12`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${encoded}/artifacts?limit=12`, { cache: "no-store" }),
         ]);
-        if (!timelineResponse.ok || !organismsResponse.ok || !findingsResponse.ok) throw new Error("world data unavailable");
+        if (!timelineResponse.ok || !organismsResponse.ok || !findingsResponse.ok || !artifactsResponse.ok) throw new Error("world data unavailable");
         const timeline = (await timelineResponse.json()) as { items: TimelineItem[] };
         const organisms = (await organismsResponse.json()) as { organisms: Organism[] };
         const findings = (await findingsResponse.json()) as { findings: Finding[] };
-        if (active) setRecord({ state: "ready", world, timeline: timeline.items, organisms: organisms.organisms, findings: findings.findings });
+        const artifacts = (await artifactsResponse.json()) as { artifacts: Artifact[] };
+        if (active) setRecord({ state: "ready", world, timeline: timeline.items, organisms: organisms.organisms, findings: findings.findings, artifacts: artifacts.artifacts });
       } catch {
         if (active) setRecord({ state: "error" });
       }
@@ -78,7 +91,7 @@ export function LiveRecord() {
   if (record.state === "empty") return <section className="live-record empty">The world has not begun yet. When it does, its first moments will appear here.</section>;
   if (record.state === "error") return <section className="live-record empty">The live window is resting. Please check back in a moment.</section>;
 
-  const { world, timeline, organisms, findings } = record;
+  const { world, timeline, organisms, findings, artifacts } = record;
   const people = organisms.filter((organism) => organism.role === "person" && !organism.ended_event_id);
   const animals = organisms.filter((organism) => organism.role === "fauna" && !organism.ended_event_id);
   const latestMoment = timeline[0];
@@ -119,6 +132,11 @@ export function LiveRecord() {
           <strong>{formatNumber(findings.length)}</strong>
           <small>{findings.length === 0 ? "nothing established yet" : "firsts and records observed"}</small>
         </article>
+        <article>
+          <span>Altered objects</span>
+          <strong>{formatNumber(artifacts.length)}</strong>
+          <small>{artifacts.length === 0 ? "no durable traces observed" : "physical traces in the archive"}</small>
+        </article>
       </div>
       <div className="live-record-grid">
         <article id="timeline">
@@ -138,6 +156,13 @@ export function LiveRecord() {
         </div>
         {findings.length === 0 ? <p>No firsts or records have been established yet.</p> : <ul>{findings.map((finding) => <li key={finding.finding_key}><span>{finding.kind}</span><strong>{finding.title}</strong><p>{finding.summary}</p></li>)}</ul>}
       </section>
+      {artifacts.length > 0 && <section className="finding-board artifact-board" aria-labelledby="artifact-board-title">
+        <div>
+          <p className="eyebrow">Material evidence</p>
+          <h3 id="artifact-board-title">Changed objects, without invented meaning.</h3>
+        </div>
+        <ul>{artifacts.map((artifact) => <li key={artifact.object_id}><span>surface trace {formatNumber(artifact.surface_trace_units)}</span><strong><a href={artifact.material.source_url} rel="noreferrer" target="_blank">{artifact.material.canonical_name}</a></strong><p>First observed at moment {formatNumber(artifact.first_trace_tick)}; latest trace at moment {formatNumber(artifact.latest_trace_tick)}.</p></li>)}</ul>
+      </section>}
       {began && <p className="record-footnote">The record starts at moment {formatNumber(began.source_tick)} and currently ends at moment {formatNumber(world.tick)}. The observatory refreshes every 15 seconds.</p>}
       <details className="verification-details">
         <summary>Verify this world</summary>
