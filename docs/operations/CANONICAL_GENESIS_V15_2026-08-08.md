@@ -76,6 +76,14 @@ Inference and Hindsight stayed on loopback; paid cognition was disabled.
   air-motion perceptions
 - machine-readable qualification: `passed: true`
 
+The immutable retained bundle is
+`a-tiny-civilization-qualification-evidence/b3ea736d-7a5a-5161-a74b-fa8c4302d333-ruleset29-v15-tick1000`.
+Its `SHA256SUMS` digest is
+`60d719d9bf2225e283da0d45147edb7d93a2c26d44757a886dabf5097bd89882`; every covered file
+verifies. The bundle binds source commit `0dcc482f324d3eb8f2c77cf05a78167071b437ce`, the genesis
+manifest digest, and the passing qualification-report digest, and declares that it contains no
+canonical event payloads.
+
 No public or production world was changed by this procedure. Passing this bounded candidate gate
 does not itself authorize launch; the quality review, retained evidence bundle, production
 configuration, and deliberate genesis activation remain separate gates.
