@@ -49,11 +49,23 @@ implemented and tested.
 
 ## Status
 
-Foundation under active construction. The first vertical slice will include a
-deterministic Rust simulation runner, PostgreSQL event history and snapshots,
-structured memory behind a Hindsight adapter, an observer API, and a public site.
+The complete first vertical slice is implemented: a deterministic Rust simulation
+runner, append-only PostgreSQL history and snapshots, exact replay verification,
+structured memory behind a Hindsight adapter, bounded cognition, five rebuildable
+observer projections, a read-only API, an observatory, and its evidence-backed wiki.
 
-No LLM key is required for the deterministic foundation.
+The fixed public seed now has a same-identity ruleset-29 launch candidate. Its exact
+full-Earth input closure, genesis, 1,000 simulated ticks, Hindsight delivery, zero-cost
+local Qwen2.5 cognition, snapshot-plus-tail replay, projections, and observer privacy
+gate have passed in an isolated PostgreSQL database. The retained evidence bundle
+contains hashes and qualification reports but no canonical event payloads. The world
+is not deployed: production activation and the explicit launch-quality review remain
+separate gates, while the integrated scientific review is intentionally deferred under
+the experimental-world policy.
+
+No API key is required for the qualified local cognition path. Remote model providers
+remain optional, disabled, and require separate approval before private context may be
+exported.
 
 The canonical spatial domain is the full Earth. It uses coarse conserved ecology
 globally and deterministic finer detail only around causal activity; opening a map can
@@ -73,18 +85,17 @@ gates pass; exhaustive scientific calibration moves to a successor world.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network,
 including exhaustive content-hash traversal of global tile indexes and leaves.
-The pure single-worker L10 scheduler kernel now pins ordering, barrier, and capacity
-semantics and matches a synthetic dense reference history. A private integer-only
-EPSG:4978-to-S2 reference also pins all six faces, exact projection boundaries, and
-L10/L14/L18/L23 ancestor routing. A private L10-to-L14 refinement proof now allocates
-all 256 descendants with exact integer conservation, deterministic residual streams,
-canonical reaggregation, and an explicit Alabama-paradox guard. Neither reference
-changes durable schemas. Ruleset-two full-Earth execution now deterministically
-schedules every living embodied organism and records one internal body-clock transition
-per tick. It remains provisional: coupled ecological quantities, retained refined
-state, locomotion physics, and source-backed physiology are not yet integrated.
-Schema-v4 state now retains and replays a full-Earth organism's durable S2 embodied-patch
-position and resolved movement, while public projections intentionally omit both.
+The single-worker L10 scheduler kernel pins ordering, barrier, and capacity semantics
+and matches a synthetic dense reference history. An integer-only EPSG:4978-to-S2
+reference pins all six faces, exact projection boundaries, and L10/L14/L18/L23
+ancestor routing. L10-to-L14 refinement allocates all 256 descendants with exact
+integer conservation, deterministic residual streams, canonical reaggregation, and an
+explicit Alabama-paradox guard. Current rulesets add durable embodied movement,
+source-bound weather sensations, bodily regulation and mortality, neutral material
+handling and artifact traces, reproduction and heredity, imitation, variable sound,
+action/motor learning, Hindsight recall, bounded model input, and real terrain effects.
+All private position, learning, cognition, and reproductive mechanisms remain absent
+from public projections.
 
 Exact upstream snapshots now pin both Natural Earth v5.1.2 generalized global land
 polygons and NOAA ETOPO 2022 v1 global 60 arc-second bedrock relief. The latter is
