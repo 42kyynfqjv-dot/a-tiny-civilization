@@ -66,6 +66,10 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
 
+# Refuse a half-deployment when the legacy development stack still owns one of the exact host
+# ports. Existing containers from this production Compose project are safe for an in-place update.
+"${project_root}/scripts/production-port-preflight.sh"
+
 # Deployment remains a separate literal authorization, but it cannot begin until the exact
 # candidate evidence, quality-world admission, reviewed observer tree, production configuration,
 # and staged runtime closure all pass the same composed read-only gate used by the runbook.

@@ -42,3 +42,10 @@ jurisdiction review, monitored policy mailboxes, and optional Google/Apple/Strip
 items gate accounts and payments, not a free anonymous observatory. The qualified local
 Qwen/Hindsight path requires none of those integrations. Deployment and world activation remain
 separate literal-confirmation operations.
+
+The empty ownership-labelled production volumes now exist as
+`a-tiny-civilization-postgres-v1`, `a-tiny-civilization-hindsight-v1`, and
+`a-tiny-civilization-hindsight-model-cache-v1`. The live development world at tick 139,382 is in
+the distinct legacy `emergent-civilization_postgres-data` volume. Development currently owns
+loopback ports 3000, 5432, and 8080; the deployment helper now rejects that state before mutation
+and requires a deliberate service cutover without deleting the legacy volume.
