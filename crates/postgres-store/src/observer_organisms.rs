@@ -9,7 +9,9 @@ use world_domain::{
     DomainEvent, EntityId, EventId, EventSequence, OrganismRole, SimTick, SpeciesIdentity, WorldId,
 };
 
-use crate::PostgresStore;
+use crate::{
+    PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
+};
 
 #[derive(FromRow)]
 struct OrganismRow {
@@ -30,75 +32,93 @@ struct OrganismRow {
     ended_tick: Option<i64>,
 }
 
+impl PostgresStore {
+    pub async fn apply_public_organism_batches(
+        &self,
+        batches: &[world_domain::EventBatch],
+    ) -> Result<u64, ObserverProjectionStoreError> {
+        let Some(first) = batches.first() else {
+            return Ok(0);
+        };
+        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let cursor = lock_projection_cursor(
+            &mut transaction,
+            PUBLIC_ORGANISM_PROJECTION_NAME,
+            first.world_id,
+        )
+        .await?;
+        let start = batches.partition_point(|batch| {
+            i64::try_from(batch.sequence.get()).is_ok_and(|sequence| sequence <= cursor)
+        });
+        let pending = &batches[start..];
+        let Some(first_pending) = pending.first() else {
+            transaction.commit().await.map_err(unavailable)?;
+            return Ok(0);
+        };
+        let first_sequence = to_i64(first_pending.sequence.get(), "source sequence")?;
+        if first_sequence != cursor + 1 {
+            return Err(ObserverProjectionStoreError::Corrupt(format!(
+                "public organism index expected sequence {}, received {first_sequence}",
+                cursor + 1
+            )));
+        }
+        verify_committed_batch_range(&mut transaction, pending).await?;
+        for batch in pending {
+            let sequence = to_i64(batch.sequence.get(), "source sequence")?;
+            for organism in project_public_organisms(batch) {
+                insert_organism(&mut transaction, &organism).await?;
+            }
+            for record in &batch.events {
+                if let DomainEvent::OrganismDied { organism_id, .. } = &record.event {
+                    let inserted = sqlx::query(
+                        r#"
+                        INSERT INTO observer_organism_endings (
+                            projection_version, world_id, organism_id, source_event_id, source_sequence, source_tick
+                        )
+                        VALUES ($1, $2, $3, $4, $5, $6)
+                        ON CONFLICT (projection_version, world_id, organism_id) DO NOTHING
+                        "#,
+                    )
+                    .bind(i32::from(PUBLIC_ORGANISM_PROJECTION_VERSION))
+                    .bind(batch.world_id.as_uuid())
+                    .bind(organism_id.as_uuid())
+                    .bind(record.event_id.as_uuid())
+                    .bind(sequence)
+                    .bind(to_i64(batch.tick.get(), "source tick")?)
+                    .execute(&mut *transaction)
+                    .await
+                    .map_err(unavailable)?;
+                    if inserted.rows_affected() == 0 {
+                        return Err(ObserverProjectionStoreError::Corrupt(format!(
+                            "organism {organism_id} already has a public ending"
+                        )));
+                    }
+                }
+            }
+        }
+        let last_sequence = to_i64(pending[pending.len() - 1].sequence.get(), "source sequence")?;
+        advance_projection_cursor(
+            &mut transaction,
+            PUBLIC_ORGANISM_PROJECTION_NAME,
+            first.world_id,
+            last_sequence,
+        )
+        .await?;
+        transaction.commit().await.map_err(unavailable)?;
+        u64::try_from(pending.len()).map_err(|_| corrupt("indexed batch count"))
+    }
+}
+
 #[async_trait]
 impl ObserverOrganismStore for PostgresStore {
     async fn apply_public_organism_batch(
         &self,
         batch: &world_domain::EventBatch,
     ) -> Result<bool, ObserverProjectionStoreError> {
-        batch
-            .verify_integrity()
-            .map_err(|error| ObserverProjectionStoreError::Corrupt(error.to_string()))?;
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
-        verify_committed(&mut transaction, batch).await?;
-        let cursor = lock_cursor(&mut transaction, batch.world_id).await?;
-        let sequence = to_i64(batch.sequence.get(), "source sequence")?;
-        if sequence <= cursor {
-            transaction.commit().await.map_err(unavailable)?;
-            return Ok(false);
-        }
-        if sequence != cursor + 1 {
-            return Err(ObserverProjectionStoreError::Corrupt(format!(
-                "public organism index expected sequence {}, received {sequence}",
-                cursor + 1
-            )));
-        }
-
-        for organism in project_public_organisms(batch) {
-            insert_organism(&mut transaction, &organism).await?;
-        }
-        for record in &batch.events {
-            if let DomainEvent::OrganismDied { organism_id, .. } = &record.event {
-                let inserted = sqlx::query(
-                    r#"
-                    INSERT INTO observer_organism_endings (
-                        projection_version, world_id, organism_id, source_event_id, source_sequence, source_tick
-                    )
-                    VALUES ($1, $2, $3, $4, $5, $6)
-                    ON CONFLICT (projection_version, world_id, organism_id) DO NOTHING
-                    "#,
-                )
-                .bind(i32::from(PUBLIC_ORGANISM_PROJECTION_VERSION))
-                .bind(batch.world_id.as_uuid())
-                .bind(organism_id.as_uuid())
-                .bind(record.event_id.as_uuid())
-                .bind(sequence)
-                .bind(to_i64(batch.tick.get(), "source tick")?)
-                .execute(&mut *transaction)
-                .await
-                .map_err(unavailable)?;
-                if inserted.rows_affected() == 0 {
-                    return Err(ObserverProjectionStoreError::Corrupt(format!(
-                        "organism {organism_id} already has a public ending"
-                    )));
-                }
-            }
-        }
-        sqlx::query(
-            r#"
-            UPDATE projection_offsets
-            SET through_sequence = $3, updated_at = NOW()
-            WHERE projection_name = $1 AND world_id = $2
-            "#,
-        )
-        .bind(PUBLIC_ORGANISM_PROJECTION_NAME)
-        .bind(batch.world_id.as_uuid())
-        .bind(sequence)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        transaction.commit().await.map_err(unavailable)?;
-        Ok(true)
+        Ok(self
+            .apply_public_organism_batches(std::slice::from_ref(batch))
+            .await?
+            == 1)
     }
 
     async fn public_organism_cursor(
@@ -150,58 +170,6 @@ impl ObserverOrganismStore for PostgresStore {
         .map_err(unavailable)?;
         row.map(parse_row).transpose()
     }
-}
-
-async fn verify_committed(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    batch: &world_domain::EventBatch,
-) -> Result<(), ObserverProjectionStoreError> {
-    let checksum = sqlx::query_scalar::<_, Vec<u8>>(
-        "SELECT checksum FROM event_batches WHERE world_id = $1 AND sequence = $2",
-    )
-    .bind(batch.world_id.as_uuid())
-    .bind(to_i64(batch.sequence.get(), "source sequence")?)
-    .fetch_optional(&mut **transaction)
-    .await
-    .map_err(unavailable)?
-    .ok_or_else(|| {
-        ObserverProjectionStoreError::Corrupt(format!(
-            "organism batch {}:{} is not committed",
-            batch.world_id, batch.sequence
-        ))
-    })?;
-    if checksum.as_slice() != batch.batch_hash.as_bytes() {
-        return Err(ObserverProjectionStoreError::Corrupt(format!(
-            "organism batch {}:{} differs from committed history",
-            batch.world_id, batch.sequence
-        )));
-    }
-    Ok(())
-}
-
-async fn lock_cursor(
-    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
-    world_id: WorldId,
-) -> Result<i64, ObserverProjectionStoreError> {
-    sqlx::query(
-        r#"
-        INSERT INTO projection_offsets (projection_name, world_id, through_sequence, updated_at)
-        VALUES ($1, $2, 0, NOW()) ON CONFLICT (projection_name, world_id) DO NOTHING
-        "#,
-    )
-    .bind(PUBLIC_ORGANISM_PROJECTION_NAME)
-    .bind(world_id.as_uuid())
-    .execute(&mut **transaction)
-    .await
-    .map_err(unavailable)?;
-    sqlx::query_scalar::<_, i64>(
-        "SELECT through_sequence FROM projection_offsets WHERE projection_name = $1 AND world_id = $2 FOR UPDATE",
-    )
-    .bind(PUBLIC_ORGANISM_PROJECTION_NAME)
-    .bind(world_id.as_uuid())
-    .fetch_one(&mut **transaction)
-    .await
-    .map_err(unavailable)
 }
 
 async fn insert_organism(

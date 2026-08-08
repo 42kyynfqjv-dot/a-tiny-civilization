@@ -7,7 +7,9 @@ use observer_projection::{
 use sqlx::FromRow;
 use world_domain::{DomainEvent, EventId, EventSequence, OrganismRole, SimTick, WorldId};
 
-use crate::PostgresStore;
+use crate::{
+    PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
+};
 
 #[derive(FromRow)]
 struct FindingRow {
@@ -21,6 +23,50 @@ struct FindingRow {
     provenance: String,
     title: String,
     summary: String,
+}
+
+impl PostgresStore {
+    pub async fn apply_public_finding_batches(
+        &self,
+        batches: &[world_domain::EventBatch],
+    ) -> Result<u64, ObserverProjectionStoreError> {
+        let Some(first) = batches.first() else {
+            return Ok(0);
+        };
+        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let cursor = lock_projection_cursor(
+            &mut transaction,
+            PUBLIC_FINDING_PROJECTION_NAME,
+            first.world_id,
+        )
+        .await?;
+        let start = batches.partition_point(|batch| {
+            i64::try_from(batch.sequence.get()).is_ok_and(|sequence| sequence <= cursor)
+        });
+        let pending = &batches[start..];
+        let Some(first_pending) = pending.first() else {
+            transaction.commit().await.map_err(unavailable)?;
+            return Ok(0);
+        };
+        let first_sequence = to_i64(first_pending.sequence.get(), "sequence")?;
+        if first_sequence != cursor + 1 {
+            return Err(corrupt("finding batch sequence gap"));
+        }
+        verify_committed_batch_range(&mut transaction, pending).await?;
+        for batch in pending {
+            apply_finding_events(&mut transaction, batch).await?;
+        }
+        let last_sequence = to_i64(pending[pending.len() - 1].sequence.get(), "sequence")?;
+        advance_projection_cursor(
+            &mut transaction,
+            PUBLIC_FINDING_PROJECTION_NAME,
+            first.world_id,
+            last_sequence,
+        )
+        .await?;
+        transaction.commit().await.map_err(unavailable)?;
+        u64::try_from(pending.len()).map_err(|_| corrupt("finding batch count"))
+    }
 }
 
 #[async_trait]
@@ -256,6 +302,182 @@ async fn lock(
     sqlx::query("INSERT INTO projection_offsets (projection_name,world_id,through_sequence,updated_at) VALUES ($1,$2,0,NOW()) ON CONFLICT DO NOTHING").bind(PUBLIC_FINDING_PROJECTION_NAME).bind(world.as_uuid()).execute(&mut **tx).await.map_err(unavailable)?;
     sqlx::query_scalar("SELECT through_sequence FROM projection_offsets WHERE projection_name=$1 AND world_id=$2 FOR UPDATE").bind(PUBLIC_FINDING_PROJECTION_NAME).bind(world.as_uuid()).fetch_one(&mut **tx).await.map_err(unavailable)
 }
+
+async fn apply_finding_events(
+    tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batch: &world_domain::EventBatch,
+) -> Result<(), ObserverProjectionStoreError> {
+    let mut latest_intro: [Option<&world_domain::EventRecord>; 2] = [None, None];
+    for record in &batch.events {
+        match &record.event {
+            DomainEvent::WorldStarted { .. } => {
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    "world_began",
+                    "A world began",
+                    "Initial conditions were committed to the public record.",
+                )
+                .await?
+            }
+            DomainEvent::OrganismInitialized {
+                organism_id, role, ..
+            }
+            | DomainEvent::OrganismBorn {
+                organism_id, role, ..
+            } => {
+                let role_code = role_code(*role);
+                let result = sqlx::query("INSERT INTO observer_finding_lives (projection_version, world_id, organism_id, role) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING")
+                    .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(batch.world_id.as_uuid()).bind(organism_id.as_uuid()).bind(role_code).execute(&mut **tx).await.map_err(unavailable)?;
+                if result.rows_affected() == 0 {
+                    return Err(corrupt("duplicate organism introduction"));
+                }
+                latest_intro[role_index(*role)] = Some(record);
+                let (key, title, summary) = match role {
+                    OrganismRole::Person => (
+                        "first_person_recorded",
+                        "A first person was recorded",
+                        "An individual person entered the durable observer record.",
+                    ),
+                    OrganismRole::Fauna => (
+                        "first_animal_recorded",
+                        "A first animal was recorded",
+                        "An individual animal entered the durable observer record.",
+                    ),
+                };
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    key,
+                    title,
+                    summary,
+                )
+                .await?;
+            }
+            DomainEvent::OrganismDied { organism_id, .. } => {
+                let result = sqlx::query("INSERT INTO observer_finding_life_endings (projection_version, world_id, organism_id) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING")
+                    .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(batch.world_id.as_uuid()).bind(organism_id.as_uuid()).execute(&mut **tx).await.map_err(unavailable)?;
+                if result.rows_affected() == 0 {
+                    return Err(corrupt("duplicate organism ending"));
+                }
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    "first_life_ended",
+                    "A first life ended",
+                    "The first life-ending event entered the durable observer record.",
+                )
+                .await?;
+            }
+            DomainEvent::OrganismMoved { .. } => {
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    "first_confirmed_relocation",
+                    "A first relocation was confirmed",
+                    "A living organism reached a different recorded patch.",
+                )
+                .await?;
+            }
+            DomainEvent::WorldExtinct => {
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    "people_extinct",
+                    "No people remained",
+                    "The world reached its mechanical extinction condition.",
+                )
+                .await?
+            }
+            DomainEvent::WorldArchived => {
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    "world_archived",
+                    "A world entered its archive",
+                    "Its committed history remains available for observation.",
+                )
+                .await?
+            }
+            DomainEvent::WorldConfigured { .. }
+            | DomainEvent::MaterialInstanceInitialized { .. }
+            | DomainEvent::MaterialReservoirCommitted { .. }
+            | DomainEvent::MaterialInstanceHeld { .. }
+            | DomainEvent::MaterialInstanceReleased { .. }
+            | DomainEvent::MaterialOralPortionTransferred { .. }
+            | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
+            | DomainEvent::TickAdvanced { .. }
+            | DomainEvent::OrganismPerceived { .. }
+            | DomainEvent::OrganismActed { .. }
+            | DomainEvent::OrganismAgeAdvanced { .. }
+            | DomainEvent::OrganismNeedsChanged { .. }
+            | DomainEvent::OrganismActionValueChanged { .. }
+            | DomainEvent::CognitionRequestSelected { .. }
+            | DomainEvent::CognitionInputRecorded { .. }
+            | DomainEvent::ReproductiveDevelopmentStarted { .. }
+            | DomainEvent::ReproductiveDevelopmentEnded { .. }
+            | DomainEvent::CelestialStateRecorded { .. } => {}
+        }
+    }
+    for role in [OrganismRole::Person, OrganismRole::Fauna] {
+        if let Some(record) = latest_intro[role_index(role)] {
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM observer_finding_lives l LEFT JOIN observer_finding_life_endings e ON e.projection_version=l.projection_version AND e.world_id=l.world_id AND e.organism_id=l.organism_id WHERE l.projection_version=$1 AND l.world_id=$2 AND l.role=$3 AND e.organism_id IS NULL")
+                .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(batch.world_id.as_uuid()).bind(role_code(role)).fetch_one(&mut **tx).await.map_err(unavailable)?;
+            let metric = if role == OrganismRole::Person {
+                "people_population"
+            } else {
+                "animal_population"
+            };
+            let previous = sqlx::query_scalar::<_, i64>("SELECT value FROM observer_finding_records WHERE projection_version=$1 AND world_id=$2 AND metric=$3 FOR UPDATE")
+                .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(batch.world_id.as_uuid()).bind(metric).fetch_optional(&mut **tx).await.map_err(unavailable)?.unwrap_or(-1);
+            if count > previous {
+                sqlx::query("INSERT INTO observer_finding_records (projection_version,world_id,metric,value) VALUES ($1,$2,$3,$4) ON CONFLICT (projection_version,world_id,metric) DO UPDATE SET value=EXCLUDED.value")
+                    .bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(batch.world_id.as_uuid()).bind(metric).bind(count).execute(&mut **tx).await.map_err(unavailable)?;
+                let (key, title, summary) = if role == OrganismRole::Person {
+                    (
+                        format!("people_population_record_{count}"),
+                        "A population record was reached",
+                        format!("The recorded population reached {count} people."),
+                    )
+                } else {
+                    (
+                        format!("animal_population_record_{count}"),
+                        "An animal population record was reached",
+                        format!("The recorded animal population reached {count}."),
+                    )
+                };
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::Record,
+                    &key,
+                    title,
+                    &summary,
+                )
+                .await?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn to_i64(value: u64, field: &str) -> Result<i64, ObserverProjectionStoreError> {
+    i64::try_from(value).map_err(|_| corrupt(field))
+}
+
 async fn insert_finding(
     tx: &mut sqlx::Transaction<'_, sqlx::Postgres>,
     batch: &world_domain::EventBatch,

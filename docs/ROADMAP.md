@@ -46,6 +46,10 @@ is present in the log:
 Every projection has its own version and durable cursor. It can be discarded and
 rebuilt without changing a world.
 
+The ruleset-17 quality history now also exercises shared-load, range-atomic projection
+rebuilds. Its first published development envelope and the remaining scale boundary are
+recorded in [the 2026-08-08 capacity report](operations/CAPACITY_REPORT_2026-08-08.md).
+
 ## Delivery order: complete first, admit second
 
 Development is breadth-first until a provisional full-Earth world runs end to end.

@@ -70,60 +70,31 @@ async fn main() -> Result<()> {
 
 async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<()> {
     for world_id in world_ids {
-        let cursor = store
+        let timeline_cursor = store
             .public_timeline_cursor(*world_id)
             .await
             .context("load observer projection cursor")?;
-        let batches = store
-            .load_event_batches(*world_id, cursor)
-            .await
-            .context("load committed event batches")?;
-        let mut applied = 0_u64;
-        for batch in &batches {
-            if store
-                .apply_public_timeline_batch(batch)
-                .await
-                .context("persist observer timeline batch")?
-            {
-                applied += 1;
-            }
-        }
         let organism_cursor = store
             .public_organism_cursor(*world_id)
             .await
             .context("load public organism projection cursor")?;
-        let organism_batches = store
-            .load_event_batches(*world_id, organism_cursor)
-            .await
-            .context("load committed event batches for public organism projection")?;
-        let mut indexed = 0_u64;
-        for batch in &organism_batches {
-            if store
-                .apply_public_organism_batch(batch)
-                .await
-                .context("persist public organism batch")?
-            {
-                indexed += 1;
-            }
-        }
         let finding_cursor = store
             .public_finding_cursor(*world_id)
             .await
             .context("load finding cursor")?;
-        let finding_batches = store
-            .load_event_batches(*world_id, finding_cursor)
+        let earliest_cursor = timeline_cursor.min(organism_cursor).min(finding_cursor);
+        let batches = store
+            .load_event_batches(*world_id, earliest_cursor)
             .await
-            .context("load committed event batches for findings")?;
-        let mut findings = 0_u64;
-        for batch in &finding_batches {
-            if store
-                .apply_public_finding_batch(batch)
-                .await
-                .context("persist public finding batch")?
-            {
-                findings += 1;
-            }
-        }
+            .context("load committed event batches once for all public projections")?;
+        let timeline_start = batches.partition_point(|batch| batch.sequence <= timeline_cursor);
+        let organism_start = batches.partition_point(|batch| batch.sequence <= organism_cursor);
+        let finding_start = batches.partition_point(|batch| batch.sequence <= finding_cursor);
+        let (applied, indexed, findings) = tokio::try_join!(
+            project_timeline(store, &batches[timeline_start..]),
+            project_organisms(store, &batches[organism_start..]),
+            project_findings(store, &batches[finding_start..]),
+        )?;
         // Archive is already an immutable canonical fact. Checking the durable lifecycle
         // state also covers worlds archived before this projector version was deployed.
         // Expiration is idempotent observer-side bookkeeping only.
@@ -154,6 +125,36 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
         );
     }
     Ok(())
+}
+
+async fn project_timeline(
+    store: &PostgresStore,
+    batches: &[world_domain::EventBatch],
+) -> Result<u64> {
+    store
+        .apply_public_timeline_batches(batches)
+        .await
+        .context("persist observer timeline batch range")
+}
+
+async fn project_organisms(
+    store: &PostgresStore,
+    batches: &[world_domain::EventBatch],
+) -> Result<u64> {
+    store
+        .apply_public_organism_batches(batches)
+        .await
+        .context("persist public organism batch range")
+}
+
+async fn project_findings(
+    store: &PostgresStore,
+    batches: &[world_domain::EventBatch],
+) -> Result<u64> {
+    store
+        .apply_public_finding_batches(batches)
+        .await
+        .context("persist public finding batch range")
 }
 
 fn init_tracing() {

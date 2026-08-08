@@ -2651,18 +2651,14 @@ impl EngineState {
                     .work()
                     .iter()
                     .map(|work| {
-                        let organism = self
-                            .organisms
-                            .values()
-                            .find(|organism| {
-                                SubjectKey::from_entity(organism.organism_id)
-                                    == work.key().subject()
-                            })
-                            .ok_or_else(|| {
-                                EngineError::PartitionScheduleState(
-                                    "scheduled work has no matching organism".to_owned(),
-                                )
-                            })?;
+                        let organism_id = EntityId::from_uuid(Uuid::from_bytes(
+                            work.key().subject().into_bytes(),
+                        ));
+                        let organism = self.organisms.get(&organism_id).ok_or_else(|| {
+                            EngineError::PartitionScheduleState(
+                                "scheduled work has no matching organism".to_owned(),
+                            )
+                        })?;
                         let from_age_ticks = organism.age_ticks().ok_or_else(|| {
                             EngineError::PartitionScheduleState(
                                 "ruleset-two organism has no durable age state".to_owned(),

@@ -71,6 +71,11 @@ impl SubjectKey {
     pub fn from_entity(entity_id: EntityId) -> Self {
         Self(*entity_id.as_uuid().as_bytes())
     }
+
+    #[must_use]
+    pub const fn into_bytes(self) -> [u8; 16] {
+        self.0
+    }
 }
 
 impl Ord for SubjectKey {

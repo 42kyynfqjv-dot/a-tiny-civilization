@@ -5,7 +5,9 @@ use std::time::Duration;
 use application::{FoundationStatus, FoundationStore, ServiceHeartbeat, StoreError};
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
+use observer_projection::ObserverProjectionStoreError;
 use sqlx::{PgPool, postgres::PgPoolOptions};
+use world_domain::{EventBatch, WorldId};
 
 mod cognition_jobs;
 mod memory_outbox;
@@ -49,6 +51,106 @@ impl PostgresStore {
     pub const fn pool(&self) -> &PgPool {
         &self.pool
     }
+}
+
+async fn lock_projection_cursor(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    projection_name: &str,
+    world_id: WorldId,
+) -> Result<i64, ObserverProjectionStoreError> {
+    sqlx::query(
+        "INSERT INTO projection_offsets (projection_name,world_id,through_sequence,updated_at) VALUES ($1,$2,0,NOW()) ON CONFLICT DO NOTHING",
+    )
+    .bind(projection_name)
+    .bind(world_id.as_uuid())
+    .execute(&mut **transaction)
+    .await
+    .map_err(observer_unavailable)?;
+    sqlx::query_scalar(
+        "SELECT through_sequence FROM projection_offsets WHERE projection_name=$1 AND world_id=$2 FOR UPDATE",
+    )
+    .bind(projection_name)
+    .bind(world_id.as_uuid())
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(observer_unavailable)
+}
+
+async fn verify_committed_batch_range(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    batches: &[EventBatch],
+) -> Result<(), ObserverProjectionStoreError> {
+    let Some(first) = batches.first() else {
+        return Ok(());
+    };
+    for batch in batches {
+        batch
+            .verify_integrity()
+            .map_err(|error| ObserverProjectionStoreError::Corrupt(error.to_string()))?;
+        if batch.world_id != first.world_id {
+            return Err(ObserverProjectionStoreError::Corrupt(
+                "projection batch range crosses worlds".to_owned(),
+            ));
+        }
+    }
+    if batches
+        .windows(2)
+        .any(|pair| pair[0].sequence.get().checked_add(1) != Some(pair[1].sequence.get()))
+    {
+        return Err(ObserverProjectionStoreError::Corrupt(
+            "projection batch range is not contiguous".to_owned(),
+        ));
+    }
+    let last = &batches[batches.len() - 1];
+    let rows = sqlx::query_as::<_, (i64, Vec<u8>)>(
+        "SELECT sequence,checksum FROM event_batches WHERE world_id=$1 AND sequence BETWEEN $2 AND $3 ORDER BY sequence",
+    )
+    .bind(first.world_id.as_uuid())
+    .bind(i64::try_from(first.sequence.get()).map_err(|_| {
+        ObserverProjectionStoreError::Corrupt("projection sequence overflow".to_owned())
+    })?)
+    .bind(i64::try_from(last.sequence.get()).map_err(|_| {
+        ObserverProjectionStoreError::Corrupt("projection sequence overflow".to_owned())
+    })?)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(observer_unavailable)?;
+    if rows.len() != batches.len()
+        || rows
+            .iter()
+            .zip(batches)
+            .any(|((sequence, checksum), batch)| {
+                u64::try_from(*sequence).ok() != Some(batch.sequence.get())
+                    || checksum.as_slice() != batch.batch_hash.as_bytes()
+            })
+    {
+        return Err(ObserverProjectionStoreError::Corrupt(
+            "projection batch range differs from committed history".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+async fn advance_projection_cursor(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    projection_name: &str,
+    world_id: WorldId,
+    through_sequence: i64,
+) -> Result<(), ObserverProjectionStoreError> {
+    sqlx::query(
+        "UPDATE projection_offsets SET through_sequence=$3,updated_at=NOW() WHERE projection_name=$1 AND world_id=$2",
+    )
+    .bind(projection_name)
+    .bind(world_id.as_uuid())
+    .bind(through_sequence)
+    .execute(&mut **transaction)
+    .await
+    .map_err(observer_unavailable)?;
+    Ok(())
+}
+
+fn observer_unavailable(error: sqlx::Error) -> ObserverProjectionStoreError {
+    ObserverProjectionStoreError::Unavailable(error.to_string())
 }
 
 #[derive(sqlx::FromRow)]

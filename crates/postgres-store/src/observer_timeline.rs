@@ -7,7 +7,9 @@ use observer_projection::{
 use sqlx::FromRow;
 use world_domain::{EventId, EventSequence, SimTick, WorldId};
 
-use crate::PostgresStore;
+use crate::{
+    PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
+};
 
 #[derive(FromRow)]
 struct TimelineRow {
@@ -23,89 +25,63 @@ struct TimelineRow {
     summary: String,
 }
 
+impl PostgresStore {
+    pub async fn apply_public_timeline_batches(
+        &self,
+        batches: &[world_domain::EventBatch],
+    ) -> Result<u64, ObserverProjectionStoreError> {
+        let Some(first) = batches.first() else {
+            return Ok(0);
+        };
+        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        let cursor = lock_projection_cursor(
+            &mut transaction,
+            PUBLIC_TIMELINE_PROJECTION_NAME,
+            first.world_id,
+        )
+        .await?;
+        let start = batches.partition_point(|batch| {
+            i64::try_from(batch.sequence.get()).is_ok_and(|sequence| sequence <= cursor)
+        });
+        let pending = &batches[start..];
+        let Some(first_pending) = pending.first() else {
+            transaction.commit().await.map_err(unavailable)?;
+            return Ok(0);
+        };
+        let first_sequence = to_i64(first_pending.sequence.get(), "source sequence")?;
+        if first_sequence != cursor + 1 {
+            return Err(ObserverProjectionStoreError::Corrupt(format!(
+                "public timeline expected sequence {}, received {first_sequence}",
+                cursor + 1
+            )));
+        }
+        verify_committed_batch_range(&mut transaction, pending).await?;
+        for batch in pending {
+            insert_items(&mut transaction, &project_public_timeline(batch)).await?;
+        }
+        let last_sequence = to_i64(pending[pending.len() - 1].sequence.get(), "source sequence")?;
+        advance_projection_cursor(
+            &mut transaction,
+            PUBLIC_TIMELINE_PROJECTION_NAME,
+            first.world_id,
+            last_sequence,
+        )
+        .await?;
+        transaction.commit().await.map_err(unavailable)?;
+        u64::try_from(pending.len()).map_err(|_| corrupt("applied batch count"))
+    }
+}
+
 #[async_trait]
 impl ObserverTimelineStore for PostgresStore {
     async fn apply_public_timeline_batch(
         &self,
         batch: &world_domain::EventBatch,
     ) -> Result<bool, ObserverProjectionStoreError> {
-        batch
-            .verify_integrity()
-            .map_err(|error| ObserverProjectionStoreError::Corrupt(error.to_string()))?;
-        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
-        let committed_checksum = sqlx::query_scalar::<_, Vec<u8>>(
-            "SELECT checksum FROM event_batches WHERE world_id = $1 AND sequence = $2",
-        )
-        .bind(batch.world_id.as_uuid())
-        .bind(to_i64(batch.sequence.get(), "source sequence")?)
-        .fetch_optional(&mut *transaction)
-        .await
-        .map_err(unavailable)?
-        .ok_or_else(|| {
-            ObserverProjectionStoreError::Corrupt(format!(
-                "timeline batch {}:{} is not committed",
-                batch.world_id, batch.sequence
-            ))
-        })?;
-        if committed_checksum.as_slice() != batch.batch_hash.as_bytes() {
-            return Err(ObserverProjectionStoreError::Corrupt(format!(
-                "timeline batch {}:{} differs from committed history",
-                batch.world_id, batch.sequence
-            )));
-        }
-        sqlx::query(
-            r#"
-            INSERT INTO projection_offsets (projection_name, world_id, through_sequence, updated_at)
-            VALUES ($1, $2, 0, NOW())
-            ON CONFLICT (projection_name, world_id) DO NOTHING
-            "#,
-        )
-        .bind(PUBLIC_TIMELINE_PROJECTION_NAME)
-        .bind(batch.world_id.as_uuid())
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        let cursor = sqlx::query_scalar::<_, i64>(
-            r#"
-            SELECT through_sequence
-            FROM projection_offsets
-            WHERE projection_name = $1 AND world_id = $2
-            FOR UPDATE
-            "#,
-        )
-        .bind(PUBLIC_TIMELINE_PROJECTION_NAME)
-        .bind(batch.world_id.as_uuid())
-        .fetch_one(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        let sequence = to_i64(batch.sequence.get(), "source sequence")?;
-        if sequence <= cursor {
-            transaction.commit().await.map_err(unavailable)?;
-            return Ok(false);
-        }
-        if sequence != cursor + 1 {
-            return Err(ObserverProjectionStoreError::Corrupt(format!(
-                "public timeline expected sequence {}, received {sequence}",
-                cursor + 1
-            )));
-        }
-        insert_items(&mut transaction, &project_public_timeline(batch)).await?;
-        sqlx::query(
-            r#"
-            INSERT INTO projection_offsets (projection_name, world_id, through_sequence, updated_at)
-            VALUES ($1, $2, $3, NOW())
-            ON CONFLICT (projection_name, world_id)
-            DO UPDATE SET through_sequence = EXCLUDED.through_sequence, updated_at = EXCLUDED.updated_at
-            "#,
-        )
-        .bind(PUBLIC_TIMELINE_PROJECTION_NAME)
-        .bind(batch.world_id.as_uuid())
-        .bind(sequence)
-        .execute(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
-        transaction.commit().await.map_err(unavailable)?;
-        Ok(true)
+        Ok(self
+            .apply_public_timeline_batches(std::slice::from_ref(batch))
+            .await?
+            == 1)
     }
 
     async fn public_timeline_cursor(

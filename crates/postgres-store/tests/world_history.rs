@@ -598,6 +598,77 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
 }
 
 #[sqlx::test(migrations = "../../db/migrations")]
+async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(101_101);
+    let created = store.create_world(&manifest, None).await?;
+    let (running, genesis_batch, genesis_snapshot) =
+        genesis(&manifest, vec![initial_person(manifest.world_id)])?;
+    let persisted = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let tick_events = running.plan_next_tick()?;
+    let (after_tick, tick_batch) =
+        running.commit(EventSequence::new(2), genesis_batch.batch_hash, tick_events)?;
+    let tick_snapshot = Snapshot::new(after_tick, tick_batch.sequence, tick_batch.batch_hash)?;
+    store
+        .commit_transition(
+            persisted.cursor,
+            &tick_batch,
+            &tick_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    let batches = vec![genesis_batch, tick_batch];
+
+    assert_eq!(store.apply_public_timeline_batches(&batches).await?, 2);
+    assert_eq!(store.apply_public_organism_batches(&batches).await?, 2);
+    assert_eq!(store.apply_public_finding_batches(&batches).await?, 2);
+    assert_eq!(store.apply_public_timeline_batches(&batches).await?, 0);
+    assert_eq!(store.apply_public_organism_batches(&batches).await?, 0);
+    assert_eq!(store.apply_public_finding_batches(&batches).await?, 0);
+    assert_eq!(
+        store.public_timeline_cursor(manifest.world_id).await?,
+        EventSequence::new(2)
+    );
+    assert_eq!(
+        store.public_organism_cursor(manifest.world_id).await?,
+        EventSequence::new(2)
+    );
+    assert_eq!(
+        store.public_finding_cursor(manifest.world_id).await?,
+        EventSequence::new(2)
+    );
+    assert_eq!(
+        store
+            .list_public_organisms(manifest.world_id, 10)
+            .await?
+            .len(),
+        1
+    );
+    assert!(
+        store
+            .list_public_timeline(manifest.world_id, 10)
+            .await?
+            .len()
+            >= 2
+    );
+    assert!(
+        store
+            .list_public_findings(manifest.world_id, 10)
+            .await?
+            .len()
+            >= 2
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
 async fn runtime_replays_and_resumes_at_the_exact_next_sequence(pool: PgPool) -> Result<()> {
     let store = PostgresStore::from_pool(pool);
     let manifest = manifest(151);
