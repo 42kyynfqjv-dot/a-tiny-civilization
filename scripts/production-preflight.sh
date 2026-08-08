@@ -1,6 +1,62 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+if [[ "${1:-}" == "--env-file" ]]; then
+  environment_file="${2:-}"
+  shift 2
+  if (($#)); then
+    echo "usage: $0 [--env-file /absolute/path/to/production.env]" >&2
+    exit 2
+  fi
+  if [[ -z "$environment_file" || "$environment_file" != /* \
+        || ! -f "$environment_file" || -L "$environment_file" ]]; then
+    echo "production environment file must be an absolute, regular, non-symlink file" >&2
+    exit 2
+  fi
+  owner_id="$(stat -c '%u' "$environment_file")"
+  permissions="$(stat -c '%a' "$environment_file")"
+  if [[ "$owner_id" != "0" && "$owner_id" != "$EUID" ]]; then
+    echo "production environment file must be owned by root or the current operator" >&2
+    exit 2
+  fi
+  if [[ ! "$permissions" =~ ^[0-7]?[0-7]00$ ]]; then
+    echo "production environment file must not be accessible by group or other users" >&2
+    exit 2
+  fi
+
+  declare -A loaded_names=()
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line%$'\r'}"
+    [[ -z "$line" || "$line" =~ ^[[:space:]]*# ]] && continue
+    if [[ "$line" == export\ * ]]; then
+      line="${line#export }"
+    fi
+    if [[ ! "$line" =~ ^([A-Za-z_][A-Za-z0-9_]*)=(.*)$ ]]; then
+      echo "production environment contains an invalid assignment" >&2
+      exit 2
+    fi
+    name="${BASH_REMATCH[1]}"
+    value="${BASH_REMATCH[2]}"
+    if [[ -n "${loaded_names[$name]:-}" ]]; then
+      echo "production environment contains duplicate setting: $name" >&2
+      exit 2
+    fi
+    loaded_names[$name]=1
+    if [[ "$value" == \'*\' && ${#value} -ge 2 ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == \"*\" && ${#value} -ge 2 ]]; then
+      value="${value:1:${#value}-2}"
+    elif [[ "$value" == *'${'* || "$value" == *'$('* || "$value" == *'`'* ]]; then
+      echo "production environment values must be literal; quote metacharacters" >&2
+      exit 2
+    fi
+    export "$name=$value"
+  done < "$environment_file"
+elif (($#)); then
+  echo "usage: $0 [--env-file /absolute/path/to/production.env]" >&2
+  exit 2
+fi
+
 required=(
   POSTGRES_DB
   POSTGRES_USER
@@ -152,7 +208,11 @@ if ! docker compose version >/dev/null 2>&1; then
   compose_command=(docker-compose)
 fi
 
-compose_files=(-f compose.yaml -f compose.hindsight.yaml)
+compose_files=()
+if [[ -n "${environment_file:-}" ]]; then
+  compose_files+=(--env-file "$environment_file")
+fi
+compose_files+=(-f compose.yaml -f compose.hindsight.yaml)
 if [[ "${require_compose_tunnel}" == "1" || -n "${CLOUDFLARE_TUNNEL_TOKEN:-}" ]]; then
   compose_files+=(-f compose.tunnel.yaml)
 fi

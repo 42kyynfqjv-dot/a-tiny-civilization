@@ -31,51 +31,6 @@ if [[ "$environment_file" != /* ]]; then
   exit 2
 fi
 
-required=(APP_ENV POSTGRES_DB POSTGRES_USER POSTGRES_PASSWORD)
-for name in "${required[@]}"; do
-  if ! grep -qE "^${name}=.+$" "$environment_file"; then
-    echo "production environment is missing $name" >&2
-    exit 2
-  fi
-done
-if ! grep -qx 'APP_ENV=production' "$environment_file"; then
-  echo "APP_ENV must be production" >&2
-  exit 2
-fi
-if grep -qx 'POSTGRES_PASSWORD=local-development-only' "$environment_file"; then
-  echo "production database password uses the documented development value" >&2
-  exit 2
-fi
-if ! grep -qE '^(CLOUDFLARE_WORKERS_AI_API_KEY|GROQ_API_KEY|CEREBRAS_API_KEY|OPENROUTER_API_KEY)=.+$' "$environment_file"; then
-  echo "production environment requires at least one cognition provider key" >&2
-  exit 2
-fi
-if grep -qx 'COGNITION_PAID_ENABLED=true' "$environment_file" \
-   && ! grep -qE '^OPENROUTER_API_KEY=.+$' "$environment_file"; then
-  echo "paid cognition requires OPENROUTER_API_KEY" >&2
-  exit 2
-fi
-if grep -qE '^CLOUDFLARE_WORKERS_AI_API_KEY=.+$' "$environment_file" \
-   && ! grep -qE '^CLOUDFLARE_WORKERS_AI_BASE_URL=.+$' "$environment_file"; then
-  echo "Cloudflare Workers AI requires its account-scoped base URL" >&2
-  exit 2
-fi
-if grep -qE '^CLOUDFLARE_WORKERS_AI_BASE_URL=.+$' "$environment_file" \
-   && ! grep -qE '^CLOUDFLARE_WORKERS_AI_API_KEY=.+$' "$environment_file"; then
-  echo "Cloudflare Workers AI requires its API key" >&2
-  exit 2
-fi
-if grep -qE '^COGNITION_PAID_ENABLED=' "$environment_file" \
-   && ! grep -qEx 'COGNITION_PAID_ENABLED=(true|false)' "$environment_file"; then
-  echo "COGNITION_PAID_ENABLED must be true or false" >&2
-  exit 2
-fi
-if grep -qE '^STRIPE_SECRET_KEY=.+$' "$environment_file" \
-   && ! grep -qE '^ATINY_MODERATOR_ID=[A-Za-z0-9._:@/-]{1,128}$' "$environment_file"; then
-  echo "Stripe Checkout requires a stable ATINY_MODERATOR_ID" >&2
-  exit 2
-fi
-
 compose_command=(docker compose)
 if ! docker compose version >/dev/null 2>&1; then
   compose_command=(docker-compose)
@@ -83,6 +38,10 @@ fi
 
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
+
+# Validate the exact file that Compose will consume. Keeping one validator prevents the
+# deployment helper and documented/manual preflight from silently accepting different setups.
+"${project_root}/scripts/production-preflight.sh" --env-file "$environment_file"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
 "${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web

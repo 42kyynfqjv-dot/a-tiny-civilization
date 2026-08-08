@@ -94,7 +94,10 @@ sudo ./scripts/deploy-production-app.sh \
   --env-file /etc/a-tiny-civilization-production.env
 ```
 
-The helper builds the application and web images, starts the database, migrations,
+The helper first runs the complete production preflight against the exact root-protected env file
+that Compose will consume. The file must be an absolute, regular non-symlink owned by root (or the
+invoking operator for a manual preflight), with no group or other permissions. The helper then builds
+the application and web images, starts the database, migrations,
 API, projector, and runner with `APP_ENV=production`, then updates the web container
 without allowing Compose defaults to recreate its API dependency. It waits for the
 observer API readiness check. It deliberately does **not** configure a tunnel or
