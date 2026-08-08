@@ -89,4 +89,9 @@ if grep -qF 'sha256sum "${output_directory}"/*.json' scripts/prepare-provisional
   echo "genesis checksum manifest must not retain absolute host paths" >&2
   exit 1
 fi
+grep -qF 'VerifyProvisionalGenesis' apps/runner/src/main.rs
+grep -qF 'verify_portable_genesis_manifest(genesis_directory)' apps/runner/src/main.rs
+grep -qF 'construct_configured_genesis_with_materials' \
+  apps/runner/src/main.rs crates/application/src/lib.rs
+grep -qF 'complete != from_snapshot' apps/runner/src/main.rs
 echo "Ruleset-32 provisional genesis pins one verified composition and artifact revision."

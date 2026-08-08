@@ -13,7 +13,7 @@ use application::{
     CognitionProviderId, CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore,
     MemoryOutboxStore, ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession,
     WorldStore, advance_world, advance_world_with_celestial,
-    advance_world_with_celestial_and_cognition,
+    advance_world_with_celestial_and_cognition, construct_configured_genesis_with_materials,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
     process_next_cognition_job, resume_world, resume_world_from_snapshot, schedule_world_cognition,
 };
@@ -28,7 +28,8 @@ use sim_engine::{
     CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
     LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
-    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, run_partition_capacity_probe,
+    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
+    run_partition_capacity_probe,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
@@ -202,6 +203,36 @@ enum Command {
 
         /// Immutable causal ruleset for this new or resumed provisional world.
         /// Ruleset three and later require the pinned DE441 source driver at every tick.
+        #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
+        ruleset_version: u32,
+    },
+    /// Prove canonical ruleset-32 genesis construction and replay without PostgreSQL.
+    VerifyProvisionalGenesis {
+        #[arg(long)]
+        world_id: WorldId,
+
+        #[arg(long)]
+        seed: u64,
+
+        /// Portable artifact bundle produced by prepare-provisional-genesis.sh.
+        #[arg(long)]
+        genesis_directory: PathBuf,
+
+        #[arg(
+            long,
+            default_value = "data/provisional/full-earth-breadth-first-0.1.2.json"
+        )]
+        composition: PathBuf,
+
+        #[arg(long, default_value = ".")]
+        artifact_root: PathBuf,
+
+        #[arg(long, default_value_t = 300)]
+        tick_duration_seconds: u32,
+
+        #[arg(long, default_value_t = 10_000)]
+        max_events_per_partition_transition: u32,
+
         #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
         ruleset_version: u32,
     },
@@ -419,8 +450,31 @@ async fn main() -> Result<()> {
     {
         return capacity_sweep(populations, active_percents, *ticks);
     }
+    if let Some(Command::VerifyProvisionalGenesis {
+        world_id,
+        seed,
+        genesis_directory,
+        composition,
+        artifact_root,
+        tick_duration_seconds,
+        max_events_per_partition_transition,
+        ruleset_version,
+    }) = &cli.command
+    {
+        return verify_provisional_genesis(
+            *world_id,
+            *seed,
+            genesis_directory,
+            composition,
+            artifact_root,
+            *tick_duration_seconds,
+            *max_events_per_partition_transition,
+            *ruleset_version,
+        )
+        .await;
+    }
     let database_url = cli.database_url.as_deref().context(
-        "--database-url or DATABASE_URL is required except for database-free probe commands",
+        "--database-url or DATABASE_URL is required except for explicitly database-free commands",
     )?;
     let store = PostgresStore::connect(database_url, cli.database_max_connections)
         .await
@@ -466,7 +520,7 @@ async fn main() -> Result<()> {
             ruleset_version,
         } => {
             init_provisional_full_earth_world(
-                &store,
+                Some(&store),
                 world_id,
                 seed,
                 &composition,
@@ -503,6 +557,9 @@ async fn main() -> Result<()> {
         }
         Command::CapacitySweep { .. } => {
             unreachable!("capacity sweep returns before database connection")
+        }
+        Command::VerifyProvisionalGenesis { .. } => {
+            unreachable!("genesis verification returns before database connection")
         }
         Command::MemoryWorker {
             hindsight_base_url,
@@ -949,8 +1006,135 @@ async fn init_proof_world(
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn verify_provisional_genesis(
+    world_id: WorldId,
+    seed: u64,
+    genesis_directory: &std::path::Path,
+    composition_path: &std::path::Path,
+    artifact_root: &std::path::Path,
+    tick_duration_seconds: u32,
+    max_events_per_partition_transition: u32,
+    ruleset_version: u32,
+) -> Result<()> {
+    let manifest_digest = verify_portable_genesis_manifest(genesis_directory)?;
+    println!("portable genesis manifest: {manifest_digest}");
+    println!("verifying the complete content-addressed full-Earth artifact tree...");
+    let origin_selection = genesis_directory.join("origin-selection.json");
+    let origin_environment = genesis_directory.join("origin-environment.json");
+    let origin_climate_evidence = genesis_directory.join("origin-climate-evidence.json");
+    let origin_climate_normals = genesis_directory.join("origin-climate-normals.json");
+    let fauna_candidates = genesis_directory.join("fauna-candidates.json");
+    let fauna_selection = genesis_directory.join("fauna-selection.json");
+    let fauna_population = genesis_directory.join("fauna-population-plan.json");
+    let fauna_ecology = genesis_directory.join("fauna-ecology-plan.json");
+    let organism_profiles = genesis_directory.join("organism-body-profile-plan.json");
+    let material_resources = genesis_directory.join("material-resource-plan.json");
+    let fauna_ecology_profiles =
+        std::path::Path::new("data/derived-cache/eltontraits-ecology-v2.json");
+    init_provisional_full_earth_world(
+        None,
+        world_id,
+        seed,
+        composition_path,
+        artifact_root,
+        None,
+        Some(&origin_selection),
+        Some(&origin_environment),
+        Some(&origin_climate_evidence),
+        Some(&origin_climate_normals),
+        Some(&fauna_candidates),
+        Some(&fauna_selection),
+        Some(&origin_environment),
+        Some(&fauna_population),
+        None,
+        None,
+        Some(fauna_ecology_profiles),
+        Some(&fauna_ecology),
+        Some(&organism_profiles),
+        Some(&material_resources),
+        None,
+        false,
+        tick_duration_seconds,
+        max_events_per_partition_transition,
+        ruleset_version,
+    )
+    .await
+}
+
+fn verify_portable_genesis_manifest(genesis_directory: &std::path::Path) -> Result<Digest> {
+    let manifest_path = genesis_directory.join("SHA256SUMS");
+    let metadata = fs::symlink_metadata(&manifest_path)
+        .with_context(|| format!("inspect genesis manifest {}", manifest_path.display()))?;
+    if !metadata.file_type().is_file() {
+        anyhow::bail!("genesis SHA256SUMS must be a regular, non-symlink file");
+    }
+    let manifest_bytes = fs::read(&manifest_path).context("read genesis SHA256SUMS")?;
+    let manifest_text = std::str::from_utf8(&manifest_bytes)
+        .context("genesis SHA256SUMS must contain UTF-8 text")?;
+    let mut covered = BTreeSet::new();
+    for line in manifest_text.lines() {
+        let (expected, relative) = line
+            .split_once("  ./")
+            .context("genesis SHA256SUMS has a noncanonical or nonportable line")?;
+        if expected.len() != 64
+            || !expected
+                .bytes()
+                .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+            || relative.is_empty()
+            || relative.contains('/')
+            || relative.contains('\\')
+            || relative.chars().any(char::is_whitespace)
+            || !covered.insert(relative.to_owned())
+        {
+            anyhow::bail!("genesis SHA256SUMS has a noncanonical or nonportable line");
+        }
+        let artifact = genesis_directory.join(relative);
+        let metadata = fs::symlink_metadata(&artifact)
+            .with_context(|| format!("inspect genesis artifact {}", artifact.display()))?;
+        if !metadata.file_type().is_file() {
+            anyhow::bail!("genesis artifact must be a regular, non-symlink file: {relative}");
+        }
+        let actual = Digest::sha256(
+            &fs::read(&artifact)
+                .with_context(|| format!("read genesis artifact {}", artifact.display()))?,
+        );
+        if actual.to_string() != expected {
+            anyhow::bail!("genesis checksum mismatch: {relative}");
+        }
+    }
+    let mut present = BTreeSet::new();
+    for entry in fs::read_dir(genesis_directory).with_context(|| {
+        format!(
+            "enumerate provisional genesis directory {}",
+            genesis_directory.display()
+        )
+    })? {
+        let entry = entry.context("read provisional genesis directory entry")?;
+        let name = entry
+            .file_name()
+            .into_string()
+            .map_err(|_| anyhow::anyhow!("genesis artifact name is not UTF-8"))?;
+        if name == "SHA256SUMS" {
+            continue;
+        }
+        if !entry
+            .file_type()
+            .context("inspect provisional genesis directory entry")?
+            .is_file()
+        {
+            anyhow::bail!("genesis bundle contains a non-regular entry: {name}");
+        }
+        present.insert(name);
+    }
+    if covered.is_empty() || covered != present {
+        anyhow::bail!("genesis SHA256SUMS must cover every and only genesis artifact");
+    }
+    Ok(Digest::sha256(&manifest_bytes))
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn init_provisional_full_earth_world(
-    store: &PostgresStore,
+    store: Option<&PostgresStore>,
     world_id: WorldId,
     seed: u64,
     composition_path: &std::path::Path,
@@ -977,6 +1161,7 @@ async fn init_provisional_full_earth_world(
     ruleset_version: u32,
 ) -> Result<()> {
     if refuse_other_worlds {
+        let store = store.context("exclusive initialization requires PostgreSQL")?;
         let other_worlds = store
             .list_world_ids()
             .await
@@ -1221,17 +1406,31 @@ async fn init_provisional_full_earth_world(
             "provisional_organism_body_profile_plan".to_owned(),
             evidence.profile_plan_digest.to_string(),
         );
-        if let Some(life_history_profile_set_digest) = evidence.life_history_profile_set_digest {
-            manifest.scientific_datasets.insert(
-                "provisional_fauna_life_history_profile_set".to_owned(),
-                life_history_profile_set_digest.to_string(),
-            );
+        let life_history_count = evidence.life_history_profile_set_digests.len();
+        for (ordinal, digest) in evidence
+            .life_history_profile_set_digests
+            .into_iter()
+            .enumerate()
+        {
+            let key = if life_history_count == 1 {
+                "provisional_fauna_life_history_profile_set".to_owned()
+            } else {
+                format!("provisional_fauna_life_history_profile_set_{ordinal:03}")
+            };
+            manifest.scientific_datasets.insert(key, digest.to_string());
         }
-        if let Some(body_mass_profile_set_digest) = evidence.body_mass_profile_set_digest {
-            manifest.scientific_datasets.insert(
-                "provisional_fauna_body_mass_profile_set".to_owned(),
-                body_mass_profile_set_digest.to_string(),
-            );
+        let body_mass_count = evidence.body_mass_profile_set_digests.len();
+        for (ordinal, digest) in evidence
+            .body_mass_profile_set_digests
+            .into_iter()
+            .enumerate()
+        {
+            let key = if body_mass_count == 1 {
+                "provisional_fauna_body_mass_profile_set".to_owned()
+            } else {
+                format!("provisional_fauna_body_mass_profile_set_{ordinal:03}")
+            };
+            manifest.scientific_datasets.insert(key, digest.to_string());
         }
     }
     let (material_resource_plan_digest, initial_materials) = load_provisional_material_resources(
@@ -1251,31 +1450,82 @@ async fn init_provisional_full_earth_world(
             material_resource_plan_digest.to_string(),
         );
     }
-    let session = initialize_or_resume_configured_world_with_materials(
-        store,
-        manifest,
-        predecessor_world_id,
-        configuration,
-        initial_organisms,
-        initial_materials,
-    )
-    .await
-    .context("initialize provisional full-Earth world")?;
-
     println!(
         "verified {} provisional references ({} bytes)",
         verified.artifacts, verified.bytes
     );
-    println!(
-        "initialized provisional full-Earth world {world_id} from {}@{}",
-        composition_reference.composition_id, composition_reference.composition_version
-    );
-    println!("status: provisional-not-scientifically-admitted");
-    println!("composition hash: {}", composition_reference.content_hash);
-    println!(
-        "sequence {}, tick {}, state {}",
-        session.world.cursor.sequence, session.world.cursor.tick, session.world.cursor.state_hash
-    );
+    if let Some(store) = store {
+        let session = initialize_or_resume_configured_world_with_materials(
+            store,
+            manifest,
+            predecessor_world_id,
+            configuration,
+            initial_organisms,
+            initial_materials,
+        )
+        .await
+        .context("initialize provisional full-Earth world")?;
+        println!(
+            "initialized provisional full-Earth world {world_id} from {}@{}",
+            composition_reference.composition_id, composition_reference.composition_version
+        );
+        println!("status: provisional-not-scientifically-admitted");
+        println!("composition hash: {}", composition_reference.content_hash);
+        println!(
+            "sequence {}, tick {}, state {}",
+            session.world.cursor.sequence,
+            session.world.cursor.tick,
+            session.world.cursor.state_hash
+        );
+    } else {
+        let organism_count = initial_organisms.len();
+        let material_count = initial_materials.len();
+        let scientific_dataset_count = manifest.scientific_datasets.len();
+        let genesis = construct_configured_genesis_with_materials(
+            manifest.clone(),
+            configuration,
+            initial_organisms,
+            initial_materials,
+        )
+        .context("construct database-free provisional full-Earth genesis")?;
+        let batches = vec![genesis.batch.clone()];
+        let complete = replay(manifest, &batches).context("replay genesis from event zero")?;
+        let from_snapshot = replay_from_snapshot(&genesis.snapshot, &[])
+            .context("replay genesis snapshot with an empty tail")?;
+        if complete != from_snapshot
+            || complete.state != genesis.state
+            || genesis.batch.post_state_hash != genesis.snapshot.state_hash
+        {
+            anyhow::bail!("database-free genesis replay paths disagree");
+        }
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&json!({
+                "mode": "database-free-canonical-genesis-proof",
+                "world_id": world_id,
+                "seed": seed,
+                "ruleset_version": ruleset_version,
+                "composition": {
+                    "id": composition_reference.composition_id,
+                    "version": composition_reference.composition_version,
+                    "content_hash": composition_reference.content_hash,
+                },
+                "verified_artifacts": verified.artifacts,
+                "verified_artifact_bytes": verified.bytes,
+                "scientific_dataset_commitments": scientific_dataset_count,
+                "organisms": organism_count,
+                "material_instances": material_count,
+                "event_count": genesis.batch.events.len(),
+                "sequence": genesis.batch.sequence,
+                "tick": genesis.batch.tick,
+                "batch_hash": genesis.batch.batch_hash,
+                "state_hash": genesis.batch.post_state_hash,
+                "snapshot_schema_version": genesis.snapshot.snapshot_schema_version,
+                "genesis_replay_matches_snapshot": true,
+            }))
+            .context("encode database-free genesis proof")?
+        );
+    }
     Ok(())
 }
 
@@ -1812,11 +2062,11 @@ fn load_provisional_fauna_initial_organisms(
     }))
 }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 struct AppliedBodyProfileEvidence {
     profile_plan_digest: Digest,
-    life_history_profile_set_digest: Option<Digest>,
-    body_mass_profile_set_digest: Option<Digest>,
+    life_history_profile_set_digests: Vec<Digest>,
+    body_mass_profile_set_digests: Vec<Digest>,
 }
 
 fn apply_provisional_organism_body_profiles(
@@ -1861,10 +2111,9 @@ fn apply_provisional_organism_body_profiles(
         })
         .map(|entry| entry.source_profile_set_digest)
         .collect::<BTreeSet<_>>();
-    if life_history_digests.len() > 1 {
+    if ruleset_version < ADULT_BODY_MASS_STATE_RULESET_VERSION && life_history_digests.len() > 1 {
         anyhow::bail!("one body-profile plan cannot mix multiple life-history profile sets");
     }
-    let life_history_profile_set_digest = life_history_digests.into_iter().next();
     let body_mass_digests = plan
         .entries
         .iter()
@@ -1874,10 +2123,9 @@ fn apply_provisional_organism_body_profiles(
         })
         .map(|entry| entry.profile_set_digest)
         .collect::<BTreeSet<_>>();
-    if body_mass_digests.len() > 1 {
+    if ruleset_version < ADULT_BODY_MASS_STATE_RULESET_VERSION && body_mass_digests.len() > 1 {
         anyhow::bail!("one body-profile plan cannot mix multiple body-mass profile sets");
     }
-    let body_mass_profile_set_digest = body_mass_digests.into_iter().next();
 
     for organism in initial_organisms {
         let profile = plan.entry_for(&organism.species).with_context(|| {
@@ -1949,8 +2197,8 @@ fn apply_provisional_organism_body_profiles(
 
     Ok(Some(AppliedBodyProfileEvidence {
         profile_plan_digest: Digest::sha256(&bytes),
-        life_history_profile_set_digest,
-        body_mass_profile_set_digest,
+        life_history_profile_set_digests: life_history_digests.into_iter().collect(),
+        body_mass_profile_set_digests: body_mass_digests.into_iter().collect(),
     }))
 }
 
@@ -2570,8 +2818,8 @@ mod tests {
             digest,
             Some(AppliedBodyProfileEvidence {
                 profile_plan_digest: Digest::sha256(&bytes),
-                life_history_profile_set_digest: None,
-                body_mass_profile_set_digest: Some(Digest::sha256(b"runner body-mass source set")),
+                life_history_profile_set_digests: Vec::new(),
+                body_mass_profile_set_digests: vec![Digest::sha256(b"runner body-mass source set")],
             })
         );
         assert_eq!(organisms[0].initial_age_ticks, 20);
@@ -2627,6 +2875,99 @@ mod tests {
             )
             .is_err()
         );
+        std::fs::remove_file(path).expect("remove body-profile plan");
+    }
+
+    #[test]
+    fn ruleset_thirty_two_pins_every_distinct_body_mass_source_set() {
+        let world_id = WorldId::from_uuid(Uuid::new_v4());
+        let human = SpeciesIdentity::new(
+            "gbif",
+            "2436436",
+            "Homo sapiens",
+            "https://www.gbif.org/species/2436436",
+        )
+        .expect("human species");
+        let fox = SpeciesIdentity::new(
+            "gbif",
+            "5219243",
+            "Vulpes vulpes",
+            "https://www.gbif.org/species/5219243",
+        )
+        .expect("fox species");
+        let mut human_profile = provisional_body_profile_entry(human.clone());
+        let mut fox_profile = provisional_body_profile_entry(fox.clone());
+        let human_source = Digest::sha256(b"human mass source set");
+        let fox_source = Digest::sha256(b"fox mass source set");
+        human_profile
+            .adult_body_mass
+            .as_mut()
+            .expect("human mass")
+            .profile_set_digest = human_source;
+        fox_profile
+            .adult_body_mass
+            .as_mut()
+            .expect("fox mass")
+            .profile_set_digest = fox_source;
+        let plan = ProvisionalOrganismBodyProfilePlan {
+            plan_schema_version: world_data::PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
+            status: world_data::PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS.to_owned(),
+            tick_duration_seconds: 300,
+            entries: vec![human_profile, fox_profile],
+        };
+        let bytes = plan.canonical_bytes().expect("canonical body-profile plan");
+        let path = std::env::temp_dir().join(format!(
+            "atc-runner-multiple-body-profile-sets-{}.json",
+            Uuid::new_v4()
+        ));
+        std::fs::write(&path, bytes).expect("write body-profile plan");
+        let mut organisms = [human, fox]
+            .into_iter()
+            .enumerate()
+            .map(|(ordinal, species)| InitialOrganism {
+                organism_id: EntityId::deterministic(
+                    world_id,
+                    format!("profiled-founder-{ordinal}").as_bytes(),
+                ),
+                species,
+                role: OrganismRole::Person,
+                birth_category: BirthCategory::new("female").expect("category"),
+                initial_age_ticks: 0,
+                location_id: None,
+                embodied_patch: Some("0000000000004000".parse().expect("L23 patch")),
+                metabolic_rate: None,
+                adult_body_mass: None,
+                physiological_regulation: None,
+                reproductive_physiology: None,
+                heritable_disposition_profile: None,
+            })
+            .collect::<Vec<_>>();
+        let evidence = apply_provisional_organism_body_profiles(
+            &mut organisms,
+            ADULT_BODY_MASS_STATE_RULESET_VERSION,
+            300,
+            Some(&path),
+        )
+        .expect("ruleset 32 accepts multiple source sets")
+        .expect("profile evidence");
+        assert_eq!(
+            evidence.body_mass_profile_set_digests,
+            vec![human_source, fox_source]
+                .into_iter()
+                .collect::<BTreeSet<_>>()
+                .into_iter()
+                .collect::<Vec<_>>()
+        );
+
+        let error = apply_provisional_organism_body_profiles(
+            &mut organisms,
+            ADULT_BODY_MASS_STATE_RULESET_VERSION - 1,
+            300,
+            Some(&path),
+        )
+        .expect_err("older rulesets retain their single-set genesis contract")
+        .to_string();
+        assert!(error.contains("cannot mix multiple body-mass profile sets"));
         std::fs::remove_file(path).expect("remove body-profile plan");
     }
 
@@ -2983,6 +3324,65 @@ mod tests {
         };
         assert_eq!(ruleset_version, ADULT_BODY_MASS_STATE_RULESET_VERSION);
         assert!(refuse_other_worlds);
+    }
+
+    #[test]
+    fn canonical_genesis_proof_is_an_explicit_database_free_command() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "verify-provisional-genesis",
+            "--world-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--seed",
+            "1",
+            "--genesis-directory",
+            "genesis",
+        ])
+        .expect("parse database-free genesis proof");
+        assert!(cli.database_url.is_none());
+        let Some(Command::VerifyProvisionalGenesis {
+            seed,
+            genesis_directory,
+            tick_duration_seconds,
+            max_events_per_partition_transition,
+            ruleset_version,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected provisional genesis verification command");
+        };
+        assert_eq!(seed, 1);
+        assert_eq!(genesis_directory, std::path::Path::new("genesis"));
+        assert_eq!(tick_duration_seconds, 300);
+        assert_eq!(max_events_per_partition_transition, 10_000);
+        assert_eq!(ruleset_version, ADULT_BODY_MASS_STATE_RULESET_VERSION);
+    }
+
+    #[test]
+    fn canonical_genesis_proof_requires_a_portable_complete_manifest() {
+        let directory =
+            std::env::temp_dir().join(format!("atc-genesis-manifest-test-{}", Uuid::new_v4()));
+        std::fs::create_dir(&directory).expect("test directory");
+        let artifact = directory.join("seed.json");
+        std::fs::write(&artifact, b"{}\n").expect("artifact");
+        let artifact_digest = world_domain::Digest::sha256(b"{}\n");
+        let portable_manifest = format!("{artifact_digest}  ./seed.json\n");
+        std::fs::write(directory.join("SHA256SUMS"), &portable_manifest).expect("manifest");
+        assert_eq!(
+            verify_portable_genesis_manifest(&directory).expect("portable manifest"),
+            world_domain::Digest::sha256(portable_manifest.as_bytes())
+        );
+
+        std::fs::write(
+            directory.join("SHA256SUMS"),
+            format!("{artifact_digest}  {}\n", artifact.display()),
+        )
+        .expect("absolute manifest");
+        let error = verify_portable_genesis_manifest(&directory)
+            .expect_err("absolute manifest must fail")
+            .to_string();
+        assert!(error.contains("noncanonical or nonportable"));
+        std::fs::remove_dir_all(directory).expect("remove test directory");
     }
 
     #[test]

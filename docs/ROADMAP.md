@@ -850,3 +850,12 @@ manifest to use relative paths. The bundle verifies unchanged after copying to a
 directory, closing a production portability defect found in v23. Its exact `SHA256SUMS` digest is
 recorded in `docs/operations/CANONICAL_INPUT_REVISION_V24_2026-08-08.md`; it remains input evidence,
 not qualification or launch authorization.
+
+The canonical initializer now shares a side-effect-free genesis constructor with a database-free
+operator proof. That proof validates the portable input manifest and every content-addressed
+full-Earth artifact, constructs the exact configured genesis batch and snapshot, and requires
+event-zero replay and snapshot replay to reproduce the same state. Its first complete v24 pass
+exposed an obsolete single-profile-set assumption before PostgreSQL mutation. Ruleset 32 now pins
+every distinct retained body-mass and life-history source-set digest under stable ordered manifest
+keys while older rulesets preserve their singular provenance contract. ADRs 0138 and 0139 record
+the two boundaries. Database durability and bounded-tick qualification remain separate gates.

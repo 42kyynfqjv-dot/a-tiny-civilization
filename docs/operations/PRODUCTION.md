@@ -325,6 +325,21 @@ than the development/proof database. The underlying initializer applies the same
 embedded migration set used by the deployment migration service, allowing a genuinely empty
 canonical database without weakening the exclusive-world check:
 
+Before creating that isolated database, the same complete bundle can be checked through the exact
+genesis constructor with no persistence side effect:
+
+```bash
+target/release/civilization-runner verify-provisional-genesis \
+  --world-id "$WORLD_ID" \
+  --seed "$WORLD_SEED" \
+  --genesis-directory "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" \
+  --ruleset-version 32
+```
+
+This verifies the portable input manifest, every full-Earth composition artifact, genesis
+construction, event-zero replay, and snapshot replay. It is an early fail-fast proof, not a
+substitute for database-backed bounded qualification or launch admission.
+
 ```bash
 ./scripts/activate-qualified-canonical-world.sh activate \
   docs/operations/CANONICAL_SEED_COMMITMENT.json \

@@ -123,6 +123,19 @@ pub struct WorldSession {
     pub state: EngineState,
 }
 
+/// Fully constructed genesis artifacts before any persistence side effect.
+///
+/// Operators use this to prove that a canonical input bundle can produce a
+/// self-consistent, replayable genesis even when a database is unavailable.
+/// Persistence still commits these exact artifacts through [`WorldStore`].
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ConstructedGenesis {
+    pub initial_state_hash: Digest,
+    pub state: EngineState,
+    pub batch: EventBatch,
+    pub snapshot: Snapshot,
+}
+
 #[derive(Debug, Error)]
 pub enum WorldRuntimeError {
     #[error(transparent)]
@@ -211,16 +224,31 @@ pub async fn initialize_or_resume_configured_world_with_materials<S: WorldStore 
     .await
 }
 
-async fn initialize_or_resume_world_internal<S: WorldStore + ?Sized>(
-    store: &S,
+/// Construct the exact configured genesis batch and snapshot without writing
+/// external state. This is the database-free counterpart to
+/// [`initialize_or_resume_configured_world_with_materials`].
+pub fn construct_configured_genesis_with_materials(
     manifest: WorldManifest,
-    predecessor_world_id: Option<WorldId>,
+    configuration: WorldConfiguration,
+    initial_organisms: Vec<InitialOrganism>,
+    initial_materials: Vec<InitialMaterialInstance>,
+) -> Result<ConstructedGenesis, WorldRuntimeError> {
+    construct_genesis(
+        manifest,
+        Some(configuration),
+        initial_organisms,
+        initial_materials,
+    )
+}
+
+fn construct_genesis(
+    manifest: WorldManifest,
     configuration: Option<WorldConfiguration>,
     initial_organisms: Vec<InitialOrganism>,
     initial_materials: Vec<InitialMaterialInstance>,
-) -> Result<WorldSession, WorldRuntimeError> {
-    let initial = EngineState::new(manifest.clone());
-    let initial_hash = initial.state_hash().map_err(EngineError::from)?;
+) -> Result<ConstructedGenesis, WorldRuntimeError> {
+    let initial = EngineState::new(manifest);
+    let initial_state_hash = initial.state_hash().map_err(EngineError::from)?;
     let genesis_events = match configuration {
         Some(configuration) => initial.plan_configured_genesis_with_materials(
             configuration,
@@ -234,14 +262,34 @@ async fn initialize_or_resume_world_internal<S: WorldStore + ?Sized>(
             ));
         }
     };
-    let genesis_sequence = EventSequence::new(1);
-    let (running, genesis_batch) =
-        initial.commit(genesis_sequence, Digest::ZERO, genesis_events)?;
-    let genesis_snapshot = Snapshot::new(
-        running.clone(),
-        genesis_batch.sequence,
-        genesis_batch.batch_hash,
+    let (state, batch) = initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;
+    let snapshot = Snapshot::new(state.clone(), batch.sequence, batch.batch_hash)?;
+    Ok(ConstructedGenesis {
+        initial_state_hash,
+        state,
+        batch,
+        snapshot,
+    })
+}
+
+async fn initialize_or_resume_world_internal<S: WorldStore + ?Sized>(
+    store: &S,
+    manifest: WorldManifest,
+    predecessor_world_id: Option<WorldId>,
+    configuration: Option<WorldConfiguration>,
+    initial_organisms: Vec<InitialOrganism>,
+    initial_materials: Vec<InitialMaterialInstance>,
+) -> Result<WorldSession, WorldRuntimeError> {
+    let genesis = construct_genesis(
+        manifest.clone(),
+        configuration,
+        initial_organisms,
+        initial_materials,
     )?;
+    let initial_hash = genesis.initial_state_hash;
+    let running = genesis.state;
+    let genesis_batch = genesis.batch;
+    let genesis_snapshot = genesis.snapshot;
 
     let stored = match store.load_world(manifest.world_id).await {
         Ok(existing) => existing,
@@ -612,7 +660,9 @@ mod tests {
     use sim_engine::{InitialOrganism, PERSISTENT_PERCEPTION_RULESET_VERSION};
     use uuid::Uuid;
     use world_domain::{
-        BirthCategory, Digest, OrganismRole, PerceptionChannel, PropertyReading,
+        BirthCategory, CapacityExhaustionPolicy, Digest, EarthResolutionLevels, FullEarthGrid,
+        OrganismRole, PartitionedExecution, PerceptionChannel, PersonRepresentation,
+        PropertyReading, ProvisionalWorldCompositionReference, S2Projection, SchedulerKind,
         SituatedPerception, SpeciesIdentity, WorldSeed,
     };
 
@@ -695,5 +745,63 @@ mod tests {
                 .memory_retains
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn database_free_genesis_matches_event_replay_and_snapshot() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xA78));
+        let manifest = WorldManifest::new(world_id, WorldSeed::new(18), 1);
+        let patch = "0000000000004000".parse().expect("L23 patch");
+        let mut founder = organism(world_id);
+        founder.embodied_patch = Some(patch);
+        let configuration = WorldConfiguration::new_provisional_full_earth(
+            300,
+            FullEarthGrid {
+                physics_crs_epsg: 4978,
+                catalog_crs_epsg: 4979,
+                vertical_crs_epsg: 3855,
+                s2_definition_url: "https://s2geometry.io/devguide/s2cell_hierarchy.html"
+                    .to_owned(),
+                s2_library_revision: "0123456789abcdef".to_owned(),
+                s2_definition_hash: Digest::sha256(b"S2 definition"),
+                s2_projection: S2Projection::Quadratic,
+                levels: EarthResolutionLevels {
+                    planetary_aggregate: 10,
+                    regional_ecology: 14,
+                    active_landscape: 18,
+                    embodied_patch: 23,
+                },
+                refinement_policy_version: 1,
+            },
+            ProvisionalWorldCompositionReference::new(
+                1,
+                "application-genesis-proof",
+                "0.1.0",
+                Digest::sha256(b"composition"),
+            )
+            .expect("composition reference"),
+            PartitionedExecution {
+                scheduler_schema_version: 1,
+                scheduler: SchedulerKind::DeterministicEventQueue,
+                partition_s2_level: 10,
+                person_representation: PersonRepresentation::DurableIndividuals,
+                capacity_exhaustion: CapacityExhaustionPolicy::PauseAtCommittedBoundary,
+                max_events_per_partition_transition: 10_000,
+            },
+        )
+        .expect("configuration");
+        let genesis = construct_configured_genesis_with_materials(
+            manifest.clone(),
+            configuration,
+            vec![founder],
+            Vec::new(),
+        )
+        .expect("construct genesis");
+        let complete =
+            replay(manifest, std::slice::from_ref(&genesis.batch)).expect("event replay");
+        let from_snapshot = replay_from_snapshot(&genesis.snapshot, &[]).expect("snapshot replay");
+        assert_eq!(complete, from_snapshot);
+        assert_eq!(complete.state, genesis.state);
+        assert_eq!(genesis.batch.post_state_hash, genesis.snapshot.state_hash);
     }
 }
