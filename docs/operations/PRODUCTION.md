@@ -112,7 +112,9 @@ API, projector, runner, memory worker, and cognition worker with `APP_ENV=produc
 the web container
 without allowing Compose defaults to recreate its API dependency. It waits for web and API
 responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
-worker, and cognition worker. It deliberately does **not** configure a tunnel or
+worker, and cognition worker. Before it checks the public edge, it also requires the exact world to
+advance through tick one, drain initial Hindsight delivery without error, expose current
+privacy-safe projections, and replay exactly from canonical history. It deliberately does **not** configure a tunnel or
 off-site backups; those remain separate operational changes.
 The literal confirmation argument is required even for root and has no environment-variable
 equivalent, preventing a copied preflight command from becoming a deployment by implication.
@@ -313,8 +315,8 @@ The second command is retry-safe only for byte-identical inputs. Do not enable o
 restart the long-running runner until the printed replay hashes and the public seed
 commitment have been recorded in the launch evidence.
 
-Once production services are running and activation has committed tick zero, require observed live
-progress before opening the public hostname. This read-only check waits for tick 1, drains the
+The deployment helper runs the live-genesis verifier automatically. It remains available as a
+read-only operator check after restarts or incident recovery: it waits for tick 1, drains the
 initial Hindsight outbox, requires exact current privacy-safe projections, replays the live world,
 and reruns complete backend health:
 

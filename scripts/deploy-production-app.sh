@@ -149,6 +149,14 @@ fi
 
 "${project_root}/scripts/backend-status.sh" --env-file "$environment_file" --wait-seconds 60
 
+# A release is not successful merely because processes answer. Require the real canonical world to
+# cross tick one, drain its initial Hindsight delivery, expose current privacy-safe projections,
+# and replay exactly before checking the public edge.
+"${project_root}/scripts/verify-live-genesis.sh" \
+  --env-file "$environment_file" \
+  --world-id "$expected_world_id" \
+  --wait-seconds 300
+
 # A service-level health check cannot prove that the public read model is current,
 # nonempty, and privacy-safe. If this deployment contains a running world, resolve
 # its committed cursor from PostgreSQL and exercise the public API contract through
