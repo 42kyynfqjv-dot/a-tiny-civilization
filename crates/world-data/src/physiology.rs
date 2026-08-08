@@ -24,6 +24,12 @@ pub const LEGACY_FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_METABOLIC_RATE_PLAN_SCHEMA_VERSION: u16 = 2;
 pub const FAUNA_METABOLIC_RATE_PLAN_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-metabolic-rate-plan+json";
+pub const FAUNA_BODY_MASS_SELECTION_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_BODY_MASS_SELECTION_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.fauna-body-mass-selection+json";
+pub const FAUNA_BODY_MASS_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_BODY_MASS_PLAN_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.fauna-body-mass-plan+json";
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct FaunaPhysiologyProfile {
@@ -88,6 +94,105 @@ pub struct FaunaMetabolicRateSelection {
 pub struct FaunaMetabolicRatePlan {
     pub plan_schema_version: u16,
     pub selections: Vec<FaunaMetabolicRateSelection>,
+}
+
+/// An explicit, immutable choice of one retained adult-mass observation.
+///
+/// Sources may contain several valid measurements for one taxon. Keeping this
+/// choice separate from the profile set prevents a consumer from depending on
+/// source row order or silently averaging unlike observations.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaBodyMassSelection {
+    pub selection_schema_version: u16,
+    pub profile_set_digest: Digest,
+    pub species: SpeciesIdentity,
+    pub source_record_id: String,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct FaunaBodyMassPlan {
+    pub plan_schema_version: u16,
+    pub selections: Vec<FaunaBodyMassSelection>,
+}
+
+impl FaunaBodyMassPlan {
+    pub fn validate(&self) -> Result<(), FaunaPhysiologyProfileError> {
+        if self.plan_schema_version != FAUNA_BODY_MASS_PLAN_SCHEMA_VERSION {
+            return Err(FaunaPhysiologyProfileError::UnsupportedBodyMassPlanSchema);
+        }
+        for pair in self.selections.windows(2) {
+            if body_mass_selection_key(&pair[0]) >= body_mass_selection_key(&pair[1]) {
+                return Err(FaunaPhysiologyProfileError::NonCanonicalBodyMassPlanOrder);
+            }
+        }
+        for selection in &self.selections {
+            selection.validate()?;
+        }
+        Ok(())
+    }
+
+    pub fn selection_for(&self, species: &SpeciesIdentity) -> Option<&FaunaBodyMassSelection> {
+        self.selections
+            .binary_search_by(|selection| {
+                body_mass_selection_key(selection)
+                    .cmp(&(species.catalog.as_str(), species.identifier.as_str()))
+            })
+            .ok()
+            .map(|index| &self.selections[index])
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, FaunaPhysiologyProfileError> {
+        self.validate()?;
+        serde_json::to_vec(self)
+            .map_err(|error| FaunaPhysiologyProfileError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice(bytes: &[u8]) -> Result<Self, FaunaPhysiologyProfileError> {
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| FaunaPhysiologyProfileError::Decode(error.to_string()))?;
+        if value.canonical_bytes()? != bytes {
+            return Err(FaunaPhysiologyProfileError::NonCanonicalEncoding);
+        }
+        Ok(value)
+    }
+}
+
+impl FaunaBodyMassSelection {
+    pub fn validate(&self) -> Result<(), FaunaPhysiologyProfileError> {
+        if self.selection_schema_version != FAUNA_BODY_MASS_SELECTION_SCHEMA_VERSION {
+            return Err(FaunaPhysiologyProfileError::UnsupportedBodyMassSelectionSchema);
+        }
+        self.species
+            .validate()
+            .map_err(|_| FaunaPhysiologyProfileError::InvalidBodyMassSelection)?;
+        if self.profile_set_digest == Digest::ZERO || !technical(&self.source_record_id) {
+            return Err(FaunaPhysiologyProfileError::InvalidBodyMassSelection);
+        }
+        Ok(())
+    }
+
+    pub fn resolve<'a>(
+        &self,
+        profiles: &'a FaunaPhysiologyProfileSet,
+    ) -> Result<&'a FaunaPhysiologyProfile, FaunaPhysiologyProfileError> {
+        self.validate()?;
+        if Digest::sha256(&profiles.canonical_bytes()?) != self.profile_set_digest {
+            return Err(FaunaPhysiologyProfileError::BodyMassProfileSetMismatch);
+        }
+        let profile = profiles
+            .profiles
+            .iter()
+            .find(|profile| {
+                same_catalog_taxon(&profile.species, &self.species)
+                    && profile.trait_id == "adult-body-mass"
+                    && profile.source_record_id == self.source_record_id
+            })
+            .ok_or(FaunaPhysiologyProfileError::SelectedBodyMassProfileMissing)?;
+        if profile.value.unit != "g" || profile.value.value <= 0 {
+            return Err(FaunaPhysiologyProfileError::InvalidSelectedBodyMassProfile);
+        }
+        Ok(profile)
+    }
 }
 
 impl FaunaMetabolicRatePlan {
@@ -318,6 +423,10 @@ fn metabolic_selection_key(selection: &FaunaMetabolicRateSelection) -> (&str, &s
     (&selection.species.catalog, &selection.species.identifier)
 }
 
+fn body_mass_selection_key(selection: &FaunaBodyMassSelection) -> (&str, &str) {
+    (&selection.species.catalog, &selection.species.identifier)
+}
+
 fn same_catalog_taxon(left: &SpeciesIdentity, right: &SpeciesIdentity) -> bool {
     left.catalog == right.catalog && left.identifier == right.identifier
 }
@@ -368,6 +477,20 @@ pub enum FaunaPhysiologyProfileError {
     SelectedMetabolicProfileMissing,
     #[error("selected metabolic-rate profile is not a positive watt observation")]
     InvalidSelectedMetabolicProfile,
+    #[error("unsupported fauna body-mass selection schema")]
+    UnsupportedBodyMassSelectionSchema,
+    #[error("unsupported fauna body-mass plan schema")]
+    UnsupportedBodyMassPlanSchema,
+    #[error("fauna body-mass plan is not canonically ordered")]
+    NonCanonicalBodyMassPlanOrder,
+    #[error("invalid fauna body-mass selection")]
+    InvalidBodyMassSelection,
+    #[error("body-mass selection does not match the supplied profile set")]
+    BodyMassProfileSetMismatch,
+    #[error("selected body-mass profile is absent")]
+    SelectedBodyMassProfileMissing,
+    #[error("selected body-mass profile is not a positive gram observation")]
+    InvalidSelectedBodyMassProfile,
     #[error("decode error: {0}")]
     Decode(String),
     #[error("encoding error: {0}")]
@@ -502,6 +625,57 @@ mod tests {
             missing.resolve(&profiles),
             Err(FaunaPhysiologyProfileError::SelectedMetabolicProfileMissing)
         );
+    }
+
+    #[test]
+    fn body_mass_selection_pins_one_observation_without_averaging() {
+        let species = SpeciesIdentity::new(
+            "gbif",
+            "5219173",
+            "Canis lupus",
+            "https://www.gbif.org/species/5219173",
+        )
+        .expect("valid fixture species");
+        let profiles = FaunaPhysiologyProfileSet {
+            profile_set_schema_version: 1,
+            source_artifact_digest: Digest::sha256(b"source"),
+            profiles: vec![FaunaPhysiologyProfile {
+                species: species.clone(),
+                trait_id: "adult-body-mass".to_owned(),
+                value: ScaledFaunaTraitValue {
+                    value: 30_000,
+                    decimal_places: 0,
+                    unit: "g".to_owned(),
+                },
+                source: FaunaEvidenceSource::AnimalTraitsV1_0_7,
+                source_field: "body_mass".to_owned(),
+                source_record_id: "animaltraits-observations-line-8".to_owned(),
+                source_record_digest: Digest::sha256(b"mass row"),
+                evidence_basis: FaunaEvidenceBasis::EmpiricalObservation,
+            }],
+        };
+        let selection = FaunaBodyMassSelection {
+            selection_schema_version: FAUNA_BODY_MASS_SELECTION_SCHEMA_VERSION,
+            profile_set_digest: Digest::sha256(
+                &profiles.canonical_bytes().expect("canonical profile set"),
+            ),
+            species,
+            source_record_id: "animaltraits-observations-line-8".to_owned(),
+        };
+        assert_eq!(
+            selection
+                .resolve(&profiles)
+                .expect("exact profile resolves")
+                .value
+                .value,
+            30_000
+        );
+        let plan = FaunaBodyMassPlan {
+            plan_schema_version: FAUNA_BODY_MASS_PLAN_SCHEMA_VERSION,
+            selections: vec![selection],
+        };
+        let bytes = plan.canonical_bytes().expect("canonical plan");
+        assert_eq!(FaunaBodyMassPlan::from_canonical_slice(&bytes), Ok(plan));
     }
 
     #[test]

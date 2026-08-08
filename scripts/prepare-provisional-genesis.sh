@@ -38,6 +38,7 @@ fauna_occurrences="${output_directory}/local-fauna-occurrence-evidence.json"
 fauna_selection="${output_directory}/fauna-selection.json"
 fauna_population="${output_directory}/fauna-population-plan.json"
 fauna_metabolic_rates="${output_directory}/fauna-metabolic-rate-plan.json"
+fauna_body_masses="${output_directory}/fauna-body-mass-plan.json"
 body_profiles="${output_directory}/organism-body-profile-plan.json"
 material_resources="${output_directory}/material-resource-plan.json"
 
@@ -113,6 +114,14 @@ fi
   --metabolic-profiles data/derived-cache/animaltraits-metabolic-rate-v1.json \
   --output "${fauna_metabolic_rates}"
 
+"${data_executable}" derive fauna-body-mass-plan \
+  --population-plan "${fauna_population}" \
+  --candidates "${fauna_candidates}" \
+  --selection "${fauna_selection}" \
+  --origin-environment "${origin_environment}" \
+  --body-mass-profiles data/derived-cache/amniote-life-history-v1.json \
+  --output "${fauna_body_masses}"
+
 "${data_executable}" derive provisional-organism-body-profile-plan \
   --population-plan "${fauna_population}" \
   --candidates "${fauna_candidates}" \
@@ -122,6 +131,7 @@ fi
   --metabolic-rate-plan "${fauna_metabolic_rates}" \
   --life-history-profiles data/derived-cache/amniote-life-history-v1.json \
   --body-mass-profiles data/derived-cache/amniote-life-history-v1.json \
+  --body-mass-plan "${fauna_body_masses}" \
   --tick-duration-seconds 300 \
   --output "${body_profiles}"
 

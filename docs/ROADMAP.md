@@ -263,7 +263,12 @@ not clear any of them.
 
 The active ruleset-18 genesis path now pins its append-only successor,
 `data/provisional/full-earth-breadth-first-0.1.1.json`, whose fourth world component is the
-normalized, independently source-pinned fauna physiology v2 catalog. Preparation, initialization,
+normalized, independently source-pinned fauna physiology v3 catalog. V3 replaces a retained
+AnimalTraits body-mass artifact whose identifiers were numerically rather than lexicographically
+ordered, and canonical preparation now writes an explicit per-world body-mass selection plan before
+constructing body profiles. Multiple source observations remain intact and are never averaged. The
+current Amniote input covers five of 32 selected fauna taxa, while every uncovered mass stays an
+explicit engineering assumption. Preparation, initialization,
 runner defaults, and root-owned runtime staging all select the same 0.1.1 bytes and artifact set;
 the earlier 0.1.0 composition remains immutable evidence for histories that already reference it.
 The 0.1.1 filesystem audit now traverses 147,466 unique artifacts (10,164,215,509 bytes), including

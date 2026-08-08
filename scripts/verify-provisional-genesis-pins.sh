@@ -11,13 +11,13 @@ import hashlib, json, pathlib, sys
 
 path = pathlib.Path(sys.argv[1])
 raw = path.read_bytes()
-if len(raw) != 9842 or hashlib.sha256(raw).hexdigest() != "f43b5e02b6dc5660390a2f3162967d2d18ab95a29652cf07c7ed763fa8c6bb18":
+if len(raw) != 9842 or hashlib.sha256(raw).hexdigest() != "bf574653def31ba3a93a4ba8ab9dbc3dd9600c1461285fa196f3ef8ae656ebe4":
     raise SystemExit("active provisional composition bytes changed")
 value = json.loads(raw)
 physiology = next(item for item in value["world_components"] if item["kind"] == "fauna_physiology_evidence")
 release = physiology["release"]
-if release["artifact_path"] != "data/derived-cache/fauna-physiology-catalog-v2.json":
-    raise SystemExit("active composition does not pin normalized fauna physiology v2")
+if release["artifact_path"] != "data/derived-cache/fauna-physiology-catalog-v3.json":
+    raise SystemExit("active composition does not pin normalized fauna physiology v3")
 PY
 
 if [[ "${ATINY_VERIFY_FULL_PROVISIONAL_CLOSURE:-0}" == "1" ]]; then
@@ -59,4 +59,6 @@ grep -qF 'ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1' scripts/prepare-canonical-g
 grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-world.sh
 grep -qF -- '--body-mass-profiles data/derived-cache/amniote-life-history-v1.json' \
   scripts/prepare-provisional-genesis.sh
+grep -qF 'derive fauna-body-mass-plan' scripts/prepare-provisional-genesis.sh
+grep -qF -- '--body-mass-plan "${fauna_body_masses}"' scripts/prepare-provisional-genesis.sh
 echo "Ruleset-26 provisional genesis pins one verified composition and artifact revision."

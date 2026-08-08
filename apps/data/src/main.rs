@@ -24,9 +24,9 @@ use uuid::Uuid;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
     BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, FAUNA_POPULATION_PLAN_SCHEMA_VERSION,
-    FaunaBirthCategoryCount, FaunaMetabolicRatePlan, FaunaMetabolicRateSelection,
-    FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet, FaunaPopulationPlan,
-    FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
+    FaunaBirthCategoryCount, FaunaBodyMassPlan, FaunaBodyMassSelection, FaunaMetabolicRatePlan,
+    FaunaMetabolicRateSelection, FaunaPhysiologyProfileCatalog, FaunaPhysiologyProfileSet,
+    FaunaPopulationPlan, FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
     LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION, LandCoverClassCount, LandCoverEvidenceCell,
     LandCoverSignedValueCount, LocalFaunaOccurrenceEvidenceSet, LocalFaunaOccurrenceRecord,
     PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE, PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE,
@@ -582,6 +582,22 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Pin one canonical exact adult-body-mass observation for each covered
+    /// planned fauna species. Multiple retained observations are never averaged.
+    FaunaBodyMassPlan {
+        #[arg(long)]
+        population_plan: PathBuf,
+        #[arg(long)]
+        candidates: PathBuf,
+        #[arg(long)]
+        selection: PathBuf,
+        #[arg(long)]
+        origin_environment: PathBuf,
+        #[arg(long)]
+        body_mass_profiles: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Construct explicit provisional body profiles for Homo sapiens and every
     /// planned fauna species. Optional metabolic inputs provide exact retained fauna
     /// observations; otherwise metabolism, regulation, reproduction, and heredity
@@ -610,8 +626,12 @@ enum DeriveCommand {
         /// Canonical source-compiled physiology profiles. Exact adult-body-mass
         /// aggregates are retained as literature approximations; missing species
         /// receive explicit non-evidentiary assumptions.
-        #[arg(long)]
+        #[arg(long, requires = "body_mass_plan")]
         body_mass_profiles: Option<PathBuf>,
+        /// Explicit selection from the body-mass profile set. Optional only as a
+        /// pair with `--body-mass-profiles`.
+        #[arg(long, requires = "body_mass_profiles")]
+        body_mass_plan: Option<PathBuf>,
         #[arg(long, default_value_t = 300)]
         tick_duration_seconds: u32,
         #[arg(long)]
@@ -1540,6 +1560,21 @@ async fn main() -> Result<()> {
                 &metabolic_profiles,
                 &output,
             ),
+            DeriveCommand::FaunaBodyMassPlan {
+                population_plan,
+                candidates,
+                selection,
+                origin_environment,
+                body_mass_profiles,
+                output,
+            } => derive_fauna_body_mass_plan(
+                &population_plan,
+                &candidates,
+                &selection,
+                &origin_environment,
+                &body_mass_profiles,
+                &output,
+            ),
             DeriveCommand::ProvisionalOrganismBodyProfilePlan {
                 population_plan,
                 candidates,
@@ -1549,6 +1584,7 @@ async fn main() -> Result<()> {
                 metabolic_rate_plan,
                 life_history_profiles,
                 body_mass_profiles,
+                body_mass_plan,
                 tick_duration_seconds,
                 output,
             } => derive_provisional_organism_body_profile_plan(
@@ -1558,10 +1594,13 @@ async fn main() -> Result<()> {
                     selection: &selection,
                     origin_environment: &origin_environment,
                 },
-                metabolic_profiles.as_deref(),
-                metabolic_rate_plan.as_deref(),
-                life_history_profiles.as_deref(),
-                body_mass_profiles.as_deref(),
+                BodyProfileEvidencePaths {
+                    metabolic_profiles: metabolic_profiles.as_deref(),
+                    metabolic_rate_plan: metabolic_rate_plan.as_deref(),
+                    life_history_profiles: life_history_profiles.as_deref(),
+                    body_mass_profiles: body_mass_profiles.as_deref(),
+                    body_mass_plan: body_mass_plan.as_deref(),
+                },
                 tick_duration_seconds,
                 &output,
             ),
@@ -2892,6 +2931,70 @@ fn derive_fauna_metabolic_rate_plan(
     Ok(())
 }
 
+fn derive_fauna_body_mass_plan(
+    population_plan_path: &Path,
+    candidates_path: &Path,
+    selection_path: &Path,
+    origin_environment_path: &Path,
+    body_mass_profiles_path: &Path,
+    output_path: &Path,
+) -> Result<()> {
+    let (_, _, _, population) = load_population_plan_inputs(
+        candidates_path,
+        selection_path,
+        origin_environment_path,
+        population_plan_path,
+    )?;
+    let (profiles, profile_set_digest) = load_metabolic_profiles(body_mass_profiles_path)?;
+    let mut selections = population
+        .entries
+        .iter()
+        .filter_map(|entry| {
+            let profile = profiles.profiles.iter().find(|profile| {
+                profile.species.catalog == entry.species.catalog
+                    && profile.species.identifier == entry.species.identifier
+                    && profile.trait_id == "adult-body-mass"
+                    && profile.value.unit == "g"
+                    && profile.value.value > 0
+            })?;
+            Some(FaunaBodyMassSelection {
+                selection_schema_version: world_data::FAUNA_BODY_MASS_SELECTION_SCHEMA_VERSION,
+                profile_set_digest,
+                species: entry.species.clone(),
+                source_record_id: profile.source_record_id.clone(),
+            })
+        })
+        .collect::<Vec<_>>();
+    selections.sort_by(|left, right| {
+        (&left.species.catalog, &left.species.identifier)
+            .cmp(&(&right.species.catalog, &right.species.identifier))
+    });
+    let plan = FaunaBodyMassPlan {
+        plan_schema_version: world_data::FAUNA_BODY_MASS_PLAN_SCHEMA_VERSION,
+        selections,
+    };
+    let bytes = plan
+        .canonical_bytes()
+        .context("encode fauna body-mass plan")?;
+    for selection in &plan.selections {
+        selection
+            .resolve(&profiles)
+            .context("resolve selected adult-body-mass observation")?;
+    }
+    write_new_artifact(output_path, &bytes)?;
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": Digest::sha256(&bytes),
+            "planned_species_count": population.entries.len(),
+            "source_measured_species_count": plan.selections.len(),
+            "uncovered_species_count": population.entries.len() - plan.selections.len(),
+            "policy": "first canonical exact positive adult-body-mass observation for each covered planned species; the explicit selection is pinned and observations are never averaged",
+        }))?
+    );
+    Ok(())
+}
+
 const SECONDS_PER_DAY: u64 = 86_400;
 const DAYS_PER_YEAR: u64 = 365;
 
@@ -2996,7 +3099,7 @@ fn engineering_body_profile_entry(
     tick_duration_seconds: u32,
     range_package: &str,
     life_history_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
-    body_mass_profiles: Option<&(FaunaPhysiologyProfileSet, Digest)>,
+    sourced_body_mass: Option<&(FaunaPhysiologyProfileSet, FaunaBodyMassPlan)>,
 ) -> Result<ProvisionalOrganismBodyProfileEntry> {
     let life_history = provisional_life_history(range_package);
     let profile_digest = Digest::sha256(
@@ -3060,29 +3163,18 @@ fn engineering_body_profile_entry(
             .expect("category maturity commitments serialize")
             .as_slice(),
     );
-    let matching_mass_profiles = body_mass_profiles
-        .map(|(profiles, _)| {
-            profiles
-                .profiles
-                .iter()
-                .filter(|profile| {
-                    profile.species.catalog == species.catalog
-                        && profile.species.identifier == species.identifier
-                        && profile.trait_id == "adult-body-mass"
-                        && profile.value.unit == "g"
-                        && profile.value.value > 0
-                })
-                .collect::<Vec<_>>()
+    let selected_mass = sourced_body_mass
+        .and_then(|(profiles, plan)| {
+            plan.selection_for(&species)
+                .map(|selection| (profiles, selection))
         })
-        .unwrap_or_default();
-    if matching_mass_profiles.len() > 1 {
-        bail!(
-            "body-mass profile set has multiple exact adult-body-mass aggregates for {}:{}",
-            species.catalog,
-            species.identifier
-        );
-    }
-    let adult_body_mass = matching_mass_profiles.first().map_or_else(
+        .map(|(profiles, selection)| {
+            selection
+                .resolve(profiles)
+                .context("resolve exact fauna body-mass observation")
+        })
+        .transpose()?;
+    let adult_body_mass = selected_mass.map_or_else(
         || {
             let assumption_digest = Digest::sha256(
                 format!(
@@ -3103,13 +3195,15 @@ fn engineering_body_profile_entry(
             }
         },
         |profile| {
-            let (_, profile_set_digest) =
-                body_mass_profiles.expect("a matching profile requires its profile set");
+            let (_, plan) = sourced_body_mass.expect("a selected profile requires its plan");
+            let selection = plan
+                .selection_for(&species)
+                .expect("a selected profile requires its selection");
             AdultBodyMassCommitment {
                 commitment_schema_version: ADULT_BODY_MASS_COMMITMENT_SCHEMA_VERSION,
                 species: species.clone(),
                 evidence_basis: PhysiologicalEvidenceBasis::LiteratureApproximation,
-                profile_set_digest: *profile_set_digest,
+                profile_set_digest: selection.profile_set_digest,
                 source_record_id: profile.source_record_id.clone(),
                 source_record_digest: profile.source_record_digest,
                 mass_grams_value: profile.value.value,
@@ -3232,12 +3326,17 @@ struct PopulationPlanInputPaths<'a> {
     origin_environment: &'a Path,
 }
 
+struct BodyProfileEvidencePaths<'a> {
+    metabolic_profiles: Option<&'a Path>,
+    metabolic_rate_plan: Option<&'a Path>,
+    life_history_profiles: Option<&'a Path>,
+    body_mass_profiles: Option<&'a Path>,
+    body_mass_plan: Option<&'a Path>,
+}
+
 fn derive_provisional_organism_body_profile_plan(
     inputs: PopulationPlanInputPaths<'_>,
-    metabolic_profiles_path: Option<&Path>,
-    metabolic_rate_plan_path: Option<&Path>,
-    life_history_profiles_path: Option<&Path>,
-    body_mass_profiles_path: Option<&Path>,
+    evidence: BodyProfileEvidencePaths<'_>,
     tick_duration_seconds: u32,
     output_path: &Path,
 ) -> Result<()> {
@@ -3250,7 +3349,7 @@ fn derive_provisional_organism_body_profile_plan(
         inputs.origin_environment,
         inputs.population_plan,
     )?;
-    let sourced_metabolic = match (metabolic_profiles_path, metabolic_rate_plan_path) {
+    let sourced_metabolic = match (evidence.metabolic_profiles, evidence.metabolic_rate_plan) {
         (None, None) => None,
         (Some(profiles_path), Some(plan_path)) => {
             let (profiles, _) = load_metabolic_profiles(profiles_path)?;
@@ -3280,7 +3379,8 @@ fn derive_provisional_organism_body_profile_plan(
             "metabolic profiles and metabolic-rate plan must be supplied together or both omitted"
         ),
     };
-    let life_history_profiles = life_history_profiles_path
+    let life_history_profiles = evidence
+        .life_history_profiles
         .map(|path| {
             let bytes = fs::read(path)
                 .with_context(|| format!("read life-history profiles {}", path.display()))?;
@@ -3289,15 +3389,39 @@ fn derive_provisional_organism_body_profile_plan(
             Ok::<_, anyhow::Error>((profiles, Digest::sha256(&bytes)))
         })
         .transpose()?;
-    let body_mass_profiles = body_mass_profiles_path
-        .map(|path| {
-            let bytes = fs::read(path)
-                .with_context(|| format!("read body-mass profiles {}", path.display()))?;
-            let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&bytes)
+    let sourced_body_mass = match (evidence.body_mass_profiles, evidence.body_mass_plan) {
+        (None, None) => None,
+        (Some(profiles_path), Some(plan_path)) => {
+            let profile_bytes = fs::read(profiles_path)
+                .with_context(|| format!("read body-mass profiles {}", profiles_path.display()))?;
+            let profiles = FaunaPhysiologyProfileSet::from_canonical_slice(&profile_bytes)
                 .context("validate body-mass profile set")?;
-            Ok::<_, anyhow::Error>((profiles, Digest::sha256(&bytes)))
-        })
-        .transpose()?;
+            let plan = FaunaBodyMassPlan::from_canonical_slice(
+                &fs::read(plan_path)
+                    .with_context(|| format!("read body-mass plan {}", plan_path.display()))?,
+            )
+            .context("validate body-mass plan")?;
+            for selected in &plan.selections {
+                if !population
+                    .entries
+                    .iter()
+                    .any(|entry| entry.species == selected.species)
+                {
+                    bail!(
+                        "fauna body-mass plan contains unplanned species {}",
+                        selected.species.scientific_name
+                    );
+                }
+                selected
+                    .resolve(&profiles)
+                    .context("resolve selected fauna body-mass observation")?;
+            }
+            Some((profiles, plan))
+        }
+        _ => {
+            bail!("body-mass profiles and body-mass plan must be supplied together or both omitted")
+        }
+    };
     let mut entries = Vec::with_capacity(population.entries.len() + 1);
     let human = SpeciesIdentity::new(
         "gbif",
@@ -3340,7 +3464,7 @@ fn derive_provisional_organism_body_profile_plan(
                 .expect("validated population species belongs to its seeded selection")
                 .range_package,
             life_history_profiles.as_ref(),
-            body_mass_profiles.as_ref(),
+            sourced_body_mass.as_ref(),
         )?);
     }
     entries.sort_by(|left, right| {
@@ -14670,13 +14794,23 @@ mod tests {
         };
         profiles.validate().expect("valid test profile set");
         let profile_set_digest = Digest::canonical(&profiles).expect("profile set digest");
+        let body_mass_plan = FaunaBodyMassPlan {
+            plan_schema_version: world_data::FAUNA_BODY_MASS_PLAN_SCHEMA_VERSION,
+            selections: vec![FaunaBodyMassSelection {
+                selection_schema_version: world_data::FAUNA_BODY_MASS_SELECTION_SCHEMA_VERSION,
+                profile_set_digest,
+                species: species.clone(),
+                source_record_id: "elton-mammal-line-1".to_owned(),
+            }],
+        };
+        body_mass_plan.validate().expect("valid body-mass plan");
         let entry = engineering_body_profile_entry(
             species.clone(),
             engineering_metabolic_commitment(species),
             300,
             "homo_sapiens",
             None,
-            Some(&(profiles, profile_set_digest)),
+            Some(&(profiles, body_mass_plan)),
         )
         .expect("body profile");
         let mass = entry.adult_body_mass.expect("adult body mass");

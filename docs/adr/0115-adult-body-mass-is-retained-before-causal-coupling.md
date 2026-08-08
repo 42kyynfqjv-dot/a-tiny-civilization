@@ -17,7 +17,8 @@ Body-profile plan schema three requires one species-bound adult-body-mass commit
 exact catalog/taxon match to one positive gram-valued retained Amniote aggregate carries the exact
 profile-set and source-row digests and is classified as a literature approximation. Missing taxa
 receive a coarse class-level engineering assumption with an independently addressable digest.
-Ambiguous multiple exact records fail derivation rather than being silently averaged or selected.
+When a source retains multiple exact records, a separate canonical selection plan pins one record;
+records are never silently averaged and body-profile derivation never depends on presentation order.
 
 The body-plan digest and contributing source-profile-set digest are retained in the world manifest.
 The engine does not yet copy mass into organism state or use it in any causal equation. A later
