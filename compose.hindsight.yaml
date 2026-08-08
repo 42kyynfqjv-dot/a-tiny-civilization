@@ -1,12 +1,18 @@
 services:
   hindsight:
     image: ghcr.io/vectorize-io/hindsight:0.8.6
+    # Embedded PostgreSQL's vector index builds can request roughly 512 MiB of
+    # POSIX shared memory; Docker's 64 MiB default fails retain operations.
+    shm_size: 1gb
     environment:
       HINDSIGHT_API_LLM_PROVIDER: none
       HINDSIGHT_API_RETAIN_EXTRACTION_MODE: chunks
       HINDSIGHT_API_FAIL_ON_EXTRACTION_ERRORS: "true"
       HINDSIGHT_API_STORE_DOCUMENT_TEXT: "false"
       HINDSIGHT_API_WORKER_ID: local-development-worker
+      # Existing local vector state plus cold model initialization can exceed the
+      # image's five-minute supervisor default on this host.
+      HINDSIGHT_API_STARTUP_WAIT_SECONDS: "900"
       HF_HUB_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-0}
       TRANSFORMERS_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-0}
     expose:
@@ -23,6 +29,7 @@ services:
     networks:
       - backend
     restart: unless-stopped
+    stop_grace_period: 30s
 
   runner:
     environment:
