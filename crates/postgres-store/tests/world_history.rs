@@ -11,6 +11,7 @@ use application::{
     StoredWorld, TransitionEffects, WorldStore, advance_world,
     initialize_or_resume_configured_world, initialize_or_resume_configured_world_with_materials,
     initialize_or_resume_world, process_next_cognition_job, resume_world,
+    resume_world_from_snapshot,
 };
 use async_trait::async_trait;
 use observer_projection::{
@@ -573,11 +574,17 @@ async fn commits_loads_and_replays_atomic_history(pool: PgPool) -> Result<()> {
     let replayed = replay(manifest.clone(), &batches)?;
     let latest_snapshot = store.load_latest_snapshot(manifest.world_id).await?;
     let loaded_world = store.load_world(manifest.world_id).await?;
+    let fast_resumed = resume_world_from_snapshot(&store, manifest.world_id).await?;
 
     assert_eq!(batches, vec![genesis_batch, tick_batch]);
     assert_eq!(replayed.state, after_tick);
-    assert_eq!(latest_snapshot, tick_snapshot);
+    assert_eq!(
+        latest_snapshot, genesis_snapshot,
+        "running snapshots are sparse replay caches"
+    );
     assert_eq!(loaded_world, persisted);
+    assert_eq!(fast_resumed.world, persisted);
+    assert_eq!(fast_resumed.state, after_tick);
     assert_eq!(replayed.last_event_hash, persisted.cursor.last_event_hash);
     assert_eq!(replayed.state.state_hash()?, persisted.cursor.state_hash);
     let public_worlds = store.list_public_worlds().await?;
@@ -749,6 +756,37 @@ async fn material_genesis_is_atomic_idempotent_and_replayable(pool: PgPool) -> R
             .count(),
         1
     );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn running_snapshots_are_sparse_and_anchor_fast_resume(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(64_064);
+    let mut current = initialize_or_resume_world(
+        &store,
+        manifest.clone(),
+        None,
+        vec![initial_person(manifest.world_id)],
+    )
+    .await?;
+    for _ in 0..63 {
+        current = advance_world(&store, &current).await?;
+    }
+    assert_eq!(current.world.cursor.sequence, EventSequence::new(64));
+
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT through_sequence FROM snapshots WHERE world_id = $1 ORDER BY through_sequence",
+    )
+    .bind(manifest.world_id.as_uuid())
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(rows, vec![0, 1, 64]);
+    assert_eq!(
+        resume_world_from_snapshot(&store, manifest.world_id).await?,
+        current
+    );
+    assert_eq!(resume_world(&store, manifest.world_id).await?, current);
     Ok(())
 }
 

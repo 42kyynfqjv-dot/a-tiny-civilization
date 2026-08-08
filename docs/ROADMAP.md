@@ -401,6 +401,14 @@ tick-1,183 survival gate are covered. Local flora, hydrology, toxicity, and trop
 replacement remain the later
 scientific-validation pass; a live world will never have its committed bridge edited.
 
+Snapshot persistence and restart cost are now bounded under ADR 0058. Running worlds
+retain genesis, terminal, and every 64th cache checkpoint. Runner startup anchors the
+latest snapshot to its immutable event batch and replays at most the short tail, while
+the operator verifier still performs the independent genesis replay. On the
+tick-1,183 quality world this reduced measured startup verification from minutes to
+about half a second; new-world steady-state snapshot storage is approximately 64 times
+smaller than the former every-transition policy.
+
 ### 4. Evidence observatory
 
 - project canonical maps, events, people, animals, lineages, and provenance;

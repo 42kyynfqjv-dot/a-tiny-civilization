@@ -13,7 +13,7 @@ use application::{
     WorldSession, WorldStore, advance_world, advance_world_with_celestial,
     advance_world_with_celestial_and_cognition,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
-    process_next_cognition_job, resume_world, schedule_world_cognition,
+    process_next_cognition_job, resume_world, resume_world_from_snapshot, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -475,7 +475,7 @@ async fn advance_running_worlds(
         let current = match sessions.remove(&world_id) {
             Some(session) => session,
             None => {
-                let session = resume_world(store, world_id).await?;
+                let session = resume_world_from_snapshot(store, world_id).await?;
                 tracing::info!(
                     %world_id,
                     sequence = %session.world.cursor.sequence,

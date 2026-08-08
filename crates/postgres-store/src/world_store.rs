@@ -11,6 +11,10 @@ use world_domain::{
 
 use crate::PostgresStore;
 
+/// Persist one replay cache checkpoint per this many committed batches. Genesis and
+/// terminal transitions are always retained independently of this cadence.
+const SNAPSHOT_SEQUENCE_INTERVAL: u64 = 64;
+
 #[derive(FromRow)]
 struct WorldRow {
     id: Uuid,
@@ -258,7 +262,15 @@ impl WorldStore for PostgresStore {
             StoreError::Conflict("ruleset version exceeds PostgreSQL integer range".to_owned())
         })?;
         let batch_json = serde_json::to_value(batch).map_err(corrupt)?;
-        let snapshot_json = serde_json::to_value(snapshot).map_err(corrupt)?;
+        let persist_snapshot = sequence == 1
+            || batch
+                .sequence
+                .get()
+                .is_multiple_of(SNAPSHOT_SEQUENCE_INTERVAL)
+            || snapshot.state.status() != WorldStatus::Running;
+        let snapshot_json = persist_snapshot
+            .then(|| serde_json::to_value(snapshot).map_err(corrupt))
+            .transpose()?;
 
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
         let persisted = fetch_world_for_update(&mut transaction, batch.world_id)
@@ -373,7 +385,9 @@ impl WorldStore for PostgresStore {
 
         consume_cognition_latches(&mut transaction, batch).await?;
 
-        insert_snapshot(&mut transaction, snapshot, ruleset_version, snapshot_json).await?;
+        if let Some(snapshot_json) = snapshot_json {
+            insert_snapshot(&mut transaction, snapshot, ruleset_version, snapshot_json).await?;
+        }
 
         let contains_started = batch
             .events

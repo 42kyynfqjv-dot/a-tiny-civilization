@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sim_engine::{
     EngineError, EngineState, InitialMaterialInstance, InitialOrganism,
-    PERSISTENT_PERCEPTION_RULESET_VERSION, Snapshot, replay, replay_from_snapshot,
+    PERSISTENT_PERCEPTION_RULESET_VERSION, ReplayOutcome, Snapshot, replay, replay_from_snapshot,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -312,12 +312,58 @@ pub async fn resume_world<S: WorldStore + ?Sized>(
         )));
     }
 
-    let state_hash = complete.state.state_hash().map_err(EngineError::from)?;
-    if complete.state.manifest() != &world.manifest
-        || complete.through_sequence != world.cursor.sequence
-        || complete.state.tick() != world.cursor.tick
-        || complete.state.status() != world.status
-        || complete.last_event_hash != world.cursor.last_event_hash
+    finish_resume(world, complete)
+}
+
+/// Resumes from the newest cache checkpoint after anchoring it to its immutable event
+/// batch, then replays only the bounded tail. Full operator verification continues to
+/// use [`resume_world`] and independently replays from genesis.
+pub async fn resume_world_from_snapshot<S: WorldStore + ?Sized>(
+    store: &S,
+    world_id: WorldId,
+) -> Result<WorldSession, WorldRuntimeError> {
+    let world = store.load_world(world_id).await?;
+    let snapshot = store.load_latest_snapshot(world_id).await?;
+    let after_sequence = if snapshot.through_sequence == EventSequence::ZERO {
+        EventSequence::ZERO
+    } else {
+        EventSequence::new(snapshot.through_sequence.get() - 1)
+    };
+    let anchored_tail = store.load_event_batches(world_id, after_sequence).await?;
+    let tail = if snapshot.through_sequence == EventSequence::ZERO {
+        anchored_tail.as_slice()
+    } else {
+        let anchor = anchored_tail.first().ok_or_else(|| {
+            WorldRuntimeError::Integrity(format!(
+                "world {world_id} snapshot has no immutable event anchor"
+            ))
+        })?;
+        if anchor.sequence != snapshot.through_sequence
+            || anchor.batch_hash != snapshot.last_event_hash
+            || anchor.post_state_hash != snapshot.state_hash
+            || anchor.world_id != snapshot.world_id
+        {
+            return Err(WorldRuntimeError::Integrity(format!(
+                "world {world_id} snapshot disagrees with its immutable event anchor"
+            )));
+        }
+        &anchored_tail[1..]
+    };
+    let outcome = replay_from_snapshot(&snapshot, tail)?;
+    finish_resume(world, outcome)
+}
+
+fn finish_resume(
+    world: StoredWorld,
+    outcome: ReplayOutcome,
+) -> Result<WorldSession, WorldRuntimeError> {
+    let world_id = world.manifest.world_id;
+    let state_hash = outcome.state.state_hash().map_err(EngineError::from)?;
+    if outcome.state.manifest() != &world.manifest
+        || outcome.through_sequence != world.cursor.sequence
+        || outcome.state.tick() != world.cursor.tick
+        || outcome.state.status() != world.status
+        || outcome.last_event_hash != world.cursor.last_event_hash
         || state_hash != world.cursor.state_hash
     {
         return Err(WorldRuntimeError::Integrity(format!(
@@ -327,7 +373,7 @@ pub async fn resume_world<S: WorldStore + ?Sized>(
 
     Ok(WorldSession {
         world,
-        state: complete.state,
+        state: outcome.state,
     })
 }
 
