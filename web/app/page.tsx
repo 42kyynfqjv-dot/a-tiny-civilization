@@ -3,6 +3,7 @@ import Link from "next/link";
 import { FoundationPulse } from "./components/FoundationPulse";
 import { LiveRecord } from "./components/LiveRecord";
 import { ArchiveIndex } from "./components/ArchiveIndex";
+import { SupporterPanel } from "./components/SupporterPanel";
 
 export const metadata: Metadata = {
   title: "Live World",
@@ -261,18 +262,21 @@ export default function Home() {
           </div>
         </section>
 
-        <section className="supporter-strip" id="supporters">
-          <div>
+        <section className="supporter-section" id="supporters" aria-labelledby="supporter-heading">
+          <div className="supporter-section-copy">
             <p className="eyebrow">A small way to be part of it</p>
-            <h2>Give a future life a name.</h2>
+            <h2 id="supporter-heading">Give a future life a name.</h2>
+            <p>
+              Pick a person or individually recorded animal and a birth category. When a matching
+              life is born naturally, an approved name joins their public story.
+            </p>
+            <ul>
+              <li>The world never sees the reservation.</li>
+              <li>Every name passes automatic and human moderation.</li>
+              <li>Naming never creates, delays, or controls a life.</li>
+            </ul>
           </div>
-          <p>
-            Pick a person or animal and a gender. When a matching life is born naturally, your name
-            joins their story. You can follow them, but never control them.
-          </p>
-          <button className="button button-dark" type="button" disabled>
-            Opens after first births
-          </button>
+          <SupporterPanel />
         </section>
 
         <footer>

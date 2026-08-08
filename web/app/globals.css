@@ -36,7 +36,8 @@ a {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -792,13 +793,41 @@ input {
 .provenance-inference { background: #ffd2c7; }
 .wiki-grid h3 { font-size: 22px; letter-spacing: -0.04em; margin: 82px 0 10px; }
 .wiki-grid h3,
-.supporter-strip h2,
+.supporter-section h2,
 .section-heading h2 { font-family: Georgia, "Times New Roman", serif; font-weight: 500; }
 .wiki-grid article > p:last-child { color: #5c645d; font-size: 12px; line-height: 1.55; margin: 0; }
 
-.supporter-strip { align-items: center; background: var(--acid); border-radius: 18px; display: grid; gap: 36px; grid-template-columns: 1fr 1fr auto; margin: 88px auto 0; max-width: 1420px; padding: 31px; }
-.supporter-strip h2 { font-size: 29px; letter-spacing: -0.05em; margin: 9px 0 0; }
-.supporter-strip > p { font-size: 12px; line-height: 1.6; margin: 0; max-width: 480px; }
+.supporter-section { align-items: start; background: var(--acid); border-radius: 18px; display: grid; gap: clamp(28px, 5vw, 76px); grid-template-columns: minmax(0, 0.8fr) minmax(360px, 1.2fr); margin: 88px auto 0; max-width: 1420px; padding: clamp(28px, 4vw, 56px); }
+.supporter-section h2 { font-size: clamp(31px, 3.2vw, 48px); letter-spacing: -0.055em; line-height: 0.98; margin: 13px 0 22px; }
+.supporter-section-copy > p:not(.eyebrow) { font-size: 13px; line-height: 1.65; margin: 0; max-width: 520px; }
+.supporter-section-copy ul { border-top: 1px solid rgba(33, 50, 40, 0.18); display: grid; gap: 11px; list-style: none; margin: 28px 0 0; padding: 23px 0 0; }
+.supporter-section-copy li { font-family: var(--font-geist-mono), monospace; font-size: 9px; letter-spacing: 0.02em; padding-left: 18px; position: relative; text-transform: uppercase; }
+.supporter-section-copy li::before { content: "✓"; left: 0; position: absolute; }
+.supporter-console { background: var(--white); border: 1px solid rgba(33, 50, 40, 0.14); border-radius: 15px; box-shadow: 0 18px 50px rgba(33, 50, 40, 0.08); min-height: 150px; padding: clamp(22px, 3vw, 34px); }
+.supporter-console-status { align-content: center; color: var(--ink-soft); display: grid; line-height: 1.55; }
+.supporter-console-status strong { color: var(--ink); font-family: Georgia, "Times New Roman", serif; font-size: 24px; font-weight: 500; }
+.supporter-console-status p { font-size: 12px; margin: 10px 0 0; }
+.supporter-console-heading { align-items: center; display: flex; justify-content: space-between; }
+.supporter-step { font-family: var(--font-geist-mono), monospace; font-size: 9px; font-weight: 700; letter-spacing: 0.08em; margin: 0; text-transform: uppercase; }
+.supporter-signout { background: transparent; border: 0; color: var(--ink-soft); cursor: pointer; font-size: 10px; text-decoration: underline; }
+.supporter-auth-actions { display: flex; flex-wrap: wrap; gap: 10px; margin: 24px 0 18px; }
+.supporter-console small { color: var(--ink-soft); display: block; font-size: 10px; line-height: 1.55; }
+.supporter-form { display: grid; gap: 16px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin-top: 25px; }
+.supporter-form label { display: grid; font-family: var(--font-geist-mono), monospace; font-size: 8px; font-weight: 700; gap: 7px; letter-spacing: 0.08em; text-transform: uppercase; }
+.supporter-form input,
+.supporter-form select { appearance: none; background: var(--paper); border: 1px solid rgba(33, 50, 40, 0.18); border-radius: 8px; color: var(--ink); min-height: 43px; padding: 10px 12px; }
+.supporter-form select { background-image: linear-gradient(45deg, transparent 50%, var(--ink) 50%), linear-gradient(135deg, var(--ink) 50%, transparent 50%); background-position: calc(100% - 15px) 18px, calc(100% - 11px) 18px; background-repeat: no-repeat; background-size: 4px 4px; padding-right: 30px; }
+.supporter-form .button { grid-column: 1 / -1; justify-self: start; }
+.supporter-form .button:disabled { cursor: progress; opacity: 0.65; }
+.supporter-fine-print { color: var(--ink-soft); font-size: 10px; line-height: 1.6; margin: 18px 0 0; }
+.supporter-message { background: var(--paper); border-left: 3px solid var(--moss); font-size: 11px; line-height: 1.5; margin: 16px 0 0; padding: 10px 12px; }
+.reservation-list { border-top: 1px solid var(--line); margin-top: 23px; padding-top: 20px; }
+.reservation-list h3 { font-family: Georgia, "Times New Roman", serif; font-size: 19px; font-weight: 500; margin: 0 0 10px; }
+.reservation-list ul { display: grid; gap: 8px; list-style: none; margin: 0; padding: 0; }
+.reservation-list li { align-items: center; background: var(--paper); border-radius: 8px; display: flex; gap: 12px; justify-content: space-between; padding: 11px 12px; }
+.reservation-list li strong { display: block; font-size: 12px; }
+.reservation-list li small { font-size: 8px; margin-top: 3px; text-transform: uppercase; }
+.reservation-list button { background: transparent; border: 1px solid var(--line); border-radius: 999px; cursor: pointer; font-size: 8px; padding: 6px 9px; text-transform: uppercase; }
 
 footer { border-top: 1px solid var(--line); color: #747a74; display: flex; font-family: var(--font-geist-mono), monospace; font-size: 9px; justify-content: space-between; margin: 72px auto 0; max-width: 1420px; padding: 20px 0 0; text-transform: uppercase; }
 
@@ -819,8 +848,7 @@ footer { border-top: 1px solid var(--line); color: #747a74; display: flex; font-
   .open-source-note span { font-size: 18px; }
   .hero-copy { gap: 28px; grid-template-columns: 1fr; }
   .hero-intro { max-width: 640px; }
-  .supporter-strip { grid-template-columns: 1fr 1fr; }
-  .supporter-strip .button { grid-column: 1 / -1; justify-self: start; }
+  .supporter-section { grid-template-columns: 1fr; }
 }
 
 @media (max-width: 760px) {
@@ -849,11 +877,12 @@ footer { border-top: 1px solid var(--line); color: #747a74; display: flex; font-
   .world-stats article:nth-child(-n + 2) { border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
   .lower-grid,
   .wiki-grid,
-  .supporter-strip { grid-template-columns: 1fr; }
+  .supporter-section { grid-template-columns: 1fr; }
   .wiki-heading { display: block; }
   .wiki-heading > p { margin-top: 20px; }
-  .supporter-strip .button { grid-column: auto; }
-  .supporter-strip { gap: 22px; }
+  .supporter-section { gap: 28px; }
+  .supporter-form { grid-template-columns: 1fr; }
+  .supporter-form .button { grid-column: auto; }
   footer { display: block; line-height: 1.6; }
 }
 

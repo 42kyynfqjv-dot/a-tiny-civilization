@@ -543,7 +543,10 @@ smaller than the former every-transition policy.
   prepares terminal refunds, uses Stripe idempotency, and immutably records completion; transfers
   are prohibited by policy. An operator-only queue now reports paid labels oldest-first, fails a
   monitor check when review age exceeds its threshold, and stores immutable moderator decisions;
-  rejection resumes the refund automatically. The public supporter UI remains.
+  rejection resumes the refund automatically. The public supporter panel now discovers disabled
+  integrations without exposing broken controls, starts Google or Apple sign-in, creates person or
+  individually recorded animal Checkout reservations, reads account history, and cancels unmatched
+  reservations with CSRF protection; payment and OAuth remain disabled until operator configuration.
   Authenticated supporters can also cancel their own unmatched reservations through a
   CSRF-protected, retry-safe route; paid cancellations automatically use the durable full-refund
   path while unpaid cancellations never contact Stripe. A bounded private account-history route

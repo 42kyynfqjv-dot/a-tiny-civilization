@@ -35,6 +35,9 @@ test("server-renders the civilization observatory", async () => {
   assert.doesNotMatch(html, /River basin · seed awaiting launch/);
   assert.match(html, /World notebook/);
   assert.match(html, /Give a future life a name\./);
+  assert.match(html, /The world never sees the reservation\./);
+  assert.match(html, /Checking supporter access/);
+  assert.doesNotMatch(html, /Opens after first births/);
   assert.match(html, /Even an ending becomes a story\./);
   assert.match(html, /If every person dies/);
   assert.match(html, /Places that change/);
