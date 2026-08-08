@@ -8,6 +8,8 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
+genesis_directory="${ATINY_CANONICAL_GENESIS_DIRECTORY:-}"
+evidence_directory="${ATINY_QUALIFICATION_EVIDENCE_DIRECTORY:-}"
 confirmed=0
 
 while (($#)); do
@@ -16,18 +18,30 @@ while (($#)); do
       environment_file="${2:-}"
       shift 2
       ;;
+    --genesis-directory)
+      genesis_directory="${2:-}"
+      shift 2
+      ;;
+    --evidence-directory)
+      evidence_directory="${2:-}"
+      shift 2
+      ;;
     --confirm-public-deployment)
       confirmed=1
       shift
       ;;
     *)
-      echo "usage: $0 [--env-file /absolute/path/to/production.env] --confirm-public-deployment" >&2
+      echo "usage: $0 [--env-file /absolute/path/to/production.env] --genesis-directory /absolute/path --evidence-directory /absolute/path --confirm-public-deployment" >&2
       exit 2
       ;;
   esac
 done
 if ((confirmed != 1)); then
   echo "deployment requires the literal --confirm-public-deployment argument" >&2
+  exit 2
+fi
+if [[ -z "$genesis_directory" || -z "$evidence_directory" ]]; then
+  echo "deployment requires the exact qualified genesis and evidence directories" >&2
   exit 2
 fi
 
@@ -52,17 +66,14 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 cd "$project_root"
 
-# Deployment is a separate explicit authorization, but it may only package the exact observer
-# surface that passed the public review. This check is read-only and source-bound.
-"${project_root}/scripts/verify-public-observatory-admission.py" \
-  --admission "${project_root}/docs/operations/PUBLIC_OBSERVATORY_ADMISSION_2026-08-08.json"
-
-# Validate the exact file that Compose will consume. Keeping one validator prevents the
-# deployment helper and documented/manual preflight from silently accepting different setups.
-"${project_root}/scripts/production-preflight.sh" --env-file "$environment_file"
-ATINY_CIVILIZATION_DATA_EXECUTABLE="${project_root}/target/release/civilization-data" \
-  "${project_root}/scripts/verify-staged-runtime-artifacts.sh" \
-  "${project_root}/runtime-artifacts"
+# Deployment remains a separate literal authorization, but it cannot begin until the exact
+# candidate evidence, quality-world admission, reviewed observer tree, production configuration,
+# and staged runtime closure all pass the same composed read-only gate used by the runbook.
+"${project_root}/scripts/public-genesis-preflight.sh" \
+  --env-file "$environment_file" \
+  --genesis-directory "$genesis_directory" \
+  --evidence-directory "$evidence_directory" \
+  --runtime-root "${project_root}/runtime-artifacts"
 "${project_root}/scripts/provision-runtime-volumes.sh"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet

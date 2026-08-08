@@ -586,6 +586,13 @@ explicitly deferred by the owner for the first genesis. Static production prefli
 accepts that deferred state; backup and restore commands still fail closed unless the
 complete encrypted offsite configuration is present.
 
+The long-term host now passes the composed read-only public-genesis preflight with its protected
+production configuration, exact v18 evidence, both admissions, and a freshly staged 147,469-file
+composition-0.1.1 runtime closure. Obsolete generated staging, unused build cache, and unused
+images were reclaimed without touching retained inputs or active volumes, restoring the disk
+reserve above the backend health floor. ADR 0135 makes that complete composed gate a hard
+precondition of the deployment helper rather than a runbook-only instruction.
+
 ## Vertical-slice proof
 
 The first public vertical slice is done only when a fresh clone can:

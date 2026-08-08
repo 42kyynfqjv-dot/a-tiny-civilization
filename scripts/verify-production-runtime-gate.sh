@@ -5,16 +5,14 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 deployment="${project_root}/scripts/deploy-production-app.sh"
 runtime_verifier="${project_root}/scripts/verify-staged-runtime-artifacts.sh"
 
-preflight_line="$(rg -n -m1 'production-preflight\.sh.*--env-file' "$deployment")"
-runtime_line="$(rg -n -m1 'verify-staged-runtime-artifacts\.sh' "$deployment")"
+preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$deployment")"
 mutation_line="$(rg -n -m1 'compose_args\[@.*build migrate' "$deployment")"
 public_edge_line="$(rg -n -m1 'verify-public-edge\.sh.*https://atinycivilization\.com' "$deployment")"
 preflight_number="${preflight_line%%:*}"
-runtime_number="${runtime_line%%:*}"
 mutation_number="${mutation_line%%:*}"
 public_edge_number="${public_edge_line%%:*}"
-if ((preflight_number >= runtime_number || runtime_number >= mutation_number)); then
-  echo "runtime artifact verification must follow env preflight and precede Compose mutation" >&2
+if ((preflight_number >= mutation_number)); then
+  echo "composed public-genesis preflight must precede every Compose mutation" >&2
   exit 1
 fi
 if ((public_edge_number <= mutation_number)); then
@@ -25,6 +23,12 @@ if ! rg -q 'requires the literal --confirm-public-deployment argument' "$deploym
   echo "production deployment lost its explicit confirmation boundary" >&2
   exit 1
 fi
+for contract in '--genesis-directory' '--evidence-directory' '--runtime-root'; do
+  if ! rg -q -- "$contract" "$deployment"; then
+    echo "production deployment lost required public-genesis input: $contract" >&2
+    exit 1
+  fi
+done
 
 required_contracts=(
   'validate-provisional'
