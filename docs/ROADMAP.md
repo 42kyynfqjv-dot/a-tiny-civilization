@@ -844,3 +844,9 @@ replay, state hashing, and snapshots directly instead of remaining reachable onl
 external body-profile plan or being inferred from metabolic power. Public projections discard the
 commitment, and schema-32 validation requires exactly one species-matching value for every organism.
 ADR 0137 records the boundary; growth and individual changing mass remain later mechanics.
+
+Canonical input revision v24 rederives the same 14 JSON artifacts and corrects the checksum
+manifest to use relative paths. The bundle verifies unchanged after copying to a different host
+directory, closing a production portability defect found in v23. Its exact `SHA256SUMS` digest is
+recorded in `docs/operations/CANONICAL_INPUT_REVISION_V24_2026-08-08.md`; it remains input evidence,
+not qualification or launch authorization.

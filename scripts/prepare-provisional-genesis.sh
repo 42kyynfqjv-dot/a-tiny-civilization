@@ -166,6 +166,9 @@ fi
   --organism-body-profile-plan "${body_profiles}" \
   --output "${material_resources}"
 
-sha256sum "${output_directory}"/*.json >"${output_directory}/SHA256SUMS"
-chmod 0640 "${output_directory}"/*.json "${output_directory}/SHA256SUMS"
+(
+  cd "${output_directory}"
+  sha256sum ./*.json >SHA256SUMS
+  chmod 0640 ./*.json SHA256SUMS
+)
 echo "prepared canonical provisional genesis inputs at ${output_directory}"

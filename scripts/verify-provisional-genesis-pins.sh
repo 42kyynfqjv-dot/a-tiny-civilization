@@ -84,4 +84,9 @@ grep -qF -- '--provisional-origin-climate-normals "${origin_climate_normals}"' \
 grep -qF -- '--fauna-ecology-plan "${genesis_directory}/fauna-ecology-plan.json"' \
   scripts/initialize-provisional-world.sh
 grep -qF -- '--body-mass-plan "${fauna_body_masses}"' scripts/prepare-provisional-genesis.sh
+grep -qF 'sha256sum ./*.json >SHA256SUMS' scripts/prepare-provisional-genesis.sh
+if grep -qF 'sha256sum "${output_directory}"/*.json' scripts/prepare-provisional-genesis.sh; then
+  echo "genesis checksum manifest must not retain absolute host paths" >&2
+  exit 1
+fi
 echo "Ruleset-32 provisional genesis pins one verified composition and artifact revision."
