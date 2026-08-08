@@ -1,0 +1,19 @@
+[Unit]
+Description=A Tiny Civilization operator alert for %i
+Documentation=https://github.com/42kyynfqjv-dot/a-tiny-civilization/blob/main/docs/operations/PRODUCTION.md
+StartLimitIntervalSec=1800
+StartLimitBurst=3
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/a-tiny-civilization
+EnvironmentFile=-/etc/a-tiny-civilization-production.env
+ExecStart=/usr/bin/env python3 ./scripts/send-operations-alert.py --unit %i
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LockPersonality=true
+MemoryDenyWriteExecute=true

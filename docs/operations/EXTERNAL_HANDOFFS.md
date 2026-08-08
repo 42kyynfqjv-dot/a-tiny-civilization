@@ -103,6 +103,16 @@ Cloudflare documents the remotely managed tunnel setup and token lifecycle in it
 [Tunnel documentation](https://developers.cloudflare.com/tunnel/setup/) and
 [token guidance](https://developers.cloudflare.com/tunnel/advanced/tunnel-tokens/).
 
+### Operations alert receiver
+
+Periodic backend health checks and the systemd failure-to-webhook delivery path are implemented.
+For unattended operation, choose an operator-controlled HTTPS receiver and place its URL directly
+in the protected production environment as `ATINY_OPERATIONS_ALERT_WEBHOOK_URL`. If that receiver
+requires a bearer credential, store it beside the URL as
+`ATINY_OPERATIONS_ALERT_BEARER_TOKEN`. Report only that alert delivery is configured; neither value
+belongs in Git or chat. Without a receiver, the originating unit remains failed and visible in the
+systemd journal, but no external notification can be delivered.
+
 ## Explicitly deferred for the first genesis
 
 ### Server and offsite backups

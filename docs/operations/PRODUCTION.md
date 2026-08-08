@@ -199,7 +199,14 @@ It fails when the project filesystem has less than 10 GiB free or is at least 95
 edge, API, Hindsight, or exact pinned local model is unreachable, or when any required Rust-service
 heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). The free-space
 floor may be raised with bounded `BACKEND_MIN_FREE_MIB`; configure host alerting for the failed unit
-before genesis.
+before genesis. The installer now wires every backend-check failure to the checked-in, rate-limited
+`a-tiny-civilization-operations-alert@.service`. Set
+`ATINY_OPERATIONS_ALERT_WEBHOOK_URL` to an HTTPS receiver in the protected environment and,
+optionally, `ATINY_OPERATIONS_ALERT_BEARER_TOKEN`. The notifier sends only the project, failed unit,
+failure state, schema version, and wall-clock occurrence time; it never sends world events, journal
+text, environment values, host inventory, or agent memory. Redirects and plaintext external URLs
+are rejected, delivery is attempted three times, and the failed source unit remains visible in
+systemd whether or not a receiver is configured.
 
 The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second
 runner refuses startup instead of racing the canonical cursor; process or connection

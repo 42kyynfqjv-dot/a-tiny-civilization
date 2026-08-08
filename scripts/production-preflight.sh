@@ -80,6 +80,21 @@ if [[ "${APP_ENV:-production}" != "production" ]]; then
   exit 2
 fi
 
+if [[ -n "${ATINY_OPERATIONS_ALERT_ALLOW_HTTP_LOOPBACK:-}" ]]; then
+  echo "production operations alerts cannot enable plaintext loopback test mode" >&2
+  exit 2
+fi
+if [[ -n "${ATINY_OPERATIONS_ALERT_BEARER_TOKEN:-}" \
+      && -z "${ATINY_OPERATIONS_ALERT_WEBHOOK_URL:-}" ]]; then
+  echo "operations alert bearer token requires a webhook URL" >&2
+  exit 2
+fi
+if [[ -n "${ATINY_OPERATIONS_ALERT_WEBHOOK_URL:-}" \
+      && ! "${ATINY_OPERATIONS_ALERT_WEBHOOK_URL}" =~ ^https://[^[:space:]]+$ ]]; then
+  echo "operations alert webhook URL must use HTTPS and contain no whitespace" >&2
+  exit 2
+fi
+
 if [[ -z "${LOCAL_COGNITION_BASE_URL:-}" \
       && -z "${CLOUDFLARE_WORKERS_AI_API_KEY:-}" \
       && -z "${GROQ_API_KEY:-}" \
