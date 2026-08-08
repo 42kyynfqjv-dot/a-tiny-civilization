@@ -1,0 +1,17 @@
+{
+  "schema_version": 1,
+  "chain_hash": "52db9ba70e0cc0f6eaf7803dd07447a1f5477735fd3f661792ba94600c84e971",
+  "public_key": "83cf0f2896adee7eb8b5f01fcad3912212c437e0073e911fb90022d3e760183c8c4b450b6a0a6c3ac6a5776a2d1064510d1fec758c921cc22b0e17e63aaf4bcb5ed66304de9cf809bd274ca73bab4af5a6e9c76a4bc09e76eae8991ef5ece45a",
+  "scheme": "bls-unchained-g1-rfc9380",
+  "period_seconds": 3,
+  "genesis_unix_seconds": 1692803367,
+  "target_round": 31125752,
+  "target_unix_seconds": 1786180620,
+  "minimum_unrevealed_rounds": 200,
+  "observed_beacon": {
+    "round": 31125218,
+    "randomness": "e3138d8f40ec1cafae93ff33f443da3ee4a435cdbed3d167a4ae90c9e9ce41a9",
+    "signature": "8350161234c20d3bd66cc5149da4dba8dc02c5fe7c7857340933ba2c4f34e66476ef7450aced8a4aa9675b242f096704"
+  },
+  "derivation_domain": "a-tiny-civilization/world-seed/v1"
+}
