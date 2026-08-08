@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{Digest, PrimitiveActionKind};
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v4";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v5";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -332,39 +332,7 @@ fn api_request(
             "json_schema": {
                 "name": "bounded_primitive_action",
                 "strict": true,
-                "schema": {
-                    "type": "object",
-                    "properties": {
-                        "action_kind": {
-                            "type": "string",
-                            "enum": [
-                                "move", "orient", "reach", "grasp", "release",
-                                "apply_force", "bite", "chew", "swallow", "rest",
-                                "emit_signal"
-                            ]
-                        },
-                        "contact_region": {
-                            "anyOf": [
-                                {"type": "integer", "minimum": 0, "maximum": 7},
-                                {"type": "null"}
-                            ]
-                        },
-                        "signal_intensity": {
-                            "anyOf": [
-                                {"type": "integer", "minimum": 1, "maximum": 8},
-                                {"type": "null"}
-                            ]
-                        },
-                        "movement_direction": {
-                            "anyOf": [
-                                {"type": "integer", "minimum": 0, "maximum": 3},
-                                {"type": "null"}
-                            ]
-                        }
-                    },
-                    "required": ["action_kind", "contact_region", "signal_intensity", "movement_direction"],
-                    "additionalProperties": false
-                }
+                "schema": bounded_action_schema()
             }
         }
     });
@@ -376,6 +344,39 @@ fn api_request(
         payload["include_reasoning"] = Value::Bool(false);
     }
     Ok(payload)
+}
+
+fn bounded_action_schema() -> Value {
+    let null = || json!({"type": "null"});
+    let integer = |minimum: u8, maximum: u8| json!({"type": "integer", "minimum": minimum, "maximum": maximum});
+    let variant = |action_kind: &str,
+                   contact_region: Value,
+                   signal_intensity: Value,
+                   movement_direction: Value| {
+        json!({
+            "type": "object",
+            "properties": {
+                "action_kind": {"const": action_kind},
+                "contact_region": contact_region,
+                "signal_intensity": signal_intensity,
+                "movement_direction": movement_direction
+            },
+            "required": [
+                "action_kind", "contact_region", "signal_intensity", "movement_direction"
+            ],
+            "additionalProperties": false
+        })
+    };
+
+    let mut variants = vec![variant("move", null(), null(), integer(0, 3))];
+    for action_kind in [
+        "orient", "reach", "grasp", "release", "bite", "chew", "swallow", "rest",
+    ] {
+        variants.push(variant(action_kind, null(), null(), null()));
+    }
+    variants.push(variant("apply_force", integer(0, 7), null(), null()));
+    variants.push(variant("emit_signal", null(), integer(1, 8), null()));
+    json!({"oneOf": variants})
 }
 
 fn request_seed(request: &ModelCognitionRequest) -> u64 {
@@ -729,6 +730,16 @@ mod tests {
         let seen = seen.lock().expect("test lock").clone().expect("request");
         assert_eq!(seen["provider"]["require_parameters"], true);
         assert_eq!(seen["response_format"]["json_schema"]["strict"], true);
+        let variants = seen["response_format"]["json_schema"]["schema"]["oneOf"]
+            .as_array()
+            .expect("closed action variants");
+        assert_eq!(variants.len(), 11);
+        assert_eq!(variants[0]["properties"]["action_kind"]["const"], "move");
+        assert_eq!(
+            variants[0]["properties"]["movement_direction"]["maximum"],
+            3
+        );
+        assert_eq!(variants[0]["properties"]["contact_region"]["type"], "null");
         assert_eq!(seen["include_reasoning"], false);
     }
 
