@@ -31,6 +31,11 @@ These are write-side commitments and must be active before the first durable wor
 Any species offered for supporter naming must use durable individual identity before
 that feature is enabled. Observer aliases never become world state.
 
+The first candidate identity tier is `ranged-tetrapod-individuals-v1`: source-ranged
+tetrapods may become durable founders, while smaller fauna remain ecological evidence
+until cohort and life-stage mechanics exist. This is an identity policy, not a claim
+of abundance, native status, habitat suitability, or scientific admission.
+
 ## Rebuildable read-side features
 
 These can phase in without losing earlier history, provided their primitive evidence

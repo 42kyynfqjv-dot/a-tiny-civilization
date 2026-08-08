@@ -16,7 +16,9 @@ pub const FAUNA_RANGE_CANDIDATE_SET_SCHEMA_VERSION: u16 = 1;
 pub const FAUNA_RANGE_CANDIDATE_SET_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-range-candidate-set+json";
 const INATURALIST_RANGE_RELEASE: &str = "2.20";
-pub const FAUNA_SEEDED_SELECTION_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_FAUNA_SEEDED_SELECTION_SCHEMA_VERSION: u16 = 1;
+pub const FAUNA_SEEDED_SELECTION_SCHEMA_VERSION: u16 = 2;
+pub const INDIVIDUAL_FAUNA_IDENTITY_TIER_POLICY: &str = "ranged-tetrapod-individuals-v1";
 pub const FAUNA_SEEDED_SELECTION_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.fauna-seeded-selection+json";
 pub const LEGACY_FAUNA_POPULATION_PLAN_SCHEMA_VERSION: u16 = 1;
@@ -68,6 +70,8 @@ pub struct FaunaSeededSelection {
     pub candidate_set_digest: Digest,
     pub world_seed: WorldSeed,
     pub species_limit: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub identity_tier_policy: Option<String>,
     /// Ordered by the derived seed priority, never by an authored species list.
     pub selected_candidates: Vec<FaunaRangeCandidate>,
 }
@@ -165,6 +169,46 @@ impl FaunaRangeCandidateSet {
         world_seed: WorldSeed,
         species_limit: u32,
     ) -> Result<FaunaSeededSelection, FaunaRangeCandidateSetError> {
+        self.select_seeded_candidates_with_policy(
+            world_seed,
+            species_limit,
+            LEGACY_FAUNA_SEEDED_SELECTION_SCHEMA_VERSION,
+            None,
+            b"a-tiny-civilization/fauna-seed-selection/v1",
+            |_| true,
+        )
+    }
+
+    /// Select only source-ranged tetrapods for durable individual simulation.
+    /// Other real candidates remain coarse ecological evidence rather than being
+    /// assigned fabricated individual physiology and cognition.
+    pub fn select_seeded_individual_candidates(
+        &self,
+        world_seed: WorldSeed,
+        species_limit: u32,
+    ) -> Result<FaunaSeededSelection, FaunaRangeCandidateSetError> {
+        self.select_seeded_candidates_with_policy(
+            world_seed,
+            species_limit,
+            FAUNA_SEEDED_SELECTION_SCHEMA_VERSION,
+            Some(INDIVIDUAL_FAUNA_IDENTITY_TIER_POLICY.to_owned()),
+            b"a-tiny-civilization/fauna-seed-selection/v2/tetrapod-individuals",
+            FaunaRangeCandidate::is_tetrapod_individual_candidate,
+        )
+    }
+
+    fn select_seeded_candidates_with_policy<F>(
+        &self,
+        world_seed: WorldSeed,
+        species_limit: u32,
+        selection_schema_version: u16,
+        identity_tier_policy: Option<String>,
+        domain: &[u8],
+        eligible: F,
+    ) -> Result<FaunaSeededSelection, FaunaRangeCandidateSetError>
+    where
+        F: Fn(&FaunaRangeCandidate) -> bool,
+    {
         if species_limit == 0 {
             return Err(FaunaRangeCandidateSetError::ZeroSpeciesLimit);
         }
@@ -172,10 +216,11 @@ impl FaunaRangeCandidateSet {
         let mut ranked = self
             .candidates
             .iter()
+            .filter(|candidate| eligible(candidate))
             .cloned()
             .map(|candidate| {
                 let mut bytes = Vec::with_capacity(128);
-                bytes.extend_from_slice(b"a-tiny-civilization/fauna-seed-selection/v1");
+                bytes.extend_from_slice(domain);
                 bytes.extend_from_slice(&world_seed.get().to_le_bytes());
                 bytes.extend_from_slice(candidate_set_digest.as_bytes());
                 bytes.extend_from_slice(&candidate.order_key()?.to_le_bytes());
@@ -197,10 +242,11 @@ impl FaunaRangeCandidateSet {
             .map(|(_, _, candidate)| candidate)
             .collect();
         Ok(FaunaSeededSelection {
-            selection_schema_version: FAUNA_SEEDED_SELECTION_SCHEMA_VERSION,
+            selection_schema_version,
             candidate_set_digest,
             world_seed,
             species_limit,
+            identity_tier_policy,
             selected_candidates,
         })
     }
@@ -211,15 +257,30 @@ impl FaunaSeededSelection {
         &self,
         candidates: &FaunaRangeCandidateSet,
     ) -> Result<(), FaunaRangeCandidateSetError> {
-        if self.selection_schema_version != FAUNA_SEEDED_SELECTION_SCHEMA_VERSION {
-            return Err(FaunaRangeCandidateSetError::UnsupportedSelectionSchema(
-                self.selection_schema_version,
-            ));
-        }
         if self.species_limit == 0 || self.candidate_set_digest == Digest::ZERO {
             return Err(FaunaRangeCandidateSetError::InvalidSeededSelection);
         }
-        let expected = candidates.select_seeded_candidates(self.world_seed, self.species_limit)?;
+        let expected = match self.selection_schema_version {
+            LEGACY_FAUNA_SEEDED_SELECTION_SCHEMA_VERSION if self.identity_tier_policy.is_none() => {
+                candidates.select_seeded_candidates(self.world_seed, self.species_limit)?
+            }
+            FAUNA_SEEDED_SELECTION_SCHEMA_VERSION
+                if self.identity_tier_policy.as_deref()
+                    == Some(INDIVIDUAL_FAUNA_IDENTITY_TIER_POLICY) =>
+            {
+                candidates
+                    .select_seeded_individual_candidates(self.world_seed, self.species_limit)?
+            }
+            LEGACY_FAUNA_SEEDED_SELECTION_SCHEMA_VERSION
+            | FAUNA_SEEDED_SELECTION_SCHEMA_VERSION => {
+                return Err(FaunaRangeCandidateSetError::InvalidSeededSelection);
+            }
+            version => {
+                return Err(FaunaRangeCandidateSetError::UnsupportedSelectionSchema(
+                    version,
+                ));
+            }
+        };
         if self != &expected {
             return Err(FaunaRangeCandidateSetError::InvalidSeededSelection);
         }
@@ -419,6 +480,13 @@ impl FaunaRangeCandidate {
             .parse()
             .map_err(|_| FaunaRangeCandidateSetError::InvalidCandidate)
     }
+
+    fn is_tetrapod_individual_candidate(&self) -> bool {
+        matches!(
+            self.range_package.split('_').next(),
+            Some("amphibia" | "aves" | "mammalia" | "reptilia")
+        )
+    }
 }
 
 fn slug(value: &str) -> bool {
@@ -476,6 +544,10 @@ mod tests {
     use super::*;
 
     fn candidate(key: u64, name: &str) -> FaunaRangeCandidate {
+        candidate_in_package(key, name, "mammalia")
+    }
+
+    fn candidate_in_package(key: u64, name: &str, range_package: &str) -> FaunaRangeCandidate {
         FaunaRangeCandidate {
             species: SpeciesIdentity::new(
                 "gbif",
@@ -485,7 +557,7 @@ mod tests {
             )
             .expect("valid source species"),
             inaturalist_taxon_id: key + 1,
-            range_package: "mammalia".to_owned(),
+            range_package: range_package.to_owned(),
             range_feature_fid: key + 2,
         }
     }
@@ -592,6 +664,39 @@ mod tests {
         assert_eq!(
             selection.validate_against(&candidate_set),
             Err(FaunaRangeCandidateSetError::InvalidSeededSelection)
+        );
+    }
+
+    #[test]
+    fn individual_fauna_selection_excludes_invertebrates_without_reranking_by_name() {
+        let mut candidate_set = set();
+        candidate_set.candidates = vec![
+            candidate_in_package(1, "Insecta testii", "insecta_1"),
+            candidate_in_package(2, "Aves testii", "aves_1"),
+            candidate_in_package(3, "Arachnida testii", "arachnida"),
+            candidate_in_package(4, "Reptilia testii", "reptilia"),
+        ];
+        let selection = candidate_set
+            .select_seeded_individual_candidates(WorldSeed::new(42), 4)
+            .expect("tetrapod individual selection");
+        assert_eq!(selection.selection_schema_version, 2);
+        assert_eq!(
+            selection.identity_tier_policy.as_deref(),
+            Some(INDIVIDUAL_FAUNA_IDENTITY_TIER_POLICY)
+        );
+        assert_eq!(selection.selected_candidates.len(), 2);
+        assert!(
+            selection
+                .selected_candidates
+                .iter()
+                .all(FaunaRangeCandidate::is_tetrapod_individual_candidate)
+        );
+        let bytes = selection
+            .canonical_bytes_against(&candidate_set)
+            .expect("canonical tiered selection");
+        assert_eq!(
+            FaunaSeededSelection::from_canonical_slice_against(&bytes, &candidate_set),
+            Ok(selection)
         );
     }
 

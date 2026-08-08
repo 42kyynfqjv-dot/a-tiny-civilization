@@ -67,6 +67,7 @@ python3 scripts/query-inaturalist-range-candidates.py \
   --candidates "${fauna_candidates}" \
   --world-seed "${world_seed}" \
   --species-limit "${species_limit}" \
+  --individual-fauna-only \
   --output "${fauna_selection}"
 
 "${data_executable}" derive provisional-fauna-population-plan \

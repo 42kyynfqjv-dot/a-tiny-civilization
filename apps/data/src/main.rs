@@ -628,6 +628,9 @@ enum DeriveCommand {
         /// Maximum number of species candidates to retain. Must be nonzero.
         #[arg(long)]
         species_limit: u32,
+        /// Restrict durable individual founders to source-ranged tetrapods.
+        #[arg(long, default_value_t = false)]
+        individual_fauna_only: bool,
         /// New output path. Existing artifacts are never replaced.
         #[arg(long)]
         output: PathBuf,
@@ -1462,11 +1465,13 @@ async fn main() -> Result<()> {
                 candidates,
                 world_seed,
                 species_limit,
+                individual_fauna_only,
                 output,
             } => derive_fauna_seeded_selection(
                 &candidates,
                 WorldSeed::new(world_seed),
                 species_limit,
+                individual_fauna_only,
                 &output,
             ),
             DeriveCommand::ProvisionalFaunaPopulationPlan {
@@ -2313,6 +2318,7 @@ fn derive_fauna_seeded_selection(
     candidates_path: &Path,
     world_seed: WorldSeed,
     species_limit: u32,
+    individual_fauna_only: bool,
     output_path: &Path,
 ) -> Result<()> {
     let candidate_bytes = fs::read(candidates_path).with_context(|| {
@@ -2328,9 +2334,12 @@ fn derive_fauna_seeded_selection(
                 candidates_path.display()
             )
         })?;
-    let selection = candidates
-        .select_seeded_candidates(world_seed, species_limit)
-        .context("derive deterministic fauna seeded selection")?;
+    let selection = if individual_fauna_only {
+        candidates.select_seeded_individual_candidates(world_seed, species_limit)
+    } else {
+        candidates.select_seeded_candidates(world_seed, species_limit)
+    }
+    .context("derive deterministic fauna seeded selection")?;
     let selection_bytes = selection
         .canonical_bytes_against(&candidates)
         .context("encode canonical fauna seeded selection")?;
@@ -2343,6 +2352,7 @@ fn derive_fauna_seeded_selection(
             "content_hash": Digest::sha256(&selection_bytes),
             "selected_candidate_count": selection.selected_candidates.len(),
             "species_limit": selection.species_limit,
+            "identity_tier_policy": selection.identity_tier_policy,
             "status": "seeded-range-selection-not-population-or-organism-creation",
             "world_seed": selection.world_seed,
         }))?
@@ -14004,6 +14014,7 @@ mod tests {
             candidate_set_digest: Digest::sha256(b"test candidates"),
             world_seed: WorldSeed::new(42),
             species_limit: 2,
+            identity_tier_policy: None,
             selected_candidates: vec![
                 world_data::FaunaRangeCandidate {
                     species: species("10", "Ten testii"),
