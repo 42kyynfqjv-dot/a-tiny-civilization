@@ -110,26 +110,16 @@ if ((database_ready != 1)); then
   exit 1
 fi
 
-worlds=()
-if [[ -n "$world_rows" ]]; then
-  mapfile -t worlds <<<"$world_rows"
-fi
-if ((${#worlds[@]} == 0)); then
+validated_state="$({
+  if [[ -n "$world_rows" ]]; then
+    printf '%s\n' "$world_rows"
+  fi
+} | "${project_root}/scripts/validate-production-world-state.py" \
+      --mode allow-empty \
+      --expected-world-id "$expected_world_id" \
+      --expected-ruleset "$expected_ruleset")"
+if [[ "$validated_state" == *'"status":"empty-ready-for-qualified-activation"'* ]]; then
   echo "Private production database is migration-ready and empty for qualified activation of ${expected_world_id}."
   exit 0
-fi
-if ((${#worlds[@]} != 1)); then
-  echo "private production database contains ${#worlds[@]} worlds; refusing preparation" >&2
-  exit 1
-fi
-IFS='|' read -r deployed_world_id deployed_ruleset deployed_tick deployed_sequence deployed_status \
-  <<<"${worlds[0]}"
-if [[ "$deployed_world_id" != "$expected_world_id" \
-   || "$deployed_ruleset" != "$expected_ruleset" \
-   || ! "$deployed_tick" =~ ^[0-9]+$ \
-   || ! "$deployed_sequence" =~ ^[1-9][0-9]*$ \
-   || "$deployed_status" != "running" ]]; then
-  echo "private production database contains a world other than the exact running qualified world" >&2
-  exit 1
 fi
 echo "Private production database already contains the exact running qualified world; no world state changed."

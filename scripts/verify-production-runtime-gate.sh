@@ -14,7 +14,7 @@ mutation_line="$(rg -n -m1 'compose_args\[@.*build migrate' "$deployment")"
 public_edge_line="$(rg -n -m1 'verify-public-edge\.sh.*https://atinycivilization\.com' "$deployment")"
 live_genesis_line="$(rg -n -m1 'verify-live-genesis\.sh' "$deployment")"
 private_foundation_line="$(rg -n -m1 'up -d db migrate local-cognition hindsight' "$deployment")"
-world_guard_line="$(rg -n -m1 'public deployment requires exactly one privately activated qualified world' "$deployment")"
+world_guard_line="$(rg -n -m1 -- '--mode require-running' "$deployment")"
 canonical_start_line="$(rg -n -m1 '^  api projector runner memory-worker cognition-worker' "$deployment")"
 preflight_number="${preflight_line%%:*}"
 checkout_number="${checkout_line%%:*}"
@@ -63,9 +63,8 @@ if ((private_foundation_number >= world_guard_number || world_guard_number >= ca
   exit 1
 fi
 for contract in \
-  'deployed_world_id.*expected_world_id' \
-  'deployed_ruleset.*expected_ruleset' \
-  'deployed_status.*running' \
+  'validate-production-world-state\.py' \
+  'mode require-running' \
   'deployment lost its single running world after service startup'; do
   if ! rg -q "$contract" "$deployment"; then
     echo "production deployment lost qualified-world contract: $contract" >&2
@@ -98,7 +97,9 @@ for contract in \
   'requires the literal --confirm-private-database-preparation argument' \
   'up -d db migrate' \
   'migration-ready and empty for qualified activation' \
-  'already contains the exact running qualified world'; do
+  'already contains the exact running qualified world' \
+  'validate-production-world-state\.py' \
+  'mode allow-empty'; do
   if ! rg -q -- "$contract" "$database_preparation"; then
     echo "private database preparation lost required contract: $contract" >&2
     exit 1

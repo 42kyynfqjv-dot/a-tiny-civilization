@@ -158,7 +158,9 @@ unchanged qualified activation boundary. It commits only tick zero and starts no
 its replay hashes, and only then invoke the deployment helper above. The helper now refuses an
 empty database instead of publishing a pre-genesis shell, and it refuses a different world,
 ruleset, terminal status, zero sequence, or multiple worlds before any canonical service or web
-container starts.
+container starts. Private preparation and deployment use the same strict world-row validator;
+empty state is accepted only in preparation mode, while deployment requires the one exact running
+world with a positive committed sequence.
 
 Before the first deployment, populate the external local-model volume. The provisioner uses a
 pinned Ollama image, host networking only while downloading, a loopback-bound API, and verifies the

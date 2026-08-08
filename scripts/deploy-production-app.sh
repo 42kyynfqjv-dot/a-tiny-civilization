@@ -124,25 +124,15 @@ for _ in $(seq 1 60); do
   fi
   sleep 1
 done
-worlds=()
-if [[ -n "$world_rows" ]]; then
-  mapfile -t worlds <<<"$world_rows"
-fi
-if ((${#worlds[@]} != 1)); then
-  echo "public deployment requires exactly one privately activated qualified world; found ${#worlds[@]}" >&2
-  echo "start only db+migrate, run activate-qualified-canonical-world.sh, then retry deployment" >&2
-  exit 1
-fi
-IFS='|' read -r deployed_world_id deployed_ruleset deployed_tick deployed_sequence deployed_status \
-  <<<"${worlds[0]}"
-if [[ "$deployed_world_id" != "$expected_world_id" \
-   || "$deployed_ruleset" != "$expected_ruleset" \
-   || ! "$deployed_tick" =~ ^[0-9]+$ \
-   || ! "$deployed_sequence" =~ ^[1-9][0-9]*$ \
-   || "$deployed_status" != "running" ]]; then
-  echo "production database is not the exact running qualified world" >&2
-  exit 1
-fi
+{
+  if [[ -n "$world_rows" ]]; then
+    printf '%s\n' "$world_rows"
+  fi
+} | "${project_root}/scripts/validate-production-world-state.py" \
+  --mode require-running \
+  --expected-world-id "$expected_world_id" \
+  --expected-ruleset "$expected_ruleset" \
+  >/dev/null
 
 "${compose_command[@]}" "${compose_args[@]}" up -d \
   api projector runner memory-worker cognition-worker
