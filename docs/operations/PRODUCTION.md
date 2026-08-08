@@ -224,6 +224,20 @@ The second command is retry-safe only for byte-identical inputs. Do not enable o
 restart the long-running runner until the printed replay hashes and the public seed
 commitment have been recorded in the launch evidence.
 
+Once production services are running and activation has committed tick zero, require observed live
+progress before opening the public hostname. This read-only check waits for tick 1, drains the
+initial Hindsight outbox, requires exact current privacy-safe projections, replays the live world,
+and reruns complete backend health:
+
+```bash
+sudo ./scripts/verify-live-genesis.sh \
+  --env-file /etc/a-tiny-civilization-production.env \
+  --world-id "$WORLD_ID"
+```
+
+If it fails, repair or restart the failed service and rerun the verifier. Never reinitialize or
+replace the committed tick-zero world.
+
 For disposable pre-genesis evidence only, an exact bounded runner path avoids relying on process
 signal timing. It uses the real writer lock, snapshot resume, cognition scheduling, and DE441
 driver, but refuses `APP_ENV=production` and cannot change a public world's pace:
