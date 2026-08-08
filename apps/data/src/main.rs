@@ -31,7 +31,8 @@ use world_data::{
     FaunaPopulationPlanEntry, FaunaRangeCandidateSet, FaunaSeededSelection,
     LOCAL_FAUNA_OCCURRENCE_EVIDENCE_SCHEMA_VERSION, LandCoverClassCount, LandCoverEvidenceCell,
     LandCoverSignedValueCount, LocalFaunaOccurrenceEvidenceSet, LocalFaunaOccurrenceRecord,
-    OriginClimateSeries, OriginClimateSourceArtifact, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
+    OriginClimateNormalMonth, OriginClimateNormalSeries, OriginClimateSeries,
+    OriginClimateSourceArtifact, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_LAND_COVER_EVIDENCE_TILE_MEDIA_TYPE, PACKED_SCALAR_FIELD_TILE_MEDIA_TYPE,
     PACKED_SCALAR_TERRAIN_TILE_MEDIA_TYPE, PACKED_SEASONAL_FIELD_TILE_MEDIA_TYPE,
     PACKED_SOILGRIDS_TOPSOIL_TILE_MEDIA_TYPE, PROVISIONAL_MATERIAL_RESOURCE_PLAN_SCHEMA_VERSION,
@@ -39,16 +40,17 @@ use world_data::{
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_SCHEMA_VERSION,
     PROVISIONAL_ORGANISM_BODY_PROFILE_PLAN_STATUS,
     PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION, PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS,
+    PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION, PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS,
     PackedBooleanFieldTile, PackedLandCoverEvidenceTile, PackedScalarFieldTile,
     PackedScalarTerrainTile, PackedSeasonalScalarFieldTile, PackedSoilGridsTopsoilTile,
     ProvisionalLandOriginSelection, ProvisionalMaterialResourcePlan,
     ProvisionalMaterialResourceSource, ProvisionalOrganismBodyProfileEntry,
     ProvisionalOrganismBodyProfilePlan, ProvisionalOriginClimateEvidence,
-    ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE, ScalarFieldCell, ScalarTerrainCell,
-    SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth, SoilGridsProperty,
-    SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell, SourceSnapshotArtifact,
-    SourceSnapshotManifest, TileArtifactReference, TileTreeEntry, TileTreeEntryKind, TileTreeIndex,
-    WorldDataBundle, soilgrids_source_set_digest,
+    ProvisionalOriginClimateNormals, ProvisionalOriginEnvironment, SOILGRIDS_NO_DATA_VALUE,
+    ScalarFieldCell, ScalarTerrainCell, SeasonalScalarFieldCell, SeasonalSourceArtifact, SoilDepth,
+    SoilGridsProperty, SoilGridsPropertySource, SoilGridsQuantileValues, SoilGridsTopsoilCell,
+    SourceSnapshotArtifact, SourceSnapshotManifest, TileArtifactReference, TileTreeEntry,
+    TileTreeEntryKind, TileTreeIndex, WorldDataBundle, soilgrids_source_set_digest,
 };
 use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
@@ -695,6 +697,14 @@ enum DeriveCommand {
         source_snapshot: PathBuf,
         #[arg(long)]
         artifact_root: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Convert exact origin source bits into deterministic monthly fixed-point ranges.
+    /// The output is still noncausal and does not generate weather.
+    ProvisionalOriginClimateNormals {
+        #[arg(long)]
+        evidence: PathBuf,
         #[arg(long)]
         output: PathBuf,
     },
@@ -1827,6 +1837,9 @@ async fn main() -> Result<()> {
                 &artifact_root,
                 &output,
             ),
+            DeriveCommand::ProvisionalOriginClimateNormals { evidence, output } => {
+                derive_provisional_origin_climate_normals(&evidence, &output)
+            }
         },
     }
 }
@@ -10380,6 +10393,143 @@ fn derive_provisional_origin_climate_evidence(
     Ok(())
 }
 
+fn f32_bits_to_optional_scaled_integer(bits: u32, scale: i128) -> Result<Option<i64>> {
+    if scale <= 0 {
+        bail!("binary32 fixed-point scale must be positive");
+    }
+    let sign = if bits >> 31 == 0 { 1_i128 } else { -1_i128 };
+    let exponent = ((bits >> 23) & 0xff) as i32;
+    let fraction = bits & 0x007f_ffff;
+    if exponent == 0xff {
+        if fraction != 0 {
+            return Ok(None);
+        }
+        bail!("binary32 source value is infinite");
+    }
+    let (significand, power) = if exponent == 0 {
+        (i128::from(fraction), -149)
+    } else {
+        (i128::from((1_u32 << 23) | fraction), exponent - 150)
+    };
+    let numerator = sign
+        .checked_mul(significand)
+        .and_then(|value| value.checked_mul(scale))
+        .context("binary32 fixed-point numerator overflow")?;
+    let scaled = if power >= 0 {
+        numerator
+            .checked_shl(u32::try_from(power)?)
+            .context("binary32 fixed-point conversion overflow")?
+    } else {
+        let divisor_shift = u32::try_from(-power)?;
+        if divisor_shift >= 127 {
+            0
+        } else {
+            round_divide_i128(numerator, 1_i128 << divisor_shift)
+        }
+    };
+    Ok(Some(
+        i64::try_from(scaled).context("binary32 fixed-point value exceeds i64")?,
+    ))
+}
+
+fn derive_provisional_origin_climate_normals(evidence_path: &Path, output: &Path) -> Result<()> {
+    let evidence_bytes = fs::read(evidence_path)
+        .with_context(|| format!("read origin climate evidence {}", evidence_path.display()))?;
+    let evidence = ProvisionalOriginClimateEvidence::from_canonical_slice(&evidence_bytes)
+        .context("validate canonical origin climate evidence")?;
+    let specifications = [
+        ("siconc", "fraction", 6_u8, 1_000_000_i128, 0_i64),
+        ("sst", "degC", 3, 1_000, -273_150),
+        ("t2m", "degC", 3, 1_000, -273_150),
+        ("tp", "m", 6, 1_000_000, 0),
+        ("u10", "m/s", 3, 1_000, 0),
+        ("v10", "m/s", 3, 1_000, 0),
+    ];
+    let mut series = Vec::with_capacity(specifications.len());
+    for (source, (variable, unit, decimal_places, scale, offset)) in
+        evidence.series.iter().zip(specifications)
+    {
+        if source.variable != variable {
+            bail!("origin climate evidence series order changed before normalization");
+        }
+        let mut months = Vec::with_capacity(12);
+        for month_index in 0..12_usize {
+            let values = (0..30_usize)
+                .map(|year_index| {
+                    let index = year_index
+                        .checked_mul(12)
+                        .and_then(|value| value.checked_add(month_index))
+                        .context("origin climate monthly index overflow")?;
+                    let bits = *source
+                        .values_ieee754_binary32_bits
+                        .get(index)
+                        .context("origin climate monthly source value is absent")?;
+                    Ok(match f32_bits_to_optional_scaled_integer(bits, scale)? {
+                        Some(value) => Some(
+                            value
+                                .checked_add(offset)
+                                .context("origin climate fixed-point offset overflow")?,
+                        ),
+                        None => None,
+                    })
+                })
+                .collect::<Result<Vec<_>>>()?
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>();
+            let (minimum, mean, maximum) = if values.is_empty() {
+                (None, None, None)
+            } else {
+                let minimum = *values.iter().min().context("nonempty climate values")?;
+                let maximum = *values.iter().max().context("nonempty climate values")?;
+                let sum = values.iter().try_fold(0_i128, |sum, value| {
+                    sum.checked_add(i128::from(*value))
+                        .context("origin climate monthly sum overflow")
+                })?;
+                let mean = i64::try_from(round_divide_i128(sum, i128::try_from(values.len())?))?;
+                (Some(minimum), Some(mean), Some(maximum))
+            };
+            months.push(OriginClimateNormalMonth {
+                month: u8::try_from(month_index + 1)?,
+                observed_years: u8::try_from(values.len())?,
+                minimum,
+                mean,
+                maximum,
+            });
+        }
+        series.push(OriginClimateNormalSeries {
+            variable: variable.to_owned(),
+            unit: unit.to_owned(),
+            decimal_places,
+            months,
+        });
+    }
+    let normals = ProvisionalOriginClimateNormals {
+        normals_schema_version: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION,
+        status: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS.to_owned(),
+        origin_climate_evidence_digest: Digest::sha256(&evidence_bytes),
+        conversion_policy:
+            "binary32-nearest-even-per-observation-then-nearest-even-monthly-mean-v1".to_owned(),
+        series,
+    };
+    let bytes = normals.canonical_bytes()?;
+    write_new_artifact(output, &bytes)?;
+    println!(
+        "{}",
+        serde_json::json!({
+            "status": normals.status,
+            "output": output.display().to_string(),
+            "content_hash": Digest::sha256(&bytes),
+            "origin_climate_evidence_digest": normals.origin_climate_evidence_digest,
+            "series": normals.series.iter().map(|series| serde_json::json!({
+                "variable": series.variable,
+                "observed_years_by_month": series.months.iter().map(|month| month.observed_years).collect::<Vec<_>>(),
+            })).collect::<Vec<_>>(),
+        })
+    );
+    Ok(())
+}
+
 const COPERNICUS_LAND_COVER_MEMBER: &str = "C3S-LC-L4-LCCS-Map-300m-P1Y-2022-v2.1.1.nc";
 const COPERNICUS_LAND_COVER_SNAPSHOT_ID: &str = "copernicus-satellite-land-cover-v2-1-1-2022";
 const COPERNICUS_LAND_COVER_ARTIFACT_PATH: &str =
@@ -13923,6 +14073,29 @@ mod tests {
             era5_origin_source_address(dateline).expect("wrapped ERA5 address");
         assert_eq!(column, 720);
         assert_eq!(source.longitude_e7(), -1_800_000_000);
+    }
+
+    #[test]
+    fn era5_binary32_values_cross_to_fixed_scale_with_explicit_missing_data() {
+        assert_eq!(
+            f32_bits_to_optional_scaled_integer(273.15_f32.to_bits(), 1_000)
+                .expect("finite ERA5 temperature"),
+            Some(273_150)
+        );
+        assert_eq!(
+            f32_bits_to_optional_scaled_integer(2.5_f32.to_bits(), 1).expect("exact even tie"),
+            Some(2)
+        );
+        assert_eq!(
+            f32_bits_to_optional_scaled_integer(3.5_f32.to_bits(), 1).expect("exact odd tie"),
+            Some(4)
+        );
+        assert_eq!(
+            f32_bits_to_optional_scaled_integer(f32::NAN.to_bits(), 1_000)
+                .expect("NaN is explicit missing data"),
+            None
+        );
+        assert!(f32_bits_to_optional_scaled_integer(f32::INFINITY.to_bits(), 1_000).is_err());
     }
 
     #[test]

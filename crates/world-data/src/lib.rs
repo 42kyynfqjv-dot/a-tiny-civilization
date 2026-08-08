@@ -68,10 +68,14 @@ pub use origin::{
     ProvisionalLandOriginSelection, ProvisionalLandOriginSelectionError,
 };
 pub use origin_climate::{
-    ERA5_NORMAL_FIRST_YEAR, ERA5_NORMAL_LAST_YEAR, ERA5_NORMAL_MONTHS, OriginClimateSeries,
-    OriginClimateSourceArtifact, PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_MEDIA_TYPE,
+    ERA5_NORMAL_FIRST_YEAR, ERA5_NORMAL_LAST_YEAR, ERA5_NORMAL_MONTHS, OriginClimateNormalMonth,
+    OriginClimateNormalSeries, OriginClimateSeries, OriginClimateSourceArtifact,
+    PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_MEDIA_TYPE,
     PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_SCHEMA_VERSION, PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS,
+    PROVISIONAL_ORIGIN_CLIMATE_NORMALS_MEDIA_TYPE,
+    PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION, PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS,
     ProvisionalOriginClimateEvidence, ProvisionalOriginClimateEvidenceError,
+    ProvisionalOriginClimateNormals,
 };
 pub use origin_environment::{
     PROVISIONAL_ORIGIN_ENVIRONMENT_MEDIA_TYPE, PROVISIONAL_ORIGIN_ENVIRONMENT_SCHEMA_VERSION,

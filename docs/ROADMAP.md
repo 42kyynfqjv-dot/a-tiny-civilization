@@ -397,8 +397,12 @@ than only a one-year schema probe. A canonical artifact binds the seed-selected 
 verified annual archives and preserves six complete 1981–2010 monthly series—air temperature,
 precipitation, two wind components, sea-surface temperature, and sea-ice fraction—as 2,160 exact
 source binary32 values. The committed origin resolves to ERA5 row 265 / column 1026. This is
-noncausal evidence: fixed-point conversion, weather generation, land/ocean composition, and
-cross-variable scientific admission remain separate later mechanics.
+noncausal evidence. A second canonical artifact now derives deterministic fixed-point monthly
+minimums, means, maximums, and coverage counts without host floating-point arithmetic. It retains
+the terrestrial cell's absent sea-surface and sea-ice values explicitly and records 30 observations
+per month for air temperature, precipitation, and both wind components. Weather generation,
+land/ocean composition, temporal downscaling, and cross-variable scientific admission remain
+separate later mechanics.
 
 ### 3. Situated memory and bounded cognition
 

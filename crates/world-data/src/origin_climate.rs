@@ -12,6 +12,11 @@ pub const PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_MEDIA_TYPE: &str =
     "application/vnd.atinycivilization.provisional-origin-climate-evidence+json";
 pub const PROVISIONAL_ORIGIN_CLIMATE_EVIDENCE_STATUS: &str =
     "provisional-noncausal-not-scientifically-admitted";
+pub const PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION: u16 = 1;
+pub const PROVISIONAL_ORIGIN_CLIMATE_NORMALS_MEDIA_TYPE: &str =
+    "application/vnd.atinycivilization.provisional-origin-climate-normals+json";
+pub const PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS: &str =
+    "provisional-weather-input-noncausal-not-scientifically-admitted";
 pub const ERA5_NORMAL_FIRST_YEAR: u16 = 1981;
 pub const ERA5_NORMAL_LAST_YEAR: u16 = 2010;
 pub const ERA5_NORMAL_MONTHS: usize = 360;
@@ -56,6 +61,32 @@ pub struct OriginClimateSeries {
     pub source_unit: String,
     pub source_step_type: String,
     pub values_ieee754_binary32_bits: Vec<u32>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct ProvisionalOriginClimateNormals {
+    pub normals_schema_version: u16,
+    pub status: String,
+    pub origin_climate_evidence_digest: Digest,
+    pub conversion_policy: String,
+    pub series: Vec<OriginClimateNormalSeries>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OriginClimateNormalSeries {
+    pub variable: String,
+    pub unit: String,
+    pub decimal_places: u8,
+    pub months: Vec<OriginClimateNormalMonth>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct OriginClimateNormalMonth {
+    pub month: u8,
+    pub observed_years: u8,
+    pub minimum: Option<i64>,
+    pub mean: Option<i64>,
+    pub maximum: Option<i64>,
 }
 
 impl ProvisionalOriginClimateEvidence {
@@ -135,12 +166,79 @@ impl ProvisionalOriginClimateEvidence {
     }
 }
 
+impl ProvisionalOriginClimateNormals {
+    pub fn validate(&self) -> Result<(), ProvisionalOriginClimateEvidenceError> {
+        const NORMAL_SERIES: [(&str, &str, u8); 6] = [
+            ("siconc", "fraction", 6),
+            ("sst", "degC", 3),
+            ("t2m", "degC", 3),
+            ("tp", "m", 6),
+            ("u10", "m/s", 3),
+            ("v10", "m/s", 3),
+        ];
+        if self.normals_schema_version != PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION
+            || self.status != PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS
+            || self.origin_climate_evidence_digest == Digest::ZERO
+            || self.conversion_policy
+                != "binary32-nearest-even-per-observation-then-nearest-even-monthly-mean-v1"
+            || self.series.len() != NORMAL_SERIES.len()
+        {
+            return Err(ProvisionalOriginClimateEvidenceError::InvalidNormals);
+        }
+        for (series, (variable, unit, decimal_places)) in self.series.iter().zip(NORMAL_SERIES) {
+            if series.variable != variable
+                || series.unit != unit
+                || series.decimal_places != decimal_places
+                || series.months.len() != 12
+            {
+                return Err(ProvisionalOriginClimateEvidenceError::InvalidNormals);
+            }
+            for (index, month) in series.months.iter().enumerate() {
+                let expected_month = u8::try_from(index + 1)
+                    .map_err(|_| ProvisionalOriginClimateEvidenceError::InvalidNormals)?;
+                let complete = match (month.minimum, month.mean, month.maximum) {
+                    (None, None, None) => month.observed_years == 0,
+                    (Some(minimum), Some(mean), Some(maximum)) => {
+                        (1..=30).contains(&month.observed_years)
+                            && minimum <= mean
+                            && mean <= maximum
+                    }
+                    _ => false,
+                };
+                if month.month != expected_month || !complete {
+                    return Err(ProvisionalOriginClimateEvidenceError::InvalidNormals);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn canonical_bytes(&self) -> Result<Vec<u8>, ProvisionalOriginClimateEvidenceError> {
+        self.validate()?;
+        serde_json::to_vec(self)
+            .map_err(|error| ProvisionalOriginClimateEvidenceError::Encoding(error.to_string()))
+    }
+
+    pub fn from_canonical_slice(
+        bytes: &[u8],
+    ) -> Result<Self, ProvisionalOriginClimateEvidenceError> {
+        let value: Self = serde_json::from_slice(bytes)
+            .map_err(|error| ProvisionalOriginClimateEvidenceError::Decode(error.to_string()))?;
+        if value.canonical_bytes()? != bytes {
+            return Err(ProvisionalOriginClimateEvidenceError::NonCanonicalEncoding);
+        }
+        Ok(value)
+    }
+}
+
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum ProvisionalOriginClimateEvidenceError {
     #[error("unsupported provisional origin-climate evidence schema {0}")]
     UnsupportedSchema(u16),
     #[error("invalid provisional origin-climate evidence")]
     InvalidEvidence,
+    #[error("invalid provisional origin-climate normals")]
+    InvalidNormals,
     #[error("decode error: {0}")]
     Decode(String),
     #[error("encoding error: {0}")]
@@ -209,6 +307,54 @@ mod tests {
         assert_eq!(
             infinite.validate(),
             Err(ProvisionalOriginClimateEvidenceError::InvalidEvidence)
+        );
+    }
+
+    #[test]
+    fn normals_require_complete_months_and_explicit_missing_values() {
+        let normals = ProvisionalOriginClimateNormals {
+            normals_schema_version: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_SCHEMA_VERSION,
+            status: PROVISIONAL_ORIGIN_CLIMATE_NORMALS_STATUS.to_owned(),
+            origin_climate_evidence_digest: Digest::sha256(b"origin climate evidence"),
+            conversion_policy:
+                "binary32-nearest-even-per-observation-then-nearest-even-monthly-mean-v1".to_owned(),
+            series: [
+                ("siconc", "fraction", 6),
+                ("sst", "degC", 3),
+                ("t2m", "degC", 3),
+                ("tp", "m", 6),
+                ("u10", "m/s", 3),
+                ("v10", "m/s", 3),
+            ]
+            .into_iter()
+            .map(
+                |(variable, unit, decimal_places)| OriginClimateNormalSeries {
+                    variable: variable.to_owned(),
+                    unit: unit.to_owned(),
+                    decimal_places,
+                    months: (1..=12)
+                        .map(|month| OriginClimateNormalMonth {
+                            month,
+                            observed_years: if variable == "sst" { 0 } else { 30 },
+                            minimum: (variable != "sst").then_some(1),
+                            mean: (variable != "sst").then_some(2),
+                            maximum: (variable != "sst").then_some(3),
+                        })
+                        .collect(),
+                },
+            )
+            .collect(),
+        };
+        let bytes = normals.canonical_bytes().expect("canonical normals");
+        assert_eq!(
+            ProvisionalOriginClimateNormals::from_canonical_slice(&bytes),
+            Ok(normals.clone())
+        );
+        let mut partial = normals;
+        partial.series[0].months[0].maximum = None;
+        assert_eq!(
+            partial.validate(),
+            Err(ProvisionalOriginClimateEvidenceError::InvalidNormals)
         );
     }
 }
