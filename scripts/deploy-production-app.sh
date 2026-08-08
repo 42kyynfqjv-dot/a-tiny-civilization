@@ -46,7 +46,7 @@ cd "$project_root"
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
 "${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web
 "${compose_command[@]}" "${compose_args[@]}" up -d \
-  db migrate hindsight api projector runner memory-worker cognition-worker
+  db migrate local-cognition hindsight api projector runner memory-worker cognition-worker
 # Avoid recreating API dependencies with accidental Compose defaults while updating the
 # public web container. Never use --remove-orphans: the application and any separately
 # managed tunnel may span more than one Compose profile.

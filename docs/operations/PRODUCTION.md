@@ -99,7 +99,7 @@ sudo ./scripts/deploy-production-app.sh \
 The helper first runs the complete production preflight against the exact root-protected env file
 that Compose will consume. The file must be an absolute, regular non-symlink owned by root (or the
 invoking operator for a manual preflight), with no group or other permissions. The helper then builds
-the application and web images, starts the database, migrations,
+the application and web images, starts the database, migrations, pinned local model,
 API, projector, and runner with `APP_ENV=production`, then updates the web container
 without allowing Compose defaults to recreate its API dependency. It waits for web and API
 responses, Hindsight health, and fresh durable heartbeats from the runner, projector, memory
@@ -128,8 +128,8 @@ sudo systemctl start a-tiny-civilization-backend-status.service
 systemctl status a-tiny-civilization-backend-status.service
 ```
 
-It fails when the web edge, API, or Hindsight is unreachable, or when any required Rust-service
-heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). Configure
+It fails when the web edge, API, Hindsight, or exact pinned local model is unreachable, or when any
+required Rust-service heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). Configure
 host alerting for the failed unit before genesis.
 
 The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second

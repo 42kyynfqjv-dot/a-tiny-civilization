@@ -61,6 +61,12 @@ check_once() {
     >/dev/null || return 1
   "${compose_command[@]}" "${compose_args[@]}" exec -T hindsight \
     curl --fail --silent http://127.0.0.1:8888/health >/dev/null || return 1
+  local_model_status="$("${compose_command[@]}" "${compose_args[@]}" exec -T hindsight \
+    curl --fail --silent http://local-cognition:11434/api/tags)" || return 1
+  [[ "$local_model_status" == *'"name":"qwen2.5:1.5b"'* ]] || return 1
+  [[ "$local_model_status" == \
+    *'"digest":"65ec06548149b04c096a120e4a6da9d4017ea809c91734ea5631e89f96ddc57b"'* \
+  ]] || return 1
   data_status="$("${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
     "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \"
       WITH active_world AS (
@@ -117,7 +123,7 @@ check_once() {
 deadline=$((SECONDS + wait_seconds))
 while ! check_once; do
   if ((SECONDS >= deadline)); then
-    echo "backend is not ready: an endpoint, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
+    echo "backend is not ready: an endpoint, local model, heartbeat, projection, memory delivery, or cognition dispatch is unhealthy" >&2
     exit 1
   fi
   sleep 1

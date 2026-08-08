@@ -552,8 +552,8 @@ may address one of eight physical contact regions; exact region and aggregate tr
 and replayed, while the engine assigns no pattern, symbol, or purpose. Its first isolated
 qualification history reached tick 1,000 with 85 regional transitions spanning all eight regions,
 all five observer projections current, and exact stop/resume/replay. ADR 0096 records the schema and
-observer boundaries. Hindsight delivery and the audited cognition fallback are exercised separately;
-a non-null real provider receipt remains a fail-closed launch requirement.
+observer boundaries. At that checkpoint Hindsight delivery and cognition fallback were exercised
+separately; the later ruleset-25 qualification closes the then-unmet model-receipt gate.
 
 Ruleset 21 removes a separate emergence ceiling in communication: autonomous local sound now has
 eight selectable physical intensities instead of one invariant amplitude. The values have no token,
@@ -586,3 +586,11 @@ the engine still stores no word, message, destination, intention, or meaning. Le
 associations remain replay-compatible; new associations are bounded, life-local, non-heritable, and
 absent from public projections. Fresh genesis and qualification default to ruleset 25; ADR 0102
 records the boundary.
+
+Ruleset-25 integrated qualification now continues through tick 1,381 with exact genesis and
+snapshot-plus-tail replay, all five projections current, 3,672 error-free Hindsight deliveries, and
+one zero-cost Qwen2.5 1.5B receipt prepared before its fixed deadline and consumed in canonical
+history. The private CPU model runs behind an exact same-host URL allowlist and an unexposed Compose
+service. Adapter schema v5 grammatically closes every action/coordinate pairing while retaining the
+independent Rust receipt validator. The checksum-covered evidence bundle contains no canonical
+event payloads or secrets.

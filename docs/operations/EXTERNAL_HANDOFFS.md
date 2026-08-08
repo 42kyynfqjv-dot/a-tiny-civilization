@@ -74,20 +74,26 @@ identity/contact steps cannot be inferred by the application.
 
 ### Cognition provider
 
-Install at least one supported provider key directly in
-`/etc/a-tiny-civilization-production.env`. The production ladder is free-first across
-configured Cloudflare Workers AI, Groq, Cerebras, and OpenRouter routes. Keep
-`COGNITION_PAID_ENABLED=false` for a free-only launch; enabling it requires OpenRouter
-and is bounded by the canonical three-dollar monthly hard stop. Hindsight itself runs
-keylessly on the private application network.
+The standard production path uses the pinned Qwen2.5 1.5B model locally and requires no provider
+account or API key. Run `scripts/provision-local-cognition.sh`, set
+`LOCAL_COGNITION_BASE_URL=http://local-cognition:11434/v1`, and keep
+`COGNITION_PAID_ENABLED=false`. Hindsight and Qwen both remain on the private application network.
+The integrated ruleset-25 qualification exercised a recalled, zero-cost local receipt through its
+fixed deadline, canonical latch, consumption, and replay.
+
+Cloudflare Workers AI, Groq, Cerebras, and OpenRouter are optional remote fallbacks, not genesis
+handoffs. Configure one of their keys directly in `/etc/a-tiny-civilization-production.env` only if
+the owner later chooses to export private cognition context. Enabling the paid OpenRouter tail also
+requires `COGNITION_PAID_ENABLED=true` and remains bounded by the canonical three-dollar monthly
+hard stop.
 
 A configured remote provider receives the selected individual's private cognition request and the
 bounded recalled-memory context. That payload is never public, but sending it is still an external
 data transfer. Before live provider-path qualification or public activation, the owner must
 explicitly approve that transfer to the chosen provider and the privacy policy must disclose it.
 Possession of an API key or approval of a spending cap does not by itself authorize exporting the
-payload. Local Hindsight delivery, recall persistence, route accounting, deterministic fallback,
-deadline latching, and replay have been qualified without external export.
+payload. Local Hindsight delivery, Qwen inference, recall persistence, route accounting,
+deterministic fallback, deadline latching, and replay have been qualified without external export.
 
 After that approval is made, set `COGNITION_EXTERNAL_EXPORT_APPROVED=true` in the protected
 production environment. The runtime worker and production preflight both refuse a configured
@@ -98,8 +104,8 @@ and zero-cost enforcement have been qualified with the fixed synthetic command f
 probe sent no civilization or Hindsight data. Live-world provider qualification remains separate and
 requires the explicit export approval above.
 
-Report only which provider is configured. The application preflight checks presence
-and pairing without printing the value.
+Report only which remote provider is configured. The application preflight checks presence and
+pairing without printing the value; local-only production does not require this owner handoff.
 
 ### Cloudflare DNS and tunnel
 
