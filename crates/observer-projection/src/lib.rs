@@ -376,6 +376,23 @@ pub struct PublicArtifact {
     pub surface_trace_units: u32,
 }
 
+/// One physical trace transition exposed without the private actor or any inferred
+/// purpose. The delta is canonical world evidence; the artifact filing remains a
+/// separate observer interpretation on `PublicArtifact`.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicArtifactTrace {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub object_id: EntityId,
+    pub source_event_id: EventId,
+    pub source_sequence: EventSequence,
+    pub source_tick: SimTick,
+    pub provenance: ClaimProvenance,
+    pub from_trace_units: u32,
+    pub applied_force_units: u16,
+    pub to_trace_units: u32,
+}
+
 #[async_trait]
 pub trait ObserverArtifactStore: Send + Sync {
     async fn apply_public_artifact_batch(
@@ -393,6 +410,14 @@ pub trait ObserverArtifactStore: Send + Sync {
         world_id: WorldId,
         limit: u16,
     ) -> Result<Vec<PublicArtifact>, ObserverProjectionStoreError>;
+
+    async fn list_public_artifact_traces(
+        &self,
+        world_id: WorldId,
+        object_id: EntityId,
+        after_sequence: EventSequence,
+        limit: u16,
+    ) -> Result<Vec<PublicArtifactTrace>, ObserverProjectionStoreError>;
 }
 
 /// The kind of evidence-backed page exposed by the generated observer wiki.

@@ -19,8 +19,9 @@ use observer_auth::{
 use observer_projection::{
     ObserverArtifactStore, ObserverFindingStore, ObserverHistoryCommitmentStore,
     ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicArtifact,
-    PublicFinding, PublicHistoryCommitmentPage, PublicOrganism, PublicTimelineItem,
-    PublicWikiEntry, PublicWorld, PublicWorldTelemetry, compose_public_wiki_entries,
+    PublicArtifactTrace, PublicFinding, PublicHistoryCommitmentPage, PublicOrganism,
+    PublicTimelineItem, PublicWikiEntry, PublicWorld, PublicWorldTelemetry,
+    compose_public_wiki_entries,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -182,6 +183,10 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/worlds/{world_id}/findings", get(public_findings))
         .route("/api/v1/worlds/{world_id}/artifacts", get(public_artifacts))
+        .route(
+            "/api/v1/worlds/{world_id}/artifacts/{object_id}/traces",
+            get(public_artifact_traces),
+        )
         .route("/api/v1/worlds/{world_id}/wiki", get(public_wiki))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route(
@@ -1010,6 +1015,45 @@ struct ArtifactsResponse {
 struct WikiResponse {
     index_version: u16,
     entries: Vec<PublicWikiEntry>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ArtifactTraceQuery {
+    after_sequence: Option<u64>,
+    limit: Option<u16>,
+}
+
+#[derive(Serialize)]
+struct ArtifactTracesResponse {
+    projection_version: u16,
+    traces: Vec<PublicArtifactTrace>,
+}
+
+async fn public_artifact_traces(
+    State(state): State<ApiState>,
+    Path((world_id, object_id)): Path<(String, String)>,
+    Query(query): Query<ArtifactTraceQuery>,
+) -> Result<Json<ArtifactTracesResponse>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let object_id = object_id
+        .parse::<EntityId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let traces = state
+        .store
+        .list_public_artifact_traces(
+            world_id,
+            object_id,
+            EventSequence::new(query.after_sequence.unwrap_or(0)),
+            query.limit.unwrap_or(100),
+        )
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(ArtifactTracesResponse {
+        projection_version: observer_projection::PUBLIC_ARTIFACT_PROJECTION_VERSION,
+        traces,
+    }))
 }
 
 async fn public_wiki(

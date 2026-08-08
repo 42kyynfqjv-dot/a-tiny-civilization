@@ -2,6 +2,7 @@ use async_trait::async_trait;
 use observer_projection::{
     ClaimProvenance, ObserverArtifactStore, ObserverProjectionStoreError,
     PUBLIC_ARTIFACT_PROJECTION_NAME, PUBLIC_ARTIFACT_PROJECTION_VERSION, PublicArtifact,
+    PublicArtifactTrace,
 };
 use sqlx::FromRow;
 use world_domain::{
@@ -27,6 +28,19 @@ struct ArtifactRow {
     latest_sequence: i64,
     latest_tick: i64,
     to_trace_units: i64,
+}
+
+#[derive(FromRow)]
+struct ArtifactTraceRow {
+    world_id: uuid::Uuid,
+    object_id: uuid::Uuid,
+    source_event_id: uuid::Uuid,
+    source_sequence: i64,
+    source_tick: i64,
+    from_trace_units: i64,
+    applied_force_units: i32,
+    to_trace_units: i64,
+    provenance: String,
 }
 
 impl PostgresStore {
@@ -221,6 +235,35 @@ impl ObserverArtifactStore for PostgresStore {
         .map_err(unavailable)?;
         rows.into_iter().map(parse_row).collect()
     }
+
+    async fn list_public_artifact_traces(
+        &self,
+        world_id: WorldId,
+        object_id: EntityId,
+        after_sequence: EventSequence,
+        limit: u16,
+    ) -> Result<Vec<PublicArtifactTrace>, ObserverProjectionStoreError> {
+        let rows = sqlx::query_as::<_, ArtifactTraceRow>(
+            r#"
+            SELECT world_id,object_id,source_event_id,source_sequence,source_tick,
+              from_trace_units,applied_force_units,to_trace_units,provenance
+            FROM observer_artifact_traces
+            WHERE projection_version=$1 AND world_id=$2 AND object_id=$3
+              AND source_sequence>$4
+            ORDER BY source_sequence ASC,source_event_id ASC
+            LIMIT $5
+            "#,
+        )
+        .bind(i32::from(PUBLIC_ARTIFACT_PROJECTION_VERSION))
+        .bind(world_id.as_uuid())
+        .bind(object_id.as_uuid())
+        .bind(to_i64(after_sequence.get(), "trace cursor")?)
+        .bind(i64::from(limit.clamp(1, 200)))
+        .fetch_all(self.pool())
+        .await
+        .map_err(unavailable)?;
+        rows.into_iter().map(parse_trace_row).collect()
+    }
 }
 
 fn parse_row(row: ArtifactRow) -> Result<PublicArtifact, ObserverProjectionStoreError> {
@@ -245,6 +288,28 @@ fn parse_row(row: ArtifactRow) -> Result<PublicArtifact, ObserverProjectionStore
         latest_trace_tick: SimTick::new(to_u64(row.latest_tick, "latest tick")?),
         surface_trace_units: u32::try_from(row.to_trace_units)
             .map_err(|_| corrupt("surface trace units"))?,
+    })
+}
+
+fn parse_trace_row(
+    row: ArtifactTraceRow,
+) -> Result<PublicArtifactTrace, ObserverProjectionStoreError> {
+    if row.provenance != "world_fact" {
+        return Err(corrupt("artifact trace provenance"));
+    }
+    Ok(PublicArtifactTrace {
+        projection_version: PUBLIC_ARTIFACT_PROJECTION_VERSION,
+        world_id: WorldId::from_uuid(row.world_id),
+        object_id: EntityId::from_uuid(row.object_id),
+        source_event_id: EventId::from_uuid(row.source_event_id),
+        source_sequence: EventSequence::new(to_u64(row.source_sequence, "trace sequence")?),
+        source_tick: SimTick::new(to_u64(row.source_tick, "trace tick")?),
+        provenance: ClaimProvenance::WorldFact,
+        from_trace_units: u32::try_from(row.from_trace_units)
+            .map_err(|_| corrupt("from trace units"))?,
+        applied_force_units: u16::try_from(row.applied_force_units)
+            .map_err(|_| corrupt("applied force units"))?,
+        to_trace_units: u32::try_from(row.to_trace_units).map_err(|_| corrupt("to trace units"))?,
     })
 }
 
