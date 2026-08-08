@@ -1619,6 +1619,7 @@ name = "observer-auth"
 version = "0.1.0"
 dependencies = [
  "async-trait",
+ "base64",
  "chrono",
  "getrandom 0.4.3",
  "hex",

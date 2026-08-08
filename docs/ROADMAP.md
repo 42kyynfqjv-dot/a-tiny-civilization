@@ -444,8 +444,9 @@ smaller than the former every-transition policy.
   but remains unexposed until account authentication can supply a trusted supporter subject;
 - provider-neutral accounts plus hashed, expiring, revocable browser sessions are implemented;
   account-bound reservation/Checkout orchestration is also implemented and retry-safe; Apple/Google
-  authorization-code adapters, CSRF-protected HTTP composition, refunds/transfers, and extinction
-  handling remain.
+  login attempts now have hashed state/nonce/PKCE/browser binding, strict expiry, and single-use
+  consumption. Provider token adapters, CSRF-protected HTTP composition, refunds/transfers, and
+  extinction handling remain.
 
 ### 6. Public operations
 

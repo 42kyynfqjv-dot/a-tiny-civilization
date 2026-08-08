@@ -16,8 +16,8 @@ use application::{
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
 use observer_auth::{
-    IdentityProvider, NewObserverSession, ObserverSessionStore, SessionSecrets,
-    VerifiedExternalIdentity,
+    IdentityProvider, NewObserverSession, OAuthAttemptSecrets, OAuthAttemptStore,
+    ObserverSessionStore, SessionSecrets, VerifiedExternalIdentity,
 };
 use observer_projection::{
     CommittedBirth, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
@@ -150,6 +150,86 @@ async fn observer_sessions_are_hashed_expiring_revocable_and_noncanonical(
         .fetch_one(&pool)
         .await?;
     assert_eq!(canonical_event_count, 0);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn oauth_attempts_are_browser_bound_expiring_single_use_and_hashed(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let now = Utc::now();
+    let secrets = OAuthAttemptSecrets::generate()?;
+    let attempt = secrets.attempt(IdentityProvider::Google, now, now + Duration::minutes(10));
+    store.create_oauth_attempt(&attempt).await?;
+    let loaded = store
+        .load_oauth_attempt(
+            attempt.state_digest,
+            attempt.browser_binding_digest,
+            now + Duration::minutes(1),
+        )
+        .await?;
+    let loaded = loaded.expect("matching pending attempt");
+    assert_eq!(loaded.provider, attempt.provider);
+    assert_eq!(loaded.state_digest, attempt.state_digest);
+    assert_eq!(loaded.nonce_digest, attempt.nonce_digest);
+    assert_eq!(loaded.verifier_digest, attempt.verifier_digest);
+    assert_eq!(
+        loaded.browser_binding_digest,
+        attempt.browser_binding_digest
+    );
+    assert!(
+        store
+            .load_oauth_attempt(
+                attempt.state_digest,
+                Digest::sha256(b"different browser"),
+                now + Duration::minutes(1),
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        store
+            .load_oauth_attempt(
+                attempt.state_digest,
+                attempt.browser_binding_digest,
+                attempt.expires_at,
+            )
+            .await?
+            .is_none()
+    );
+    assert!(
+        store
+            .consume_oauth_attempt(attempt.state_digest, now + Duration::minutes(2))
+            .await?
+    );
+    assert!(
+        !store
+            .consume_oauth_attempt(attempt.state_digest, now + Duration::minutes(3))
+            .await?
+    );
+    assert!(
+        store
+            .load_oauth_attempt(
+                attempt.state_digest,
+                attempt.browser_binding_digest,
+                now + Duration::minutes(3),
+            )
+            .await?
+            .is_none()
+    );
+    let raw_state_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM observer_oauth_attempts WHERE encode(state_digest,'hex')=$1",
+    )
+    .bind(secrets.state())
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(raw_state_count, 0, "raw OAuth state is never stored");
+    let deletion = sqlx::query("DELETE FROM observer_oauth_attempts WHERE state_digest=$1")
+        .bind(attempt.state_digest.as_bytes().as_slice())
+        .execute(&pool)
+        .await;
+    assert!(deletion.is_err());
     Ok(())
 }
 
