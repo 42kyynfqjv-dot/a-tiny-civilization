@@ -37,6 +37,27 @@ test("redirects the canonical public hostname to HTTPS without losing the reques
   assert.equal(response.headers.get("cache-control"), "no-store");
 });
 
+test("does not loop when Cloudflare Tunnel forwards an HTTPS visitor over HTTP", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("tunnel-https", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+
+  const response = await worker.fetch(
+    new Request("http://atinycivilization.com/", {
+      headers: {
+        "cf-visitor": '{"scheme":"https"}',
+        "x-forwarded-proto": "https",
+      },
+    }),
+    { ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) } },
+    { waitUntil() {}, passThroughOnException() {} },
+  );
+
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("location"), null);
+  assert.match(await response.text(), /A world where every life writes its own story\./);
+});
+
 test("server-renders the civilization observatory", async () => {
   const response = await render();
   assert.equal(response.status, 200);

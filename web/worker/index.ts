@@ -34,7 +34,15 @@ const worker = {
     // accidentally disabled edge toggle cannot serve the canonical hostname
     // over plaintext after a release. A 308 preserves POST bodies for OAuth
     // callbacks and other future non-GET routes.
-    if (url.hostname === "atinycivilization.com" && url.protocol === "http:") {
+    // Cloudflare Tunnel terminates TLS at the edge and reaches this loopback-only
+    // origin over HTTP. In that case the Request URL is `http:` even though the
+    // visitor is already on HTTPS; redirecting it would produce a same-URL loop.
+    // Accept only the standard proxy scheme signals used on that trusted hop.
+    const forwardedProtocol = request.headers.get("x-forwarded-proto")?.split(",", 1)[0]?.trim();
+    const visitorProtocol = cloudflareVisitorProtocol(request.headers.get("cf-visitor"));
+    const visitorUsedHttps =
+      url.protocol === "https:" || forwardedProtocol === "https" || visitorProtocol === "https";
+    if (url.hostname === "atinycivilization.com" && !visitorUsedHttps) {
       url.protocol = "https:";
       return withSecurityHeaders(Response.redirect(url, 308), url.pathname);
     }
@@ -74,6 +82,18 @@ const worker = {
     return withSecurityHeaders(await handler.fetch(request, env, ctx), url.pathname);
   },
 };
+
+function cloudflareVisitorProtocol(value: string | null): string | undefined {
+  if (!value) return undefined;
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    if (typeof parsed !== "object" || parsed === null || !("scheme" in parsed)) return undefined;
+    const scheme = (parsed as { scheme?: unknown }).scheme;
+    return scheme === "http" || scheme === "https" ? scheme : undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 function withSecurityHeaders(response: Response, pathname: string): Response {
   const headers = new Headers(response.headers);
