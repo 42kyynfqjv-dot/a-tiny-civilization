@@ -6,6 +6,7 @@ preflight="${project_root}/scripts/production-port-preflight.sh"
 private_preflight="${project_root}/scripts/production-private-database-preflight.sh"
 deployment="${project_root}/scripts/deploy-production-app.sh"
 database_preparation="${project_root}/scripts/prepare-production-genesis-database.sh"
+legacy_cutover_verifier="${project_root}/scripts/verify-legacy-cutover-helper.sh"
 
 required=(
   "expected_project='a-tiny-civilization'"
@@ -61,5 +62,7 @@ if ((port_number >= mutation_number)); then
   echo "production port preflight must precede every Compose mutation" >&2
   exit 1
 fi
+
+"$legacy_cutover_verifier"
 
 echo "Production cutover rejects foreign loopback listeners and protected-volume consumers before mutation."
