@@ -511,8 +511,9 @@ sudo ./scripts/stop-legacy-public-stack-for-cutover.sh \
 ```
 
 The helper discovers only the `emergent-civilization` Compose project, validates each service and
-its checkout working-directory label, refuses an already-running `a-tiny-civilization` production
-project, and prints the exact ordered set without mutation in `--check` mode. The confirmed mode
+its checkout working-directory label, allows only the already-prepared private production database
+and migration sentinel, refuses any already-running production runner, worker, cognition, API, or
+web service, and prints the exact ordered set without mutation in `--check` mode. The confirmed mode
 stops canonical writers before public and persistence services, then reruns the production
 port/volume preflight. That preflight resolves the database, API, and web loopback ports from the
 protected Compose configuration; alternate preparation ports are never checked against hardcoded

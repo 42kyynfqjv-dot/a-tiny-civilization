@@ -12,6 +12,7 @@ readonly production_project='a-tiny-civilization'
 readonly -a allowed_services=(
   runner cognition-worker memory-worker projector web api migrate hindsight local-cognition db
 )
+readonly -a allowed_private_production_services=(db migrate)
 mode=''
 
 case "${1:-}" in
@@ -38,6 +39,15 @@ service_is_allowed() {
   local candidate="$1"
   local expected
   for expected in "${allowed_services[@]}"; do
+    [[ "$candidate" == "$expected" ]] && return 0
+  done
+  return 1
+}
+
+private_production_service_is_allowed() {
+  local candidate="$1"
+  local expected
+  for expected in "${allowed_private_production_services[@]}"; do
     [[ "$candidate" == "$expected" ]] && return 0
   done
   return 1
@@ -78,12 +88,26 @@ for container_id in "${legacy_ids[@]}"; do
   service_ids[$service]="$container_id"
 done
 
-# A separately running admitted production container would make stopping the public proof stack an
-# unsafe partial cutover. Production is deployed only after this helper has completed.
-if docker ps --filter "label=com.docker.compose.project=${production_project}" --format '{{.ID}}' | grep -q .; then
-  echo "refusing legacy cutover while the production Compose project is already running" >&2
-  exit 1
-fi
+# Private genesis preparation intentionally starts only the production database and migration
+# sentinel before this phase. Allow those exact services from this checkout, but reject a partial
+# public/canonical production start: its recovery needs incident handling, not a legacy stop.
+while IFS= read -r container_id; do
+  [[ -n "$container_id" ]] || continue
+  labels="$(docker inspect --format \
+    '{{ index .Config.Labels "com.docker.compose.service" }}|{{ index .Config.Labels "com.docker.compose.project.working_dir" }}' \
+    "$container_id")"
+  IFS='|' read -r service working_directory <<<"$labels"
+  if ! private_production_service_is_allowed "$service"; then
+    echo "refusing legacy cutover while production service ${service:-unset} is already running" >&2
+    exit 1
+  fi
+  if [[ "$working_directory" != "$project_root" ]]; then
+    echo "refusing production foundation service ${service}: unexpected working directory ${working_directory:-unset}" >&2
+    exit 1
+  fi
+done < <(
+  docker ps --filter "label=com.docker.compose.project=${production_project}" --format '{{.ID}}' | sort
+)
 
 if [[ "$mode" == 'check' ]]; then
   planned_names=()
