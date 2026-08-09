@@ -1,16 +1,16 @@
-# Canonical ruleset-30 assumption audit — 2026-08-08
+# Canonical ruleset-32 assumption audit — updated 2026-08-09
 
-This is a machine-derived audit of the immutable v16 genesis directory for world
+This is a machine-derived audit of the immutable v24 genesis directory for world
 `b3ea736d-7a5a-5161-a74b-fa8c4302d333`. It does not alter or scientifically admit that
 world. The audit first verifies the complete genesis `SHA256SUMS` manifest, whose digest is
-`36f92754e0e50c7bfc018c303f57b670f0320ba01452d013a5b9820afb27d4d9`, and then checks
+`76d54b0749bd9602c625c73d9f6eac78c21ca06865ece796976e49284e06a725`, and then checks
 cross-file species coverage before counting causal evidence classes.
 
 Run it with:
 
 ```bash
 scripts/audit-canonical-science.py \
-  /absolute/path/to/b3ea736d-7a5a-5161-a74b-fa8c4302d333-ruleset30-v16
+  /absolute/path/to/b3ea736d-7a5a-5161-a74b-fa8c4302d333-ruleset32-v24
 ```
 
 ## Result
@@ -18,10 +18,12 @@ scripts/audit-canonical-science.py \
 The candidate is mechanically qualified but scientifically assumption-heavy in the parts that
 control life:
 
-- all 33 body profiles use engineering assumptions for metabolic rate, physiological regulation,
-  reproductive physiology, and heritable dispositions;
-- adult body mass is a source-addressed literature approximation for 5 profiles and an engineering
-  assumption for 28;
+- 24 of 33 metabolic-rate commitments are source-addressed literature approximations and nine
+  remain engineering assumptions because their body masses are assumed;
+- adult body mass is a source-addressed literature approximation for 24 profiles and an
+  engineering assumption for nine;
+- all 33 physiological-regulation, reproductive-physiology, and heritable-disposition profiles
+  remain engineering assumptions;
 - 30 of 66 category-specific maturity commitments are literature approximations and 36 are
   engineering assumptions;
 - ecology traits cover 23 of 32 fauna species. The nine uncovered species are emitted by exact
@@ -36,9 +38,9 @@ quantitative and regression-testable instead of relying on prose.
 
 ## Improvement order
 
-1. Replace uniform assumed metabolic power with source-linked observations or an explicit,
-   validated taxon/body-mass/temperature transformation. Metabolism directly controls survival and
-   therefore population history.
+1. Replace the nine assumption-derived body masses, then validate the existing taxon/body-mass
+   metabolic transformation against direct observations and ambient temperature. Metabolism
+   directly controls survival and therefore population history.
 2. Replace the universal glucose reservoir and universal oral responses with physical biomass,
    species diet, and water pathways. A real chemical identity is not evidence of local abundance or
    organism response.
@@ -61,8 +63,9 @@ evidence, not a complete solution. It must be content-addressed, parsed by a por
 pipeline, unit-normalized, and distinguished from basal or standard metabolic measurements before
 it can affect a future ruleset.
 
-Implementation update: ADR 0136 and ruleset 31 now use the paper's published endotherm/ectotherm
+Implementation update: ADR 0136 and ruleset 31 use the paper's published endotherm/ectotherm
 mass fits at the neutral 293 K reference temperature. The resulting integer-microwatt commitments
-are literature approximations, not direct FmrBT observations; values derived from assumed masses
-remain engineering assumptions. Direct dataset ingestion and ambient-temperature coupling remain
-open validation work.
+are literature approximations, not direct FmrBT observations; ruleset 32 also records every exact
+adult-body commitment in canonical state, replay, snapshots, and hashes. Values derived from
+assumed masses remain engineering assumptions. Direct dataset ingestion and ambient-temperature
+coupling remain open validation work.
