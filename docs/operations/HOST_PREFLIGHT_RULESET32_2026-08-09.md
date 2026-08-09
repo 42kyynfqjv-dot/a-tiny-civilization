@@ -48,3 +48,10 @@ loopback binding for the web process. The container smoke also proved that a pla
 carrying the canonical public Host receives an exact method-preserving `308` to the same HTTPS
 target. The production Compose render independently confirmed that the ruleset-32 v24 stage is the
 runner's single read-only `/runtime` mount.
+
+The read-only cutover inventory reports exactly four legacy-development conflicts: web on loopback
+port 3000, PostgreSQL on 5432, the observer API on 8080, and the local-cognition container's use of
+the shared `atiny-ollama` volume. No unexpected production-volume consumer exists. The improved
+preflight reports the complete set in one pass; it does not stop, remove, or recreate any of those
+containers. Their deliberate stop remains part of the separately authorized public cutover, and
+the legacy development PostgreSQL volume is retained rather than promoted.

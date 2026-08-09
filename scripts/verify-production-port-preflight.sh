@@ -15,6 +15,8 @@ required=(
   'docker ps --filter "volume=${volume}"'
   'com.docker.compose.project'
   'stop the legacy/dev listener before deployment'
+  'failure_count=$((failure_count + 1))'
+  'conflicting listener or protected-volume consumer(s)'
 )
 for contract in "${required[@]}"; do
   if ! grep -Fq "$contract" "$preflight"; then
