@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use observer_projection::{
     ClaimProvenance, ObserverFindingStore, ObserverProjectionStoreError,
     PUBLIC_FINDING_PROJECTION_NAME, PUBLIC_FINDING_PROJECTION_VERSION, PublicFinding,
@@ -23,6 +24,7 @@ struct FindingRow {
     provenance: String,
     title: String,
     summary: String,
+    projected_at: DateTime<Utc>,
 }
 
 impl PostgresStore {
@@ -279,7 +281,7 @@ impl ObserverFindingStore for PostgresStore {
         world_id: WorldId,
         limit: u16,
     ) -> Result<Vec<PublicFinding>, ObserverProjectionStoreError> {
-        let rows = sqlx::query_as::<_,FindingRow>("SELECT projection_version,world_id,source_event_id,source_sequence,source_tick,kind,finding_key,provenance,title,summary FROM observer_findings WHERE projection_version=$1 AND world_id=$2 ORDER BY source_sequence DESC,source_event_id DESC LIMIT $3").bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(world_id.as_uuid()).bind(i64::from(limit.clamp(1,200))).fetch_all(self.pool()).await.map_err(unavailable)?;
+        let rows = sqlx::query_as::<_,FindingRow>("SELECT projection_version,world_id,source_event_id,source_sequence,source_tick,kind,finding_key,provenance,title,summary,projected_at FROM observer_findings WHERE projection_version=$1 AND world_id=$2 ORDER BY source_sequence DESC,source_event_id DESC LIMIT $3").bind(i32::from(PUBLIC_FINDING_PROJECTION_VERSION)).bind(world_id.as_uuid()).bind(i64::from(limit.clamp(1,200))).fetch_all(self.pool()).await.map_err(unavailable)?;
         rows.into_iter().map(parse).collect()
     }
 }
@@ -570,6 +572,7 @@ fn parse(r: FindingRow) -> Result<PublicFinding, ObserverProjectionStoreError> {
         },
         title: r.title,
         summary: r.summary,
+        projected_at: Some(r.projected_at),
     })
 }
 const fn role_code(role: OrganismRole) -> &'static str {

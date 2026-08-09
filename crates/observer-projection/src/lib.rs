@@ -83,6 +83,10 @@ pub struct PublicTimelineItem {
     pub provenance: ClaimProvenance,
     pub title: String,
     pub summary: String,
+    /// Observer-side publication time. It is assigned by durable storage and never
+    /// enters canonical history or affects simulation behavior.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_at: Option<DateTime<Utc>>,
 }
 
 /// Produces a factual, restrained public finding aid from one committed batch.
@@ -181,6 +185,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 provenance: ClaimProvenance::WorldFact,
                 title: title.to_owned(),
                 summary: summary.to_owned(),
+                projected_at: None,
             })
         })
         .collect()
@@ -343,6 +348,9 @@ pub struct PublicFinding {
     pub provenance: ClaimProvenance,
     pub title: String,
     pub summary: String,
+    /// Observer-side publication time, separate from deterministic simulation time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projected_at: Option<DateTime<Utc>>,
 }
 
 #[async_trait]
@@ -1420,6 +1428,7 @@ mod tests {
             provenance: ClaimProvenance::WorldFact,
             title: "A world began".to_owned(),
             summary: "Initial conditions were committed.".to_owned(),
+            projected_at: None,
         };
 
         let entries = compose_public_wiki_entries(&[finding], &[artifact]);

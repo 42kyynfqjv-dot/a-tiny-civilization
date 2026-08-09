@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{DateTime, Utc};
 use observer_projection::{
     ClaimProvenance, ObserverProjectionStoreError, ObserverTimelineStore,
     PUBLIC_TIMELINE_PROJECTION_NAME, PublicTimelineItem, PublicTimelineKind,
@@ -23,6 +24,7 @@ struct TimelineRow {
     provenance: String,
     title: String,
     summary: String,
+    projected_at: DateTime<Utc>,
 }
 
 impl PostgresStore {
@@ -109,7 +111,7 @@ impl ObserverTimelineStore for PostgresStore {
         let rows = sqlx::query_as::<_, TimelineRow>(
             r#"
             SELECT projection_version, world_id, source_event_id, source_sequence, source_tick,
-                source_event_index, kind, provenance, title, summary
+                source_event_index, kind, provenance, title, summary, projected_at
             FROM observer_timeline_items
             WHERE world_id = $1 AND projection_version = $2
             ORDER BY source_sequence DESC, source_event_index DESC
@@ -196,6 +198,7 @@ fn parse_row(row: TimelineRow) -> Result<PublicTimelineItem, ObserverProjectionS
         provenance: parse_provenance(&row.provenance)?,
         title: row.title,
         summary: row.summary,
+        projected_at: Some(row.projected_at),
     })
 }
 

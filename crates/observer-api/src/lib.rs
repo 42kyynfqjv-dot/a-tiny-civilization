@@ -1241,6 +1241,7 @@ async fn public_digest_feed(
                 format!("event:{}", item.source_event_id),
                 item.title,
                 item.summary,
+                item.projected_at,
                 "https://atinycivilization.com/lives".to_owned(),
             )
         })
@@ -1250,6 +1251,7 @@ async fn public_digest_feed(
                 format!("finding:{}", finding.finding_key),
                 finding.title,
                 finding.summary,
+                finding.projected_at,
                 "https://atinycivilization.com/wiki".to_owned(),
             )
         }))
@@ -1260,7 +1262,7 @@ async fn public_digest_feed(
     let mut xml = format!(
         "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel><title>A Tiny Civilization — World {world_id}</title><link>https://atinycivilization.com/</link><description>Factual observer findings from a live, unscripted world.</description>"
     );
-    for (_, guid, title, summary, link) in items {
+    for (_, guid, title, summary, projected_at, link) in items {
         xml.push_str("<item><title>");
         push_xml_escaped(&mut xml, &title);
         xml.push_str("</title><link>");
@@ -1269,7 +1271,13 @@ async fn public_digest_feed(
         push_xml_escaped(&mut xml, &guid);
         xml.push_str("</guid><description>");
         push_xml_escaped(&mut xml, &summary);
-        xml.push_str("</description></item>");
+        xml.push_str("</description>");
+        if let Some(projected_at) = projected_at {
+            xml.push_str("<pubDate>");
+            push_xml_escaped(&mut xml, &projected_at.to_rfc2822());
+            xml.push_str("</pubDate>");
+        }
+        xml.push_str("</item>");
     }
     xml.push_str("</channel></rss>");
     Ok((
