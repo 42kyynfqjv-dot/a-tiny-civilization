@@ -406,7 +406,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     }, 120);
   };
 
-  return <section className={`habitat-stage ${interacting ? "is-interacting" : ""}`} aria-label="Deep-space observatory window onto the live habitat">
+  return <section className={`habitat-stage ${interacting ? "is-interacting" : ""} ${selected ? "has-selected-life" : ""}`} aria-label="Deep-space observatory window onto the live habitat">
     <div className="habitat-starfield" aria-hidden="true"><i /><i /><i /></div>
     <div className="habitat-window">
     <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={cancelPointer} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, pinch or scroll to zoom, and select a point to inspect it." />
