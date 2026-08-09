@@ -5,8 +5,8 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
 genesis_directory="${ATINY_CANONICAL_GENESIS_DIRECTORY:-}"
 evidence_directory="${ATINY_QUALIFICATION_EVIDENCE_DIRECTORY:-}"
-admission_file="${ATINY_QUALITY_ADMISSION_FILE:-${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json}"
-observatory_admission_file="${ATINY_PUBLIC_OBSERVATORY_ADMISSION_FILE:-${project_root}/docs/operations/PUBLIC_OBSERVATORY_ADMISSION_2026-08-08.json}"
+admission_file="${ATINY_QUALITY_ADMISSION_FILE:-${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json}"
+observatory_admission_file="${ATINY_PUBLIC_OBSERVATORY_ADMISSION_FILE:-${project_root}/docs/operations/PUBLIC_OBSERVATORY_ADMISSION_RULESET32_2026-08-09.json}"
 runtime_root="${ATINY_RUNTIME_ARTIFACT_ROOT:-${project_root}/runtime-artifacts}"
 
 usage() {

@@ -346,7 +346,7 @@ substitute for database-backed bounded qualification or launch admission.
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "/var/lib/a-tiny-civilization/genesis/$WORLD_ID" \
   "$QUALIFICATION_EVIDENCE_DIRECTORY" \
-  docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json \
+  docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json \
   --confirm-experimental-genesis
 ```
 
@@ -420,7 +420,7 @@ Before accepting a retained bundle into launch review, independently bind all of
   --world-id "$QUALIFICATION_WORLD_ID" \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
-  --expected-ruleset 30 --minimum-tick 1000
+  --expected-ruleset 32 --minimum-tick 1000
 ```
 
 This verifies every bundle checksum, the external genesis-manifest binding, absence declaration for
@@ -436,7 +436,7 @@ read-only mode can be repeated without a database:
   docs/operations/CANONICAL_SEED_COMMITMENT.json \
   docs/operations/CANONICAL_SEED_RESOLUTION.json \
   "$QUALIFICATION_GENESIS_DIRECTORY" "$QUALIFICATION_EVIDENCE_DIRECTORY" \
-  docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json
+  docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json
 ```
 
 Both modes also verify the exact experimental quality-world admission and its binding to the two
@@ -526,7 +526,7 @@ sudo ./scripts/public-genesis-preflight.sh \
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public
   seed procedure, with assumptions disclosed for later scientific review;
-- a ruleset-30 genesis chain produced by `prepare-canonical-genesis.sh` from the
+- a ruleset-32 genesis chain produced by `prepare-canonical-genesis.sh` from the
   independently verified public seed resolution and required range-plus-local-occurrence fauna
   evidence plus the complete point-scoped 1981–2010 ERA5 evidence and its deterministic fixed-point
   monthly summaries, embedded as the schema-5 local weather input and exposed only as
@@ -534,11 +534,11 @@ sudo ./scripts/public-genesis-preflight.sh \
   independently rederived during initialization, admitted by the offline qualification-evidence
   verifier, atomically initialized by `activate-qualified-canonical-world.sh`, and replayed before
   the long-running runner is enabled;
-- the exact ruleset-30 genesis and qualification manifest digests admitted by
-  `QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json`; that experimental quality admission does not
+- the exact ruleset-32 genesis and qualification manifest digests admitted by
+  `QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json`; that experimental quality admission does not
   by itself authorize deployment or claim scientific admission;
 - the exact reviewed web and policy trees admitted by
-  `PUBLIC_OBSERVATORY_ADMISSION_2026-08-08.json`; that review also cannot authorize deployment;
+  `PUBLIC_OBSERVATORY_ADMISSION_RULESET32_2026-08-09.json`; that review also cannot authorize deployment;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is

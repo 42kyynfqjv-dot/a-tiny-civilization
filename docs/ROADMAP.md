@@ -859,3 +859,11 @@ exposed an obsolete single-profile-set assumption before PostgreSQL mutation. Ru
 every distinct retained body-mass and life-history source-set digest under stable ordered manifest
 keys while older rulesets preserve their singular provenance contract. ADRs 0138 and 0139 record
 the two boundaries. Database durability and bounded-tick qualification remain separate gates.
+
+Canonical qualification v20 now closes those remaining ruleset-32 gates on a fresh isolated
+PostgreSQL and Hindsight pair. Database genesis reproduced the v24 proof hashes, then 1,000 ticks
+passed complete replay, snapshot-tail, memory, zero-cost local cognition, projection, mechanics,
+mass-state, body-scaled oral-transfer, and public observer checks. The checksum-covered evidence
+bundle binds source commit `30a26a0` and contains no canonical event payloads. Ruleset-32 quality
+and public-observatory successor admissions now supersede the ruleset-30 launch-review defaults;
+both continue to state that scientific admission and public deployment authorization are false.

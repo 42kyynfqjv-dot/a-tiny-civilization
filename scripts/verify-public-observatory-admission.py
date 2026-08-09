@@ -12,7 +12,7 @@ import subprocess
 import sys
 
 PROJECT_ROOT = pathlib.Path(__file__).resolve().parent.parent
-DEFAULT_QUALITY_ADMISSION = PROJECT_ROOT / "docs/operations/QUALITY_WORLD_ADMISSION_RULESET30_2026-08-08.json"
+DEFAULT_QUALITY_ADMISSION = PROJECT_ROOT / "docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json"
 QUALIFIED_PATHS = ["docs/policies", "web"]
 DIMENSIONS = {
     "edge_security",
