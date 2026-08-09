@@ -3,7 +3,9 @@ set -euo pipefail
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 preflight="${project_root}/scripts/production-port-preflight.sh"
+private_preflight="${project_root}/scripts/production-private-database-preflight.sh"
 deployment="${project_root}/scripts/deploy-production-app.sh"
+database_preparation="${project_root}/scripts/prepare-production-genesis-database.sh"
 
 required=(
   "expected_project='a-tiny-civilization'"
@@ -24,6 +26,32 @@ for contract in "${required[@]}"; do
     exit 1
   fi
 done
+
+for contract in \
+  'production-preflight.sh" --env-file' \
+  'config --format json' \
+  'int(port.get("target", 0)) == 5432' \
+  'mapping.get("host_ip") != "127.0.0.1"' \
+  "postgres_volume='a-tiny-civilization-postgres-v1'" \
+  'docker ps --filter "publish=${database_port}"' \
+  'docker ps --filter "volume=${postgres_volume}"'; do
+  if ! grep -Fq "$contract" "$private_preflight"; then
+    echo "private database port preflight lost required contract: $contract" >&2
+    exit 1
+  fi
+done
+if rg -q "'3000:web'|'8080:api'|atiny-ollama|hindsight-data" "$private_preflight"; then
+  echo "private database preflight gained a public-service or cognition cutover dependency" >&2
+  exit 1
+fi
+if ! rg -q 'production-private-database-preflight\.sh.*--env-file' "$database_preparation"; then
+  echo "private database preparation does not use its narrow port/volume guard" >&2
+  exit 1
+fi
+if rg -q 'production-port-preflight\.sh' "$database_preparation"; then
+  echo "private database preparation still requires the full public cutover guard" >&2
+  exit 1
+fi
 
 port_line="$(rg -n -m1 'production-port-preflight\.sh' "$deployment")"
 mutation_line="$(rg -n -m1 'compose_args\[@.*build api web' "$deployment")"

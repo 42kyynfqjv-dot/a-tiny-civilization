@@ -75,7 +75,7 @@ export ATINY_RUNTIME_ARTIFACT_ROOT="$runtime_root"
 cd "$project_root"
 
 "${project_root}/scripts/verify-production-checkout.sh"
-"${project_root}/scripts/production-port-preflight.sh"
+"${project_root}/scripts/production-private-database-preflight.sh" --env-file "$environment_file"
 ATINY_QUALITY_ADMISSION_FILE="$quality_admission" \
   "${project_root}/scripts/public-genesis-preflight.sh" \
   --env-file "$environment_file" \

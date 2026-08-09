@@ -149,8 +149,12 @@ sudo ./scripts/prepare-production-genesis-database.sh \
 ```
 
 It runs the same complete candidate/admission/runtime preflight before changing service state and
-refuses to start any public or canonical process. Commit the admitted world while the database is
-still private:
+refuses to start any public or canonical process. Its narrow conflict guard checks only the
+production PostgreSQL loopback port resolved from Compose and the protected production database
+volume; web, API, and local cognition remain untouched. Assigning production a distinct
+`POSTGRES_PORT` therefore allows this private preparation while the legacy observatory stays up.
+The full deployment guard still requires every legacy listener and shared-model consumer to stop
+before public cutover. Commit the admitted world while the database is still private:
 
 ```bash
 sudo ./scripts/activate-production-genesis.sh \

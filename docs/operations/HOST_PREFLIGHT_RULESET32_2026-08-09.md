@@ -69,3 +69,9 @@ stopping it also removed its anonymous 1.16 GB volume. That probe volume is not 
 was not canonical history or retained launch evidence. The external v20 evidence, v24 genesis,
 current ruleset-32 qualification database, development-world volume, production volumes, and every
 running development service remain intact.
+
+The private-database preparation guard is now scoped to the only resources that phase mutates: the
+Compose-resolved PostgreSQL loopback port and `a-tiny-civilization-postgres-v1`. Against the
+current default it reports exactly the legacy database on port 5432; a read-only protected Compose
+render with production port 55432 passed while the legacy web, API, and local-model services kept
+running. No protected environment value or production service was changed during that proof.
