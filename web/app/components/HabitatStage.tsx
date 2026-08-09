@@ -25,6 +25,17 @@ type HabitatView = { through_sequence: string | number; detail: Detail; entities
 type Point = { id: string; x: number; y: number; radius: number; entity?: HabitatEntity; cluster?: HabitatCluster };
 type Bounds = { west: number; south: number; east: number; north: number };
 type Camera = { latitude: number; longitude: number };
+type DragState = {
+  pointerId: number;
+  startX: number;
+  startY: number;
+  lastX: number;
+  lastY: number;
+  lastAt: number;
+  startCamera: Camera;
+  velocity: Camera;
+  moved: boolean;
+};
 
 const WORLD_BOUNDS: Bounds = { west: -1_799_999_999, south: -900_000_000, east: 1_799_999_999, north: 900_000_000 };
 
@@ -32,13 +43,27 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointsRef = useRef<Point[]>([]);
   const viewRef = useRef<HabitatView | null>(null);
-  const dragRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
+  const dragRef = useRef<DragState | null>(null);
+  const cameraRef = useRef<Camera>({ latitude: 0, longitude: 0 });
+  const zoomRef = useRef(1);
+  const detailRef = useRef<Detail>("local");
+  const inertiaFrameRef = useRef<number | null>(null);
+  const wheelCommitRef = useRef<number | null>(null);
   const [view, setView] = useState<HabitatView | null>(null);
   const [detail, setDetail] = useState<Detail>("local");
   const [center, setCenter] = useState<Camera>({ latitude: 0, longitude: 0 });
   const [localZoom, setLocalZoom] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(() => typeof window === "undefined" ? null : window.localStorage.getItem("atiny.followed-organism"));
   const [status, setStatus] = useState<"loading" | "live" | "error">("loading");
+  const [interacting, setInteracting] = useState(false);
+
+  useEffect(() => { cameraRef.current = center; }, [center]);
+  useEffect(() => { zoomRef.current = localZoom; }, [localZoom]);
+  useEffect(() => { detailRef.current = detail; }, [detail]);
+  useEffect(() => () => {
+    if (inertiaFrameRef.current !== null) cancelAnimationFrame(inertiaFrameRef.current);
+    if (wheelCommitRef.current !== null) window.clearTimeout(wheelCommitRef.current);
+  }, []);
 
   const fetchView = useCallback(async (nextDetail: Detail, nextCenter: Camera, nextZoom: number) => {
     const bounds = boundsFor(nextDetail, nextCenter, nextZoom);
@@ -66,6 +91,9 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
         nextCenter = fitted.center;
         const local = fitted.zoom > 1.05 ? await fetchView("local", nextCenter, fitted.zoom) : overview;
         if (!active) return;
+        cameraRef.current = nextCenter;
+        zoomRef.current = fitted.zoom;
+        detailRef.current = "local";
         setCenter(nextCenter);
         setLocalZoom(fitted.zoom);
         viewRef.current = local;
@@ -101,13 +129,17 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     if (!context) return;
     let frame = 0;
     let start = performance.now();
+    let width = 1;
+    let height = 1;
     const resize = new ResizeObserver(() => {
       const rect = canvas.getBoundingClientRect();
+      width = Math.max(1, rect.width);
+      height = Math.max(1, rect.height);
       const requestedScale = Math.min(window.devicePixelRatio || 1, 3);
-      const pixelBudgetScale = Math.sqrt(14_000_000 / Math.max(1, rect.width * rect.height));
+      const pixelBudgetScale = Math.sqrt(14_000_000 / Math.max(1, width * height));
       const scale = Math.max(1, Math.min(requestedScale, pixelBudgetScale));
-      canvas.width = Math.max(1, Math.round(rect.width * scale));
-      canvas.height = Math.max(1, Math.round(rect.height * scale));
+      canvas.width = Math.max(1, Math.round(width * scale));
+      canvas.height = Math.max(1, Math.round(height * scale));
       context.setTransform(scale, 0, 0, scale, 0, 0);
       context.imageSmoothingEnabled = true;
       context.imageSmoothingQuality = "high";
@@ -115,17 +147,19 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     });
     resize.observe(canvas);
     function draw(now: number) {
-      const rect = canvas.getBoundingClientRect();
-      pointsRef.current = drawHabitat(context, rect.width, rect.height, viewRef.current, detail, center, localZoom, Math.min(1, (now - start) / 2_400), selectedId, labels);
+      pointsRef.current = drawHabitat(context, width, height, viewRef.current, detailRef.current, cameraRef.current, zoomRef.current, Math.min(1, (now - start) / 2_400), selectedId, labels);
       frame = requestAnimationFrame(draw);
     }
     frame = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(frame); resize.disconnect(); };
-  }, [center, detail, labels, localZoom, selectedId]);
+  }, [labels, selectedId]);
 
   const selected = view?.entities.find((entity) => entity.organism_id === selectedId);
   const activity = useMemo(() => view?.activity.slice(0, 8) ?? [], [view]);
   const chooseDetail = async (next: Detail, focus = center, nextZoom = next === "local" ? localZoom : 1) => {
+    detailRef.current = next;
+    cameraRef.current = focus;
+    zoomRef.current = nextZoom;
     setDetail(next);
     setCenter(focus);
     setLocalZoom(nextZoom);
@@ -150,26 +184,85 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     }
   };
   const beginPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
-    dragRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    if (inertiaFrameRef.current !== null) cancelAnimationFrame(inertiaFrameRef.current);
+    if (wheelCommitRef.current !== null) window.clearTimeout(wheelCommitRef.current);
+    inertiaFrameRef.current = null;
+    wheelCommitRef.current = null;
+    const now = performance.now();
+    dragRef.current = {
+      pointerId: event.pointerId,
+      startX: event.clientX,
+      startY: event.clientY,
+      lastX: event.clientX,
+      lastY: event.clientY,
+      lastAt: now,
+      startCamera: cameraRef.current,
+      velocity: { latitude: 0, longitude: 0 },
+      moved: false,
+    };
+    setInteracting(true);
     event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const movePointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    const rect = event.currentTarget.getBoundingClientRect();
+    const bounds = boundsFor(detailRef.current, drag.startCamera, zoomRef.current);
+    const next = clampCamera({
+      longitude: drag.startCamera.longitude - (event.clientX - drag.startX) / Math.max(1, rect.width) * (bounds.east - bounds.west),
+      latitude: drag.startCamera.latitude + (event.clientY - drag.startY) / Math.max(1, rect.height) * (bounds.north - bounds.south),
+    });
+    const now = performance.now();
+    const elapsed = Math.max(1, now - drag.lastAt);
+    const instantaneous = {
+      longitude: (next.longitude - cameraRef.current.longitude) / elapsed,
+      latitude: (next.latitude - cameraRef.current.latitude) / elapsed,
+    };
+    drag.velocity = {
+      longitude: drag.velocity.longitude * .58 + instantaneous.longitude * .42,
+      latitude: drag.velocity.latitude * .58 + instantaneous.latitude * .42,
+    };
+    drag.lastX = event.clientX;
+    drag.lastY = event.clientY;
+    drag.lastAt = now;
+    drag.moved ||= Math.hypot(event.clientX - drag.startX, event.clientY - drag.startY) >= 4;
+    cameraRef.current = next;
   };
   const endPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag || drag.pointerId !== event.pointerId) return;
-    event.currentTarget.releasePointerCapture(event.pointerId);
-    const dx = event.clientX - drag.x;
-    const dy = event.clientY - drag.y;
-    if (Math.hypot(dx, dy) < 6) {
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (!drag.moved) {
+      setInteracting(false);
       selectPoint(event);
       return;
     }
-    const rect = event.currentTarget.getBoundingClientRect();
-    const bounds = boundsFor(detail, center, localZoom);
-    setCenter(clampCamera({
-      longitude: center.longitude - dx / Math.max(1, rect.width) * (bounds.east - bounds.west),
-      latitude: center.latitude + dy / Math.max(1, rect.height) * (bounds.north - bounds.south),
-    }));
+    const span = boundsFor(detailRef.current, cameraRef.current, zoomRef.current);
+    const maximumVelocity = Math.max(1, span.east - span.west) * .001;
+    let velocity = {
+      longitude: Math.max(-maximumVelocity, Math.min(maximumVelocity, drag.velocity.longitude)),
+      latitude: Math.max(-maximumVelocity, Math.min(maximumVelocity, drag.velocity.latitude)),
+    };
+    let prior = performance.now();
+    const coast = (now: number) => {
+      const elapsed = Math.min(32, now - prior);
+      prior = now;
+      cameraRef.current = clampCamera({
+        longitude: cameraRef.current.longitude + velocity.longitude * elapsed,
+        latitude: cameraRef.current.latitude + velocity.latitude * elapsed,
+      });
+      const decay = Math.exp(-elapsed / 145);
+      velocity = { longitude: velocity.longitude * decay, latitude: velocity.latitude * decay };
+      if (Math.hypot(velocity.longitude, velocity.latitude) > maximumVelocity * .012) {
+        inertiaFrameRef.current = requestAnimationFrame(coast);
+      } else {
+        inertiaFrameRef.current = null;
+        setCenter(cameraRef.current);
+        setInteracting(false);
+      }
+    };
+    inertiaFrameRef.current = requestAnimationFrame(coast);
   };
   const zoomBy = (direction: 1 | -1) => {
     if (direction > 0 && detail === "planet") { void chooseDetail("region", center, 1); return; }
@@ -187,8 +280,41 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     setSelectedId(selectedId);
   };
 
-  return <section className="habitat-stage" aria-label="Live habitat view">
-    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerUp={endPointer} onPointerCancel={() => { dragRef.current = null; }} onWheel={(event) => { event.preventDefault(); zoomBy(event.deltaY < 0 ? 1 : -1); }} aria-label="Live positions of inhabitants and animals. Drag to pan, scroll to zoom, and select a point to inspect it." />
+  const wheelZoom = (event: React.WheelEvent<HTMLCanvasElement>) => {
+    event.preventDefault();
+    if (detailRef.current !== "local") {
+      zoomBy(event.deltaY < 0 ? 1 : -1);
+      return;
+    }
+    if (event.deltaY > 0 && zoomRef.current <= 1.02) {
+      void chooseDetail("region", cameraRef.current, 1);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const x = Math.max(0, Math.min(1, (event.clientX - rect.left) / Math.max(1, rect.width)));
+    const y = Math.max(0, Math.min(1, (event.clientY - rect.top) / Math.max(1, rect.height)));
+    const before = boundsFor("local", cameraRef.current, zoomRef.current);
+    const longitude = before.west + x * (before.east - before.west);
+    const latitude = before.north - y * (before.north - before.south);
+    const nextZoom = Math.max(1, Math.min(64, zoomRef.current * Math.exp(-event.deltaY * .0018)));
+    const after = boundsFor("local", cameraRef.current, nextZoom);
+    cameraRef.current = clampCamera({
+      longitude: cameraRef.current.longitude + longitude - (after.west + x * (after.east - after.west)),
+      latitude: cameraRef.current.latitude + latitude - (after.north - y * (after.north - after.south)),
+    });
+    zoomRef.current = nextZoom;
+    setInteracting(true);
+    if (wheelCommitRef.current !== null) window.clearTimeout(wheelCommitRef.current);
+    wheelCommitRef.current = window.setTimeout(() => {
+      wheelCommitRef.current = null;
+      setCenter(cameraRef.current);
+      setLocalZoom(zoomRef.current);
+      setInteracting(false);
+    }, 120);
+  };
+
+  return <section className={`habitat-stage ${interacting ? "is-interacting" : ""}`} aria-label="Live habitat view">
+    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={() => { dragRef.current = null; setCenter(cameraRef.current); setInteracting(false); }} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, scroll to zoom, and select a point to inspect it." />
     <div className="habitat-wash" aria-hidden="true" />
     <div className="habitat-glass" aria-hidden="true"><i /><span className="glass-corner corner-nw" /><span className="glass-corner corner-ne" /><span className="glass-corner corner-sw" /><span className="glass-corner corner-se" /></div>
     <header className="habitat-toolbar">
@@ -218,10 +344,17 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
   drawTerrain(context, width, height, center, localZoom);
   if (!view) return [];
   const bounds = boundsFor(detail, center, localZoom);
-  const project = (longitude: number, latitude: number) => ({
-    x: ((longitude - bounds.west) / Math.max(1, bounds.east - bounds.west)) * width,
-    y: height - ((latitude - bounds.south) / Math.max(1, bounds.north - bounds.south)) * height,
-  });
+  const project = (longitude: number, latitude: number) => {
+    const horizontal = (longitude - bounds.west) / Math.max(1, bounds.east - bounds.west);
+    const depth = 1 - (latitude - bounds.south) / Math.max(1, bounds.north - bounds.south);
+    if (detail !== "local") return { x: horizontal * width, y: depth * height };
+    const clampedDepth = Math.max(-.08, Math.min(1.08, depth));
+    const perspectiveWidth = .44 + Math.max(0, clampedDepth) * .72;
+    return {
+      x: width / 2 + (horizontal - .5) * width * perspectiveWidth,
+      y: height * .16 + Math.pow(Math.max(0, clampedDepth), 1.28) * height * .84,
+    };
+  };
   const points: Point[] = [];
   if (detail !== "local") {
     for (const cluster of view.clusters) {
@@ -239,7 +372,9 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     const to = project(entity.longitude_e7, entity.latitude_e7);
     return { entity, from, to, anchorX: from.x + (to.x - from.x) * ease(progress), anchorY: from.y + (to.y - from.y) * ease(progress) };
   }), selectedId);
-  for (const marker of positioned) {
+  const pulse = Math.sin(Date.now() / 350) * 2;
+  const depthOrdered = positioned.sort((a, b) => a.y - b.y || Number(a.entity.organism_id === selectedId) - Number(b.entity.organism_id === selectedId));
+  for (const marker of depthOrdered) {
     const { entity, from, to, anchorX, anchorY, x, y } = marker;
     if (Math.hypot(to.x - from.x, to.y - from.y) > 1) {
       context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y); context.strokeStyle = entity.role === "person" ? "rgba(236,132,89,.34)" : "rgba(229,202,113,.23)"; context.lineWidth = 1; context.stroke();
@@ -248,14 +383,23 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
       context.beginPath(); context.moveTo(anchorX, anchorY); context.lineTo(x, y); context.strokeStyle = "rgba(223,231,211,.18)"; context.lineWidth = .7; context.stroke();
     }
     const selected = entity.organism_id === selectedId;
-    const radius = entity.role === "person" ? 5.5 : 3.8;
+    const depth = Math.max(0, Math.min(1, (y - height * .16) / Math.max(1, height * .84)));
+    const depthScale = .62 + depth * .72;
+    const radius = (entity.role === "person" ? 5.5 : 3.8) * depthScale;
+    const lift = 3 + depth * 6;
+    const orbY = y - lift;
+    context.beginPath(); context.ellipse(x + depthScale * 1.5, y + 1, radius * 1.35, radius * .38, 0, 0, Math.PI * 2); context.fillStyle = "rgba(0,7,5,.38)"; context.fill();
+    context.beginPath(); context.moveTo(x, y); context.lineTo(x, orbY + radius * .5); context.strokeStyle = entity.role === "person" ? "rgba(239,130,88,.36)" : "rgba(216,189,104,.28)"; context.lineWidth = Math.max(.55, depthScale * .8); context.stroke();
     if (entity.last_action === "emit_signal") {
-      context.beginPath(); context.arc(x, y, radius + 7 + Math.sin(Date.now() / 350) * 2, 0, Math.PI * 2); context.strokeStyle = "rgba(121,210,180,.42)"; context.stroke();
+      context.beginPath(); context.ellipse(x, orbY, radius + 7 + pulse, (radius + 7 + pulse) * .48, 0, 0, Math.PI * 2); context.strokeStyle = "rgba(121,210,180,.42)"; context.stroke();
     }
-    if (selected) { context.beginPath(); context.arc(x, y, radius + 8, 0, Math.PI * 2); context.strokeStyle = "#fff1bd"; context.lineWidth = 1.5; context.stroke(); }
-    context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fillStyle = entity.role === "person" ? "#ef8258" : "#d8bd68"; context.shadowColor = context.fillStyle; context.shadowBlur = selected ? 14 : 5; context.fill(); context.shadowBlur = 0;
-    if (selected) { context.fillStyle = "#fff7df"; context.font = "10px ui-monospace, monospace"; context.textAlign = "left"; context.fillText(labels.get(entity.organism_id) ?? shortId(entity.organism_id), x + 13, y + 4); }
-    points.push({ id: entity.organism_id, x, y, radius, entity });
+    if (selected) { context.beginPath(); context.ellipse(x, orbY, radius + 8, (radius + 8) * .56, 0, 0, Math.PI * 2); context.strokeStyle = "#fff1bd"; context.lineWidth = 1.5; context.stroke(); }
+    const color = entity.role === "person" ? "#ef8258" : "#d8bd68";
+    const sphere = context.createRadialGradient(x - radius * .35, orbY - radius * .45, .2, x, orbY, radius * 1.35);
+    sphere.addColorStop(0, "#fff3cf"); sphere.addColorStop(.24, color); sphere.addColorStop(1, entity.role === "person" ? "#7f2f24" : "#695623");
+    context.beginPath(); context.arc(x, orbY, radius, 0, Math.PI * 2); context.fillStyle = sphere; context.shadowColor = color; context.shadowBlur = selected ? 18 : 7 * depthScale; context.fill(); context.shadowBlur = 0;
+    if (selected) { context.fillStyle = "#fff7df"; context.font = "10px ui-monospace, monospace"; context.textAlign = "left"; context.fillText(labels.get(entity.organism_id) ?? shortId(entity.organism_id), x + radius + 9, orbY + 4); }
+    points.push({ id: entity.organism_id, x, y: orbY, radius, entity });
   }
   return points;
 }
@@ -292,28 +436,57 @@ function separateOverlaps(items: Omit<PositionedEntity, "x" | "y">[], selectedId
 
 function drawTerrain(context: CanvasRenderingContext2D, width: number, height: number, center: Camera, localZoom: number) {
   context.save();
-  const illumination = context.createRadialGradient(width * .48, height * .43, 0, width * .48, height * .43, Math.max(width, height) * .72);
-  illumination.addColorStop(0, "rgba(113,170,137,.11)"); illumination.addColorStop(.55, "rgba(55,112,85,.035)"); illumination.addColorStop(1, "rgba(0,0,0,.24)");
-  context.fillStyle = illumination; context.fillRect(0, 0, width, height);
-  context.globalAlpha = .3; context.strokeStyle = "#91b8a0"; context.lineWidth = .45;
+  const horizon = height * .16;
   const phaseX = center.longitude / 1_800_000; const phaseY = center.latitude / 2_400_000;
-  for (let line = 0; line < 32; line++) {
-    context.beginPath();
-    for (let x = -20; x <= width + 20; x += 10) {
-      const y = height * (.035 + line / 32) + Math.sin(x * .009 + line * .57 + phaseX) * (12 + Math.min(14, localZoom * .35)) + Math.sin(x * .027 - line + phaseY) * 4;
-      if (x === -20) context.moveTo(x, y); else context.lineTo(x, y);
+  const atmosphere = context.createLinearGradient(0, 0, 0, height);
+  atmosphere.addColorStop(0, "#041613"); atmosphere.addColorStop(.16, "#1c4b3a"); atmosphere.addColorStop(.42, "#173d2d"); atmosphere.addColorStop(1, "#071b15");
+  context.fillStyle = atmosphere; context.fillRect(0, 0, width, height);
+  const glow = context.createRadialGradient(width * .46, horizon * .55, 0, width * .46, horizon * .55, width * .62);
+  glow.addColorStop(0, "rgba(168,204,177,.17)"); glow.addColorStop(.42, "rgba(80,139,106,.06)"); glow.addColorStop(1, "rgba(0,0,0,0)");
+  context.fillStyle = glow; context.fillRect(0, 0, width, height * .62);
+
+  for (let layer = 0; layer < 3; layer++) {
+    context.beginPath(); context.moveTo(0, horizon + layer * 10);
+    for (let x = 0; x <= width + 16; x += 16) {
+      const y = horizon + layer * 11 - Math.sin(x * (.004 + layer * .0017) + phaseX * .5 + layer) * (14 - layer * 3) - Math.sin(x * .013 - phaseY) * (5 + layer);
+      context.lineTo(x, y);
     }
+    context.lineTo(width, horizon + 70); context.lineTo(0, horizon + 70); context.closePath();
+    context.fillStyle = layer === 0 ? "rgba(22,61,45,.74)" : layer === 1 ? "rgba(18,55,40,.72)" : "rgba(15,48,35,.68)"; context.fill();
+  }
+
+  for (let line = 0; line < 34; line++) {
+    const depth = line / 33;
+    const baseY = horizon + Math.pow(depth, 1.28) * (height - horizon);
+    const perspectiveWidth = .44 + depth * .72;
+    context.beginPath();
+    for (let step = 0; step <= 80; step++) {
+      const normalized = step / 80;
+      const x = width / 2 + (normalized - .5) * width * perspectiveWidth;
+      const relief = Math.sin(normalized * 14 + phaseX + line * .31) * (2 + depth * 15) + Math.sin(normalized * 37 - phaseY - line * .19) * (1 + depth * 5);
+      const y = baseY - relief;
+      if (step === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.strokeStyle = `rgba(145,184,160,${.055 + depth * .17})`; context.lineWidth = .45 + depth * .48;
     context.stroke();
   }
-  context.globalAlpha = .22; context.fillStyle = "#d4e6d8";
-  for (let index = 0; index < 180; index++) {
-    const x = ((index * 83.17 + phaseX * 41) % (width + 40)) - 20;
-    const y = ((index * 47.63 + phaseY * 37) % (height + 40)) - 20;
-    const radius = index % 11 === 0 ? .8 : .35;
-    context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill();
+
+  for (let column = 0; column <= 18; column++) {
+    const normalized = column / 18;
+    context.beginPath();
+    for (let step = 0; step <= 30; step++) {
+      const depth = step / 30;
+      const perspectiveWidth = .44 + depth * .72;
+      const x = width / 2 + (normalized - .5) * width * perspectiveWidth;
+      const y = horizon + Math.pow(depth, 1.28) * (height - horizon) - Math.sin(normalized * 14 + phaseX + step * .34) * depth * 10;
+      if (step === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    }
+    context.strokeStyle = "rgba(123,169,143,.055)"; context.lineWidth = .45; context.stroke();
   }
-  const water = context.createLinearGradient(width * .1, 0, width * .9, 0); water.addColorStop(0, "rgba(73,137,123,0)"); water.addColorStop(.5, "rgba(73,137,123,.28)"); water.addColorStop(1, "rgba(73,137,123,0)");
-  context.globalAlpha = .45; context.strokeStyle = water; context.lineWidth = 21; context.beginPath(); context.moveTo(-20, height * .78); context.bezierCurveTo(width * .24, height * .52, width * .63, height * .88, width + 20, height * .58); context.stroke();
+
+  const water = context.createLinearGradient(width * .2, 0, width * .8, 0); water.addColorStop(0, "rgba(76,151,135,0)"); water.addColorStop(.5, "rgba(90,166,148,.27)"); water.addColorStop(1, "rgba(76,151,135,0)");
+  context.strokeStyle = water; context.lineWidth = 10 + Math.min(18, localZoom * .45); context.beginPath(); context.moveTo(width * .43, horizon); context.bezierCurveTo(width * .36, height * .42, width * .66, height * .64, width * .56, height * 1.04); context.stroke();
+  const foreground = context.createLinearGradient(0, height * .72, 0, height); foreground.addColorStop(0, "rgba(3,17,13,0)"); foreground.addColorStop(1, "rgba(1,8,6,.54)"); context.fillStyle = foreground; context.fillRect(0, height * .7, width, height * .3);
   context.restore();
 }
 

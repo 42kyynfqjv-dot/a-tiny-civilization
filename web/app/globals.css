@@ -1005,13 +1005,15 @@ select {
 .living-habitat-hero { display: block; min-height: min(900px, calc(100vh - 76px)); }
 .living-habitat-hero::before { display: none; }
 .habitat-stage { background: #061712; box-shadow: inset 0 0 0 1px rgba(210,231,217,.13), inset 0 0 110px rgba(0,0,0,.82); height: min(900px, calc(100vh - 76px)); isolation: isolate; min-height: 690px; overflow: hidden; position: relative; }
-.habitat-stage canvas { cursor: grab; display: block; height: 100%; touch-action: none; width: 100%; }
-.habitat-stage canvas:active { cursor: grabbing; }
+.habitat-stage canvas { cursor: grab; display: block; height: 100%; touch-action: none; user-select: none; width: 100%; will-change: contents; }
+.habitat-stage canvas:active, .habitat-stage.is-interacting canvas { cursor: grabbing; }
 .habitat-wash { background: radial-gradient(ellipse at 52% 47%, transparent 35%, rgba(1,9,8,.2) 68%, rgba(0,5,4,.82) 112%), linear-gradient(0deg, rgba(2,13,11,.56), transparent 20%); inset: 0; pointer-events: none; position: absolute; z-index: 2; }
 .habitat-glass { background: linear-gradient(112deg, transparent 0 17%, rgba(221,242,230,.035) 24%, transparent 34% 66%, rgba(206,235,219,.025) 73%, transparent 82%), repeating-linear-gradient(0deg, rgba(225,244,233,.012) 0 1px, transparent 1px 4px); box-shadow: inset 0 0 0 1px rgba(226,242,232,.1), inset 0 0 80px rgba(0,0,0,.55); inset: 0; pointer-events: none; position: absolute; z-index: 4; }
-.habitat-glass::before { background: radial-gradient(ellipse at 24% -18%, rgba(229,246,236,.13), transparent 45%); content: ""; inset: 0; mix-blend-mode: screen; opacity: .5; position: absolute; }
+.habitat-glass::before { background: radial-gradient(ellipse at 24% -18%, rgba(229,246,236,.13), transparent 45%); content: ""; inset: 0; mix-blend-mode: screen; opacity: .5; position: absolute; transition: opacity .28s ease, transform .45s cubic-bezier(.2,.8,.2,1); }
 .habitat-glass::after { border: 1px solid rgba(200,226,211,.09); border-radius: 50%; content: ""; height: 118%; left: -9%; position: absolute; top: -58%; width: 118%; }
-.habitat-glass > i { background: linear-gradient(105deg, transparent 0 47%, rgba(236,249,241,.075) 49%, rgba(236,249,241,.018) 54%, transparent 57%); inset: 0; position: absolute; }
+.habitat-glass > i { background: linear-gradient(105deg, transparent 0 47%, rgba(236,249,241,.075) 49%, rgba(236,249,241,.018) 54%, transparent 57%); inset: 0; position: absolute; transition: opacity .22s ease, transform .5s cubic-bezier(.2,.8,.2,1); }
+.habitat-stage.is-interacting .habitat-glass::before { opacity: .62; transform: translate3d(7px, 3px, 0); }
+.habitat-stage.is-interacting .habitat-glass > i { opacity: .72; transform: translate3d(-9px, 0, 0); }
 .glass-corner { height: 24px; position: absolute; width: 24px; }.glass-corner::before, .glass-corner::after { background: rgba(208,231,217,.32); content: ""; position: absolute; }.glass-corner::before { height: 1px; width: 24px; }.glass-corner::after { height: 24px; width: 1px; }.corner-nw { left: 18px; top: 18px; }.corner-ne { right: 18px; top: 18px; transform: rotate(90deg); }.corner-sw { bottom: 18px; left: 18px; transform: rotate(-90deg); }.corner-se { bottom: 18px; right: 18px; transform: rotate(180deg); }
 .living-habitat-caption { align-items: start; background: #071b17; border-bottom: 1px solid rgba(255,255,255,.1); border-top: 1px solid rgba(255,255,255,.12); color: #f3eee2; display: grid; gap: clamp(38px, 7vw, 120px); grid-template-columns: minmax(300px, .85fr) minmax(380px, 1.15fr); padding: clamp(40px, 5vw, 72px) clamp(24px, 7vw, 112px); }
 .living-habitat-caption .living-live-label { margin: 0 0 18px; }
