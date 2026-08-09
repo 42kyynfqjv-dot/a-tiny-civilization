@@ -26,6 +26,27 @@ if failures:
     raise SystemExit("invalid durable-volume policy:\n  " + "\n  ".join(failures))
 '
 
+ATINY_RUNTIME_ARTIFACT_ROOT="${project_root}/scripts" \
+  docker compose -f compose.yaml -f compose.hindsight.yaml config --format json | \
+  python3 -c '
+import json
+import os
+import sys
+
+document = json.load(sys.stdin)
+mounts = document.get("services", {}).get("runner", {}).get("volumes", [])
+expected = os.path.realpath(sys.argv[1])
+matches = [
+    mount for mount in mounts
+    if mount.get("type") == "bind" and mount.get("target") == "/runtime"
+]
+if len(matches) != 1:
+    raise SystemExit("runner must have exactly one /runtime bind mount")
+mount = matches[0]
+if os.path.realpath(mount.get("source", "")) != expected or not mount.get("read_only"):
+    raise SystemExit("explicit runtime root did not reach the read-only runner mount")
+' "${project_root}/scripts"
+
 for start_path in Makefile scripts/deploy-production-app.sh; do
   if ! rg -q 'provision-runtime-volumes.sh' "$start_path"; then
     echo "$start_path does not provision protected volumes" >&2

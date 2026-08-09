@@ -132,7 +132,7 @@ services:
     volumes:
       # The runner may read content-addressed inputs—including DE441 source bytes
       # for a future source-backed celestial driver—but must never mutate them.
-      - ./runtime-artifacts:/runtime:ro
+      - ${ATINY_RUNTIME_ARTIFACT_ROOT:-./runtime-artifacts}:/runtime:ro
     restart: unless-stopped
 
   projector:

@@ -75,7 +75,8 @@ if ! rg -q 'requires the literal --confirm-public-deployment argument' "$deploym
   echo "production deployment lost its explicit confirmation boundary" >&2
   exit 1
 fi
-for contract in '--genesis-directory' '--evidence-directory' '--runtime-root' 'ATINY_QUALITY_ADMISSION_FILE'; do
+for contract in '--genesis-directory' '--evidence-directory' '--runtime-root' \
+  'ATINY_RUNTIME_ARTIFACT_ROOT' 'ATINY_QUALITY_ADMISSION_FILE'; do
   if ! rg -q -- "$contract" "$deployment"; then
     echo "production deployment lost required public-genesis input: $contract" >&2
     exit 1
@@ -99,6 +100,8 @@ for contract in \
   'migration-ready and empty for qualified activation' \
   'already contains the exact running qualified world' \
   'ATINY_QUALITY_ADMISSION_FILE' \
+  'ATINY_RUNTIME_ARTIFACT_ROOT' \
+  '--runtime-root' \
   'validate-production-world-state\.py' \
   'mode allow-empty'; do
   if ! rg -q -- "$contract" "$database_preparation"; then
@@ -128,6 +131,8 @@ for contract in \
   'production-preflight\.sh.*--env-file' \
   '127\.0\.0\.1' \
   'ATINY_QUALITY_ADMISSION_FILE' \
+  'ATINY_RUNTIME_ARTIFACT_ROOT' \
+  '--runtime-root' \
   'no service or public route was started'; do
   if ! rg -q -- "$contract" "$production_activation"; then
     echo "production activation lost required contract: $contract" >&2
@@ -163,5 +168,32 @@ for contract in "${required_contracts[@]}"; do
     exit 1
   fi
 done
+
+if ! rg -q 'ATINY_RUNTIME_ARTIFACT_ROOT.*runtime-artifacts.*:/runtime:ro' \
+  "${project_root}/compose.yaml"; then
+  echo "runner runtime mount is not controlled by the validated production runtime root" >&2
+  exit 1
+fi
+
+for helper_and_confirmation in \
+  'prepare-production-genesis-database.sh --confirm-private-database-preparation' \
+  'activate-production-genesis.sh --confirm-experimental-genesis' \
+  'deploy-production-app.sh --confirm-public-deployment'; do
+  read -r helper confirmation <<<"$helper_and_confirmation"
+  if "${project_root}/scripts/${helper}" \
+    --genesis-directory /not-used/genesis \
+    --evidence-directory /not-used/evidence \
+    --runtime-root relative-runtime-root \
+    "$confirmation" >"${TMPDIR:-/tmp}/atiny-runtime-root-rejection.txt" 2>&1; then
+    echo "${helper} accepted a relative production runtime root" >&2
+    exit 1
+  fi
+  if ! rg -q 'requires an absolute, existing, non-symlink runtime root' \
+    "${TMPDIR:-/tmp}/atiny-runtime-root-rejection.txt"; then
+    echo "${helper} rejected an unsafe runtime root for the wrong reason" >&2
+    exit 1
+  fi
+done
+rm -f "${TMPDIR:-/tmp}/atiny-runtime-root-rejection.txt"
 
 echo "Production deployment revalidates immutable inputs before mutation and the public edge after smoke checks."

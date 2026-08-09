@@ -10,6 +10,7 @@ environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-producti
 genesis_directory="${ATINY_CANONICAL_GENESIS_DIRECTORY:-}"
 evidence_directory="${ATINY_QUALIFICATION_EVIDENCE_DIRECTORY:-}"
 quality_admission="${ATINY_QUALITY_ADMISSION_FILE:-${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json}"
+runtime_root="${ATINY_RUNTIME_ARTIFACT_ROOT:-${project_root}/runtime-artifacts}"
 confirmed=0
 
 while (($#)); do
@@ -26,12 +27,16 @@ while (($#)); do
       evidence_directory="${2:-}"
       shift 2
       ;;
+    --runtime-root)
+      runtime_root="${2:-}"
+      shift 2
+      ;;
     --confirm-private-database-preparation)
       confirmed=1
       shift
       ;;
     *)
-      echo "usage: $0 [--env-file /absolute/path/to/production.env] --genesis-directory /absolute/path --evidence-directory /absolute/path --confirm-private-database-preparation" >&2
+      echo "usage: $0 [--env-file /absolute/path/to/production.env] --genesis-directory /absolute/path --evidence-directory /absolute/path [--runtime-root /absolute/path] --confirm-private-database-preparation" >&2
       exit 2
       ;;
   esac
@@ -48,6 +53,10 @@ if [[ "$quality_admission" != /* || ! -f "$quality_admission" || -L "$quality_ad
   echo "private database preparation requires an absolute, regular quality-admission file" >&2
   exit 2
 fi
+if [[ "$runtime_root" != /* || ! -d "$runtime_root" || -L "$runtime_root" ]]; then
+  echo "private database preparation requires an absolute, existing, non-symlink runtime root" >&2
+  exit 2
+fi
 if ((EUID != 0)); then
   echo "run this preparation helper as root; it reads a root-protected environment file" >&2
   exit 2
@@ -62,6 +71,7 @@ if ! docker compose version >/dev/null 2>&1; then
   compose_command=(docker-compose)
 fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
+export ATINY_RUNTIME_ARTIFACT_ROOT="$runtime_root"
 cd "$project_root"
 
 "${project_root}/scripts/verify-production-checkout.sh"
@@ -71,7 +81,7 @@ ATINY_QUALITY_ADMISSION_FILE="$quality_admission" \
   --env-file "$environment_file" \
   --genesis-directory "$genesis_directory" \
   --evidence-directory "$evidence_directory" \
-  --runtime-root "${project_root}/runtime-artifacts"
+  --runtime-root "$runtime_root"
 "${project_root}/scripts/provision-runtime-volumes.sh"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet

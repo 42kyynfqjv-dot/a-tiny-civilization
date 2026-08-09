@@ -96,6 +96,7 @@ sudo ./scripts/deploy-production-app.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY" \
   --confirm-public-deployment
 ```
 
@@ -143,6 +144,7 @@ sudo ./scripts/prepare-production-genesis-database.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY" \
   --confirm-private-database-preparation
 ```
 
@@ -155,6 +157,7 @@ sudo ./scripts/activate-production-genesis.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY" \
   --confirm-experimental-genesis
 ```
 
@@ -286,7 +289,9 @@ ATINY_CIVILIZATION_DATA_EXECUTABLE=target/release/civilization-data \
   ./scripts/verify-provisional-genesis-pins.sh
 ```
 
-The runner mounts that directory read-only at `/runtime`. The command is deliberately
+The runner mounts the exact directory carried through `--runtime-root` read-only at `/runtime`;
+the production wrappers export that validated absolute path for Compose rather than silently
+falling back to a different staging tree. The command is deliberately
 for the provisional integration path only; it does not authorize canonical genesis.
 
 ### Prepare and initialize the canonical provisional world
