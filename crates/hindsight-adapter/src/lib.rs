@@ -15,7 +15,7 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{Digest, EventSequence, SimTick};
 
-pub const HINDSIGHT_ADAPTER_VERSION: &str = "hindsight-http-v1/0.8.6";
+pub const HINDSIGHT_ADAPTER_VERSION: &str = "hindsight-http-v2/0.8.6";
 
 #[derive(Clone)]
 pub struct HindsightMemory {
@@ -272,7 +272,11 @@ impl From<&MemoryRecallRequest> for RecallRequest {
     fn from(request: &MemoryRecallRequest) -> Self {
         Self {
             query: request.query.clone(),
-            types: ["experience"],
+            // Hindsight's chunk-only extraction mode stores retained source
+            // documents as `world` facts. Each bank is private to one agent,
+            // so the adapter translates that provider taxonomy back into the
+            // application's provenance-checked `experience` contract below.
+            types: ["world"],
             budget: "low",
             max_tokens: request.max_tokens,
             trace: false,
@@ -304,7 +308,7 @@ fn normalize_recall_result(
     request: &MemoryRecallRequest,
     rank: u16,
 ) -> Result<RecalledMemory, ()> {
-    if result.kind != MemoryFactKind::Experience {
+    if result.kind != MemoryFactKind::World {
         return Err(());
     }
     let document_id = result
@@ -362,7 +366,7 @@ fn normalize_recall_result(
         sim_tick,
         ordinal,
         text: result.text,
-        kind: result.kind,
+        kind: MemoryFactKind::Experience,
         context: result.context.ok_or(())?,
     })
 }
@@ -448,13 +452,13 @@ mod tests {
         Json(body): Json<Value>,
     ) -> Json<Value> {
         assert_eq!(body["trace"], false);
-        assert_eq!(body["types"], json!(["experience"]));
+        assert_eq!(body["types"], json!(["world"]));
         assert!(body.get("query_timestamp").is_none());
         Json(json!({
             "results": [{
                 "id": "memory-1",
                 "text": state.retain.content,
-                "type": "experience",
+                "type": "world",
                 "context": state.retain.context,
                 "document_id": state.retain.document_id,
                 "metadata": {

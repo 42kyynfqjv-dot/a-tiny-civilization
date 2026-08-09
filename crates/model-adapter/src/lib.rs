@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT};
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v5";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v6";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -312,12 +312,18 @@ fn api_request(
 ) -> Result<Value, CognitionModelError> {
     let request_json = serde_json::to_string(request)
         .map_err(|error| CognitionModelError::Rejected(error.to_string()))?;
+    let local_unconstrained = provider.as_str() == "local_openai";
+    let system_prompt = if local_unconstrained {
+        "You are one bounded decision process inside a simple organism. You receive numeric bodily pressures, direct property readings, learned action-outcome values, and recalled direct observations. Compare learned action values and bodily pressures; do not default to the first action listed. Choose exactly one use-neutral primitive motor action. Return exactly one lowercase token from: move, orient, reach, grasp, release, apply_force, bite, chew, swallow, rest, emit_signal. Never return reasoning, punctuation, JSON, identities, technologies, language, writing, social roles, goals, or named uses."
+    } else {
+        "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be 0 through 7. For emit_signal only, signal_intensity may be 1 through 32. For move only, movement_direction may be 0 through 3. Every other motor coordinate must be null. These are physical motor coordinates only, never symbols, words, maps, place names, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
+    };
     let mut payload = json!({
         "model": route.requested_model,
         "messages": [
             {
                 "role": "system",
-                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be 0 through 7. For emit_signal only, signal_intensity may be 1 through 32. For move only, movement_direction may be 0 through 3. Every other motor coordinate must be null. These are physical motor coordinates only, never symbols, words, maps, place names, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
+                "content": system_prompt
             },
             {
                 "role": "user",
@@ -326,16 +332,22 @@ fn api_request(
         ],
         "max_tokens": request.max_output_tokens,
         "temperature": 0,
-        "seed": request_seed(request),
-        "response_format": {
+        "seed": request_seed(request)
+    });
+    // Ollama 0.11's JSON-schema grammar biases Qwen 2.5 1.5B toward the
+    // first oneOf branch regardless of the prompt. A closed bare-token parser
+    // retains the same safety boundary while allowing the local model to make
+    // the choice. Hosted routes keep strict provider-side structured output.
+    if !local_unconstrained {
+        payload["response_format"] = json!({
             "type": "json_schema",
             "json_schema": {
                 "name": "bounded_primitive_action",
                 "strict": true,
                 "schema": bounded_action_schema()
             }
-        }
-    });
+        });
+    }
     if provider.as_str() == "openrouter" {
         payload["provider"] = json!({
             "require_parameters": true,
@@ -456,8 +468,7 @@ fn parse_response(
         .ok_or_else(|| {
             CognitionModelError::InvalidResponse("completion omitted message content".to_owned())
         })?;
-    let action: BoundedAction = serde_json::from_str(content)
-        .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
+    let action = parse_bounded_action(provider, request, content)?;
     let prompt_tokens = u32::try_from(parsed.usage.prompt_tokens).map_err(|_| {
         CognitionModelError::InvalidResponse("prompt token count exceeds u32".to_owned())
     })?;
@@ -505,6 +516,46 @@ fn parse_response(
         .validate_against(route, request)
         .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
     Ok(receipt)
+}
+
+fn parse_bounded_action(
+    provider: &CognitionProviderId,
+    request: &ModelCognitionRequest,
+    content: &str,
+) -> Result<BoundedAction, CognitionModelError> {
+    if let Ok(action) = serde_json::from_str::<BoundedAction>(content) {
+        return Ok(action);
+    }
+    if provider.as_str() != "local_openai" {
+        return Err(CognitionModelError::InvalidResponse(
+            "completion was not a bounded action object".to_owned(),
+        ));
+    }
+    let token = content.trim();
+    if token.is_empty()
+        || token
+            .bytes()
+            .any(|byte| !(byte.is_ascii_lowercase() || byte == b'_'))
+    {
+        return Err(CognitionModelError::InvalidResponse(
+            "local completion was not one exact action token".to_owned(),
+        ));
+    }
+    let action_kind: PrimitiveActionKind = serde_json::from_value(Value::String(token.to_owned()))
+        .map_err(|_| {
+            CognitionModelError::InvalidResponse(
+                "local completion selected an unknown action token".to_owned(),
+            )
+        })?;
+    let seed = request_seed(request);
+    Ok(BoundedAction {
+        action_kind,
+        contact_region: (action_kind == PrimitiveActionKind::ApplyForce)
+            .then_some((seed % 8) as u8),
+        signal_intensity: (action_kind == PrimitiveActionKind::EmitSignal)
+            .then_some(1 + (seed % u32::from(SIGNAL_FORM_VARIANT_COUNT)) as u8),
+        movement_direction: (action_kind == PrimitiveActionKind::Move).then_some((seed % 4) as u8),
+    })
 }
 
 fn decimal_dollars_to_micro_usd(value: &str) -> Result<u64, CognitionModelError> {
@@ -843,21 +894,54 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn loopback_route_uses_the_same_strict_free_receipt() {
+    async fn loopback_route_avoids_schema_order_bias_and_accepts_one_closed_token() {
         let response = json!({
             "id": "local-1",
             "model": "qwen2.5:1.5b",
-            "choices": [{"message": {"content": "{\"action_kind\":\"move\",\"contact_region\":null,\"signal_intensity\":null,\"movement_direction\":2}"}}],
-            "usage": {"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}
+            "choices": [{"message": {"content": "rest"}}],
+            "usage": {"prompt_tokens": 20, "completion_tokens": 1, "total_tokens": 21}
         });
-        let (adapter, _) = adapter_for(CognitionProviderId::local_openai(), response).await;
+        let (adapter, seen) = adapter_for(CognitionProviderId::local_openai(), response).await;
         let receipt = adapter
             .infer(&CognitionModelRoute::local_qwen2_5_1_5b(), &request())
             .await
             .expect("local bounded receipt");
         assert_eq!(receipt.provider, CognitionProviderId::local_openai());
-        assert_eq!(receipt.movement_direction, Some(2));
+        assert_eq!(receipt.action_kind, PrimitiveActionKind::Rest);
+        assert_eq!(receipt.movement_direction, None);
         assert_eq!(receipt.billed_micro_usd, 0);
+        let seen = seen.lock().expect("test lock").clone().expect("request");
+        assert!(seen.get("response_format").is_none());
+        assert!(
+            seen["messages"][0]["content"]
+                .as_str()
+                .expect("system prompt")
+                .contains("do not default to the first action listed")
+        );
+    }
+
+    #[test]
+    fn local_bare_motor_tokens_receive_deterministic_bounded_coordinates() {
+        let request = request();
+        let seed = request_seed(&request);
+        let movement = parse_bounded_action(&CognitionProviderId::local_openai(), &request, "move")
+            .expect("bounded movement token");
+        assert_eq!(movement.movement_direction, Some((seed % 4) as u8));
+        let force = parse_bounded_action(
+            &CognitionProviderId::local_openai(),
+            &request,
+            "apply_force",
+        )
+        .expect("bounded force token");
+        assert_eq!(force.contact_region, Some((seed % 8) as u8));
+        assert!(
+            parse_bounded_action(
+                &CognitionProviderId::local_openai(),
+                &request,
+                "rest because tired",
+            )
+            .is_err()
+        );
     }
 
     #[tokio::test]
