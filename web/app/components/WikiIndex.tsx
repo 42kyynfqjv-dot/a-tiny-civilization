@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
+import { createPublicLifeLabels } from "./lifeLabels";
 
 type World = WorldInputMetadata & {
   world_id: string;
@@ -68,7 +69,7 @@ export function WikiIndex() {
         const worldId = encodeURIComponent(world.world_id);
         const [findingsResponse, organismsResponse, artifactsResponse] = await Promise.all([
           fetch(`/api/v1/worlds/${worldId}/findings?limit=24`, { cache: "no-store" }),
-          fetch(`/api/v1/worlds/${worldId}/organisms?limit=24`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${worldId}/organisms?limit=200`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${worldId}/artifacts?limit=24`, { cache: "no-store" }),
         ]);
         if (!findingsResponse.ok || !organismsResponse.ok || !artifactsResponse.ok) throw new Error("wiki records unavailable");
@@ -92,6 +93,7 @@ export function WikiIndex() {
   if (wiki.state === "loading") return <p className="wiki-index-status">Reading committed observer records…</p>;
   if (wiki.state === "empty") return <p className="wiki-index-status">No world has been committed. This index will begin at its first public event.</p>;
   if (wiki.state === "error") return <p className="wiki-index-status">The live index is temporarily unavailable. Its evidence rules remain public.</p>;
+  const lifeLabels = createPublicLifeLabels(wiki.organisms);
 
   return (
     <section className="wiki-live-index" aria-labelledby="wiki-live-index-title">
@@ -112,7 +114,7 @@ export function WikiIndex() {
         </article>
         <article>
           <h3>Lives cited in the record</h3>
-          {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a><small>Introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
+          {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={`/lives/${encodeURIComponent(wiki.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>{lifeLabels.get(organism.organism_id) ?? "Unindexed life"}</a><small><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a> · introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
         </article>
         <article id="artifact-archive">
           <h3>Altered material archive</h3>

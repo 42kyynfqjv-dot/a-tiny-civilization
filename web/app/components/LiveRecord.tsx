@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
+import { createPublicLifeLabels } from "./lifeLabels";
 
 type World = WorldInputMetadata & {
   world_id: string;
@@ -13,7 +14,7 @@ type World = WorldInputMetadata & {
   state_hash: string;
 };
 type TimelineItem = { source_event_id: string; source_sequence: string | number; source_tick: string | number; title: string; summary: string };
-type Organism = { organism_id: string; role: "person" | "fauna"; species: { scientific_name: string; source_url: string }; ended_event_id: string | null; introduced_tick: string | number };
+type Organism = { organism_id: string; role: "person" | "fauna"; species: { scientific_name: string; source_url: string }; ended_event_id: string | null; introduced_sequence: string | number; introduced_tick: string | number };
 type Finding = { finding_key: string; title: string; summary: string; kind: "first" | "record" | "streak" };
 type Artifact = { object_id: string; material: { canonical_name: string; source_url: string }; first_trace_sequence: string | number; first_trace_tick: string | number; latest_trace_sequence: string | number; latest_trace_tick: string | number; surface_trace_units: number };
 type RecordState =
@@ -24,6 +25,9 @@ type RecordState =
 
 export function LiveRecord() {
   const [record, setRecord] = useState<RecordState>({ state: "loading" });
+  const [followedOrganismId, setFollowedOrganismId] = useState<string | null>(() =>
+    typeof window === "undefined" ? null : window.localStorage.getItem("atiny.followed-organism"),
+  );
 
   useEffect(() => {
     let active = true;
@@ -59,7 +63,10 @@ export function LiveRecord() {
   const { world, timeline, organisms, findings, artifacts } = record;
   const people = organisms.filter((organism) => organism.role === "person" && !organism.ended_event_id);
   const animals = organisms.filter((organism) => organism.role === "fauna" && !organism.ended_event_id);
-  const featured = people[0];
+  const followed = organisms.find((organism) => organism.organism_id === followedOrganismId);
+  const featured = followed ?? people[0] ?? animals[0];
+  const lifeLabels = createPublicLifeLabels(organisms);
+  const labelFor = (organism: Organism) => lifeLabels.get(organism.organism_id) ?? "Unindexed life";
   const latestMoment = timeline[0];
   const headline = latestMoment?.title ?? "A world is quietly becoming itself.";
   const standfirst = latestMoment?.summary ?? "Its clock is moving. No public milestone has been recorded yet.";
@@ -69,10 +76,10 @@ export function LiveRecord() {
       <div className="living-hero">
         <div className="living-hero-copy">
           <p className="living-live-label"><span aria-hidden="true" /> Live from an unscripted world · moment {formatNumber(world.tick)}</p>
-          <p className="living-life-label">{featured ? "Following Person 01" : "Watching for the first life"}</p>
+          <p className="living-life-label">{featured ? `${followed ? "Following" : "Watching"} ${labelFor(featured)}` : "Watching for the first life"}</p>
           <h1 id="live-record-title">{headline}</h1>
           <p className="living-standfirst">{standfirst}</p>
-          <a className="living-primary-link" href="#people">Meet the lives inside <span aria-hidden="true">↓</span></a>
+          <a className="living-primary-link" href="#people">Choose a life to follow <span aria-hidden="true">↓</span></a>
           <WorldInputStatus world={world} />
         </div>
         <PlanetStage people={people.length} animals={animals.length} latest={latestMoment} />
@@ -95,9 +102,9 @@ export function LiveRecord() {
           <article className="living-featured-life">
             <div className="living-life-portrait" aria-hidden="true"><span /></div>
             <div>
-              <p>{featured ? "Person 01 · alive" : "No person in the public record"}</p>
+              <p>{featured ? `${labelFor(featured)} · ${featured.ended_event_id ? "record ended" : "alive"}` : "No life in the public record"}</p>
               <h3>{featured ? "A life at the beginning" : "Waiting for a life"}</h3>
-              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer">{featured.species.scientific_name}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. This public label is observational; the person does not know it.</small></> : <small>The observatory will open a biography when the public record contains one.</small>}
+              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer">{featured.species.scientific_name}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. This public label is observational; the inhabitant does not know it.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>The observatory will open a biography when the public record contains one.</small>}
             </div>
           </article>
           <article className="living-recent">
@@ -105,7 +112,8 @@ export function LiveRecord() {
             {timeline.length === 0 ? <p className="living-quiet">Nothing public has changed yet. Quiet time remains quiet.</p> : <ol>{timeline.slice(0, 5).map((item) => <li key={item.source_event_id}><time>Moment {formatNumber(item.source_tick)}</time><div><strong>{item.title}</strong><span>{item.summary}</span></div></li>)}</ol>}
           </article>
         </div>
-        {organisms.length > 1 && <div className="living-life-ribbon" id="animals">{organisms.slice(1, 9).map((organism, index) => <article key={organism.organism_id}><span>{organism.role === "person" ? `P${String(index + 2).padStart(2, "0")}` : `A${String(index + 1).padStart(2, "0")}`}</span><div><strong>{organism.role === "person" ? `Person ${String(index + 2).padStart(2, "0")}` : organism.species.scientific_name}</strong><small>{organism.ended_event_id ? "record ended" : "alive in the public record"}</small></div></article>)}</div>}
+        {organisms.length > 1 && <div className="living-life-ribbon" id="animals">{organisms.filter((organism) => organism.organism_id !== featured?.organism_id).slice(0, 8).map((organism) => <a href={lifeHref(world.world_id, organism.organism_id)} key={organism.organism_id}><span>{lifeMonogram(labelFor(organism))}</span><div><strong>{labelFor(organism)}</strong><small>{organism.species.scientific_name} · {organism.ended_event_id ? "record ended" : "alive"}</small></div></a>)}</div>}
+        <a className="living-browse-lives" href={`/lives?world=${encodeURIComponent(world.world_id)}`}>Browse all {formatNumber(organisms.length)} recorded lives <span aria-hidden="true">→</span></a>
       </section>
 
       <section className="living-evidence" id="discoveries" aria-labelledby="evidence-title">
@@ -133,3 +141,6 @@ function PlanetStage({ people, animals, latest }: { people: number; animals: num
 
 function shortHash(hash: string) { return `${hash.slice(0, 12)}…${hash.slice(-8)}`; }
 function formatNumber(value: string | number) { const parsed = typeof value === "number" ? value : Number(value); return Number.isFinite(parsed) ? new Intl.NumberFormat("en-US").format(parsed) : String(value); }
+function lifeMonogram(label: string) { return label.replace("erson ", "").replace("nimal ", ""); }
+function lifeHref(worldId: string, organismId: string) { return `/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(organismId)}`; }
+function followLife(organismId: string, update: (organismId: string) => void) { window.localStorage.setItem("atiny.followed-organism", organismId); update(organismId); }
