@@ -13,6 +13,7 @@ use stripe_adapter::{
 };
 use supporter_application::{SupporterCancellationService, SupporterCheckoutService};
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use url::Url;
 use uuid::Uuid;
 
 #[derive(Debug, Parser)]
@@ -134,6 +135,10 @@ enum Command {
             default_value = "https://atinycivilization.com/api/v1/auth/apple/callback"
         )]
         apple_redirect_uri: String,
+        #[arg(long, env = "NEWSLETTER_DAILY_SIGNUP_URL")]
+        newsletter_daily_signup_url: Option<String>,
+        #[arg(long, env = "NEWSLETTER_WEEKLY_SIGNUP_URL")]
+        newsletter_weekly_signup_url: Option<String>,
     },
 }
 
@@ -169,6 +174,8 @@ async fn main() -> Result<()> {
         apple_key_id: None,
         apple_private_key: None,
         apple_redirect_uri: "https://atinycivilization.com/api/v1/auth/apple/callback".to_owned(),
+        newsletter_daily_signup_url: None,
+        newsletter_weekly_signup_url: None,
     }) {
         Command::Migrate => {
             store.migrate().await.context("apply database migrations")?;
@@ -323,6 +330,8 @@ async fn main() -> Result<()> {
             apple_key_id,
             apple_private_key,
             apple_redirect_uri,
+            newsletter_daily_signup_url,
+            newsletter_weekly_signup_url,
         } => {
             let secure_cookies = environment == "production";
             let mut state = ApiState::new(Arc::new(store.clone()), environment);
@@ -395,6 +404,24 @@ async fn main() -> Result<()> {
                     secure_cookies,
                 );
             }
+            match (
+                nonempty(newsletter_daily_signup_url),
+                nonempty(newsletter_weekly_signup_url),
+            ) {
+                (Some(daily), Some(weekly)) => {
+                    state = state.with_newsletter(
+                        external_https_url(&daily)
+                            .context("validate daily newsletter signup URL")?,
+                        external_https_url(&weekly)
+                            .context("validate weekly newsletter signup URL")?,
+                    );
+                    tracing::info!("external newsletter signup enabled");
+                }
+                (None, None) => tracing::info!("external newsletter signup disabled"),
+                _ => anyhow::bail!(
+                    "daily and weekly newsletter signup URLs must be configured together"
+                ),
+            }
             if let Some(secret) = stripe_webhook_secret.as_ref() {
                 let verifier = StripeWebhookVerifier::new(
                     secret.as_bytes(),
@@ -466,6 +493,21 @@ async fn main() -> Result<()> {
 
 fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.is_empty())
+}
+
+fn external_https_url(value: &str) -> Result<Url> {
+    let parsed = Url::parse(value).context("parse URL")?;
+    if parsed.scheme() != "https"
+        || parsed.host_str().is_none()
+        || !parsed.username().is_empty()
+        || parsed.password().is_some()
+        || parsed.fragment().is_some()
+    {
+        anyhow::bail!(
+            "newsletter signup URL must be an absolute HTTPS URL without credentials or a fragment"
+        );
+    }
+    Ok(parsed)
 }
 
 fn init_tracing() {

@@ -156,7 +156,7 @@ async fn observer_sessions_are_hashed_expiring_revocable_and_noncanonical(
     );
 
     let next_secrets = SessionSecrets::generate()?;
-    let mut relogin = identity;
+    let mut relogin = identity.clone();
     relogin.email = Some("changed@example.test".to_owned());
     relogin.authenticated_at = now + Duration::minutes(2);
     let next = store
@@ -178,6 +178,15 @@ async fn observer_sessions_are_hashed_expiring_revocable_and_noncanonical(
         .fetch_one(&pool)
         .await?;
     assert_eq!(account_count, 1);
+
+    let stored_email: Option<String> = sqlx::query_scalar(
+        "SELECT email FROM observer_identities WHERE provider=$1 AND provider_subject=$2",
+    )
+    .bind(identity.provider.as_str())
+    .bind(&identity.subject)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(stored_email, None, "observer accounts do not retain email");
 
     assert!(store.revoke_session(secrets.session_digest()).await?);
     assert!(!store.revoke_session(secrets.session_digest()).await?);

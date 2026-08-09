@@ -131,12 +131,10 @@ async fn load_or_create_account(
     .map_err(unavailable)?
     {
         sqlx::query(
-            "UPDATE observer_identities SET email=$3,email_verified=$4,last_authenticated_at=$5 WHERE provider=$1 AND provider_subject=$2",
+            "UPDATE observer_identities SET email=NULL,email_verified=FALSE,last_authenticated_at=$3 WHERE provider=$1 AND provider_subject=$2",
         )
         .bind(identity.provider.as_str())
         .bind(&identity.subject)
-        .bind(&identity.email)
-        .bind(identity.email_verified)
         .bind(identity.authenticated_at)
         .execute(&mut **transaction)
         .await
@@ -153,13 +151,11 @@ async fn load_or_create_account(
     sqlx::query(
         r#"INSERT INTO observer_identities
         (provider,provider_subject,account_id,email,email_verified,created_at,last_authenticated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,$6)"#,
+        VALUES ($1,$2,$3,NULL,FALSE,$4,$4)"#,
     )
     .bind(identity.provider.as_str())
     .bind(&identity.subject)
     .bind(account_id)
-    .bind(&identity.email)
-    .bind(identity.email_verified)
     .bind(identity.authenticated_at)
     .execute(&mut **transaction)
     .await

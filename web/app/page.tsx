@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { ArchiveIndex } from "./components/ArchiveIndex";
 import { FoundationPulse } from "./components/FoundationPulse";
 import { LiveRecord } from "./components/LiveRecord";
+import { NewsletterPanel } from "./components/NewsletterPanel";
 import { SupporterPanel } from "./components/SupporterPanel";
 
 export const metadata: Metadata = {
@@ -74,6 +75,8 @@ export default function Home() {
           </div>
           <ArchiveIndex />
         </section>
+
+        <NewsletterPanel />
 
         <section className="living-support" id="supporters" aria-labelledby="supporter-title">
           <div className="living-support-copy">

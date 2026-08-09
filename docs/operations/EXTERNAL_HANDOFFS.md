@@ -208,7 +208,8 @@ and contract-tested. Its production return path is fixed as
 Google OAuth **Web application** client, add the exact production homepage, JavaScript
 origin, and that redirect URI, and enter the client ID and secret directly in the
 production secret store. The redirect URI must exactly match, including scheme, case,
-and trailing slash.
+and trailing slash. The application requests identity without email and persists only Google's
+opaque subject identifier.
 
 Google requires a production OAuth app to have a public homepage, terms, and privacy
 policy on an owned domain. See [Google's web-server OAuth guide](https://developers.google.com/identity/protocols/oauth2/web-server)
@@ -223,8 +224,25 @@ return URL `https://atinycivilization.com/api/v1/auth/apple/callback`, and a sig
 Store the Services ID, team ID, key ID, and PKCS#8 private key in the production secret
 store; never commit the private key.
 
+The Apple flow deliberately requests no email scope and persists only Apple's opaque subject
+identifier. A newsletter subscription is separate from sign-in.
+
 Apple's web configuration requires a Services ID associated with a primary App ID and
 registered website/return URLs. See [Configure Sign in with Apple for the web](https://developer.apple.com/help/account/capabilities/configure-sign-in-with-apple-for-the-web).
+
+### Hosted daily and weekly digest
+
+The observatory exposes a factual RSS source at
+`/api/v1/worlds/{world_id}/digest.xml` and two controlled redirects for daily and weekly hosted
+signup forms. Configure `NEWSLETTER_DAILY_SIGNUP_URL` and `NEWSLETTER_WEEKLY_SIGNUP_URL` together.
+The application never proxies a signup form, receives a subscriber export, or stores an address.
+
+Buttondown is the current operational fit: its hosted subscribe page can apply `daily` or `weekly`
+tags from the URL, and two external-feed automations can poll the same public RSS source at their
+respective cadence with tag-based audience filters. The account owner must create the newsletter,
+enable double opt-in, make both tags subscriber-editable, configure the two filtered RSS
+automations, and supply the resulting hosted signup URLs. Any equivalent provider remains usable
+because the application boundary is just two HTTPS destinations plus a public RSS feed.
 
 ### LLM and Hindsight
 

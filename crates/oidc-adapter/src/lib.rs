@@ -84,7 +84,7 @@ impl GoogleOidcClient {
         url.query_pairs_mut()
             .append_pair("client_id", &self.client_id)
             .append_pair("response_type", "code")
-            .append_pair("scope", "openid email")
+            .append_pair("scope", "openid profile")
             .append_pair("redirect_uri", self.redirect_uri.as_str())
             .append_pair("state", &secrets.state())
             .append_pair("nonce", &secrets.nonce())
@@ -292,7 +292,6 @@ impl AppleOidcClient {
             .append_pair("client_id", &self.client_id)
             .append_pair("response_type", "code")
             .append_pair("response_mode", "form_post")
-            .append_pair("scope", "email")
             .append_pair("redirect_uri", self.redirect_uri.as_str())
             .append_pair("state", &secrets.state())
             .append_pair("nonce", &secrets.nonce());
@@ -713,7 +712,7 @@ xccHuEPAJQ0zGFyMQXiSKygo83f16TuoVy6U9fKA+t/RzeBfZeaealE6GA==
         );
         assert_eq!(
             parameters.get("scope").map(String::as_str),
-            Some("openid email")
+            Some("openid profile")
         );
         assert_eq!(parameters.get("state"), Some(&secrets.state()));
         assert_eq!(parameters.get("nonce"), Some(&secrets.nonce()));
@@ -878,7 +877,7 @@ xccHuEPAJQ0zGFyMQXiSKygo83f16TuoVy6U9fKA+t/RzeBfZeaealE6GA==
             parameters.get("response_mode").map(String::as_str),
             Some("form_post")
         );
-        assert_eq!(parameters.get("scope").map(String::as_str), Some("email"));
+        assert!(!parameters.contains_key("scope"));
         assert!(!parameters.contains_key("code_challenge"));
 
         let identity = client

@@ -37,6 +37,7 @@ use supporter_application::{
     SupporterCheckoutRequest, SupporterCheckoutService,
 };
 use tower_http::trace::TraceLayer;
+use url::Url;
 use uuid::Uuid;
 use world_domain::{BirthCategory, Digest, EntityId, EventSequence, WorldId};
 
@@ -81,6 +82,7 @@ pub struct ApiState {
     auth: Option<Arc<AuthRuntime>>,
     supporter_checkout: Option<Arc<SupporterCheckoutService>>,
     supporter_cancellation: Option<Arc<SupporterCancellationService>>,
+    newsletter: Option<Arc<NewsletterRuntime>>,
 }
 
 impl ApiState {
@@ -94,6 +96,7 @@ impl ApiState {
             auth: None,
             supporter_checkout: None,
             supporter_cancellation: None,
+            newsletter: None,
         }
     }
 
@@ -135,6 +138,15 @@ impl ApiState {
         self.supporter_cancellation = Some(Arc::new(service));
         self
     }
+
+    #[must_use]
+    pub fn with_newsletter(mut self, daily_signup_url: Url, weekly_signup_url: Url) -> Self {
+        self.newsletter = Some(Arc::new(NewsletterRuntime {
+            daily_signup_url,
+            weekly_signup_url,
+        }));
+        self
+    }
 }
 
 struct StripeWebhookRuntime {
@@ -147,6 +159,11 @@ struct AuthRuntime {
     apple: Option<AppleOidcClient>,
     store: Arc<dyn ObserverAuthStore>,
     secure_cookies: bool,
+}
+
+struct NewsletterRuntime {
+    daily_signup_url: Url,
+    weekly_signup_url: Url,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -163,6 +180,8 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/auth/session", get(auth_session))
         .route("/api/v1/auth/logout", post(auth_logout))
+        .route("/api/v1/newsletter/status", get(newsletter_status))
+        .route("/api/v1/newsletter/subscribe", get(newsletter_subscribe))
         .route(
             "/api/v1/supporters/checkout",
             post(supporter_checkout).layer(axum::extract::DefaultBodyLimit::max(16_384)),
@@ -185,6 +204,10 @@ pub fn router(state: ApiState) -> Router {
             get(public_world_telemetry),
         )
         .route("/api/v1/worlds/{world_id}/timeline", get(public_timeline))
+        .route(
+            "/api/v1/worlds/{world_id}/digest.xml",
+            get(public_digest_feed),
+        )
         .route(
             "/api/v1/worlds/{world_id}/history-commitments",
             get(public_history_commitments),
@@ -215,6 +238,42 @@ pub fn router(state: ApiState) -> Router {
             }),
         )
         .with_state(state)
+}
+
+#[derive(Serialize)]
+struct NewsletterStatusResponse {
+    enabled: bool,
+    email_storage: &'static str,
+}
+
+async fn newsletter_status(State(state): State<ApiState>) -> Json<NewsletterStatusResponse> {
+    Json(NewsletterStatusResponse {
+        enabled: state.newsletter.is_some(),
+        email_storage: "newsletter_provider_only",
+    })
+}
+
+#[derive(Deserialize)]
+struct NewsletterSubscribeQuery {
+    cadence: String,
+}
+
+async fn newsletter_subscribe(
+    State(state): State<ApiState>,
+    Query(query): Query<NewsletterSubscribeQuery>,
+) -> Result<Response, ApiError> {
+    let newsletter = state.newsletter.as_ref().ok_or(ApiError::NotFound)?;
+    let target = match query.cadence.as_str() {
+        "daily" => &newsletter.daily_signup_url,
+        "weekly" => &newsletter.weekly_signup_url,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "invalid_digest_cadence",
+                "digest cadence must be daily or weekly",
+            ));
+        }
+    };
+    redirect(target.as_str())
 }
 
 async fn google_auth_start(State(state): State<ApiState>) -> Result<Response, ApiError> {
@@ -332,7 +391,7 @@ async fn auth_callback(
     if query.error.is_some() {
         return Err(ApiError::BadRequest(
             "login_rejected",
-            "Google sign-in was not completed",
+            "sign-in was not completed",
         ));
     }
     let code = query
@@ -440,6 +499,7 @@ async fn auth_callback(
 struct AuthSessionResponse {
     authenticated: bool,
     account_id: Option<Uuid>,
+    providers: Vec<&'static str>,
 }
 
 async fn auth_session(
@@ -451,6 +511,13 @@ async fn auth_session(
     Ok(Json(AuthSessionResponse {
         authenticated: session.is_some(),
         account_id: session.map(|value| value.account_id),
+        providers: [
+            runtime.google.as_ref().map(|_| "google"),
+            runtime.apple.as_ref().map(|_| "apple"),
+        ]
+        .into_iter()
+        .flatten()
+        .collect(),
     }))
 }
 
@@ -743,7 +810,7 @@ fn map_auth_store_error(error: ObserverAuthStoreError) -> ApiError {
 }
 
 fn map_oidc_error(error: OidcError) -> ApiError {
-    tracing::warn!(error = %error, "Google OIDC callback rejected");
+    tracing::warn!(error = %error, "OIDC callback rejected");
     match error {
         OidcError::Unavailable(_) => ApiError::Unavailable,
         OidcError::Configuration(_) => ApiError::Unavailable,
@@ -1154,6 +1221,83 @@ async fn public_timeline(
     }))
 }
 
+async fn public_digest_feed(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+) -> Result<Response, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let (timeline, findings) = tokio::try_join!(
+        state.store.list_public_timeline(world_id, 100),
+        state.store.list_public_findings(world_id, 100),
+    )
+    .map_err(log_observer_error)?;
+    let mut items = timeline
+        .into_iter()
+        .map(|item| {
+            (
+                item.source_sequence,
+                format!("event:{}", item.source_event_id),
+                item.title,
+                item.summary,
+                "https://atinycivilization.com/lives".to_owned(),
+            )
+        })
+        .chain(findings.into_iter().map(|finding| {
+            (
+                finding.source_sequence,
+                format!("finding:{}", finding.finding_key),
+                finding.title,
+                finding.summary,
+                "https://atinycivilization.com/wiki".to_owned(),
+            )
+        }))
+        .collect::<Vec<_>>();
+    items.sort_by(|left, right| right.0.cmp(&left.0).then_with(|| left.1.cmp(&right.1)));
+    items.truncate(100);
+
+    let mut xml = format!(
+        "<?xml version=\"1.0\" encoding=\"UTF-8\"?><rss version=\"2.0\"><channel><title>A Tiny Civilization — World {world_id}</title><link>https://atinycivilization.com/</link><description>Factual observer findings from a live, unscripted world.</description>"
+    );
+    for (_, guid, title, summary, link) in items {
+        xml.push_str("<item><title>");
+        push_xml_escaped(&mut xml, &title);
+        xml.push_str("</title><link>");
+        push_xml_escaped(&mut xml, &link);
+        xml.push_str("</link><guid isPermaLink=\"false\">");
+        push_xml_escaped(&mut xml, &guid);
+        xml.push_str("</guid><description>");
+        push_xml_escaped(&mut xml, &summary);
+        xml.push_str("</description></item>");
+    }
+    xml.push_str("</channel></rss>");
+    Ok((
+        [
+            (header::CONTENT_TYPE, "application/rss+xml; charset=utf-8"),
+            (header::CACHE_CONTROL, "public, max-age=60"),
+        ],
+        xml,
+    )
+        .into_response())
+}
+
+fn push_xml_escaped(output: &mut String, value: &str) {
+    for character in value.chars() {
+        output.push_str(match character {
+            '&' => "&amp;",
+            '<' => "&lt;",
+            '>' => "&gt;",
+            '"' => "&quot;",
+            '\'' => "&apos;",
+            _ => {
+                output.push(character);
+                continue;
+            }
+        });
+    }
+}
+
 #[derive(Serialize)]
 struct OrganismsResponse {
     projection_version: u16,
@@ -1435,5 +1579,12 @@ mod tests {
         assert!(cookie.contains("; HttpOnly"));
         assert!(cookie.ends_with("; Secure"));
         assert!(!cookie.contains("Domain="));
+    }
+
+    #[test]
+    fn digest_feed_xml_escaping_is_complete() {
+        let mut escaped = String::new();
+        push_xml_escaped(&mut escaped, "a<&>\"'z");
+        assert_eq!(escaped, "a&lt;&amp;&gt;&quot;&apos;z");
     }
 }

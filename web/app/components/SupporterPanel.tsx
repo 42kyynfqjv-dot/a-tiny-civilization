@@ -27,10 +27,12 @@ type Reservation = {
   refund_state: string | null;
 };
 
+type AuthProvider = "google" | "apple";
+
 type PanelState =
   | { kind: "checking" }
   | { kind: "unavailable" }
-  | { kind: "signed_out" }
+  | { kind: "signed_out"; providers: AuthProvider[] }
   | {
       kind: "ready";
       world: PublicWorld;
@@ -97,7 +99,7 @@ export function SupporterPanel() {
         return;
       }
       if (response.status === 401) {
-        setPanel({ kind: "signed_out" });
+        setPanel({ kind: "signed_out", providers: ["google", "apple"] });
         setMessage("Your supporter session expired. Please sign in again.");
         return;
       }
@@ -147,7 +149,7 @@ export function SupporterPanel() {
         method: "POST",
         headers: { "x-csrf-token": csrf },
       });
-      if (response.ok) setPanel({ kind: "signed_out" });
+      if (response.ok) setPanel(await loadPanel());
     } catch {
       setMessage("Sign out could not be completed right now.");
     }
@@ -167,10 +169,10 @@ export function SupporterPanel() {
   if (panel.kind === "signed_out") {
     return (
       <div className="supporter-console">
-        <p className="supporter-step">Sign in before choosing a future birth.</p>
+        <p className="supporter-step">Sign in to follow the world or choose a future birth.</p>
         <div className="supporter-auth-actions">
-          <a className="button button-dark" href="/api/v1/auth/google/start">Continue with Google</a>
-          <a className="button button-outline" href="/api/v1/auth/apple/start">Continue with Apple</a>
+          {panel.providers.includes("google") ? <a className="button button-dark" href="/api/v1/auth/google/start">Continue with Google</a> : null}
+          {panel.providers.includes("apple") ? <a className="button button-outline" href="/api/v1/auth/apple/start">Continue with Apple</a> : null}
         </div>
         <small>Accounts and payments are observer-side only. They cannot delay, select, or alter a birth.</small>
         {message ? <p className="supporter-message" role="status">{message}</p> : null}
@@ -240,9 +242,9 @@ async function loadPanel(signal?: AbortSignal): Promise<PanelState> {
   try {
     const session = await fetch("/api/v1/auth/session", { cache: "no-store", signal });
     if (session.status === 404) return { kind: "unavailable" };
-    if (!session.ok) return { kind: "signed_out" };
-    const identity = (await session.json()) as { authenticated?: boolean };
-    if (!identity.authenticated) return { kind: "signed_out" };
+    if (!session.ok) return { kind: "signed_out", providers: [] };
+    const identity = (await session.json()) as { authenticated?: boolean; providers?: AuthProvider[] };
+    if (!identity.authenticated) return { kind: "signed_out", providers: identity.providers ?? [] };
     const worldsResponse = await fetch("/api/v1/worlds", { cache: "no-store", signal });
     if (!worldsResponse.ok) return { kind: "unavailable" };
     const { worlds } = (await worldsResponse.json()) as { worlds: PublicWorld[] };

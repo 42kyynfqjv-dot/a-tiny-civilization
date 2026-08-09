@@ -20,7 +20,9 @@ stripe-adapter = { path = "../stripe-adapter" }
 supporter-application = { path = "../supporter-application" }
 tower-http.workspace = true
 tracing.workspace = true
+tokio.workspace = true
 uuid.workspace = true
+url.workspace = true
 world-domain = { path = "../world-domain" }
 
 [dev-dependencies]
