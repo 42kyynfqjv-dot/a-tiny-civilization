@@ -75,9 +75,13 @@ export function LiveRecord() {
     <section className="living-record" id="happening" aria-labelledby="live-record-title">
       <div className="living-hero living-habitat-hero">
         <HabitatStage worldId={world.world_id} worldTick={world.tick} labels={lifeLabels} />
-        <div className="living-habitat-intro">
+      </div>
+      <div className="living-habitat-caption">
+        <div>
           <p className="living-live-label"><span aria-hidden="true" /> Unscripted and happening now</p>
           <h1 id="live-record-title">Watch life unfold.</h1>
+        </div>
+        <div>
           <p>Every point is one person or animal at its latest committed position. Zoom in, select a life, and stay with it as the world changes.</p>
           {latestMoment && <small><strong>Latest lasting event</strong>{latestMoment.title} · moment {formatNumber(latestMoment.source_tick)}</small>}
           <WorldInputStatus world={world} />

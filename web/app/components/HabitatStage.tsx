@@ -103,10 +103,14 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     let start = performance.now();
     const resize = new ResizeObserver(() => {
       const rect = canvas.getBoundingClientRect();
-      const scale = Math.min(window.devicePixelRatio || 1, 2);
+      const requestedScale = Math.min(window.devicePixelRatio || 1, 3);
+      const pixelBudgetScale = Math.sqrt(14_000_000 / Math.max(1, rect.width * rect.height));
+      const scale = Math.max(1, Math.min(requestedScale, pixelBudgetScale));
       canvas.width = Math.max(1, Math.round(rect.width * scale));
       canvas.height = Math.max(1, Math.round(rect.height * scale));
       context.setTransform(scale, 0, 0, scale, 0, 0);
+      context.imageSmoothingEnabled = true;
+      context.imageSmoothingQuality = "high";
       start = performance.now();
     });
     resize.observe(canvas);
@@ -186,6 +190,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   return <section className="habitat-stage" aria-label="Live habitat view">
     <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerUp={endPointer} onPointerCancel={() => { dragRef.current = null; }} onWheel={(event) => { event.preventDefault(); zoomBy(event.deltaY < 0 ? 1 : -1); }} aria-label="Live positions of inhabitants and animals. Drag to pan, scroll to zoom, and select a point to inspect it." />
     <div className="habitat-wash" aria-hidden="true" />
+    <div className="habitat-glass" aria-hidden="true"><i /><span className="glass-corner corner-nw" /><span className="glass-corner corner-ne" /><span className="glass-corner corner-sw" /><span className="glass-corner corner-se" /></div>
     <header className="habitat-toolbar">
       <div><span className={`habitat-status ${status}`} /> <strong>{status === "live" ? "Live habitat" : status === "loading" ? "Locating life" : "Reconnecting"}</strong><small>Moment {formatNumber(worldTick)}</small></div>
       <nav aria-label="Habitat detail">
@@ -198,10 +203,10 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       <p>Happening now</p>
       {activity.length === 0 ? <span>The habitat is quiet.</span> : <ol>{activity.map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
     </aside>
-    <div className="habitat-selection">
+    <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
       {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan and scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
-    <footer><span>Committed positions · overlap separation is visual only · drag / scroll to explore</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
+    <footer><span>Positions are committed · lens and terrain are observer styling · drag / scroll to explore</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
   </section>;
 }
 
@@ -210,7 +215,7 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
   const gradient = context.createLinearGradient(0, 0, width, height);
   gradient.addColorStop(0, "#0f3126"); gradient.addColorStop(.52, "#173c2b"); gradient.addColorStop(1, "#071d18");
   context.fillStyle = gradient; context.fillRect(0, 0, width, height);
-  drawTerrain(context, width, height);
+  drawTerrain(context, width, height, center, localZoom);
   if (!view) return [];
   const bounds = boundsFor(detail, center, localZoom);
   const project = (longitude: number, latitude: number) => ({
@@ -285,18 +290,30 @@ function separateOverlaps(items: Omit<PositionedEntity, "x" | "y">[], selectedId
   return result;
 }
 
-function drawTerrain(context: CanvasRenderingContext2D, width: number, height: number) {
-  context.save(); context.globalAlpha = .28; context.strokeStyle = "#8eb39a"; context.lineWidth = .55;
-  for (let line = 0; line < 18; line++) {
+function drawTerrain(context: CanvasRenderingContext2D, width: number, height: number, center: Camera, localZoom: number) {
+  context.save();
+  const illumination = context.createRadialGradient(width * .48, height * .43, 0, width * .48, height * .43, Math.max(width, height) * .72);
+  illumination.addColorStop(0, "rgba(113,170,137,.11)"); illumination.addColorStop(.55, "rgba(55,112,85,.035)"); illumination.addColorStop(1, "rgba(0,0,0,.24)");
+  context.fillStyle = illumination; context.fillRect(0, 0, width, height);
+  context.globalAlpha = .3; context.strokeStyle = "#91b8a0"; context.lineWidth = .45;
+  const phaseX = center.longitude / 1_800_000; const phaseY = center.latitude / 2_400_000;
+  for (let line = 0; line < 32; line++) {
     context.beginPath();
-    for (let x = -20; x <= width + 20; x += 16) {
-      const y = height * (.08 + line / 19) + Math.sin(x * .012 + line * .73) * 16 + Math.sin(x * .032 - line) * 5;
+    for (let x = -20; x <= width + 20; x += 10) {
+      const y = height * (.035 + line / 32) + Math.sin(x * .009 + line * .57 + phaseX) * (12 + Math.min(14, localZoom * .35)) + Math.sin(x * .027 - line + phaseY) * 4;
       if (x === -20) context.moveTo(x, y); else context.lineTo(x, y);
     }
     context.stroke();
   }
+  context.globalAlpha = .22; context.fillStyle = "#d4e6d8";
+  for (let index = 0; index < 180; index++) {
+    const x = ((index * 83.17 + phaseX * 41) % (width + 40)) - 20;
+    const y = ((index * 47.63 + phaseY * 37) % (height + 40)) - 20;
+    const radius = index % 11 === 0 ? .8 : .35;
+    context.beginPath(); context.arc(x, y, radius, 0, Math.PI * 2); context.fill();
+  }
   const water = context.createLinearGradient(width * .1, 0, width * .9, 0); water.addColorStop(0, "rgba(73,137,123,0)"); water.addColorStop(.5, "rgba(73,137,123,.28)"); water.addColorStop(1, "rgba(73,137,123,0)");
-  context.strokeStyle = water; context.lineWidth = 18; context.beginPath(); context.moveTo(-20, height * .78); context.bezierCurveTo(width * .24, height * .52, width * .63, height * .88, width + 20, height * .58); context.stroke();
+  context.globalAlpha = .45; context.strokeStyle = water; context.lineWidth = 21; context.beginPath(); context.moveTo(-20, height * .78); context.bezierCurveTo(width * .24, height * .52, width * .63, height * .88, width + 20, height * .58); context.stroke();
   context.restore();
 }
 
