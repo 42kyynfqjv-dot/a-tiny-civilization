@@ -103,6 +103,25 @@ test("server-renders the observer wiki as a separate read-only route", async () 
   assert.doesNotMatch(html, /create wiki claim|steering wheel/i);
 });
 
+test("server-renders a selectable life directory", async () => {
+  const response = await render("/lives");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>Lives · A Tiny Civilization<\/title>/i);
+  assert.match(html, /Choose someone to return to\./);
+  assert.match(html, /Following changes only your observatory/);
+  assert.match(html, /Opening the life index/);
+});
+
+test("server-renders an individual life route", async () => {
+  const response = await render("/lives/b3ea736d-7a5a-5161-a74b-fa8c4302d333/00000000-0000-0000-0000-000000000001");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>Life Record · A Tiny Civilization<\/title>/i);
+  assert.match(html, /Reading this life’s public record/);
+  assert.match(html, /All lives/);
+});
+
 for (const [path, title, marker] of [
   ["/privacy", "Privacy notice", "Observer data is not sold"],
   ["/terms", "Terms of use", "not a promise that civilization"],
