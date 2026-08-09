@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 
+from __future__ import annotations
+
 import json
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -17,19 +20,62 @@ QUALIFIED_SOURCE_COMMIT = "30a26a062fc9b2704b30dcc11c0c50992e1d2852"
 
 
 class QualityWorldAdmissionTests(unittest.TestCase):
-    def run_verifier(self, admission: pathlib.Path = ADMISSION):
+    @classmethod
+    def setUpClass(cls):
+        cls._worktree_parent = tempfile.TemporaryDirectory()
+        cls.qualified_root = pathlib.Path(cls._worktree_parent.name) / "qualified-source"
+        subprocess.run(
+            [
+                "git", "worktree", "add", "--detach",
+                str(cls.qualified_root), QUALIFIED_SOURCE_COMMIT,
+            ],
+            cwd=PROJECT_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        admission = json.loads(ADMISSION.read_text(encoding="utf-8"))
+        evidence_paths = {
+            admission["quality_gate_adr"],
+            admission["experimental_science_policy_adr"],
+        }
+        for dimension in admission["dimensions"]:
+            evidence_paths.update(dimension["evidence"])
+        for relative in evidence_paths:
+            source = PROJECT_ROOT / relative
+            destination = cls.qualified_root / relative
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(source, destination)
+
+    @classmethod
+    def tearDownClass(cls):
+        subprocess.run(
+            ["git", "worktree", "remove", "--force", str(cls.qualified_root)],
+            cwd=PROJECT_ROOT,
+            check=True,
+            text=True,
+            capture_output=True,
+        )
+        cls._worktree_parent.cleanup()
+
+    def run_verifier(
+        self,
+        admission: pathlib.Path = ADMISSION,
+        project_root: pathlib.Path | None = None,
+    ):
+        project_root = project_root or self.qualified_root
         return subprocess.run(
             [
                 str(VERIFIER),
                 "--admission", str(admission),
-                "--project-root", str(PROJECT_ROOT),
+                "--project-root", str(project_root),
                 "--world-id", WORLD_ID,
                 "--expected-ruleset", "32",
                 "--genesis-sha256s-sha256", GENESIS_DIGEST,
                 "--evidence-sha256s-sha256", EVIDENCE_DIGEST,
                 "--qualified-source-commit", QUALIFIED_SOURCE_COMMIT,
             ],
-            cwd=PROJECT_ROOT,
+            cwd=project_root,
             text=True,
             capture_output=True,
         )
@@ -47,6 +93,11 @@ class QualityWorldAdmissionTests(unittest.TestCase):
         result = self.run_verifier()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('"public_deployment_authorized":false', result.stdout)
+
+    def test_changed_current_source_cannot_reuse_the_archived_admission(self):
+        result = self.run_verifier(project_root=PROJECT_ROOT)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("qualified source boundary differs", result.stderr)
 
     def test_rejects_deployment_authorization(self):
         admission = self.changed_admission(
