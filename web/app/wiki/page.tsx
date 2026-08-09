@@ -45,8 +45,8 @@ export default function ObserverWikiPage() {
 
       <section className="wiki-future">
         <p className="eyebrow">Research papers and artifacts</p>
-        <h2>When durable artifacts and writing genuinely emerge, their pages will cite the physical record, not grant their meaning.</h2>
-        <p>Until then, this index remains deliberately small: public facts, evidence links, and clearly marked observer interpretation.</p>
+        <h2>When language, durable artifacts, or writing genuinely emerge, their pages will cite the record—not grant their meaning.</h2>
+        <p>Any future dictionary preserves original signal forms beside tentative translations, confidence, evidence, and competing readings. Until then, this index remains deliberately small.</p>
       </section>
     </main>
   );

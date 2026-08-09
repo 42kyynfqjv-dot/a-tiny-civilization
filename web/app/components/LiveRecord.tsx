@@ -96,7 +96,7 @@ export function LiveRecord() {
         <header>
           <p className="eyebrow">Every life has a history</p>
           <h2 id="lives-title">Start with someone.</h2>
-          <p>There are no protagonists here. But every ordinary life is worth following when its future is genuinely unknown.</p>
+          <p>There are no protagonists here. Every person and individually represented animal receives a numerical observer ID. The ID stands in for a name only until the inhabitants discover naming for themselves.</p>
         </header>
         <div className="living-lives-grid">
           <article className="living-featured-life">
@@ -104,7 +104,7 @@ export function LiveRecord() {
             <div>
               <p>{featured ? `${labelFor(featured)} · ${featured.ended_event_id ? "record ended" : "alive"}` : "No life in the public record"}</p>
               <h3>{featured ? "A life at the beginning" : "Waiting for a life"}</h3>
-              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer">{featured.species.scientific_name}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. This public label is observational; the inhabitant does not know it.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>The observatory will open a biography when the public record contains one.</small>}
+              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer">{featured.species.scientific_name}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. {labelFor(featured)} is an observer ID, not a name known inside the world. If inhabitants develop names, their name becomes primary and this ID remains for audit.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>The observatory will open a biography when the public record contains one.</small>}
             </div>
           </article>
           <article className="living-recent">
@@ -141,6 +141,6 @@ function PlanetStage({ people, animals, latest }: { people: number; animals: num
 
 function shortHash(hash: string) { return `${hash.slice(0, 12)}…${hash.slice(-8)}`; }
 function formatNumber(value: string | number) { const parsed = typeof value === "number" ? value : Number(value); return Number.isFinite(parsed) ? new Intl.NumberFormat("en-US").format(parsed) : String(value); }
-function lifeMonogram(label: string) { return label.replace("erson ", "").replace("nimal ", ""); }
+function lifeMonogram(label: string) { return label.replace(/^[PA]-/, ""); }
 function lifeHref(worldId: string, organismId: string) { return `/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(organismId)}`; }
 function followLife(organismId: string, update: (organismId: string) => void) { window.localStorage.setItem("atiny.followed-organism", organismId); update(organismId); }

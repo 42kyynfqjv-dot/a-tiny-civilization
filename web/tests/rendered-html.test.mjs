@@ -1,5 +1,17 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { createPublicLifeLabels } from "../app/components/lifeLabels.ts";
+
+test("assigns deterministic numerical observer IDs separately to people and animals", () => {
+  const labels = createPublicLifeLabels([
+    { organism_id: "person-b", role: "person", introduced_sequence: 1, introduced_tick: 0 },
+    { organism_id: "animal-a", role: "fauna", introduced_sequence: 2, introduced_tick: 1 },
+    { organism_id: "person-a", role: "person", introduced_sequence: 1, introduced_tick: 0 },
+  ]);
+  assert.equal(labels.get("person-a"), "P-0001");
+  assert.equal(labels.get("person-b"), "P-0002");
+  assert.equal(labels.get("animal-a"), "A-0001");
+});
 
 async function render(path = "/") {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
@@ -111,6 +123,7 @@ test("server-renders a selectable life directory", async () => {
   assert.match(html, /Choose someone to return to\./);
   assert.match(html, /Following changes only your observatory/);
   assert.match(html, /Opening the life index/);
+  assert.match(html, /numerical observer ID/i);
 });
 
 test("server-renders an individual life route", async () => {

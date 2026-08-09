@@ -22,7 +22,7 @@ export default function LivesPage() {
       <section className="life-directory-hero">
         <p className="eyebrow">Lives inside the world</p>
         <h1>Choose someone to return to.</h1>
-        <p>Following changes only your observatory. It cannot be perceived inside the world and never changes what happens there.</p>
+        <p>Every person and individually represented animal has a numerical observer ID until the inhabitants develop their own naming. Following changes only your observatory; it cannot be perceived inside the world.</p>
       </section>
       <LifeDirectory />
     </main>

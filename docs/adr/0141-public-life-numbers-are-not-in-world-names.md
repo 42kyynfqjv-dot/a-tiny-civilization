@@ -19,15 +19,15 @@ a read-side projection and never enters events, cognition, memory, perception, o
 
 The labels remain available for the entire archive. If inhabitants later establish a repeatable
 name-like practice through their own signal and social-learning mechanics, the public wiki may
-document that interpretation with provenance and display an inhabitant-created designation beside
-the observer number. It must not silently replace the audit label or infer names from observer
-preferences.
+document that interpretation with provenance and make an inhabitant-created designation the
+primary public display. The numerical ID remains visible as its permanent audit reference. The
+observatory must not infer names from observer preferences.
 
 ## Consequences
 
 - People can follow an individual immediately without granting it a name inside the world.
-- Public citations remain stable before and after any possible emergence of naming.
+- Public citations remain stable before and after any possible emergence of naming, even when an
+  emergent name becomes the primary display.
 - A future naming interpretation is a provenance-bearing observer/wiki feature, not a canonical
   rename operation.
 - Supporter reservations remain observer-side and cannot become inhabitant knowledge.
-

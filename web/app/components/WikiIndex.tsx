@@ -114,11 +114,17 @@ export function WikiIndex() {
         </article>
         <article>
           <h3>Lives cited in the record</h3>
-          {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person" : "Animal"}</span><a href={`/lives/${encodeURIComponent(wiki.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>{lifeLabels.get(organism.organism_id) ?? "Unindexed life"}</a><small><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a> · introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
+          <p>Each life uses a numerical observer ID until the inhabitants independently develop naming. Emergent names can become the primary display; the ID remains a permanent provenance key.</p>
+          {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person ID" : "Animal ID"}</span><a href={`/lives/${encodeURIComponent(wiki.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>{lifeLabels.get(organism.organism_id) ?? "Unindexed life"}</a><small><a href={organism.species.source_url} rel="noreferrer" target="_blank">{organism.species.scientific_name}</a> · introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
         </article>
         <article id="artifact-archive">
           <h3>Altered material archive</h3>
           {wiki.artifacts.length === 0 ? <p>No durable material alteration has entered the public record.</p> : <ul>{wiki.artifacts.map((artifact) => <li key={artifact.object_id}><a href={artifact.material.source_url} rel="noreferrer" target="_blank">{artifact.material.canonical_name}</a><span>Observed surface trace: {artifact.surface_trace_units} units</span><small>Physical trace: world fact · artifact filing: observer inference</small><small>First evidence event {artifact.first_trace_sequence}, tick {artifact.first_trace_tick} · latest event {artifact.latest_trace_sequence}, tick {artifact.latest_trace_tick}</small></li>)}</ul>}
+        </article>
+        <article id="language-archive">
+          <h3>Language archive and translation</h3>
+          <p>No language has been established. The simulation does not contain a required language milestone or a hidden dictionary.</p>
+          <p>If repeatable, socially learned signal forms emerge, this section will preserve each original form and build a cautious observer dictionary: tentative translation, confidence, first and latest supporting events, usage examples, and competing interpretations. A translation is observer research and can never teach or steer the inhabitants.</p>
         </article>
       </div>
     </section>

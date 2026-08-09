@@ -54,7 +54,8 @@ runner, append-only PostgreSQL history and snapshots, exact replay verification,
 structured memory behind a Hindsight adapter, bounded cognition, five rebuildable
 observer projections, a read-only API, an observatory, and its evidence-backed wiki.
 
-The fixed public seed now has a same-identity ruleset-32 launch candidate. Its exact
+The fixed public seed is now running publicly as the ruleset-32 technical world at
+[atinycivilization.com](https://atinycivilization.com). Its exact
 10.16 GB full-Earth input closure, database-free genesis proof, database-backed genesis,
 1,000 simulated ticks, Hindsight delivery, zero-cost local Qwen2.5 cognition,
 snapshot-plus-tail replay, projections, and observer privacy gate have passed. The retained
@@ -65,10 +66,17 @@ and
 [public-observatory](docs/operations/PUBLIC_OBSERVATORY_ADMISSION_RULESET32_2026-08-09.md)
 admissions; the complete
 [production-host preflight](docs/operations/HOST_PREFLIGHT_RULESET32_2026-08-09.md), runtime
-staging, and isolated production-image smoke also pass. The world remains unactivated and
-undeployed: private tick-zero activation and public cutover are separate literal-confirmation
-operations. Integrated scientific admission is intentionally deferred under the
-experimental-world policy.
+staging, and isolated production-image smoke also pass. Integrated scientific admission is
+intentionally deferred under the experimental-world policy.
+
+A distinct ruleset-33 successor is in preparation. Its future public seed was committed before
+reveal, and its engine begins with 24 unrelated adult human founders while privately excluding
+close-kin reproductive pairings through first cousins. Observer labels such as `Person 01` remain
+outside the world; inhabitants receive no built-in concept of names or kinship. A complete
+database-free pre-seed construction proof already verifies 88 organisms, 183 genesis events, and
+bit-identical replay over the retained 10.16 GB source closure. The successor will not replace the
+live technical world until its own exact inputs, replay, qualification, and observatory admission
+pass.
 
 No API key is required for the qualified local cognition path. Remote model providers
 remain optional, disabled, and require separate approval before private context may be
@@ -88,8 +96,8 @@ The first public genesis may use the openly labelled experimental, not-scientifi
 admitted bundle under [ADR 0049](docs/adr/0049-experimental-genesis-science-policy.md).
 Its complete content-addressed provisional global bundle, causal refinement,
 deterministic partition scheduler, replay, privacy, and implementation-facing quality gates now
-pass for the retained ruleset-32 candidate. The world remains unactivated and undeployed by owner
-decision after release preflight; exhaustive scientific calibration moves to a successor world.
+pass for the retained ruleset-32 technical world; exhaustive scientific calibration remains a
+separate future pass rather than a claim attached to the current experimental world.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network,
 including exhaustive content-hash traversal of global tile indexes and leaves.
