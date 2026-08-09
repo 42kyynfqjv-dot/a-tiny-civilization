@@ -36,6 +36,14 @@ type DragState = {
   velocity: Camera;
   moved: boolean;
 };
+type PointerPosition = { x: number; y: number };
+type PinchState = {
+  startDistance: number;
+  startZoom: number;
+  startCamera: Camera;
+  anchor: Camera;
+  scale: number;
+};
 
 const WORLD_BOUNDS: Bounds = { west: -1_799_999_999, south: -900_000_000, east: 1_799_999_999, north: 900_000_000 };
 
@@ -44,6 +52,8 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   const pointsRef = useRef<Point[]>([]);
   const viewRef = useRef<HabitatView | null>(null);
   const dragRef = useRef<DragState | null>(null);
+  const pointersRef = useRef(new Map<number, PointerPosition>());
+  const pinchRef = useRef<PinchState | null>(null);
   const cameraRef = useRef<Camera>({ latitude: 0, longitude: 0 });
   const zoomRef = useRef(1);
   const detailRef = useRef<Detail>("local");
@@ -175,7 +185,8 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     const rect = event.currentTarget.getBoundingClientRect();
     const x = event.clientX - rect.left;
     const y = event.clientY - rect.top;
-    const point = [...pointsRef.current].reverse().find((candidate) => Math.hypot(candidate.x - x, candidate.y - y) <= candidate.radius + 7);
+    const hitSlop = event.pointerType === "touch" ? 16 : 7;
+    const point = [...pointsRef.current].reverse().find((candidate) => Math.hypot(candidate.x - x, candidate.y - y) <= candidate.radius + hitSlop);
     if (point?.entity) setSelectedId(point.entity.organism_id);
     if (point?.cluster) {
       const nextCenter = { latitude: point.cluster.latitude_e7, longitude: point.cluster.longitude_e7 };
@@ -188,6 +199,23 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     if (wheelCommitRef.current !== null) window.clearTimeout(wheelCommitRef.current);
     inertiaFrameRef.current = null;
     wheelCommitRef.current = null;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    event.currentTarget.setPointerCapture(event.pointerId);
+    if (pointersRef.current.size >= 2) {
+      const [first, second] = [...pointersRef.current.values()].slice(0, 2);
+      const middle = midpoint(first, second);
+      const rect = event.currentTarget.getBoundingClientRect();
+      pinchRef.current = {
+        startDistance: Math.max(1, pointDistance(first, second)),
+        startZoom: zoomRef.current,
+        startCamera: cameraRef.current,
+        anchor: worldAtScreen(detailRef.current, cameraRef.current, zoomRef.current, middle, rect),
+        scale: 1,
+      };
+      dragRef.current = null;
+      setInteracting(true);
+      return;
+    }
     const now = performance.now();
     dragRef.current = {
       pointerId: event.pointerId,
@@ -201,9 +229,27 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       moved: false,
     };
     setInteracting(true);
-    event.currentTarget.setPointerCapture(event.pointerId);
   };
   const movePointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    if (!pointersRef.current.has(event.pointerId)) return;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const pinch = pinchRef.current;
+    if (pinch && pointersRef.current.size >= 2) {
+      const [first, second] = [...pointersRef.current.values()].slice(0, 2);
+      const middle = midpoint(first, second);
+      pinch.scale = pointDistance(first, second) / pinch.startDistance;
+      if (detailRef.current === "local") {
+        const nextZoom = Math.max(1, Math.min(64, pinch.startZoom * pinch.scale));
+        const rect = event.currentTarget.getBoundingClientRect();
+        const worldBelowFingers = worldAtScreen("local", pinch.startCamera, nextZoom, middle, rect);
+        cameraRef.current = clampCamera({
+          longitude: pinch.startCamera.longitude + pinch.anchor.longitude - worldBelowFingers.longitude,
+          latitude: pinch.startCamera.latitude + pinch.anchor.latitude - worldBelowFingers.latitude,
+        });
+        zoomRef.current = nextZoom;
+      }
+      return;
+    }
     const drag = dragRef.current;
     if (!drag || drag.pointerId !== event.pointerId) return;
     const rect = event.currentTarget.getBoundingClientRect();
@@ -229,6 +275,44 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     cameraRef.current = next;
   };
   const endPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    const pinch = pinchRef.current;
+    if (pinch) {
+      if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+      pinchRef.current = null;
+      if (detailRef.current === "local") {
+        if (pinch.scale < .88 && pinch.startZoom <= 1.05) {
+          void chooseDetail("region", pinch.anchor, 1);
+        } else {
+          setCenter(cameraRef.current);
+          setLocalZoom(zoomRef.current);
+        }
+      } else if (pinch.scale > 1.12) {
+        const next = detailRef.current === "planet" ? "region" : "local";
+        void chooseDetail(next, pinch.anchor, 1);
+      } else if (pinch.scale < .88 && detailRef.current === "region") {
+        void chooseDetail("planet", pinch.anchor, 1);
+      }
+      const remaining = [...pointersRef.current.entries()][0];
+      if (remaining) {
+        const [pointerId, position] = remaining;
+        dragRef.current = {
+          pointerId,
+          startX: position.x,
+          startY: position.y,
+          lastX: position.x,
+          lastY: position.y,
+          lastAt: performance.now(),
+          startCamera: cameraRef.current,
+          velocity: { latitude: 0, longitude: 0 },
+          moved: true,
+        };
+      } else {
+        dragRef.current = null;
+        setInteracting(false);
+      }
+      return;
+    }
     const drag = dragRef.current;
     dragRef.current = null;
     if (!drag || drag.pointerId !== event.pointerId) return;
@@ -263,6 +347,14 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       }
     };
     inertiaFrameRef.current = requestAnimationFrame(coast);
+  };
+  const cancelPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    pointersRef.current.delete(event.pointerId);
+    pinchRef.current = null;
+    dragRef.current = null;
+    setCenter(cameraRef.current);
+    setLocalZoom(zoomRef.current);
+    setInteracting(false);
   };
   const zoomBy = (direction: 1 | -1) => {
     if (direction > 0 && detail === "planet") { void chooseDetail("region", center, 1); return; }
@@ -314,7 +406,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   };
 
   return <section className={`habitat-stage ${interacting ? "is-interacting" : ""}`} aria-label="Live habitat view">
-    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={() => { dragRef.current = null; setCenter(cameraRef.current); setInteracting(false); }} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, scroll to zoom, and select a point to inspect it." />
+    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={cancelPointer} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, pinch or scroll to zoom, and select a point to inspect it." />
     <div className="habitat-wash" aria-hidden="true" />
     <div className="habitat-glass" aria-hidden="true"><i /><span className="glass-corner corner-nw" /><span className="glass-corner corner-ne" /><span className="glass-corner corner-sw" /><span className="glass-corner corner-se" /></div>
     <header className="habitat-toolbar">
@@ -330,9 +422,9 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       {activity.length === 0 ? <span>The habitat is quiet.</span> : <ol>{activity.map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
     </aside>
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
-      {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan and scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
+      {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
-    <footer><span>Positions are committed · lens and terrain are observer styling · drag / scroll to explore</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
+    <footer><span>Positions are committed · lens and terrain are observer styling · drag / pinch / scroll</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
   </section>;
 }
 
@@ -341,9 +433,11 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
   const gradient = context.createLinearGradient(0, 0, width, height);
   gradient.addColorStop(0, "#0f3126"); gradient.addColorStop(.52, "#173c2b"); gradient.addColorStop(1, "#071d18");
   context.fillStyle = gradient; context.fillRect(0, 0, width, height);
-  drawTerrain(context, width, height, center, localZoom);
+  drawTerrain(context, width, height, center, localZoom, detail);
   if (!view) return [];
   const bounds = boundsFor(detail, center, localZoom);
+  const terrainPhaseX = center.longitude / 1_800_000;
+  const terrainPhaseY = center.latitude / 2_400_000;
   const project = (longitude: number, latitude: number) => {
     const horizontal = (longitude - bounds.west) / Math.max(1, bounds.east - bounds.west);
     const depth = 1 - (latitude - bounds.south) / Math.max(1, bounds.north - bounds.south);
@@ -352,7 +446,7 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     const perspectiveWidth = .44 + Math.max(0, clampedDepth) * .72;
     return {
       x: width / 2 + (horizontal - .5) * width * perspectiveWidth,
-      y: height * .16 + Math.pow(Math.max(0, clampedDepth), 1.28) * height * .84,
+      y: height * .16 + Math.pow(Math.max(0, clampedDepth), 1.28) * height * .84 - terrainRelief(horizontal, clampedDepth, terrainPhaseX, terrainPhaseY, localZoom),
     };
   };
   const points: Point[] = [];
@@ -384,10 +478,12 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     }
     const selected = entity.organism_id === selectedId;
     const depth = Math.max(0, Math.min(1, (y - height * .16) / Math.max(1, height * .84)));
-    const depthScale = .62 + depth * .72;
-    const radius = (entity.role === "person" ? 5.5 : 3.8) * depthScale;
+    const depthScale = .3 + depth * 1.02;
+    const radius = (entity.role === "person" ? 6.1 : 4.2) * depthScale;
     const lift = 3 + depth * 6;
     const orbY = y - lift;
+    context.save();
+    context.globalAlpha = selected ? 1 : .42 + depth * .58;
     context.beginPath(); context.ellipse(x + depthScale * 1.5, y + 1, radius * 1.35, radius * .38, 0, 0, Math.PI * 2); context.fillStyle = "rgba(0,7,5,.38)"; context.fill();
     context.beginPath(); context.moveTo(x, y); context.lineTo(x, orbY + radius * .5); context.strokeStyle = entity.role === "person" ? "rgba(239,130,88,.36)" : "rgba(216,189,104,.28)"; context.lineWidth = Math.max(.55, depthScale * .8); context.stroke();
     if (entity.last_action === "emit_signal") {
@@ -399,6 +495,7 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     sphere.addColorStop(0, "#fff3cf"); sphere.addColorStop(.24, color); sphere.addColorStop(1, entity.role === "person" ? "#7f2f24" : "#695623");
     context.beginPath(); context.arc(x, orbY, radius, 0, Math.PI * 2); context.fillStyle = sphere; context.shadowColor = color; context.shadowBlur = selected ? 18 : 7 * depthScale; context.fill(); context.shadowBlur = 0;
     if (selected) { context.fillStyle = "#fff7df"; context.font = "10px ui-monospace, monospace"; context.textAlign = "left"; context.fillText(labels.get(entity.organism_id) ?? shortId(entity.organism_id), x + radius + 9, orbY + 4); }
+    context.restore();
     points.push({ id: entity.organism_id, x, y: orbY, radius, entity });
   }
   return points;
@@ -434,10 +531,26 @@ function separateOverlaps(items: Omit<PositionedEntity, "x" | "y">[], selectedId
   return result;
 }
 
-function drawTerrain(context: CanvasRenderingContext2D, width: number, height: number, center: Camera, localZoom: number) {
+function drawTerrain(context: CanvasRenderingContext2D, width: number, height: number, center: Camera, localZoom: number, detail: Detail) {
   context.save();
-  const horizon = height * .16;
   const phaseX = center.longitude / 1_800_000; const phaseY = center.latitude / 2_400_000;
+  if (detail !== "local") {
+    const overview = context.createRadialGradient(width * .48, height * .46, 0, width * .48, height * .46, Math.max(width, height) * .78);
+    overview.addColorStop(0, "#1b4a36"); overview.addColorStop(.55, "#103427"); overview.addColorStop(1, "#051712");
+    context.fillStyle = overview; context.fillRect(0, 0, width, height);
+    context.strokeStyle = "rgba(146,188,161,.12)"; context.lineWidth = .55;
+    for (let line = 0; line < 28; line++) {
+      context.beginPath();
+      for (let x = -20; x <= width + 20; x += 14) {
+        const y = height * (line / 27) + Math.sin(x * .011 + line * .51 + phaseX) * 12 + Math.sin(x * .027 - phaseY) * 4;
+        if (x === -20) context.moveTo(x, y); else context.lineTo(x, y);
+      }
+      context.stroke();
+    }
+    context.restore();
+    return;
+  }
+  const horizon = height * .16;
   const atmosphere = context.createLinearGradient(0, 0, 0, height);
   atmosphere.addColorStop(0, "#041613"); atmosphere.addColorStop(.16, "#1c4b3a"); atmosphere.addColorStop(.42, "#173d2d"); atmosphere.addColorStop(1, "#071b15");
   context.fillStyle = atmosphere; context.fillRect(0, 0, width, height);
@@ -455,39 +568,65 @@ function drawTerrain(context: CanvasRenderingContext2D, width: number, height: n
     context.fillStyle = layer === 0 ? "rgba(22,61,45,.74)" : layer === 1 ? "rgba(18,55,40,.72)" : "rgba(15,48,35,.68)"; context.fill();
   }
 
-  for (let line = 0; line < 34; line++) {
-    const depth = line / 33;
-    const baseY = horizon + Math.pow(depth, 1.28) * (height - horizon);
+  const rows = 18;
+  const columns = 24;
+  const mesh = Array.from({ length: rows + 1 }, (_, row) => {
+    const depth = row / rows;
     const perspectiveWidth = .44 + depth * .72;
-    context.beginPath();
-    for (let step = 0; step <= 80; step++) {
-      const normalized = step / 80;
-      const x = width / 2 + (normalized - .5) * width * perspectiveWidth;
-      const relief = Math.sin(normalized * 14 + phaseX + line * .31) * (2 + depth * 15) + Math.sin(normalized * 37 - phaseY - line * .19) * (1 + depth * 5);
-      const y = baseY - relief;
-      if (step === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    return Array.from({ length: columns + 1 }, (_, column) => {
+      const horizontal = column / columns;
+      const relief = terrainRelief(horizontal, depth, phaseX, phaseY, localZoom);
+      return {
+        x: width / 2 + (horizontal - .5) * width * perspectiveWidth,
+        y: horizon + Math.pow(depth, 1.28) * (height - horizon) - relief,
+        relief,
+      };
+    });
+  });
+  for (let row = 0; row < rows; row++) {
+    const depth = (row + .5) / rows;
+    for (let column = 0; column < columns; column++) {
+      const nearLeft = mesh[row + 1][column];
+      const nearRight = mesh[row + 1][column + 1];
+      const farRight = mesh[row][column + 1];
+      const farLeft = mesh[row][column];
+      const slopeLight = Math.max(-10, Math.min(14, (nearLeft.relief - nearRight.relief) * .42));
+      const red = Math.round(21 - depth * 8 + slopeLight * .28);
+      const green = Math.round(70 - depth * 18 + slopeLight);
+      const blue = Math.round(49 - depth * 13 + slopeLight * .52);
+      context.beginPath(); context.moveTo(farLeft.x, farLeft.y); context.lineTo(farRight.x, farRight.y); context.lineTo(nearRight.x, nearRight.y); context.lineTo(nearLeft.x, nearLeft.y); context.closePath();
+      context.fillStyle = `rgba(${red},${green},${blue},${.72 + depth * .2})`; context.fill();
     }
-    context.strokeStyle = `rgba(145,184,160,${.055 + depth * .17})`; context.lineWidth = .45 + depth * .48;
-    context.stroke();
   }
-
-  for (let column = 0; column <= 18; column++) {
-    const normalized = column / 18;
+  context.strokeStyle = "rgba(151,190,166,.13)";
+  for (let row = 0; row <= rows; row++) {
     context.beginPath();
-    for (let step = 0; step <= 30; step++) {
-      const depth = step / 30;
-      const perspectiveWidth = .44 + depth * .72;
-      const x = width / 2 + (normalized - .5) * width * perspectiveWidth;
-      const y = horizon + Math.pow(depth, 1.28) * (height - horizon) - Math.sin(normalized * 14 + phaseX + step * .34) * depth * 10;
-      if (step === 0) context.moveTo(x, y); else context.lineTo(x, y);
+    for (let column = 0; column <= columns; column++) {
+      const point = mesh[row][column];
+      if (column === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
     }
-    context.strokeStyle = "rgba(123,169,143,.055)"; context.lineWidth = .45; context.stroke();
+    context.lineWidth = .35 + row / rows * .45; context.stroke();
+  }
+  context.strokeStyle = "rgba(125,172,145,.055)"; context.lineWidth = .45;
+  for (let column = 0; column <= columns; column += 2) {
+    context.beginPath();
+    for (let row = 0; row <= rows; row++) {
+      const point = mesh[row][column];
+      if (row === 0) context.moveTo(point.x, point.y); else context.lineTo(point.x, point.y);
+    }
+    context.stroke();
   }
 
   const water = context.createLinearGradient(width * .2, 0, width * .8, 0); water.addColorStop(0, "rgba(76,151,135,0)"); water.addColorStop(.5, "rgba(90,166,148,.27)"); water.addColorStop(1, "rgba(76,151,135,0)");
   context.strokeStyle = water; context.lineWidth = 10 + Math.min(18, localZoom * .45); context.beginPath(); context.moveTo(width * .43, horizon); context.bezierCurveTo(width * .36, height * .42, width * .66, height * .64, width * .56, height * 1.04); context.stroke();
   const foreground = context.createLinearGradient(0, height * .72, 0, height); foreground.addColorStop(0, "rgba(3,17,13,0)"); foreground.addColorStop(1, "rgba(1,8,6,.54)"); context.fillStyle = foreground; context.fillRect(0, height * .7, width, height * .3);
   context.restore();
+}
+
+function terrainRelief(horizontal: number, depth: number, phaseX: number, phaseY: number, localZoom: number) {
+  const zoomTexture = .9 + Math.min(20, localZoom) * .006;
+  return (Math.sin(horizontal * 14 + phaseX + depth * 10.2) * (1.5 + depth * 15)
+    + Math.sin(horizontal * 37 - phaseY - depth * 6.1) * (1 + depth * 5.5)) * zoomTexture;
 }
 
 function boundsFor(detail: Detail, center: Camera, localZoom = 1): Bounds {
@@ -518,6 +657,33 @@ function clampCamera(camera: Camera): Camera {
   return {
     longitude: Math.max(WORLD_BOUNDS.west, Math.min(WORLD_BOUNDS.east, camera.longitude)),
     latitude: Math.max(WORLD_BOUNDS.south, Math.min(WORLD_BOUNDS.north, camera.latitude)),
+  };
+}
+
+function midpoint(first: PointerPosition, second: PointerPosition): PointerPosition {
+  return { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
+}
+
+function pointDistance(first: PointerPosition, second: PointerPosition) {
+  return Math.hypot(second.x - first.x, second.y - first.y);
+}
+
+function worldAtScreen(detail: Detail, camera: Camera, zoom: number, point: PointerPosition, rect: DOMRect): Camera {
+  const bounds = boundsFor(detail, camera, zoom);
+  const screenX = Math.max(0, Math.min(1, (point.x - rect.left) / Math.max(1, rect.width)));
+  const screenY = Math.max(0, Math.min(1, (point.y - rect.top) / Math.max(1, rect.height)));
+  if (detail !== "local") {
+    return {
+      longitude: bounds.west + screenX * (bounds.east - bounds.west),
+      latitude: bounds.north - screenY * (bounds.north - bounds.south),
+    };
+  }
+  const depth = Math.pow(Math.max(0, (screenY - .16) / .84), 1 / 1.28);
+  const perspectiveWidth = .44 + Math.max(0, depth) * .72;
+  const horizontal = .5 + (screenX - .5) / perspectiveWidth;
+  return {
+    longitude: bounds.west + horizontal * (bounds.east - bounds.west),
+    latitude: bounds.north - depth * (bounds.north - bounds.south),
   };
 }
 
