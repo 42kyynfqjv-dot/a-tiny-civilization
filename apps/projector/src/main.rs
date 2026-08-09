@@ -13,6 +13,8 @@ use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitEx
 use uuid::Uuid;
 use world_domain::WorldId;
 
+const PROJECTION_PAGE_BATCHES: u32 = 32;
+
 #[derive(Debug, Parser)]
 #[command(
     version,
@@ -127,58 +129,113 @@ async fn shutdown_signal() {
 
 async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<()> {
     for world_id in world_ids {
-        let timeline_cursor = store
+        let target_sequence = store
+            .load_world(*world_id)
+            .await
+            .context("capture canonical projection target")?
+            .cursor
+            .sequence;
+        let mut timeline_cursor = store
             .public_timeline_cursor(*world_id)
             .await
             .context("load observer projection cursor")?;
-        let organism_cursor = store
+        let mut organism_cursor = store
             .public_organism_cursor(*world_id)
             .await
             .context("load public organism projection cursor")?;
-        let finding_cursor = store
+        let mut finding_cursor = store
             .public_finding_cursor(*world_id)
             .await
             .context("load finding cursor")?;
-        let telemetry_cursor = store
+        let mut telemetry_cursor = store
             .public_world_telemetry_cursor(*world_id)
             .await
             .context("load public telemetry cursor")?;
-        let artifact_cursor = store
+        let mut artifact_cursor = store
             .public_artifact_cursor(*world_id)
             .await
             .context("load public artifact cursor")?;
-        let habitat_cursor = store
+        let mut habitat_cursor = store
             .public_habitat_cursor(*world_id)
             .await
             .context("load public habitat cursor")?;
-        let earliest_cursor = timeline_cursor
-            .min(organism_cursor)
-            .min(finding_cursor)
-            .min(telemetry_cursor)
-            .min(artifact_cursor)
-            .min(habitat_cursor);
-        let batches = store
-            .load_event_batches(*world_id, earliest_cursor)
-            .await
-            .context("load committed event batches once for all public projections")?;
-        let timeline_start = batches.partition_point(|batch| batch.sequence <= timeline_cursor);
-        let organism_start = batches.partition_point(|batch| batch.sequence <= organism_cursor);
-        let finding_start = batches.partition_point(|batch| batch.sequence <= finding_cursor);
-        let telemetry_start = batches.partition_point(|batch| batch.sequence <= telemetry_cursor);
-        let artifact_start = batches.partition_point(|batch| batch.sequence <= artifact_cursor);
-        let habitat_start = batches.partition_point(|batch| batch.sequence <= habitat_cursor);
-        // The default projector pool has four connections. Keep at most four
-        // long-lived projection transactions concurrent, then run the fifth from
-        // its independent cursor. Starting five here can starve one projection
-        // until the pool timeout when rebuilding a substantial history.
-        let (applied, indexed, findings, telemetry) = tokio::try_join!(
-            project_timeline(store, &batches[timeline_start..]),
-            project_organisms(store, &batches[organism_start..]),
-            project_findings(store, &batches[finding_start..]),
-            project_telemetry(store, &batches[telemetry_start..]),
-        )?;
-        let artifacts = project_artifacts(store, &batches[artifact_start..]).await?;
-        let habitat = project_habitat(store, &batches[habitat_start..]).await?;
+        let mut applied = 0;
+        let mut indexed = 0;
+        let mut findings = 0;
+        let mut telemetry = 0;
+        let mut artifacts = 0;
+        let mut habitat = 0;
+
+        loop {
+            let earliest_cursor = timeline_cursor
+                .min(organism_cursor)
+                .min(finding_cursor)
+                .min(telemetry_cursor)
+                .min(artifact_cursor)
+                .min(habitat_cursor);
+            if earliest_cursor >= target_sequence {
+                break;
+            }
+            let batches = store
+                .load_event_batch_page(
+                    *world_id,
+                    earliest_cursor,
+                    target_sequence,
+                    PROJECTION_PAGE_BATCHES,
+                )
+                .await
+                .context("load bounded committed event batch page for public projections")?;
+            let page_end = batches.last().map(|batch| batch.sequence).ok_or_else(|| {
+                anyhow::anyhow!(
+                    "canonical history gap after sequence {} before projection target {}",
+                    earliest_cursor.get(),
+                    target_sequence.get()
+                )
+            })?;
+            let timeline_start = batches.partition_point(|batch| batch.sequence <= timeline_cursor);
+            let organism_start = batches.partition_point(|batch| batch.sequence <= organism_cursor);
+            let finding_start = batches.partition_point(|batch| batch.sequence <= finding_cursor);
+            let telemetry_start =
+                batches.partition_point(|batch| batch.sequence <= telemetry_cursor);
+            let artifact_start = batches.partition_point(|batch| batch.sequence <= artifact_cursor);
+            let habitat_start = batches.partition_point(|batch| batch.sequence <= habitat_cursor);
+            // The default projector pool has four connections. Keep at most four
+            // long-lived projection transactions concurrent, then run the remaining
+            // projections from their independent cursors.
+            let (page_applied, page_indexed, page_findings, page_telemetry) = tokio::try_join!(
+                project_timeline(store, &batches[timeline_start..]),
+                project_organisms(store, &batches[organism_start..]),
+                project_findings(store, &batches[finding_start..]),
+                project_telemetry(store, &batches[telemetry_start..]),
+            )?;
+            let page_artifacts = project_artifacts(store, &batches[artifact_start..]).await?;
+            let page_habitat = project_habitat(store, &batches[habitat_start..]).await?;
+            applied += page_applied;
+            indexed += page_indexed;
+            findings += page_findings;
+            telemetry += page_telemetry;
+            artifacts += page_artifacts;
+            habitat += page_habitat;
+
+            if timeline_start < batches.len() {
+                timeline_cursor = page_end;
+            }
+            if organism_start < batches.len() {
+                organism_cursor = page_end;
+            }
+            if finding_start < batches.len() {
+                finding_cursor = page_end;
+            }
+            if telemetry_start < batches.len() {
+                telemetry_cursor = page_end;
+            }
+            if artifact_start < batches.len() {
+                artifact_cursor = page_end;
+            }
+            if habitat_start < batches.len() {
+                habitat_cursor = page_end;
+            }
+        }
         // Archive is already an immutable canonical fact. Checking the durable lifecycle
         // state also covers worlds archived before this projector version was deployed.
         // Expiration is idempotent observer-side bookkeeping only.

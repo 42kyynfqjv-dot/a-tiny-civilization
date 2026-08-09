@@ -15,6 +15,53 @@ use crate::PostgresStore;
 /// terminal transitions are always retained independently of this cadence.
 const SNAPSHOT_SEQUENCE_INTERVAL: u64 = 64;
 
+impl PostgresStore {
+    /// Load a bounded page of canonical history for disposable read-side rebuilds.
+    ///
+    /// The upper bound is captured by the caller so a live runner cannot make a
+    /// projection pass chase an ever-moving head. The regular `WorldStore` method
+    /// remains unbounded for replay and resume callers that explicitly need all
+    /// remaining history.
+    pub async fn load_event_batch_page(
+        &self,
+        world_id: WorldId,
+        after_sequence: EventSequence,
+        through_sequence: EventSequence,
+        limit: u32,
+    ) -> Result<Vec<EventBatch>, StoreError> {
+        let after_sequence = to_i64(after_sequence.get(), "event sequence")?;
+        let through_sequence = to_i64(through_sequence.get(), "event sequence")?;
+        let limit = i64::from(limit.clamp(1, 256));
+        let rows = sqlx::query_as::<_, EventBatchRow>(
+            r#"
+            SELECT
+                world_id,
+                sequence,
+                tick,
+                event_schema_version,
+                ruleset_version,
+                payload,
+                checksum,
+                previous_checksum,
+                post_state_checksum
+            FROM event_batches
+            WHERE world_id = $1 AND sequence > $2 AND sequence <= $3
+            ORDER BY sequence ASC
+            LIMIT $4
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(after_sequence)
+        .bind(through_sequence)
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+
+        rows.into_iter().map(parse_event_batch).collect()
+    }
+}
+
 #[derive(FromRow)]
 struct WorldRow {
     id: Uuid,
