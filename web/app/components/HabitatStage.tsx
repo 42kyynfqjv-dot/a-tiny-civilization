@@ -705,7 +705,7 @@ function actionSentence(action?: Action, signalForm?: number) {
     case "chew": return "continued chewing";
     case "swallow": return "swallowed material";
     case "rest": return "settled into rest";
-    case "emit_signal": return `emitted signal form ${signalForm ?? "—"}`;
+    case "emit_signal": return signalForm == null ? "made a call" : "made a distinct call";
     default: return "is present in the habitat";
   }
 }

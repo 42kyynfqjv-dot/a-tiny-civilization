@@ -876,3 +876,10 @@ mass-state, body-scaled oral-transfer, and public observer checks. The checksum-
 bundle binds source commit `30a26a0` and contains no canonical event payloads. Ruleset-32 quality
 and public-observatory successor admissions now supersede the ruleset-30 launch-review defaults;
 both continue to state that scientific admission and public deployment authorization are false.
+
+The live ruleset-33 world exposed a communication asymmetry: organisms could learn that a directly
+heard physical form preceded a witnessed motor action, but the action policy offered only weak paths
+for copying that form or reusing it under the same embodied pressure. Ruleset 34 adds bounded neutral
+imitation and context-conditioned form reuse without words, referents, intentions, or guaranteed
+convergence. The existing world receives the stateless policy driver at disclosed tick 65,000, so
+all earlier transitions retain their exact replay behavior. ADR 0145 records the boundary.

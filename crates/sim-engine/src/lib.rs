@@ -155,6 +155,15 @@ pub const ADULT_BODY_MASS_STATE_RULESET_VERSION: u32 = 32;
 /// genealogical relatives through first cousins. The relation is private
 /// physiology state, not an in-world kinship label or learned social rule.
 pub const CLOSE_KIN_EXCLUSION_RULESET_VERSION: u32 = 33;
+/// Ruleset thirty-four lets an organism imitate a directly heard physical signal
+/// form and reuse a privately learned form when its associated motor action is
+/// strongly weighted by the organism's current embodied context. It adds no word,
+/// referent, intention, or observer-authored meaning.
+pub const SIGNAL_CONVENTION_REUSE_RULESET_VERSION: u32 = 34;
+/// The already-running public ruleset-33 world receives the stateless ruleset-34
+/// policy driver at this disclosed boundary. Earlier ruleset-33 transitions retain
+/// their exact candidate set and replay behavior.
+pub const RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK: u64 = 65_000;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -194,6 +203,8 @@ pub const COGNITION_MEMORY_MAX_TOKENS: u32 = 512;
 pub const COGNITION_MODEL_MAX_OUTPUT_TOKENS: u16 = 32;
 const COGNITION_REQUEST_ORDINAL: u32 = 0;
 const COGNITION_ACTION_WEIGHT_BONUS: u32 = 2;
+const SIGNAL_IMITATION_WEIGHT_BONUS: u32 = 16;
+const SIGNAL_CONTEXT_REUSE_MAX_BONUS: u32 = 24;
 const COGNITION_MEMORY_QUERY_V1: &str =
     "recent direct experiences matching current bodily pressure and situated property readings";
 /// The first deterministic execution phase: every living embodied organism receives
@@ -579,6 +590,44 @@ fn associated_candidate_weight(base: u32, value: Option<SignalActionAssociationS
     value.map_or(base, |value| {
         base.saturating_add(u32::from(value.value.unsigned_abs()).div_ceil(8))
     })
+}
+
+fn context_reuse_candidate_weight(
+    base: u32,
+    context_weight: u32,
+    association: Option<SignalActionAssociationState>,
+) -> u32 {
+    association.map_or(base, |association| {
+        let confidence = u32::from(association.value.unsigned_abs()).div_ceil(8)
+            + association.observations.div_ceil(4)
+            + context_weight.min(8);
+        base.saturating_add(confidence.min(SIGNAL_CONTEXT_REUSE_MAX_BONUS))
+    })
+}
+
+fn signal_convention_candidate_weight(
+    base: u32,
+    signal_intensity: u8,
+    recent_signal: Option<u8>,
+    context_weight: u32,
+    association: Option<SignalActionAssociationState>,
+) -> u32 {
+    let imitative = if recent_signal == Some(signal_intensity) {
+        base.saturating_add(SIGNAL_IMITATION_WEIGHT_BONUS)
+    } else {
+        base
+    };
+    context_reuse_candidate_weight(
+        imitative,
+        context_weight,
+        association.filter(|association| association.signal_intensity == signal_intensity),
+    )
+}
+
+fn signal_convention_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= SIGNAL_CONVENTION_REUSE_RULESET_VERSION
+        || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
+            && tick.get() >= RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK)
 }
 
 fn inherited_candidate_weight(
@@ -2401,6 +2450,43 @@ impl EngineState {
             }
         }
 
+        if self.uses_signal_convention_reuse_driver() {
+            let recent_signal = organism.recent_signal(self.tick);
+            let context = candidates
+                .iter()
+                .filter(|candidate| candidate.action.kind != PrimitiveActionKind::EmitSignal)
+                .max_by_key(|candidate| candidate.weight)
+                .map(|candidate| (candidate.action.clone(), candidate.weight));
+            for candidate in &mut candidates {
+                if candidate.action.kind != PrimitiveActionKind::EmitSignal {
+                    continue;
+                }
+                let signal_intensity = u8::try_from(candidate.action.intensity)
+                    .expect("bounded signal intensity fits u8");
+                if let Some((context_action, context_weight)) = &context {
+                    candidate.weight = signal_convention_candidate_weight(
+                        candidate.weight,
+                        signal_intensity,
+                        recent_signal,
+                        *context_weight,
+                        organism.signal_action_association(
+                            signal_intensity,
+                            context_action.kind,
+                            context_action.movement_direction,
+                        ),
+                    );
+                } else {
+                    candidate.weight = signal_convention_candidate_weight(
+                        candidate.weight,
+                        signal_intensity,
+                        recent_signal,
+                        0,
+                        None,
+                    );
+                }
+            }
+        }
+
         if let Some(preference) = cognition_preference {
             for candidate in &mut candidates {
                 if candidate.action.kind == preference.action_kind
@@ -2448,7 +2534,9 @@ impl EngineState {
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_selectable_movement_driver() {
+            policy_version: if self.uses_signal_convention_reuse_driver() {
+                9
+            } else if self.uses_selectable_movement_driver() {
                 8
             } else if self.uses_signal_action_association_driver() {
                 7
@@ -4256,6 +4344,10 @@ impl EngineState {
 
     fn uses_signal_motor_association_driver(&self) -> bool {
         self.manifest.ruleset_version >= SIGNAL_MOTOR_ASSOCIATION_RULESET_VERSION
+    }
+
+    fn uses_signal_convention_reuse_driver(&self) -> bool {
+        signal_convention_reuse_active(self.manifest.ruleset_version, self.tick)
     }
 
     fn uses_person_only_cognition(&self) -> bool {
@@ -8478,6 +8570,48 @@ mod tests {
         ProvisionalWorldCompositionReference, S2Projection, SchedulerKind, SituatedPerception,
         SpatialGrid, TdbSecondsSinceJ2000, WorldDataBundleReference, WorldSeed, WorldStatus,
     };
+
+    #[test]
+    fn signal_convention_reuse_is_neutral_weighting_with_a_fixed_live_boundary() {
+        assert!(!signal_convention_reuse_active(
+            CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+            SimTick::new(RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK - 1),
+        ));
+        assert!(signal_convention_reuse_active(
+            CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+            SimTick::new(RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK),
+        ));
+        assert!(signal_convention_reuse_active(
+            SIGNAL_CONVENTION_REUSE_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+
+        let association = SignalActionAssociationState {
+            association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: 7,
+            action_kind: PrimitiveActionKind::Move,
+            movement_direction: Some(2),
+            observations: 8,
+            value: 32,
+        };
+        assert_eq!(signal_convention_candidate_weight(2, 7, None, 6, None), 2);
+        assert_eq!(
+            signal_convention_candidate_weight(2, 7, Some(7), 0, None),
+            2 + SIGNAL_IMITATION_WEIGHT_BONUS
+        );
+        assert_eq!(
+            signal_convention_candidate_weight(2, 7, None, 6, Some(association)),
+            14
+        );
+        assert_eq!(
+            signal_convention_candidate_weight(2, 7, Some(7), 6, Some(association)),
+            30
+        );
+        assert_eq!(
+            signal_convention_candidate_weight(2, 8, Some(7), 6, Some(association)),
+            2
+        );
+    }
 
     fn manifest() -> WorldManifest {
         WorldManifest::new(
