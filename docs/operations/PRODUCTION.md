@@ -514,7 +514,9 @@ The helper discovers only the `emergent-civilization` Compose project, validates
 its checkout working-directory label, refuses an already-running `a-tiny-civilization` production
 project, and prints the exact ordered set without mutation in `--check` mode. The confirmed mode
 stops canonical writers before public and persistence services, then reruns the production
-port/volume preflight. It never removes a container, network, image, or volume. Its printed exact
+port/volume preflight. That preflight resolves the database, API, and web loopback ports from the
+protected Compose configuration; alternate preparation ports are never checked against hardcoded
+defaults. It never removes a container, network, image, or volume. Its printed exact
 container identities are the incident rollback set if deployment fails before production becomes
 public; do not start them while a production container owns the same ports or protected volumes.
 

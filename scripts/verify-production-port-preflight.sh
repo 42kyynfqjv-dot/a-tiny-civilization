@@ -10,10 +10,12 @@ legacy_cutover_verifier="${project_root}/scripts/verify-legacy-cutover-helper.sh
 
 required=(
   "expected_project='a-tiny-civilization'"
-  "'3000:web'"
-  "'5432:db'"
-  "'8080:api'"
   "'atiny-ollama'"
+  'production-preflight.sh" --env-file'
+  'config --format json'
+  'expected = (("web", 3000), ("db", 5432), ("api", 8080))'
+  'mapping.get("host_ip") != "127.0.0.1"'
+  'public_bindings[@]'
   'docker ps --filter "publish=${port}"'
   'docker ps --filter "volume=${volume}"'
   'com.docker.compose.project'
@@ -54,7 +56,11 @@ if rg -q 'production-port-preflight\.sh' "$database_preparation"; then
   exit 1
 fi
 
-port_line="$(rg -n -m1 'production-port-preflight\.sh' "$deployment")"
+if ! rg -q 'production-port-preflight\.sh" --env-file "\$environment_file"' "$deployment"; then
+  echo "production deployment does not forward its exact environment to the port guard" >&2
+  exit 1
+fi
+port_line="$(rg -n -m1 'production-port-preflight\.sh.*--env-file' "$deployment")"
 mutation_line="$(rg -n -m1 'compose_args\[@.*build api web' "$deployment")"
 port_number="${port_line%%:*}"
 mutation_number="${mutation_line%%:*}"

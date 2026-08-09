@@ -47,7 +47,8 @@ mapfile -t legacy_ids < <(
   docker ps --filter "label=com.docker.compose.project=${legacy_project}" --format '{{.ID}}' | sort
 )
 if ((${#legacy_ids[@]} == 0)); then
-  "${project_root}/scripts/production-port-preflight.sh"
+  "${project_root}/scripts/production-port-preflight.sh" \
+    --env-file "${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
   echo "No running legacy public containers remain; production cutover resources are clear."
   exit 0
 fi
@@ -108,7 +109,8 @@ for service in "${allowed_services[@]}"; do
   stopped_names+=("$name")
 done
 
-"${project_root}/scripts/production-port-preflight.sh"
+"${project_root}/scripts/production-port-preflight.sh" \
+  --env-file "${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-production.env}"
 printf 'Stopped %d exact legacy container(s) without removing containers or volumes.\n' \
   "${#stopped_names[@]}"
 printf 'Rollback identities: %s\n' "${stopped_names[*]}"

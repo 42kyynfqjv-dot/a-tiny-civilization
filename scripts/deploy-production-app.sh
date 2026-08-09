@@ -100,7 +100,7 @@ cd "$project_root"
 
 # Refuse a half-deployment when the legacy development stack still owns one of the exact host
 # ports. Existing containers from this production Compose project are safe for an in-place update.
-"${project_root}/scripts/production-port-preflight.sh"
+"${project_root}/scripts/production-port-preflight.sh" --env-file "$environment_file"
 
 # Deployment remains a separate literal authorization, but it cannot begin until the exact
 # candidate evidence, quality-world admission, reviewed observer tree, production configuration,

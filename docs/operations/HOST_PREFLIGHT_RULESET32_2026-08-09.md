@@ -80,3 +80,16 @@ Every mutation wrapper now accepts, validates, and forwards the exact quality-wo
 public-observatory admission files alongside genesis, qualification evidence, and runtime root.
 Defaults remain ruleset 32 for operator convenience, but the documented release commands name both
 admissions explicitly so a later default cannot change a copied historical cutover command.
+
+The legacy-stop phase is now an explicit non-destructive operation rather than a manual container
+list. Its read-only host inspection validated nine running containers in the exact safe stop order:
+runner, memory worker, projector, web, API, migration sentinel, Hindsight, local cognition, and
+PostgreSQL. Every container carried the expected legacy project, known service, and this checkout's
+working-directory labels; no production container was running and no state changed. The confirmed
+operation stops those exact identities and removes nothing.
+
+The full cutover guard now derives all three published loopback ports from the protected Compose
+render. It reported the expected four conflicts at the default ports. With `POSTGRES_PORT=55432`,
+the identical read-only check omitted only the legacy 5432 database conflict and retained the web,
+API, and shared local-model conflicts. This proves private database preparation and final cutover
+cannot silently reason about different PostgreSQL ports.
