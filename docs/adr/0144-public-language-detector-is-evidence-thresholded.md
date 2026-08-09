@@ -14,7 +14,7 @@ promoting noise or feeding an observer interpretation back into the world.
 
 ## Decision
 
-Detector version 2 is a disposable observer projection over committed
+Detector version 3 is a disposable observer projection over committed
 `OrganismSignalActionAssociationChanged` events. A signal-form/action pairing becomes a public
 proto-lexicon candidate only when all of these conditions hold:
 
@@ -22,11 +22,16 @@ proto-lexicon candidate only when all of these conditions hold:
 - at least four distinct learners;
 - at least three distinct signal sources;
 - evidence spanning at least 288 simulation ticks (one configured simulation day); and
-- the pairing accounts for at least 60 percent of all association evidence for that signal form.
+- the pairing accounts for at least 60 percent of all association evidence for that signal form;
+- that rate exceeds the behavior's person-to-person background rate by at least 15 percentage
+  points; and
+- that rate is at least 150 percent of the behavior's person-to-person background rate.
 
 Only person-to-person evidence is eligible. An emission followed by another emission is excluded:
 it demonstrates continued signaling, not a referent, and cannot provide either evidence or the
 denominator for meaning dominance. The presentation-policy exclusion is handled the same way.
+The background-rate controls prevent a common behavior (such as resting) from becoming a supposed
+meaning merely because it commonly follows every signal form.
 
 Qualifying conventions with fewer than three **distinct physical meanings** are labelled
 `proto_lexicon`. Three or more distinct meanings are labelled only a

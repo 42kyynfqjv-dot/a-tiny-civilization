@@ -47,6 +47,8 @@ type LanguageConvention = {
   learners: number;
   signal_sources: number;
   dominance_percent: number;
+  baseline_percent: number;
+  baseline_lift_percent: number;
   first_sequence: string | number;
   first_tick: string | number;
   latest_sequence: string | number;
@@ -56,7 +58,7 @@ type LanguageConvention = {
 type LanguageArchive = {
   detector_version: number;
   stage: "undetected" | "proto_lexicon" | "rudimentary_language_candidate";
-  threshold: { minimum_evidence_events: number; minimum_learners: number; minimum_signal_sources: number; minimum_tick_span: number; minimum_dominance_percent: number; conventions_for_language_candidate: number };
+  threshold: { minimum_evidence_events: number; minimum_learners: number; minimum_signal_sources: number; minimum_tick_span: number; minimum_dominance_percent: number; minimum_baseline_margin_percent: number; minimum_baseline_lift_percent: number; conventions_for_language_candidate: number };
   conventions: LanguageConvention[];
 };
 
@@ -147,7 +149,7 @@ export function WikiIndex() {
         <article id="language-archive">
           <h3>Language archive and translation</h3>
           <p>{languageStage(wiki.language.stage)}</p>
-          {wiki.language.conventions.length === 0 ? <p>Signal emissions alone do not qualify. Detector v{wiki.language.detector_version} tests person-to-person signals for a durable association with a distinct later behavior. It requires at least {wiki.language.threshold.minimum_evidence_events} evidence events, {wiki.language.threshold.minimum_learners} independent learners, {wiki.language.threshold.minimum_signal_sources} signal sources, a {wiki.language.threshold.minimum_tick_span}-tick span, and {wiki.language.threshold.minimum_dominance_percent}% meaning dominance.</p> : <ol>{wiki.language.conventions.map((convention) => <li key={`${convention.signal_form}:${convention.tentative_gloss}`}><strong>Signal form {convention.signal_form} · “{convention.tentative_gloss}”</strong><span>Tentative observer gloss · {convention.dominance_percent}% of this form’s non-signal behavioral evidence</span><small>{convention.evidence_events} events · {convention.learners} learners · {convention.signal_sources} sources</small><small>First evidence event {convention.first_sequence}, tick {convention.first_tick} · latest event {convention.latest_sequence}, tick {convention.latest_tick}</small></li>)}</ol>}
+          {wiki.language.conventions.length === 0 ? <p>Signal emissions alone do not qualify. Detector v{wiki.language.detector_version} tests person-to-person signals for a durable association with a distinct later behavior. It requires at least {wiki.language.threshold.minimum_evidence_events} evidence events, {wiki.language.threshold.minimum_learners} independent learners, {wiki.language.threshold.minimum_signal_sources} signal sources, a {wiki.language.threshold.minimum_tick_span}-tick span, {wiki.language.threshold.minimum_dominance_percent}% meaning dominance, and a signal-specific rate at least {wiki.language.threshold.minimum_baseline_lift_percent}% of the behavior’s ordinary background rate.</p> : <ol>{wiki.language.conventions.map((convention) => <li key={`${convention.signal_form}:${convention.tentative_gloss}`}><strong>Signal form {convention.signal_form} · “{convention.tentative_gloss}”</strong><span>Tentative observer gloss · {convention.dominance_percent}% after this form versus {convention.baseline_percent}% ordinarily · {convention.baseline_lift_percent}% lift</span><small>{convention.evidence_events} events · {convention.learners} learners · {convention.signal_sources} sources</small><small>First evidence event {convention.first_sequence}, tick {convention.first_tick} · latest event {convention.latest_sequence}, tick {convention.latest_tick}</small></li>)}</ol>}
           <p>Dictionary entries are observer research over committed evidence. They never teach, steer, or reveal a translation to the inhabitants.</p>
         </article>
       </div>

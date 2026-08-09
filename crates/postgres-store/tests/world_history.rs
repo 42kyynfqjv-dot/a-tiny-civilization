@@ -1122,9 +1122,29 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
         .execute(&pool)
         .await?;
     }
+    // Ordinary background behavior supplies the null rate. Keep this evidence
+    // inside a short tick span so it cannot itself become a convention.
+    for index in 0..100_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO observer_language_evidence (
+                projection_version,world_id,source_event_id,source_sequence,source_tick,
+                source_event_index,observer_id,actor_id,signal_form,action,movement_direction
+            ) VALUES (1,$1,$2,$3,$4,0,$5,$6,32,'orient',NULL)
+            "#,
+        )
+        .bind(manifest.world_id.as_uuid())
+        .bind(Uuid::new_v4())
+        .bind(200 + index)
+        .bind(index + 1)
+        .bind(learners[usize::try_from(index % 4)?])
+        .bind(sources[usize::try_from(index % 3)?])
+        .execute(&pool)
+        .await?;
+    }
 
     let archive = store.public_language_archive(manifest.world_id).await?;
-    assert_eq!(archive.detector_version, 2);
+    assert_eq!(archive.detector_version, 3);
     assert_eq!(archive.stage, PublicLanguageStage::ProtoLexicon);
     assert_eq!(archive.conventions.len(), 3);
     let convention = &archive.conventions[0];
@@ -1134,6 +1154,8 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     assert_eq!(convention.learners, 4);
     assert_eq!(convention.signal_sources, 3);
     assert_eq!(convention.dominance_percent, 100);
+    assert_eq!(convention.baseline_percent, 26);
+    assert_eq!(convention.baseline_lift_percent, 377);
     assert_eq!(convention.first_tick, SimTick::new(1));
     assert_eq!(convention.latest_tick, SimTick::new(300));
     assert!(

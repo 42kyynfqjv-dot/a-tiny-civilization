@@ -11,12 +11,14 @@ use crate::{
     PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
 };
 
-const DETECTOR_VERSION: u16 = 2;
+const DETECTOR_VERSION: u16 = 3;
 const MINIMUM_EVIDENCE_EVENTS: u32 = 12;
 const MINIMUM_LEARNERS: u32 = 4;
 const MINIMUM_SIGNAL_SOURCES: u32 = 3;
 const MINIMUM_TICK_SPAN: u64 = 288;
 const MINIMUM_DOMINANCE_PERCENT: u16 = 60;
+const MINIMUM_BASELINE_MARGIN_PERCENT: u16 = 15;
+const MINIMUM_BASELINE_LIFT_PERCENT: u16 = 150;
 const CONVENTIONS_FOR_LANGUAGE_CANDIDATE: u16 = 3;
 
 #[derive(FromRow)]
@@ -28,6 +30,8 @@ struct ConventionRow {
     learners: i64,
     signal_sources: i64,
     form_events: i64,
+    baseline_events: i64,
+    eligible_events: i64,
     first_event_id: uuid::Uuid,
     first_sequence: i64,
     first_tick: i64,
@@ -169,9 +173,21 @@ impl ObserverLanguageStore for PostgresStore {
                 SELECT signal_form,COUNT(*)::BIGINT AS form_events
                 FROM eligible_evidence
                 GROUP BY signal_form
+            ), meaning_baselines AS (
+                SELECT action,movement_direction,COUNT(*)::BIGINT AS baseline_events
+                FROM eligible_evidence
+                GROUP BY action,movement_direction
+            ), eligible_total AS (
+                SELECT COUNT(*)::BIGINT AS eligible_events FROM eligible_evidence
             )
-            SELECT meanings.*,form_totals.form_events
-            FROM meanings JOIN form_totals USING (signal_form)
+            SELECT meanings.*,form_totals.form_events,meaning_baselines.baseline_events,
+                eligible_total.eligible_events
+            FROM meanings
+            JOIN form_totals USING (signal_form)
+            JOIN meaning_baselines
+              ON meaning_baselines.action=meanings.action
+             AND meaning_baselines.movement_direction IS NOT DISTINCT FROM meanings.movement_direction
+            CROSS JOIN eligible_total
             ORDER BY signal_form, evidence_events DESC, action, movement_direction NULLS FIRST
             "#,
         )
@@ -195,11 +211,26 @@ impl ObserverLanguageStore for PostgresStore {
                 u16::try_from((row.evidence_events * 100) / row.form_events)
                     .map_err(|_| corrupt("language dominance"))?
             };
+            let baseline_percent = ratio_percent(
+                row.baseline_events,
+                row.eligible_events,
+                "language baseline",
+            )?;
+            let baseline_lift_percent = product_ratio_percent(
+                row.evidence_events,
+                row.eligible_events,
+                row.form_events,
+                row.baseline_events,
+                "language baseline lift",
+            )?;
             if evidence_events < MINIMUM_EVIDENCE_EVENTS
                 || learners < MINIMUM_LEARNERS
                 || signal_sources < MINIMUM_SIGNAL_SOURCES
                 || latest_tick.saturating_sub(first_tick) < MINIMUM_TICK_SPAN
                 || dominance_percent < MINIMUM_DOMINANCE_PERCENT
+                || dominance_percent
+                    < baseline_percent.saturating_add(MINIMUM_BASELINE_MARGIN_PERCENT)
+                || baseline_lift_percent < MINIMUM_BASELINE_LIFT_PERCENT
             {
                 continue;
             }
@@ -217,6 +248,8 @@ impl ObserverLanguageStore for PostgresStore {
                 learners,
                 signal_sources,
                 dominance_percent,
+                baseline_percent,
+                baseline_lift_percent,
                 first_event_id: EventId::from_uuid(row.first_event_id),
                 first_sequence: EventSequence::new(to_u64(row.first_sequence, "first sequence")?),
                 first_tick: SimTick::new(first_tick),
@@ -266,6 +299,8 @@ const fn threshold() -> PublicLanguageThreshold {
         minimum_signal_sources: MINIMUM_SIGNAL_SOURCES,
         minimum_tick_span: MINIMUM_TICK_SPAN,
         minimum_dominance_percent: MINIMUM_DOMINANCE_PERCENT,
+        minimum_baseline_margin_percent: MINIMUM_BASELINE_MARGIN_PERCENT,
+        minimum_baseline_lift_percent: MINIMUM_BASELINE_LIFT_PERCENT,
         conventions_for_language_candidate: CONVENTIONS_FOR_LANGUAGE_CANDIDATE,
     }
 }
@@ -332,6 +367,48 @@ fn to_u32(value: i64, field: &str) -> Result<u32, ObserverProjectionStoreError> 
     u32::try_from(value).map_err(|_| corrupt(field))
 }
 
+fn ratio_percent(
+    numerator: i64,
+    denominator: i64,
+    field: &str,
+) -> Result<u16, ObserverProjectionStoreError> {
+    let numerator = u128::try_from(numerator).map_err(|_| corrupt(field))?;
+    let denominator = u128::try_from(denominator).map_err(|_| corrupt(field))?;
+    if denominator == 0 {
+        return Ok(0);
+    }
+    let percent = numerator
+        .saturating_mul(100)
+        .checked_div(denominator)
+        .unwrap_or(0)
+        .min(u128::from(u16::MAX));
+    u16::try_from(percent).map_err(|_| corrupt(field))
+}
+
+fn product_ratio_percent(
+    numerator_left: i64,
+    numerator_right: i64,
+    denominator_left: i64,
+    denominator_right: i64,
+    field: &str,
+) -> Result<u16, ObserverProjectionStoreError> {
+    let numerator = u128::try_from(numerator_left)
+        .map_err(|_| corrupt(field))?
+        .saturating_mul(u128::try_from(numerator_right).map_err(|_| corrupt(field))?);
+    let denominator = u128::try_from(denominator_left)
+        .map_err(|_| corrupt(field))?
+        .saturating_mul(u128::try_from(denominator_right).map_err(|_| corrupt(field))?);
+    if denominator == 0 {
+        return Ok(0);
+    }
+    let percent = numerator
+        .saturating_mul(100)
+        .checked_div(denominator)
+        .unwrap_or(0)
+        .min(u128::from(u16::MAX));
+    u16::try_from(percent).map_err(|_| corrupt(field))
+}
+
 fn unavailable(error: sqlx::Error) -> ObserverProjectionStoreError {
     ObserverProjectionStoreError::Unavailable(error.to_string())
 }
@@ -351,6 +428,8 @@ mod tests {
         assert!(threshold.minimum_signal_sources > 1);
         assert!(threshold.minimum_tick_span > 0);
         assert!(threshold.minimum_dominance_percent > 50);
+        assert!(threshold.minimum_baseline_margin_percent > 0);
+        assert!(threshold.minimum_baseline_lift_percent > 100);
         assert!(threshold.conventions_for_language_candidate > 1);
     }
 }

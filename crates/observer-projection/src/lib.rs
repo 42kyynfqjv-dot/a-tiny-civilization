@@ -674,6 +674,8 @@ pub struct PublicLanguageThreshold {
     pub minimum_signal_sources: u32,
     pub minimum_tick_span: u64,
     pub minimum_dominance_percent: u16,
+    pub minimum_baseline_margin_percent: u16,
+    pub minimum_baseline_lift_percent: u16,
     pub conventions_for_language_candidate: u16,
 }
 
@@ -688,6 +690,8 @@ pub struct PublicLanguageConvention {
     pub learners: u32,
     pub signal_sources: u32,
     pub dominance_percent: u16,
+    pub baseline_percent: u16,
+    pub baseline_lift_percent: u16,
     pub first_event_id: EventId,
     pub first_sequence: EventSequence,
     pub first_tick: SimTick,
