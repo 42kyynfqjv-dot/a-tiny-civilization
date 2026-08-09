@@ -323,7 +323,7 @@ impl CognitionDeadlineInput {
                     })
                     || evidence.signal_intensity.is_some_and(|intensity| {
                         evidence.action_kind != PrimitiveActionKind::EmitSignal
-                            || !(1..=8).contains(&intensity)
+                            || !(1..=crate::SIGNAL_FORM_VARIANT_COUNT).contains(&intensity)
                     })
                     || evidence.movement_direction.is_some_and(|direction| {
                         evidence.action_kind != PrimitiveActionKind::Move || direction >= 4

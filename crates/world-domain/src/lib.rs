@@ -50,7 +50,8 @@ pub use embodiment::{
     NeedKind, NeedSignal, PHYSIOLOGICAL_REGULATION_COMMITMENT_SCHEMA_VERSION, PerceptionChannel,
     PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment, PrimitiveAction,
     PrimitiveActionKind, PropertyReading, SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
-    SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION, SignalActionAssociationState, SituatedPerception,
+    SIGNAL_FORM_VARIANT_COUNT, SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+    SignalActionAssociationState, SituatedPerception,
 };
 pub use environment::{
     LocalEnvironmentError, NORMAL_YEAR_PHASE_COUNT, ProvisionalLocalEnvironmentBaseline,

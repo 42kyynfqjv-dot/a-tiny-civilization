@@ -14,8 +14,12 @@ result; translating a form without evidence would hide observer interpretation a
 ## Decision
 
 Language is never a milestone, scheduled capability, reward, or guaranteed outcome. The simulator
-may expose only use-neutral physical signaling, perception, memory, association, imitation, and
-variation. Whether those mechanisms produce repeatable socially learned forms is part of history.
+exposes only use-neutral physical signaling, perception, memory, association, imitation, and
+variation. The current substrate provides 32 physically distinguishable but semantically blank
+signal forms. An inhabitant can privately associate a form heard from another individual with a
+subsequently witnessed primitive action or movement direction, and that learned association can
+bias its later behavior. No form begins with a meaning and no convention is scheduled. Whether
+those mechanisms produce repeatable socially learned forms is part of history.
 
 The public wiki contains an empty-by-default language archive. A dictionary entry may appear only
 when a versioned deterministic detector can cite repeated committed uses of the same original form
@@ -45,7 +49,8 @@ separately labelled interpretation over the same cited evidence.
   action.
 - If language emerges, observers receive a provenance-bearing dictionary and translation layer
   rather than an opaque narrative summary.
-- The current bounded signal-intensity mechanism is only a proto-communication substrate. Richer
-  compositional forms and referential learning require a future ruleset and tests; this ADR does
-  not claim they already exist.
-
+- The current bounded signal-form mechanism can support a rudimentary learned conventional lexicon,
+  so language is mechanically possible rather than a promised future feature. It does not preseed
+  vocabulary, guarantee convergence, or guarantee compositional grammar. Richer compositional and
+  referential structures may emerge only to the extent the inhabitants' repeated physical signals,
+  temporal sequences, memory, and learned behavior support them.

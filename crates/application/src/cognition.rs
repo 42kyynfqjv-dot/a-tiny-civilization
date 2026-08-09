@@ -563,7 +563,8 @@ impl ModelCognitionReceipt {
                 self.action_kind != PrimitiveActionKind::ApplyForce || region >= 8
             })
             || self.signal_intensity.is_some_and(|intensity| {
-                self.action_kind != PrimitiveActionKind::EmitSignal || !(1..=8).contains(&intensity)
+                self.action_kind != PrimitiveActionKind::EmitSignal
+                    || !(1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(&intensity)
             })
             || self.movement_direction.is_some_and(|direction| {
                 self.action_kind != PrimitiveActionKind::Move || direction >= 4

@@ -12,7 +12,7 @@ use async_trait::async_trait;
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use world_domain::{Digest, PrimitiveActionKind};
+use world_domain::{Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT};
 
 pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v5";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
@@ -317,7 +317,7 @@ fn api_request(
         "messages": [
             {
                 "role": "system",
-                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be 0 through 7. For emit_signal only, signal_intensity may be 1 through 8. For move only, movement_direction may be 0 through 3. Every other motor coordinate must be null. These are physical motor coordinates only, never symbols, words, maps, place names, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
+                "content": "You are one bounded decision process inside a simple organism. You receive only numeric bodily pressures, direct property readings, bounded action-outcome values, and recalled direct observations. Select exactly one use-neutral primitive action kind to weakly bias. For apply_force only, contact_region may be 0 through 7. For emit_signal only, signal_intensity may be 1 through 32. For move only, movement_direction may be 0 through 3. Every other motor coordinate must be null. These are physical motor coordinates only, never symbols, words, maps, place names, or named uses. Do not infer or describe identities, technologies, language, writing, social roles, goals, or uses. Return only the required JSON object."
             },
             {
                 "role": "user",
@@ -375,7 +375,12 @@ fn bounded_action_schema() -> Value {
         variants.push(variant(action_kind, null(), null(), null()));
     }
     variants.push(variant("apply_force", integer(0, 7), null(), null()));
-    variants.push(variant("emit_signal", null(), integer(1, 8), null()));
+    variants.push(variant(
+        "emit_signal",
+        null(),
+        integer(1, SIGNAL_FORM_VARIANT_COUNT),
+        null(),
+    ));
     json!({"oneOf": variants})
 }
 

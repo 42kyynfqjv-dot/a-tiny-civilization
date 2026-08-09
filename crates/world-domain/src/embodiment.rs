@@ -408,6 +408,9 @@ impl MovementDirectionValueState {
 
 pub const SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION: u16 = 1;
 pub const SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION: u16 = 2;
+/// The bounded physical signal-form space. These values have no built-in meaning;
+/// learned conventions, if any, must arise from situated repetition.
+pub const SIGNAL_FORM_VARIANT_COUNT: u8 = 32;
 
 /// A private, bounded association between one directly heard physical amplitude
 /// and one subsequently witnessed primitive action. It contains no inferred
@@ -431,7 +434,7 @@ impl SignalActionAssociationState {
         ) {
             return Err(EmbodimentError::UnsupportedSignalActionAssociationSchema);
         }
-        if !(1..=8).contains(&self.signal_intensity)
+        if !(1..=SIGNAL_FORM_VARIANT_COUNT).contains(&self.signal_intensity)
             || self.observations == 0
             || !(1..=ACTION_VALUE_MAX).contains(&self.value)
             || (self.association_schema_version == SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
@@ -696,6 +699,28 @@ mod tests {
         }
         .validate()
         .expect("direction-specific signal association");
+        SignalActionAssociationState {
+            association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: SIGNAL_FORM_VARIANT_COUNT,
+            action_kind: PrimitiveActionKind::Move,
+            movement_direction: Some(0),
+            observations: 2,
+            value: 1,
+        }
+        .validate()
+        .expect("the last semantically blank signal form remains learnable");
+        assert!(matches!(
+            SignalActionAssociationState {
+                association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+                signal_intensity: SIGNAL_FORM_VARIANT_COUNT + 1,
+                action_kind: PrimitiveActionKind::Move,
+                movement_direction: Some(0),
+                observations: 2,
+                value: 1,
+            }
+            .validate(),
+            Err(EmbodimentError::InvalidSignalActionAssociation)
+        ));
         assert!(matches!(
             SignalActionAssociationState {
                 association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
