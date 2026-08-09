@@ -16,7 +16,9 @@ into pressure on canonical history.
 Add a disposable, one-way habitat projection over committed events. It retains each organism's
 current and previous geographic position, latest use-neutral primitive action, and a bounded ring of
 recent public activity. It excludes bodily needs, cognition inputs, reproductive mechanisms, death
-mechanisms, private memory, parentage, and birth category.
+mechanisms, private memory, parentage, birth category, and violence-adjacent primitive actions.
+Those canonical facts remain available for deterministic replay and audit, but are not presented as
+entertainment in the live habitat.
 
 The public API has three explicit levels of detail:
 

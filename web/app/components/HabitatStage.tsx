@@ -4,7 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 type Detail = "planet" | "region" | "local";
 type Role = "person" | "fauna";
-type Action = "move" | "orient" | "reach" | "grasp" | "release" | "apply_force" | "bite" | "chew" | "swallow" | "rest" | "emit_signal";
+type Action = "move" | "orient" | "reach" | "grasp" | "release" | "apply_force" | "chew" | "swallow" | "rest" | "emit_signal";
 type HabitatEntity = {
   organism_id: string;
   role: Role;
@@ -256,7 +256,6 @@ function actionSentence(action?: Action, signalForm?: number) {
     case "grasp": return "closed its grasp around something";
     case "release": return "released what it held";
     case "apply_force": return "pressed against a material surface";
-    case "bite": return "bit into something nearby";
     case "chew": return "continued chewing";
     case "swallow": return "swallowed material";
     case "rest": return "settled into rest";

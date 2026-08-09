@@ -204,15 +204,19 @@ impl PostgresStore {
                         } else {
                             None
                         };
-                        actions.insert(
-                            *organism_id,
-                            Action {
-                                kind: action.kind,
-                                signal_form,
-                                sequence: batch.sequence,
-                            },
-                        );
-                        if action.kind != PrimitiveActionKind::Move {
+                        if public_habitat_action(action.kind) {
+                            actions.insert(
+                                *organism_id,
+                                Action {
+                                    kind: action.kind,
+                                    signal_form,
+                                    sequence: batch.sequence,
+                                },
+                            );
+                        }
+                        if action.kind != PrimitiveActionKind::Move
+                            && public_habitat_action(action.kind)
+                        {
                             push_activity(
                                 &mut activity,
                                 Activity {
@@ -325,7 +329,9 @@ impl ObserverHabitatStore for PostgresStore {
                     SELECT organism_id,role,species_catalog,species_identifier,
                         species_scientific_name,species_source_url,embodied_patch,
                         latitude_e7,longitude_e7,previous_latitude_e7,previous_longitude_e7,
-                        last_movement_tick,last_action,signal_form,alive
+                        last_movement_tick,
+                        CASE WHEN last_action='bite' THEN NULL ELSE last_action END AS last_action,
+                        signal_form,alive
                     FROM observer_habitat_entities
                     WHERE projection_version=$1 AND world_id=$2 AND alive
                       AND longitude_e7 BETWEEN $3 AND $4 AND latitude_e7 BETWEEN $5 AND $6
@@ -411,6 +417,13 @@ fn push_activity(activity: &mut VecDeque<Activity>, item: Activity) {
         activity.pop_front();
     }
     activity.push_back(item);
+}
+
+/// The habitat is a family-safe observer projection. Canonical events remain
+/// complete and replayable, while violence-adjacent primitives are not exposed
+/// as entertainment in the live ticker or an organism's public status.
+const fn public_habitat_action(action: PrimitiveActionKind) -> bool {
+    !matches!(action, PrimitiveActionKind::Bite)
 }
 
 async fn insert_introduction(
@@ -576,7 +589,7 @@ async fn load_activity(
         SELECT source_event_id,source_sequence,source_tick,source_event_index,
             organism_id,action,signal_form
         FROM observer_habitat_activity
-        WHERE projection_version=$1 AND world_id=$2
+        WHERE projection_version=$1 AND world_id=$2 AND action <> 'bite'
         ORDER BY source_sequence DESC,source_event_index DESC
         LIMIT $3
         "#,
@@ -722,4 +735,17 @@ fn unavailable(error: sqlx::Error) -> ObserverProjectionStoreError {
 
 fn corrupt(message: &str) -> ObserverProjectionStoreError {
     ObserverProjectionStoreError::Corrupt(message.to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::public_habitat_action;
+    use world_domain::PrimitiveActionKind;
+
+    #[test]
+    fn public_habitat_excludes_violence_adjacent_actions() {
+        assert!(!public_habitat_action(PrimitiveActionKind::Bite));
+        assert!(public_habitat_action(PrimitiveActionKind::Move));
+        assert!(public_habitat_action(PrimitiveActionKind::EmitSignal));
+    }
 }
