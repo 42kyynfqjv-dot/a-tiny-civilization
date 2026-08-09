@@ -54,15 +54,21 @@ runner, append-only PostgreSQL history and snapshots, exact replay verification,
 structured memory behind a Hindsight adapter, bounded cognition, five rebuildable
 observer projections, a read-only API, an observatory, and its evidence-backed wiki.
 
-The fixed public seed now has a same-identity ruleset-30 launch candidate. Its exact
-full-Earth input closure, genesis, 1,000 simulated ticks, Hindsight delivery, zero-cost
-local Qwen2.5 cognition, snapshot-plus-tail replay, projections, and observer privacy
-gate have passed in an isolated PostgreSQL database. The retained evidence bundle
-contains hashes and qualification reports but no canonical event payloads. The world
-is not deployed: the exact candidate now has a machine-verifiable experimental quality-world
-admission, while production configuration, activation, and public deployment remain separate
-gates. Integrated scientific admission is intentionally deferred under the experimental-world
-policy.
+The fixed public seed now has a same-identity ruleset-32 launch candidate. Its exact
+10.16 GB full-Earth input closure, database-free genesis proof, database-backed genesis,
+1,000 simulated ticks, Hindsight delivery, zero-cost local Qwen2.5 cognition,
+snapshot-plus-tail replay, projections, and observer privacy gate have passed. The retained
+evidence bundle contains hashes and qualification reports but no canonical event payloads.
+The candidate has machine-verifiable
+[experimental quality-world](docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.md)
+and
+[public-observatory](docs/operations/PUBLIC_OBSERVATORY_ADMISSION_RULESET32_2026-08-09.md)
+admissions; the complete
+[production-host preflight](docs/operations/HOST_PREFLIGHT_RULESET32_2026-08-09.md), runtime
+staging, and isolated production-image smoke also pass. The world remains unactivated and
+undeployed: private tick-zero activation and public cutover are separate literal-confirmation
+operations. Integrated scientific admission is intentionally deferred under the
+experimental-world policy.
 
 No API key is required for the qualified local cognition path. Remote model providers
 remain optional, disabled, and require separate approval before private context may be
@@ -82,9 +88,8 @@ The first public genesis may use the openly labelled experimental, not-scientifi
 admitted bundle under [ADR 0049](docs/adr/0049-experimental-genesis-science-policy.md).
 Its complete content-addressed provisional global bundle, causal refinement,
 deterministic partition scheduler, replay, privacy, and implementation-facing quality gates now
-pass for the retained ruleset-30 candidate. The world remains unactivated and undeployed by owner
-decision while final release operations are completed; exhaustive scientific calibration moves to
-a successor world.
+pass for the retained ruleset-32 candidate. The world remains unactivated and undeployed by owner
+decision after release preflight; exhaustive scientific calibration moves to a successor world.
 The [scientific bundle contract](docs/science/DATA_BUNDLES.md) and offline
 `civilization-data` validator enforce those gates without fetching from the network,
 including exhaustive content-hash traversal of global tile indexes and leaves.
@@ -120,9 +125,10 @@ ecological bundle.
 All twelve CHELSA-BIOCLIM+ v2.1 monthly 1981–2010 land-temperature normals are also
 pinned with exact hashes and a shared-grid inspection gate. They remain an independent global
 land-climate reference. The canonical candidate separately pins the complete 1981–2010 ERA5
-origin evidence and fixed-point temperature, precipitation, and wind summaries; ruleset 30 exposes
-only bounded physical temperature, water-flux, and air-motion effects. Cross-variable scientific
-calibration and causal ecology remain deferred rather than silently asserted.
+origin evidence and fixed-point temperature, precipitation, and wind summaries. Ruleset 30 first
+exposed only bounded physical temperature, water-flux, and air-motion effects; ruleset 32 retains
+that boundary. Cross-variable scientific calibration and causal ecology remain deferred rather
+than silently asserted.
 
 Every person remains an individual even if the population becomes enormous. Load may
 slow or pause wall-clock advancement after a committed hash boundary; it may never
