@@ -42,10 +42,11 @@ if [[ ! "$web_address" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then
   exit 1
 fi
 
+web_ready=0
 for _ in $(seq 1 30); do
   if curl --fail --silent --show-error "http://${web_address}/" >/dev/null; then
-    echo "Production images run as non-root on read-only filesystems."
-    exit 0
+    web_ready=1
+    break
   fi
   if ! docker inspect "$web_container" >/dev/null 2>&1; then
     echo "web runtime exited before becoming ready" >&2
@@ -54,6 +55,24 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 
-docker logs "$web_container" >&2 || true
-echo "web runtime did not become ready within 30 seconds" >&2
-exit 1
+if ((web_ready != 1)); then
+  docker logs "$web_container" >&2 || true
+  echo "web runtime did not become ready within 30 seconds" >&2
+  exit 1
+fi
+
+# Exercise the container server rather than only the source-level Worker test. Cloudflare's
+# zone-level redirect remains preferred, but a released origin must also preserve the canonical
+# target when a plaintext request reaches it with the public Host header.
+redirect="$(curl --silent --show-error --head \
+  --header 'Host: atinycivilization.com' \
+  --write-out '%{http_code}|%{redirect_url}' --output /dev/null \
+  "http://${web_address}/wiki?edge-check=container")"
+IFS='|' read -r redirect_status redirect_url <<<"$redirect"
+if [[ "$redirect_status" != "308" \
+   || "$redirect_url" != "https://atinycivilization.com/wiki?edge-check=container" ]]; then
+  echo "web runtime did not preserve the canonical HTTPS target: ${redirect_status:-none} ${redirect_url:-none}" >&2
+  exit 1
+fi
+
+echo "Production images run as non-root on read-only filesystems and preserve canonical HTTPS."

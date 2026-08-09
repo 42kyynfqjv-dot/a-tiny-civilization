@@ -44,5 +44,7 @@ was built without starting services. The resulting locally tagged candidates are
 
 Both passed the checked-in isolated image smoke with a read-only root filesystem, all capabilities
 dropped, no-new-privileges, a bounded no-exec temporary filesystem, and only an ephemeral
-loopback binding for the web process. The production Compose render independently confirmed that
-the ruleset-32 v24 stage is the runner's single read-only `/runtime` mount.
+loopback binding for the web process. The container smoke also proved that a plaintext request
+carrying the canonical public Host receives an exact method-preserving `308` to the same HTTPS
+target. The production Compose render independently confirmed that the ruleset-32 v24 stage is the
+runner's single read-only `/runtime` mount.
