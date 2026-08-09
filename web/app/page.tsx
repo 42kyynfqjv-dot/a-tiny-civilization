@@ -1,294 +1,108 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ArchiveIndex } from "./components/ArchiveIndex";
 import { FoundationPulse } from "./components/FoundationPulse";
 import { LiveRecord } from "./components/LiveRecord";
-import { ArchiveIndex } from "./components/ArchiveIndex";
 import { SupporterPanel } from "./components/SupporterPanel";
 
 export const metadata: Metadata = {
   title: "Live World",
   description:
-    "Observe a persistent civilization whose history is produced by real materials, ecology, memory, and chance—not a script.",
+    "Follow the lives inside a persistent, unscripted civilization—and inspect the evidence behind every public claim.",
 };
-
-const observeLinks = [
-  ["The world", "#live", "●"],
-  ["What happened", "#happening", "↟"],
-  ["People", "#people", "○"],
-  ["Animals", "#animals", "◇"],
-  ["Discoveries", "#discoveries", "✦"],
-  ["Things they make", "#wiki", "⌁"],
-] as const;
-
-const archiveLinks = [
-  ["World notebook", "/wiki"],
-  ["Past worlds", "#archive"],
-  ["How this works", "#evidence"],
-] as const;
 
 export default function Home() {
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="#live" aria-label="A Tiny Civilization home">
-          <span className="brand-mark" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-          </span>
-          <span>
-            <strong>A Tiny</strong>
-            <small>Civilization Observatory</small>
-          </span>
+    <div className="living-site">
+      <header className="living-nav">
+        <a className="living-brand" href="#live" aria-label="A Tiny Civilization home">
+          <span className="living-brand-world" aria-hidden="true" />
+          <span><strong>A Tiny Civilization</strong><small>Live observatory</small></span>
         </a>
-
-        <nav className="top-links" aria-label="Quick links">
-          <a href="#live">Watch</a>
-          <Link href="/wiki">World notebook</Link>
-          <a href="#supporters">Join in</a>
+        <nav aria-label="Observatory navigation">
+          <a href="#live">World</a>
+          <a href="#people">Lives</a>
+          <a href="#discoveries">Discoveries</a>
+          <Link href="/wiki">Wiki</Link>
         </nav>
-
         <FoundationPulse compact />
       </header>
 
-      <aside className="sidebar">
-        <nav aria-label="Observatory navigation">
-          <p className="nav-label">Look around</p>
-          <ul className="nav-list">
-            {observeLinks.map(([label, href, short], index) => (
-              <li key={label}>
-                <a className={index === 0 ? "active" : undefined} href={href}>
-                  <span className="nav-glyph" aria-hidden="true">
-                    {short}
-                  </span>
-                  {label}
-                </a>
-              </li>
-            ))}
-          </ul>
+      <main id="live">
+        <LiveRecord />
 
-          <p className="nav-label nav-label-secondary">Go deeper</p>
-          <ul className="nav-list nav-list-plain">
-            {archiveLinks.map(([label, href]) => (
-              <li key={label}>
-                {href.startsWith("/") ? <Link href={href}>{label}</Link> : <a href={href}>{label}</a>}
-              </li>
-            ))}
-          </ul>
-        </nav>
-
-        <section className="support-card" aria-labelledby="support-title">
-          <div className="support-orbit" aria-hidden="true">
-            <span />
-          </div>
-          <p className="eyebrow">Take part</p>
-          <h2 id="support-title">Give a future life a name.</h2>
-          <p>
-            One day you will be able to name a person or animal born naturally into this world.
-          </p>
-          <a className="button button-light" href="#supporters">
-            See how it works
-            <span aria-hidden="true">↗</span>
-          </a>
-        </section>
-
-        <p className="open-source-note">
-          <span aria-hidden="true">⌁</span>
-          Open source · Apache 2.0
-        </p>
-      </aside>
-
-      <main className="main-content" id="live">
-        <section className="hero-copy observatory-hero">
-          <div>
-            <p className="eyebrow accent">Live observatory · public record</p>
-            <h1>A window into a world becoming itself.</h1>
-          </div>
-          <p className="hero-intro">
-            Watch what is actually there, not a narrated version of it. The world keeps its own
-            history; this is the window onto it.
-          </p>
-        </section>
-
-        <details className="preview-note">
-          <summary>This is a public preview. What does that mean?</summary>
-          <p>
-            A provisional integration world is live and recording its own history now. The Earth
-            model remains provisional—not yet scientifically admitted—and this is not the final
-            canonical genesis.
-          </p>
-        </details>
-
-        <section className="observation-window" aria-label="Live world window">
-          <div className="window-chrome" aria-hidden="true">
-            <span />
-            <span />
-            <span />
-            <p>observatory / live record</p>
-          </div>
-          <LiveRecord />
-        </section>
-
-        <section className="world-panel earth-window" aria-labelledby="world-panel-title">
-          <div className="panel-toolbar">
+        <section className="living-depth" aria-labelledby="depth-title">
+          <div className="living-section-kicker"><span>Look closer</span><span>Every claim has a trail</span></div>
+          <div className="living-depth-copy">
             <div>
-              <p className="eyebrow">One shared Earth</p>
-              <h2 id="world-panel-title">The canvas is global. The record begins small.</h2>
-            </div>
-            <div className="map-controls" aria-label="Map display status">
-              <span>Earth reference</span>
-              <span>Public history</span>
-            </div>
-          </div>
-
-          <div className="world-map" role="img" aria-label="Abstract global reference field for the live provisional world">
-            <div className="terrain terrain-one" />
-            <div className="terrain terrain-two" />
-            <div className="river river-main" />
-            <div className="river river-branch" />
-            <div className="map-grid" />
-            <span className="map-point point-one" />
-            <span className="map-point point-two" />
-            <span className="map-point animal point-three" />
-            <span className="map-point animal point-four" />
-            <div className="map-coordinate coordinate-north">Global reference field</div>
-            <div className="map-coordinate coordinate-scale">No position data is illustrated as fact</div>
-            <div className="genesis-marker">
-              <span className="marker-pulse" />
-              <div>
-                <strong>History is recording</strong>
-                <small>Open the live window above</small>
-              </div>
-            </div>
-          </div>
-
-          <div className="world-stats world-scope">
-            <article>
-              <span>Scope</span>
-              <strong>Earth</strong>
-              <small>a full-Earth composition is attached to this provisional world</small>
-            </article>
-            <article>
-              <span>Method</span>
-              <strong>Open</strong>
-              <small>every current claim needs committed evidence</small>
-            </article>
-            <article>
-              <span>View</span>
-              <strong>Honest</strong>
-              <small>quiet time stays quiet until there is a fact to show</small>
-            </article>
-            <article>
-              <span>Future</span>
-              <strong>Unwritten</strong>
-              <small>culture, artifacts, and writing must emerge before they appear</small>
-            </article>
-          </div>
-        </section>
-
-        <section className="lower-grid observer-next">
-          <article className="timeline-card">
-            <div className="section-heading">
-              <div>
-                <p className="eyebrow">How to read this</p>
-                <h2>Return to the record, not a feed of invented excitement.</h2>
-              </div>
-              <a className="live-tag" href="#happening">Open the live record</a>
-            </div>
-            <div className="empty-timeline">
-              <span className="timeline-rule" />
-              <span className="timeline-node" />
-              <div>
-                <strong>Watch for a first</strong>
-                <p>
-                  A birth, a lasting trail, a repeated action, an artifact, or a discovery only
-                  joins this observatory after the world itself leaves evidence for it.
-                </p>
-              </div>
-            </div>
-          </article>
-
-          <article className="principle-card" id="evidence">
-            <p className="eyebrow">The boundary</p>
-            <blockquote>“We can look in. We cannot reach in.”</blockquote>
-            <Link href="/wiki">See how we keep that promise <span aria-hidden="true">→</span></Link>
-          </article>
-        </section>
-
-        <section className="archive-section" id="archive" aria-labelledby="archive-title">
-          <div className="section-heading archive-heading">
-            <div>
-              <p className="eyebrow">Past worlds</p>
-              <h2 id="archive-title">Even an ending becomes a story.</h2>
+              <p className="eyebrow">A living Earth</p>
+              <h2 id="depth-title">The whole world beneath every life.</h2>
             </div>
             <p>
-              If every person dies, that world ends. We keep its whole story here, then let a new
-              world begin from scratch.
+              Weather, terrain, water, real species, and real materials shape what is possible.
+              Nobody inside receives a technology tree or a story to follow. What happens next is
+              history—not content written for an audience.
             </p>
+          </div>
+          <div className="living-depth-grid">
+            <article><span>01</span><h3>Actual Earth</h3><p>One shared planet, built from traceable public geographic and environmental sources.</p></article>
+            <article><span>02</span><h3>Unscripted lives</h3><p>Needs are innate. Culture, tools, traditions, and explanations are not.</p></article>
+            <article><span>03</span><h3>Permanent history</h3><p>Events are append-only and the world can be replayed from its recorded inputs.</p></article>
+            <article><span>04</span><h3>An honest window</h3><p>We observe and explain the record. The observer system cannot steer the world.</p></article>
+          </div>
+        </section>
+
+        <section className="living-notebook" id="wiki" aria-labelledby="notebook-title">
+          <div className="living-notebook-intro">
+            <p className="eyebrow">The public wiki</p>
+            <h2 id="notebook-title">A notebook that grows only when the world gives it something to say.</h2>
+            <p>
+              Lives, places, evidence, and discoveries are connected to their source events. If
+              writing, art, tools, or research emerge, their artifacts receive a dedicated archive.
+            </p>
+            <Link className="living-text-link" href="/wiki">Open the world notebook <span aria-hidden="true">↗</span></Link>
+          </div>
+          <div className="living-notebook-stack" aria-label="Wiki sections">
+            <article><span>People &amp; animals</span><strong>Lives with a past</strong><small>Birth, lineage, movement, memory, and the traces each life leaves.</small></article>
+            <article><span>Discoveries</span><strong>Firsts without hindsight</strong><small>Observed patterns are recorded without pretending the inhabitants understand them.</small></article>
+            <article><span>Artifacts</span><strong>Objects with provenance</strong><small>Material changes appear before an observer assigns them a possible meaning.</small></article>
+          </div>
+        </section>
+
+        <section className="living-archive" id="archive" aria-labelledby="archive-title">
+          <div className="living-section-heading">
+            <div><p className="eyebrow">World archive</p><h2 id="archive-title">Nothing lived here is discarded.</h2></div>
+            <p>If every person dies, that world closes as an immutable history. A successor begins without intervention or inherited knowledge.</p>
           </div>
           <ArchiveIndex />
         </section>
 
-        <section className="wiki-section" id="wiki">
-          <div className="section-heading wiki-heading">
-            <div>
-              <p className="eyebrow">The world notebook</p>
-              <h2>The story so far, without making things up.</h2>
-            </div>
+        <section className="living-support" id="supporters" aria-labelledby="supporter-title">
+          <div className="living-support-copy">
+            <p className="eyebrow">Stand beside the world</p>
+            <h2 id="supporter-title">Give a future life a name.</h2>
             <p>
-              Follow lives, places, discoveries, and the things people make. The deeper research is
-              always there when you want it.
-            </p>
-          </div>
-          <div className="wiki-grid">
-            <article>
-              <span className="wiki-index">01</span>
-              <p className="provenance provenance-fact">The world</p>
-              <h3>Places that change</h3>
-              <p>Weather, water, paths, shelters, and the marks left behind over time.</p>
-            </article>
-            <article>
-              <span className="wiki-index">02</span>
-              <p className="provenance provenance-memory">The lives</p>
-              <h3>Someone to follow</h3>
-              <p>Every person and special animal can have a life story you return to.</p>
-            </article>
-            <article>
-              <span className="wiki-index">03</span>
-              <p className="provenance provenance-inference">The surprises</p>
-              <h3>Things they discover</h3>
-              <p>If writing, tools, art, or traditions appear, they earn a home in the notebook.</p>
-            </article>
-          </div>
-        </section>
-
-        <section className="supporter-section" id="supporters" aria-labelledby="supporter-heading">
-          <div className="supporter-section-copy">
-            <p className="eyebrow">A small way to be part of it</p>
-            <h2 id="supporter-heading">Give a future life a name.</h2>
-            <p>
-              Pick a person or individually recorded animal and a birth category. When a matching
-              life is born naturally, an approved name joins their public story.
+              Choose a person or individually recorded animal and a birth category. When a matching
+              life arrives naturally, an approved name becomes part of its public story.
             </p>
             <ul>
-              <li>The world never sees the reservation.</li>
-              <li>Every name passes automatic and human moderation.</li>
-              <li>Naming never creates, delays, or controls a life.</li>
+              <li>Naming never creates, schedules, delays, or changes a birth.</li>
+              <li>The civilization cannot perceive reservations or supporters.</li>
+              <li>Names are screened before they appear in the public record.</li>
             </ul>
           </div>
           <SupporterPanel />
         </section>
-
-        <footer className="site-footer">
-          <p>A Tiny Civilization · Open source</p>
-          <nav aria-label="Project policies">
-            <Link href="/privacy">Privacy</Link>
-            <Link href="/terms">Terms</Link>
-            <Link href="/supporter-policy">Supporter policy</Link>
-            <Link href="/presentation-policy">Presentation</Link>
-          </nav>
-        </footer>
       </main>
+
+      <footer className="living-footer">
+        <div><strong>A Tiny Civilization</strong><span>We can look in. We cannot reach in.</span></div>
+        <nav aria-label="Project policies">
+          <Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link>
+          <Link href="/supporter-policy">Supporter policy</Link><Link href="/presentation-policy">Presentation</Link>
+        </nav>
+        <p>Open source · Apache 2.0</p>
+      </footer>
     </div>
   );
 }

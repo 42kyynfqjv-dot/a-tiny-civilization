@@ -52,19 +52,20 @@ test("server-renders the civilization observatory", async () => {
 
   const html = await response.text();
   assert.match(html, /<title>Live World · A Tiny Civilization<\/title>/i);
-  assert.match(html, /A window into a world becoming itself\./);
-  assert.match(html, /The canvas is global\. The record begins small\./);
-  assert.match(html, /observatory \/ live record/);
-  assert.match(html, /provisional—not yet scientifically admitted/);
+  assert.match(html, /A world where every life writes its own story\./);
+  assert.match(html, /The whole world beneath every life\./);
+  assert.match(html, /Living Atlas|A living Earth/);
+  assert.match(html, /Every claim has a trail/);
   assert.doesNotMatch(html, /River basin · seed awaiting launch/);
-  assert.match(html, /World notebook/);
+  assert.match(html, /The public wiki/);
   assert.match(html, /Give a future life a name\./);
-  assert.match(html, /The world never sees the reservation\./);
+  assert.match(html, /civilization cannot perceive reservations or supporters/);
   assert.match(html, /Checking supporter access/);
   assert.doesNotMatch(html, /Opens after first births/);
-  assert.match(html, /Even an ending becomes a story\./);
+  assert.match(html, /Nothing lived here is discarded\./);
   assert.match(html, /If every person dies/);
-  assert.match(html, /Places that change/);
+  assert.match(html, /Lives with a past/);
+  assert.doesNotMatch(html, /class="sidebar"|class="app-shell"/);
   assert.doesNotMatch(html, /Scientific reference|Committed observer record|Integrity rule 01/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
 });

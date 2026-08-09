@@ -33,13 +33,13 @@ export async function generateMetadata(): Promise<Metadata> {
       type: "website",
       title: "A Tiny Civilization",
       description: "A little world with a life of its own.",
-      images: [{ url: "/og-v3.png", width: 1731, height: 909, alt: "A Tiny Civilization global pre-genesis observatory" }],
+      images: [{ url: "/og-v4.png", width: 1729, height: 910, alt: "A living Earth seen through the A Tiny Civilization observatory" }],
     },
     twitter: {
       card: "summary_large_image",
       title: "A Tiny Civilization",
       description: "A little world with a life of its own.",
-      images: ["/og-v3.png"],
+      images: ["/og-v4.png"],
     },
   };
 }
