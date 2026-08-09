@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
 import { createPublicLifeLabels } from "./lifeLabels";
+import { HabitatStage } from "./HabitatStage";
 
 type World = WorldInputMetadata & {
   world_id: string;
@@ -68,21 +69,18 @@ export function LiveRecord() {
   const lifeLabels = createPublicLifeLabels(organisms);
   const labelFor = (organism: Organism) => lifeLabels.get(organism.organism_id) ?? "Unindexed life";
   const latestMoment = timeline[0];
-  const headline = latestMoment?.title ?? "A world is quietly becoming itself.";
-  const standfirst = latestMoment?.summary ?? "Its clock is moving. No public milestone has been recorded yet.";
 
   return (
     <section className="living-record" id="happening" aria-labelledby="live-record-title">
-      <div className="living-hero">
-        <div className="living-hero-copy">
-          <p className="living-live-label"><span aria-hidden="true" /> Live from an unscripted world · moment {formatNumber(world.tick)}</p>
-          <p className="living-life-label">{featured ? `${followed ? "Following" : "Watching"} ${labelFor(featured)}` : "Watching for the first life"}</p>
-          <h1 id="live-record-title">{headline}</h1>
-          <p className="living-standfirst">{standfirst}</p>
-          <a className="living-primary-link" href="#people">Choose a life to follow <span aria-hidden="true">↓</span></a>
+      <div className="living-hero living-habitat-hero">
+        <HabitatStage worldId={world.world_id} worldTick={world.tick} labels={lifeLabels} />
+        <div className="living-habitat-intro">
+          <p className="living-live-label"><span aria-hidden="true" /> Unscripted and happening now</p>
+          <h1 id="live-record-title">Watch life unfold.</h1>
+          <p>Every point is one person or animal at its latest committed position. Zoom in, select a life, and stay with it as the world changes.</p>
+          {latestMoment && <small><strong>Latest lasting event</strong>{latestMoment.title} · moment {formatNumber(latestMoment.source_tick)}</small>}
           <WorldInputStatus world={world} />
         </div>
-        <PlanetStage people={people.length} animals={animals.length} latest={latestMoment} />
       </div>
 
       <div className="living-glance" aria-label="Current world at a glance">

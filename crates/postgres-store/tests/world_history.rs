@@ -20,8 +20,9 @@ use observer_auth::{
     ObserverSessionStore, SessionSecrets, VerifiedExternalIdentity,
 };
 use observer_projection::{
-    CommittedBirth, ObserverArtifactStore, ObserverFindingStore, ObserverHistoryCommitmentStore,
-    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicWorldInputStatus,
+    CommittedBirth, ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
+    ObserverHistoryCommitmentStore, ObserverOrganismStore, ObserverTimelineStore,
+    ObserverWorldStore, PublicHabitatDetail, PublicHabitatQuery, PublicWorldInputStatus,
     ReservationRequest, ReservationState, ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
@@ -944,6 +945,113 @@ async fn projection_ranges_are_atomic_complete_and_idempotent(pool: PgPool) -> R
     assert_eq!(telemetry.artifacts_lag_batches, 0);
     assert_eq!(telemetry.living_people, 1);
     assert_eq!(telemetry.living_fauna, 0);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn habitat_projection_tracks_motion_and_bounds_every_view(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(101_102);
+    let person = provisional_initial_person(manifest.world_id);
+    let organism_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let initial = EngineState::new(manifest.clone());
+    let genesis_events =
+        initial.plan_configured_genesis(provisional_configuration(), vec![person])?;
+    let (running, genesis_batch) =
+        initial.commit(EventSequence::new(1), Digest::ZERO, genesis_events)?;
+    let genesis_snapshot = Snapshot::new(
+        running.clone(),
+        genesis_batch.sequence,
+        genesis_batch.batch_hash,
+    )?;
+    let persisted = store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    assert_eq!(
+        store
+            .apply_public_habitat_batches(std::slice::from_ref(&genesis_batch))
+            .await?,
+        1
+    );
+    let from_patch = running
+        .organisms()
+        .next()
+        .and_then(sim_engine::OrganismState::embodied_patch)
+        .expect("configured founder patch");
+    let to_patch = world_domain::s2_edge_neighbors(from_patch)?[0];
+    let movement_events = running.plan_movement(organism_id, to_patch)?;
+    let (after_movement, movement_batch) = running.commit(
+        EventSequence::new(2),
+        genesis_batch.batch_hash,
+        movement_events,
+    )?;
+    let movement_snapshot = Snapshot::new(
+        after_movement,
+        movement_batch.sequence,
+        movement_batch.batch_hash,
+    )?;
+    store
+        .commit_transition(
+            persisted.cursor,
+            &movement_batch,
+            &movement_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    assert_eq!(
+        store
+            .apply_public_habitat_batches(std::slice::from_ref(&movement_batch))
+            .await?,
+        1
+    );
+    assert_eq!(
+        store
+            .apply_public_habitat_batches(&[genesis_batch, movement_batch])
+            .await?,
+        0
+    );
+
+    let full_bounds = PublicHabitatQuery {
+        detail: PublicHabitatDetail::Local,
+        west_e7: -1_799_999_999,
+        south_e7: -900_000_000,
+        east_e7: 1_799_999_999,
+        north_e7: 900_000_000,
+        cell_e7: 100_000,
+        entity_limit: u16::MAX,
+        activity_limit: u16::MAX,
+    };
+    let local = store
+        .public_habitat_view(manifest.world_id, full_bounds)
+        .await?;
+    assert_eq!(local.maximum_entities, 2_000);
+    assert_eq!(local.entities.len(), 1);
+    assert_eq!(local.entities[0].organism_id, organism_id);
+    assert_eq!(local.entities[0].embodied_patch, to_patch);
+    assert_eq!(local.activity.len(), 1);
+    assert_eq!(local.activity[0].action, PrimitiveActionKind::Move);
+    assert_eq!(local.through_sequence, EventSequence::new(2));
+
+    let planet = store
+        .public_habitat_view(
+            manifest.world_id,
+            PublicHabitatQuery {
+                detail: PublicHabitatDetail::Planet,
+                cell_e7: 100_000_000,
+                ..full_bounds
+            },
+        )
+        .await?;
+    assert!(planet.entities.is_empty());
+    assert_eq!(planet.clusters.len(), 1);
+    assert_eq!(planet.clusters[0].people, 1);
+    assert_eq!(planet.clusters[0].total, 1);
     Ok(())
 }
 

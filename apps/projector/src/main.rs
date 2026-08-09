@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use application::{FoundationStore, ServiceHeartbeat, WorldStore};
 use clap::{Parser, Subcommand};
 use observer_projection::{
-    ObserverArtifactStore, ObserverFindingStore, ObserverOrganismStore, ObserverTimelineStore,
-    SupporterReservationStore,
+    ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore, ObserverOrganismStore,
+    ObserverTimelineStore, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use serde_json::json;
@@ -147,11 +147,16 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             .public_artifact_cursor(*world_id)
             .await
             .context("load public artifact cursor")?;
+        let habitat_cursor = store
+            .public_habitat_cursor(*world_id)
+            .await
+            .context("load public habitat cursor")?;
         let earliest_cursor = timeline_cursor
             .min(organism_cursor)
             .min(finding_cursor)
             .min(telemetry_cursor)
-            .min(artifact_cursor);
+            .min(artifact_cursor)
+            .min(habitat_cursor);
         let batches = store
             .load_event_batches(*world_id, earliest_cursor)
             .await
@@ -161,6 +166,7 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
         let finding_start = batches.partition_point(|batch| batch.sequence <= finding_cursor);
         let telemetry_start = batches.partition_point(|batch| batch.sequence <= telemetry_cursor);
         let artifact_start = batches.partition_point(|batch| batch.sequence <= artifact_cursor);
+        let habitat_start = batches.partition_point(|batch| batch.sequence <= habitat_cursor);
         // The default projector pool has four connections. Keep at most four
         // long-lived projection transactions concurrent, then run the fifth from
         // its independent cursor. Starting five here can starve one projection
@@ -172,6 +178,7 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             project_telemetry(store, &batches[telemetry_start..]),
         )?;
         let artifacts = project_artifacts(store, &batches[artifact_start..]).await?;
+        let habitat = project_habitat(store, &batches[habitat_start..]).await?;
         // Archive is already an immutable canonical fact. Checking the durable lifecycle
         // state also covers worlds archived before this projector version was deployed.
         // Expiration is idempotent observer-side bookkeeping only.
@@ -199,11 +206,22 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             finding_batches = findings,
             telemetry_batches = telemetry,
             artifact_batches = artifacts,
+            habitat_batches = habitat,
             expired_reservations,
             "public timeline projection completed"
         );
     }
     Ok(())
+}
+
+async fn project_habitat(
+    store: &PostgresStore,
+    batches: &[world_domain::EventBatch],
+) -> Result<u64> {
+    store
+        .apply_public_habitat_batches(batches)
+        .await
+        .context("persist public habitat batch range")
 }
 
 async fn project_artifacts(

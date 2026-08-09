@@ -17,9 +17,10 @@ use observer_auth::{
     ObserverSession, SessionSecrets,
 };
 use observer_projection::{
-    ObserverArtifactStore, ObserverFindingStore, ObserverHistoryCommitmentStore,
-    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicArtifact,
-    PublicArtifactTrace, PublicFinding, PublicHistoryCommitmentPage, PublicOrganism,
+    ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
+    ObserverHistoryCommitmentStore, ObserverOrganismStore, ObserverTimelineStore,
+    ObserverWorldStore, PublicArtifact, PublicArtifactTrace, PublicFinding, PublicHabitatDetail,
+    PublicHabitatQuery, PublicHabitatView, PublicHistoryCommitmentPage, PublicOrganism,
     PublicTimelineItem, PublicWikiEntry, PublicWorld, PublicWorldTelemetry,
     compose_public_wiki_entries,
 };
@@ -50,6 +51,7 @@ pub trait ObserverReadStore:
     + ObserverFindingStore
     + ObserverArtifactStore
     + ObserverHistoryCommitmentStore
+    + ObserverHabitatStore
 {
 }
 
@@ -61,6 +63,7 @@ impl<T> ObserverReadStore for T where
         + ObserverFindingStore
         + ObserverArtifactStore
         + ObserverHistoryCommitmentStore
+        + ObserverHabitatStore
 {
 }
 
@@ -189,6 +192,7 @@ pub fn router(state: ApiState) -> Router {
         )
         .route("/api/v1/worlds/{world_id}/wiki", get(public_wiki))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
+        .route("/api/v1/worlds/{world_id}/habitat", get(public_habitat))
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
             get(public_organism),
@@ -1147,6 +1151,78 @@ async fn public_timeline(
 struct OrganismsResponse {
     projection_version: u16,
     organisms: Vec<PublicOrganism>,
+}
+
+#[derive(Deserialize)]
+struct HabitatQuery {
+    detail: Option<String>,
+    west_e7: Option<i32>,
+    south_e7: Option<i32>,
+    east_e7: Option<i32>,
+    north_e7: Option<i32>,
+    cell_e7: Option<i32>,
+    limit: Option<u16>,
+    activity_limit: Option<u16>,
+}
+
+async fn public_habitat(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<HabitatQuery>,
+) -> Result<Json<PublicHabitatView>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let detail = match query.detail.as_deref().unwrap_or("local") {
+        "planet" => PublicHabitatDetail::Planet,
+        "region" => PublicHabitatDetail::Region,
+        "local" => PublicHabitatDetail::Local,
+        _ => {
+            return Err(ApiError::BadRequest(
+                "invalid_habitat_detail",
+                "habitat detail must be planet, region, or local",
+            ));
+        }
+    };
+    let west_e7 = query.west_e7.unwrap_or(-1_799_999_999);
+    let south_e7 = query.south_e7.unwrap_or(-900_000_000);
+    let east_e7 = query.east_e7.unwrap_or(1_799_999_999);
+    let north_e7 = query.north_e7.unwrap_or(900_000_000);
+    if west_e7 < -1_800_000_000
+        || east_e7 >= 1_800_000_000
+        || south_e7 < -900_000_000
+        || north_e7 > 900_000_000
+        || west_e7 > east_e7
+        || south_e7 > north_e7
+    {
+        return Err(ApiError::BadRequest(
+            "invalid_habitat_bounds",
+            "habitat bounds are outside the supported geographic range",
+        ));
+    }
+    let default_cell = match detail {
+        PublicHabitatDetail::Planet => 100_000_000,
+        PublicHabitatDetail::Region => 5_000_000,
+        PublicHabitatDetail::Local => 100_000,
+    };
+    let view = state
+        .store
+        .public_habitat_view(
+            world_id,
+            PublicHabitatQuery {
+                detail,
+                west_e7,
+                south_e7,
+                east_e7,
+                north_e7,
+                cell_e7: query.cell_e7.unwrap_or(default_cell),
+                entity_limit: query.limit.unwrap_or(2_000),
+                activity_limit: query.activity_limit.unwrap_or(24),
+            },
+        )
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(view))
 }
 
 async fn public_organisms(

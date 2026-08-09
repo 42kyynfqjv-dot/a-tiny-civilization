@@ -11,7 +11,8 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
     BirthCategory, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence,
-    MaterialIdentity, OrganismRole, SimTick, SpeciesIdentity, WorldId, WorldStatus,
+    MaterialIdentity, OrganismRole, PrimitiveActionKind, S2CellId, SimTick, SpeciesIdentity,
+    WorldId, WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -36,6 +37,8 @@ pub const PUBLIC_FINDING_PROJECTION_VERSION: u16 = 2;
 pub const PUBLIC_FINDING_PROJECTION_NAME: &str = "public-finding-v2";
 pub const PUBLIC_ARTIFACT_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ARTIFACT_PROJECTION_NAME: &str = "public-artifact-v1";
+pub const PUBLIC_HABITAT_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -552,6 +555,104 @@ pub fn compose_public_wiki_entries(
             .then_with(|| left.entry_id.cmp(&right.entry_id))
     });
     entries
+}
+
+/// Requested visual density for the disposable public habitat view. The server always
+/// decides the final response size; this is not a request for canonical world state.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicHabitatDetail {
+    Planet,
+    Region,
+    Local,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct PublicHabitatQuery {
+    pub detail: PublicHabitatDetail,
+    pub west_e7: i32,
+    pub south_e7: i32,
+    pub east_e7: i32,
+    pub north_e7: i32,
+    pub cell_e7: i32,
+    pub entity_limit: u16,
+    pub activity_limit: u16,
+}
+
+/// One bounded drawable point. It is a disposable observer projection over committed
+/// locations and actions and can never flow back into the simulation.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHabitatEntity {
+    pub organism_id: EntityId,
+    pub role: OrganismRole,
+    pub species: SpeciesIdentity,
+    pub embodied_patch: S2CellId,
+    pub latitude_e7: i32,
+    pub longitude_e7: i32,
+    pub previous_latitude_e7: i32,
+    pub previous_longitude_e7: i32,
+    pub last_movement_tick: SimTick,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_action: Option<PrimitiveActionKind>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_form: Option<u8>,
+    pub alive: bool,
+}
+
+/// A server-side level-of-detail aggregate. At large populations the client receives
+/// these bounded clusters instead of one payload and one DOM node per organism.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHabitatCluster {
+    pub cluster_key: String,
+    pub latitude_e7: i32,
+    pub longitude_e7: i32,
+    pub people: u64,
+    pub animals: u64,
+    pub total: u64,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHabitatActivity {
+    pub source_event_id: EventId,
+    pub source_sequence: EventSequence,
+    pub source_tick: SimTick,
+    pub source_event_index: u32,
+    pub organism_id: EntityId,
+    pub action: PrimitiveActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub signal_form: Option<u8>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHabitatView {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub through_sequence: EventSequence,
+    pub detail: PublicHabitatDetail,
+    pub entities: Vec<PublicHabitatEntity>,
+    pub clusters: Vec<PublicHabitatCluster>,
+    pub activity: Vec<PublicHabitatActivity>,
+    pub truncated: bool,
+    pub maximum_entities: u16,
+}
+
+#[async_trait]
+pub trait ObserverHabitatStore: Send + Sync {
+    async fn apply_public_habitat_batches(
+        &self,
+        batches: &[EventBatch],
+    ) -> Result<u64, ObserverProjectionStoreError>;
+
+    async fn public_habitat_cursor(
+        &self,
+        world_id: WorldId,
+    ) -> Result<EventSequence, ObserverProjectionStoreError>;
+
+    async fn public_habitat_view(
+        &self,
+        world_id: WorldId,
+        query: PublicHabitatQuery,
+    ) -> Result<PublicHabitatView, ObserverProjectionStoreError>;
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,

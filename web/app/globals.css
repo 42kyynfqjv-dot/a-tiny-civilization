@@ -1000,3 +1000,47 @@ select {
   .living-lives > header, .living-section-heading, .living-depth-copy { grid-template-columns: 1fr; }.living-featured-life { grid-template-columns: 1fr; }.living-life-portrait { min-height: 300px; }.living-life-ribbon, .living-depth-grid, .living-finding-grid { grid-template-columns: 1fr; }.living-life-ribbon article { border-bottom: 1px solid #ccc2b3; }.living-depth-grid article { border-right: 1px solid #cfc6b7; }.living-depth-grid article + article { border-top: 1px solid #cfc6b7; }.living-depth-grid h3 { margin-top: 34px; }.living-verification dl { grid-template-columns: 1fr 1fr; }.living-notebook-stack article { grid-template-columns: 1fr; }.living-notebook-stack small { grid-column: 1; }.living-artifacts article { align-items: start; flex-direction: column; gap: 8px; }
   .living-footer nav { gap: 12px; }.life-topbar { grid-template-columns: 1fr auto; padding: 0 16px; }.life-topbar nav { display: none; }.life-directory-tools { align-items: start; flex-direction: column; gap: 22px; }.life-directory-grid { grid-template-columns: 1fr; }.life-profile-hero { min-height: auto; }.life-profile-copy { padding: 80px 22px; }.life-profile-portrait { min-height: 400px; }.life-facts { grid-template-columns: repeat(2, 1fr); padding: 0 12px; }.life-facts article:nth-child(2) { border-right: 1px solid rgba(255,255,255,.1); }.life-facts article:nth-child(n+3) { border-top: 1px solid rgba(255,255,255,.1); }.life-context li { grid-template-columns: 78px 1fr; }
 }
+
+/* Live habitat: a bounded Canvas view over committed observer projections. */
+.living-habitat-hero { display: block; min-height: min(900px, calc(100vh - 76px)); }
+.living-habitat-hero::before { display: none; }
+.habitat-stage { background: #0b2b22; height: min(900px, calc(100vh - 76px)); min-height: 690px; overflow: hidden; position: relative; }
+.habitat-stage canvas { cursor: crosshair; display: block; height: 100%; touch-action: manipulation; width: 100%; }
+.habitat-wash { background: linear-gradient(90deg, rgba(3,18,14,.92) 0, rgba(3,18,14,.52) 31%, transparent 58%), linear-gradient(0deg, rgba(2,13,11,.7), transparent 30%); inset: 0; pointer-events: none; position: absolute; }
+.living-habitat-intro { left: clamp(24px, 5.5vw, 90px); max-width: min(520px, 38vw); pointer-events: none; position: absolute; top: clamp(112px, 18vh, 180px); z-index: 5; }
+.living-habitat-intro .living-live-label { margin-bottom: 24px; }
+.living-habitat-intro h1 { font-size: clamp(62px, 7.2vw, 118px); }
+.living-habitat-intro > p:not(.living-live-label) { color: #c5d3cb; font-family: Georgia, serif; font-size: clamp(17px, 1.45vw, 22px); line-height: 1.55; margin: 28px 0; max-width: 470px; }
+.living-habitat-intro > small { color: #91a69b; display: grid; font-family: var(--font-geist-mono), monospace; font-size: 8px; gap: 5px; line-height: 1.5; max-width: 440px; text-transform: uppercase; }
+.living-habitat-intro > small strong { color: #e5bd6c; font-weight: 500; letter-spacing: .1em; }
+.living-habitat-intro .world-input-status { margin-top: 28px; max-width: 470px; pointer-events: auto; }
+.habitat-toolbar { align-items: center; display: flex; justify-content: space-between; left: clamp(20px, 3vw, 48px); position: absolute; right: clamp(20px, 3vw, 48px); top: 26px; z-index: 7; }
+.habitat-toolbar > div { align-items: center; display: grid; column-gap: 9px; grid-template-columns: auto auto; }
+.habitat-toolbar strong, .habitat-toolbar small, .habitat-toolbar button, .habitat-key, .habitat-stage footer { font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .08em; text-transform: uppercase; }
+.habitat-toolbar strong { font-weight: 500; }.habitat-toolbar small { color: #8da398; grid-column: 2; margin-top: 4px; }
+.habitat-status { background: #61d49d; border-radius: 50%; box-shadow: 0 0 0 5px rgba(97,212,157,.12); height: 6px; width: 6px; }.habitat-status.loading { background: #e4b66c; }.habitat-status.error { background: #ef8258; }
+.habitat-toolbar nav { backdrop-filter: blur(12px); background: rgba(4,22,17,.68); border: 1px solid rgba(255,255,255,.13); display: flex; padding: 3px; }
+.habitat-toolbar button { background: transparent; border: 0; color: #8fa59a; cursor: pointer; padding: 9px 13px; }.habitat-toolbar button.active { background: #e7d8b7; color: #13251d; }
+.habitat-key { align-items: center; bottom: 27px; color: #91a79c; display: flex; gap: 8px; left: clamp(20px, 3vw, 48px); position: absolute; z-index: 6; }.habitat-key span { border-radius: 50%; height: 7px; width: 7px; }.habitat-key .person { background: #ef8258; }.habitat-key .animal { background: #d8bd68; margin-left: 12px; }.habitat-key i { border-top: 1px solid rgba(239,130,88,.55); display: inline-block; margin-left: 12px; width: 22px; }
+.habitat-activity { backdrop-filter: blur(16px); background: rgba(4,22,17,.76); border: 1px solid rgba(255,255,255,.13); max-height: 300px; overflow: hidden; padding: 19px 20px; position: absolute; right: clamp(20px, 3vw, 48px); top: 96px; width: min(330px, 29vw); z-index: 6; }
+.habitat-activity > p, .habitat-selection > p { color: #e5bd6c; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .1em; margin: 0 0 13px; text-transform: uppercase; }
+.habitat-activity > span { color: #9cb0a6; font-size: 10px; }.habitat-activity ol { list-style: none; margin: 0; padding: 0; }.habitat-activity li { border-top: 1px solid rgba(255,255,255,.09); display: grid; gap: 10px; grid-template-columns: 43px 1fr; padding: 9px 0; }.habitat-activity time { color: #718a7e; font-family: var(--font-geist-mono), monospace; font-size: 7px; }.habitat-activity li span { color: #c8d3cd; font-size: 10px; line-height: 1.35; }
+.habitat-selection { backdrop-filter: blur(16px); background: rgba(4,22,17,.8); border: 1px solid rgba(255,255,255,.13); bottom: 68px; display: grid; max-width: 330px; padding: 20px; position: absolute; right: clamp(20px, 3vw, 48px); width: min(330px, 29vw); z-index: 6; }.habitat-selection > p { margin-bottom: 8px; }.habitat-selection > strong { font-family: Georgia, serif; font-size: 20px; font-weight: 400; }.habitat-selection > span { color: #93a99e; font-size: 10px; line-height: 1.5; margin-top: 7px; }.habitat-selection > div { display: flex; gap: 7px; margin-top: 16px; }.habitat-selection button, .habitat-selection a { background: transparent; border: 1px solid #728b7f; color: #f1ecdd; cursor: pointer; font-family: var(--font-geist-mono), monospace; font-size: 7px; padding: 9px 10px; text-transform: uppercase; }
+.habitat-stage footer { bottom: 25px; color: #789086; display: flex; gap: 20px; justify-content: flex-end; left: 48%; position: absolute; right: clamp(20px, 3vw, 48px); z-index: 5; }
+
+@media (max-width: 980px) {
+  .living-habitat-intro { max-width: 52vw; }
+  .habitat-activity { display: none; }
+  .habitat-selection { width: min(310px, 38vw); }
+}
+@media (max-width: 660px) {
+  .living-habitat-hero, .habitat-stage { height: 760px; min-height: 760px; }
+  .habitat-wash { background: linear-gradient(180deg, rgba(3,18,14,.9), rgba(3,18,14,.3) 50%, rgba(3,18,14,.75)); }
+  .living-habitat-intro { left: 20px; max-width: calc(100% - 40px); top: 92px; }
+  .living-habitat-intro h1 { font-size: 58px; max-width: 330px; }.living-habitat-intro > p:not(.living-live-label) { font-size: 16px; max-width: 340px; }
+  .living-habitat-intro .world-input-status { display: none; }
+  .habitat-toolbar { left: 18px; right: 18px; top: 18px; }.habitat-toolbar nav { position: absolute; right: 0; }.habitat-toolbar button { padding: 8px; }
+  .habitat-key { bottom: 18px; font-size: 7px; left: 18px; }.habitat-key i, .habitat-key i + * { display: none; }
+  .habitat-selection { bottom: 54px; left: 18px; max-width: none; right: 18px; width: auto; }
+  .habitat-stage footer { display: none; }
+}
