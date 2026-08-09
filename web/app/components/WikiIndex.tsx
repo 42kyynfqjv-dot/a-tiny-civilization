@@ -139,8 +139,8 @@ export function WikiIndex() {
         </article>
         <article>
           <h3>Lives cited in the record</h3>
-          <p>Each life uses a numerical observer ID until the inhabitants independently develop naming. Emergent names can become the primary display; the ID remains a permanent provenance key.</p>
-          {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Person ID" : "Animal ID"}</span><a href={`/lives/${encodeURIComponent(wiki.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>{lifeLabels.get(organism.organism_id) ?? "Unindexed life"}</a><small><a href={organism.species.source_url} rel="noreferrer" target="_blank" title={organism.species.scientific_name}>{commonSpeciesName(organism.species.scientific_name)}</a> · introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
+          <p>Each person appears as Human N and each animal by recognizable species and number until the inhabitants independently develop naming. Emergent names can become the primary display; the underlying audit identity remains permanent.</p>
+          {wiki.organisms.length === 0 ? <p>No individual public records are available yet.</p> : <ul>{wiki.organisms.map((organism) => <li key={organism.organism_id}><span>{organism.role === "person" ? "Human ID" : `${commonSpeciesName(organism.species.scientific_name)} ID`}</span><a href={`/lives/${encodeURIComponent(wiki.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>{lifeLabels.get(organism.organism_id) ?? "Unindexed life"}</a><small><a href={organism.species.source_url} rel="noreferrer" target="_blank" title={organism.species.scientific_name}>{commonSpeciesName(organism.species.scientific_name)}</a> · introduced at event {organism.introduced_sequence} · {organism.ended_event_id ? "record ended" : "present in record"}</small></li>)}</ul>}
         </article>
         <article id="artifact-archive">
           <h3>Altered material archive</h3>

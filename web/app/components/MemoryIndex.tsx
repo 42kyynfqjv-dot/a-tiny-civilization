@@ -69,8 +69,8 @@ export function MemoryIndex() {
   }
 
   const labels = createPublicLifeLabels(record.organisms);
-  const label = (id: string) => labels.get(id) ?? `Life ${id.slice(0, 6)}`;
-  const subjectLabel = (id: string) => labels.get(id) ?? `sensed subject ${id.slice(0, 6)}`;
+  const label = (id: string) => labels.get(id) ?? "Unindexed life";
+  const subjectLabel = (id: string) => labels.get(id) ?? "an unindexed sensed subject";
   const agents = [...new Set(record.stream.observations.map((memory) => memory.agent_id))];
   const visible = selectedAgent ? record.stream.observations.filter((memory) => memory.agent_id === selectedAgent) : record.stream.observations;
   const recalls = selectedAgent ? record.stream.recalls.filter((recall) => recall.agent_id === selectedAgent) : record.stream.recalls;

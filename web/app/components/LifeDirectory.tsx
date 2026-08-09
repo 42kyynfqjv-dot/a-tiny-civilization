@@ -44,7 +44,7 @@ export function LifeDirectory() {
   return (
     <section className="life-directory" aria-labelledby="life-directory-title">
       <div className="life-directory-tools">
-        <div><p className="eyebrow">Public life index · numerical observer IDs</p><h2 id="life-directory-title">{directory.organisms.length} recorded lives</h2><p>IDs remain in place until inhabitants develop their own names. An emergent name may become primary, but its audit ID is never lost.</p></div>
+        <div><p className="eyebrow">Public life index · readable observer IDs</p><h2 id="life-directory-title">{directory.organisms.length} recorded lives</h2><p>People are Human N; animals carry their recognizable species and number. These labels remain until inhabitants develop their own names, while the permanent audit identity stays underneath.</p></div>
         <div role="group" aria-label="Filter lives">{(["all", "person", "fauna"] as const).map((value) => <button className={filter === value ? "active" : undefined} key={value} onClick={() => setFilter(value)} type="button">{value === "fauna" ? "Animals" : value === "person" ? "People" : "Everyone"}</button>)}</div>
       </div>
       <div className="life-directory-grid">
@@ -52,8 +52,8 @@ export function LifeDirectory() {
           const label = labels.get(organism.organism_id) ?? "Unindexed life";
           return <article className={followedId === organism.organism_id ? "followed" : undefined} key={organism.organism_id}>
             <a className="life-card-main" href={`/lives/${encodeURIComponent(directory.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>
-              <span className="life-card-mark">{organism.role === "person" ? "P" : "A"}</span>
-              <p>{organism.role === "person" ? "Person" : "Animal"} observer ID · {organism.ended_event_id ? "record ended" : "alive"}</p>
+              <span className="life-card-mark">{label.match(/\d+$/)?.[0] ?? (organism.role === "person" ? "H" : "A")}</span>
+              <p>{organism.role === "person" ? "Human" : commonSpeciesName(organism.species.scientific_name)} observer ID · {organism.ended_event_id ? "record ended" : "alive"}</p>
               <h3>{label}</h3><em title={organism.species.scientific_name}>{commonSpeciesName(organism.species.scientific_name)}</em><small>In the record since moment {formatNumber(organism.introduced_tick)}</small>
             </a>
             <button type="button" onClick={() => { window.localStorage.setItem("atiny.followed-organism", organism.organism_id); setFollowedId(organism.organism_id); }}>{followedId === organism.organism_id ? "Following" : "Follow"}</button>

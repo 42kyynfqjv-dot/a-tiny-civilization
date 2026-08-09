@@ -4,13 +4,15 @@ import { createPublicLifeLabels } from "../app/components/lifeLabels.ts";
 
 test("assigns deterministic numerical observer IDs separately to people and animals", () => {
   const labels = createPublicLifeLabels([
-    { organism_id: "person-b", role: "person", introduced_sequence: 1, introduced_tick: 0 },
-    { organism_id: "animal-a", role: "fauna", introduced_sequence: 2, introduced_tick: 1 },
-    { organism_id: "person-a", role: "person", introduced_sequence: 1, introduced_tick: 0 },
+    { organism_id: "person-b", role: "person", species: { scientific_name: "Homo sapiens" }, introduced_sequence: 1, introduced_tick: 0 },
+    { organism_id: "animal-a", role: "fauna", species: { scientific_name: "Buteo jamaicensis" }, introduced_sequence: 2, introduced_tick: 1 },
+    { organism_id: "animal-b", role: "fauna", species: { scientific_name: "Corvus corax" }, introduced_sequence: 3, introduced_tick: 2 },
+    { organism_id: "person-a", role: "person", species: { scientific_name: "Homo sapiens" }, introduced_sequence: 1, introduced_tick: 0 },
   ]);
-  assert.equal(labels.get("person-a"), "P-0001");
-  assert.equal(labels.get("person-b"), "P-0002");
-  assert.equal(labels.get("animal-a"), "A-0001");
+  assert.equal(labels.get("person-a"), "Human 1");
+  assert.equal(labels.get("person-b"), "Human 2");
+  assert.equal(labels.get("animal-a"), "Red-tailed hawk 1");
+  assert.equal(labels.get("animal-b"), "Common raven 2");
 });
 
 async function render(path = "/") {

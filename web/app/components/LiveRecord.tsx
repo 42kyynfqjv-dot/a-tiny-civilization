@@ -99,7 +99,7 @@ export function LiveRecord() {
         <header>
           <p className="eyebrow">Every life has a history</p>
           <h2 id="lives-title">Start with someone.</h2>
-          <p>There are no protagonists here. Every person and individually represented animal receives a numerical observer ID. The ID stands in for a name only until the inhabitants discover naming for themselves.</p>
+          <p>There are no protagonists here. The observatory identifies each person as Human N and each animal by recognizable species and number. These labels stand in for names only until the inhabitants discover naming for themselves.</p>
         </header>
         <div className="living-lives-grid">
           <article className="living-featured-life">
@@ -144,6 +144,6 @@ function PlanetStage({ people, animals, latest }: { people: number; animals: num
 
 function shortHash(hash: string) { return `${hash.slice(0, 12)}…${hash.slice(-8)}`; }
 function formatNumber(value: string | number) { const parsed = typeof value === "number" ? value : Number(value); return Number.isFinite(parsed) ? new Intl.NumberFormat("en-US").format(parsed) : String(value); }
-function lifeMonogram(label: string) { return label.replace(/^[PA]-/, ""); }
+function lifeMonogram(label: string) { return label.match(/\d+$/)?.[0] ?? label.slice(0, 1); }
 function lifeHref(worldId: string, organismId: string) { return `/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(organismId)}`; }
 function followLife(organismId: string, update: (organismId: string) => void) { window.localStorage.setItem("atiny.followed-organism", organismId); update(organismId); }

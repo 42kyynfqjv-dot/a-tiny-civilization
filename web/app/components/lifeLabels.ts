@@ -1,6 +1,9 @@
+import { commonSpeciesName } from "./speciesNames.ts";
+
 export type LabelableOrganism = {
   organism_id: string;
   role: "person" | "fauna";
+  species: { scientific_name: string };
   introduced_sequence?: string | number;
   introduced_tick: string | number;
 };
@@ -11,13 +14,16 @@ export type LabelableOrganism = {
  */
 export function createPublicLifeLabels(organisms: LabelableOrganism[]): Map<string, string> {
   const labels = new Map<string, string>();
-  for (const [role, prefix] of [["person", "P"], ["fauna", "A"]] as const) {
+  for (const role of ["person", "fauna"] as const) {
     organisms
       .filter((organism) => organism.role === role)
       .sort((left, right) =>
         sequenceOf(left) - sequenceOf(right) || left.organism_id.localeCompare(right.organism_id),
       )
-      .forEach((organism, index) => labels.set(organism.organism_id, `${prefix}-${String(index + 1).padStart(4, "0")}`));
+      .forEach((organism, index) => {
+        const kind = role === "person" ? "Human" : commonSpeciesName(organism.species.scientific_name);
+        labels.set(organism.organism_id, `${kind} ${index + 1}`);
+      });
   }
   return labels;
 }

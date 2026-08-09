@@ -426,7 +426,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     </aside>
     <MemoryTelemetry worldId={worldId} labels={labels} />
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
-      {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
+      {selected ? <><p>{labels.get(selected.organism_id) ?? "Unindexed life"} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
     <footer><span>Positions are committed · orbital glass and terrain are observer styling · drag / pinch / scroll</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
     </div>
@@ -500,7 +500,7 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     const sphere = context.createRadialGradient(x - radius * .35, orbY - radius * .45, .2, x, orbY, radius * 1.35);
     sphere.addColorStop(0, "#fff3cf"); sphere.addColorStop(.24, color); sphere.addColorStop(1, entity.role === "person" ? "#7f2f24" : "#695623");
     context.beginPath(); context.arc(x, orbY, radius, 0, Math.PI * 2); context.fillStyle = sphere; context.shadowColor = color; context.shadowBlur = selected ? 18 : 7 * depthScale; context.fill(); context.shadowBlur = 0;
-    if (selected) { context.fillStyle = "#fff7df"; context.font = "10px ui-monospace, monospace"; context.textAlign = "left"; context.fillText(labels.get(entity.organism_id) ?? shortId(entity.organism_id), x + radius + 9, orbY + 4); }
+    if (selected) { context.fillStyle = "#fff7df"; context.font = "10px ui-monospace, monospace"; context.textAlign = "left"; context.fillText(labels.get(entity.organism_id) ?? "Unindexed life", x + radius + 9, orbY + 4); }
     context.restore();
     points.push({ id: entity.organism_id, x, y: orbY, radius, entity });
   }
@@ -693,7 +693,7 @@ function worldAtScreen(detail: Detail, camera: Camera, zoom: number, point: Poin
   };
 }
 
-function activitySentence(item: HabitatActivity, labels: Map<string, string>) { return `${labels.get(item.organism_id) ?? shortId(item.organism_id)} ${actionSentence(item.action, item.signal_form)}`; }
+function activitySentence(item: HabitatActivity, labels: Map<string, string>) { return `${labels.get(item.organism_id) ?? "Unindexed life"} ${actionSentence(item.action, item.signal_form)}`; }
 function actionSentence(action?: Action, signalForm?: number) {
   switch (action) {
     case "move": return "crossed into a neighboring patch";
@@ -710,5 +710,4 @@ function actionSentence(action?: Action, signalForm?: number) {
   }
 }
 function ease(value: number) { return 1 - Math.pow(1 - value, 3); }
-function shortId(value: string) { return value.slice(0, 8); }
 function formatNumber(value: string | number) { return new Intl.NumberFormat("en-US").format(Number(value)); }

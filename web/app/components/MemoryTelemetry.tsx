@@ -24,7 +24,7 @@ export function MemoryTelemetry({ worldId, labels }: { worldId: string; labels: 
   const recalled = new Set(stream?.recalls.flatMap((recall) => recall.document_ids) ?? []);
   return <aside className="habitat-memory" aria-live="polite">
     <div><span className="habitat-memory-pulse" aria-hidden="true" /><p><strong>Memory live</strong><small>{stream ? `${stream.recalls.length} recent recall ${stream.recalls.length === 1 ? "pulse" : "pulses"}` : "reading the array"}</small></p><a href="/memory">Open graph <span aria-hidden="true">↗</span></a></div>
-    {latest.length > 0 && <ol>{latest.map((memory) => <li className={recalled.has(memory.document_id) ? "is-recalled" : undefined} key={memory.document_id}><span>{labels.get(memory.agent_id) ?? `Life ${memory.agent_id.slice(0, 6)}`}</span><small>{memory.channel} · {memory.property_code.replaceAll("_", " ")} · {formatNumber(memory.quantized_value)}</small></li>)}</ol>}
+    {latest.length > 0 && <ol>{latest.map((memory) => <li className={recalled.has(memory.document_id) ? "is-recalled" : undefined} key={memory.document_id}><span>{labels.get(memory.agent_id) ?? "Unindexed life"}</span><small>{memory.channel} · {memory.property_code.replaceAll("_", " ")} · {formatNumber(memory.quantized_value)}</small></li>)}</ol>}
   </aside>;
 }
 
