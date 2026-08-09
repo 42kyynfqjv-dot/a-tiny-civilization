@@ -60,3 +60,12 @@ the shared `atiny-ollama` volume. No unexpected production-volume consumer exist
 preflight reports the complete set in one pass; it does not stop, remove, or recreate any of those
 containers. Their deliberate stop remains part of the separately authorized public cutover, and
 the legacy development PostgreSQL volume is retained rather than promoted.
+
+After qualification and evidence verification completed, the two ruleset-32 qualification worker
+processes and five isolated qualification database/Hindsight containers were stopped. Their named
+ruleset-32, v19, Hindsight, and r18 database volumes remain attached to stopped restartable
+containers. One older superseded `atiny-quality-cc8f863-db` probe had Docker auto-remove enabled;
+stopping it also removed its anonymous 1.16 GB volume. That probe volume is not recoverable, but it
+was not canonical history or retained launch evidence. The external v20 evidence, v24 genesis,
+current ruleset-32 qualification database, development-world volume, production volumes, and every
+running development service remain intact.
