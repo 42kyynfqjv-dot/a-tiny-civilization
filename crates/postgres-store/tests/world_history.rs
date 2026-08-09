@@ -1063,20 +1063,60 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     store.create_world(&manifest, None).await?;
     let learners = (0..4).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
     let sources = (0..3).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+    for organism_id in learners.iter().chain(&sources) {
+        sqlx::query(
+            r#"
+            INSERT INTO observer_organisms (
+                projection_version,world_id,organism_id,role,species_catalog,species_identifier,
+                species_scientific_name,species_source_url,provenance,introduced_event_id,
+                introduced_sequence,introduced_tick
+            ) VALUES (1,$1,$2,'person','catalog','human','Homo sapiens',
+                'https://example.com/human','world_fact',$3,1,0)
+            "#,
+        )
+        .bind(manifest.world_id.as_uuid())
+        .bind(organism_id)
+        .bind(Uuid::new_v4())
+        .execute(&pool)
+        .await?;
+    }
+    for (form_offset, signal_form) in [7_i16, 8, 9].into_iter().enumerate() {
+        for index in 0..12_i64 {
+            let tick = if index == 11 { 300 } else { index + 1 };
+            sqlx::query(
+                r#"
+                INSERT INTO observer_language_evidence (
+                    projection_version,world_id,source_event_id,source_sequence,source_tick,
+                    source_event_index,observer_id,actor_id,signal_form,action,movement_direction
+                ) VALUES (1,$1,$2,$3,$4,0,$5,$6,$7,'rest',NULL)
+                "#,
+            )
+            .bind(manifest.world_id.as_uuid())
+            .bind(Uuid::new_v4())
+            .bind(i64::try_from(form_offset)? * 20 + index + 1)
+            .bind(tick)
+            .bind(learners[usize::try_from(index % 4)?])
+            .bind(sources[usize::try_from(index % 3)?])
+            .bind(signal_form)
+            .execute(&pool)
+            .await?;
+        }
+    }
+    // Repeated emission is circular evidence, not a meaning. It must not dilute
+    // the behavioral denominator or promote the archive's stage.
     for index in 0..12_i64 {
-        let tick = if index == 11 { 300 } else { index + 1 };
         sqlx::query(
             r#"
             INSERT INTO observer_language_evidence (
                 projection_version,world_id,source_event_id,source_sequence,source_tick,
                 source_event_index,observer_id,actor_id,signal_form,action,movement_direction
-            ) VALUES (1,$1,$2,$3,$4,0,$5,$6,7,'rest',NULL)
+            ) VALUES (1,$1,$2,$3,$4,0,$5,$6,7,'emit_signal',NULL)
             "#,
         )
         .bind(manifest.world_id.as_uuid())
         .bind(Uuid::new_v4())
+        .bind(100 + index)
         .bind(index + 1)
-        .bind(tick)
         .bind(learners[usize::try_from(index % 4)?])
         .bind(sources[usize::try_from(index % 3)?])
         .execute(&pool)
@@ -1084,8 +1124,9 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     }
 
     let archive = store.public_language_archive(manifest.world_id).await?;
+    assert_eq!(archive.detector_version, 2);
     assert_eq!(archive.stage, PublicLanguageStage::ProtoLexicon);
-    assert_eq!(archive.conventions.len(), 1);
+    assert_eq!(archive.conventions.len(), 3);
     let convention = &archive.conventions[0];
     assert_eq!(convention.signal_form, 7);
     assert_eq!(convention.tentative_gloss, "resting");
@@ -1095,6 +1136,12 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     assert_eq!(convention.dominance_percent, 100);
     assert_eq!(convention.first_tick, SimTick::new(1));
     assert_eq!(convention.latest_tick, SimTick::new(300));
+    assert!(
+        archive
+            .conventions
+            .iter()
+            .all(|item| item.associated_action == PrimitiveActionKind::Rest)
+    );
     Ok(())
 }
 

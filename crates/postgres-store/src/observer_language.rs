@@ -1,8 +1,8 @@
 use async_trait::async_trait;
 use observer_projection::{
     ObserverLanguageStore, ObserverProjectionStoreError, PUBLIC_LANGUAGE_PROJECTION_NAME,
-    PUBLIC_LANGUAGE_PROJECTION_VERSION, PublicLanguageArchive, PublicLanguageConvention,
-    PublicLanguageStage, PublicLanguageThreshold,
+    PUBLIC_LANGUAGE_PROJECTION_VERSION, PUBLIC_ORGANISM_PROJECTION_VERSION, PublicLanguageArchive,
+    PublicLanguageConvention, PublicLanguageStage, PublicLanguageThreshold,
 };
 use sqlx::FromRow;
 use world_domain::{DomainEvent, EventId, EventSequence, PrimitiveActionKind, SimTick, WorldId};
@@ -11,7 +11,7 @@ use crate::{
     PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
 };
 
-const DETECTOR_VERSION: u16 = 1;
+const DETECTOR_VERSION: u16 = 2;
 const MINIMUM_EVIDENCE_EVENTS: u32 = 12;
 const MINIMUM_LEARNERS: u32 = 4;
 const MINIMUM_SIGNAL_SOURCES: u32 = 3;
@@ -136,7 +136,23 @@ impl ObserverLanguageStore for PostgresStore {
         let through_sequence = self.public_language_cursor(world_id).await?;
         let rows = sqlx::query_as::<_, ConventionRow>(
             r#"
-            WITH meanings AS (
+            WITH eligible_evidence AS (
+                SELECT evidence.*
+                FROM observer_language_evidence evidence
+                JOIN observer_organisms learner
+                  ON learner.projection_version=$3
+                 AND learner.world_id=evidence.world_id
+                 AND learner.organism_id=evidence.observer_id
+                 AND learner.role='person'
+                JOIN observer_organisms source
+                  ON source.projection_version=$3
+                 AND source.world_id=evidence.world_id
+                 AND source.organism_id=evidence.actor_id
+                 AND source.role='person'
+                WHERE evidence.projection_version=$1
+                  AND evidence.world_id=$2
+                  AND evidence.action NOT IN ('bite','emit_signal')
+            ), meanings AS (
                 SELECT signal_form,action,movement_direction,
                     COUNT(*)::BIGINT AS evidence_events,
                     COUNT(DISTINCT observer_id)::BIGINT AS learners,
@@ -147,23 +163,21 @@ impl ObserverLanguageStore for PostgresStore {
                     (ARRAY_AGG(source_event_id ORDER BY source_sequence DESC,source_event_index DESC))[1] AS latest_event_id,
                     MAX(source_sequence)::BIGINT AS latest_sequence,
                     MAX(source_tick)::BIGINT AS latest_tick
-                FROM observer_language_evidence
-                WHERE projection_version=$1 AND world_id=$2
+                FROM eligible_evidence
                 GROUP BY signal_form,action,movement_direction
             ), form_totals AS (
                 SELECT signal_form,COUNT(*)::BIGINT AS form_events
-                FROM observer_language_evidence
-                WHERE projection_version=$1 AND world_id=$2
+                FROM eligible_evidence
                 GROUP BY signal_form
             )
             SELECT meanings.*,form_totals.form_events
             FROM meanings JOIN form_totals USING (signal_form)
-            WHERE action <> 'bite'
             ORDER BY signal_form, evidence_events DESC, action, movement_direction NULLS FIRST
             "#,
         )
         .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
         .bind(world_id.as_uuid())
+        .bind(i32::from(PUBLIC_ORGANISM_PROJECTION_VERSION))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -221,7 +235,12 @@ impl ObserverLanguageStore for PostgresStore {
                 item.movement_direction,
             )
         });
-        let stage = if conventions.len() >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE) {
+        let distinct_meanings = conventions
+            .iter()
+            .map(|item| (item.associated_action, item.movement_direction))
+            .collect::<std::collections::BTreeSet<_>>()
+            .len();
+        let stage = if distinct_meanings >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE) {
             PublicLanguageStage::RudimentaryLanguageCandidate
         } else if conventions.is_empty() {
             PublicLanguageStage::Undetected

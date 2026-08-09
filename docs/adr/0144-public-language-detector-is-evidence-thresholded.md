@@ -14,7 +14,7 @@ promoting noise or feeding an observer interpretation back into the world.
 
 ## Decision
 
-Detector version 1 is a disposable observer projection over committed
+Detector version 2 is a disposable observer projection over committed
 `OrganismSignalActionAssociationChanged` events. A signal-form/action pairing becomes a public
 proto-lexicon candidate only when all of these conditions hold:
 
@@ -24,8 +24,14 @@ proto-lexicon candidate only when all of these conditions hold:
 - evidence spanning at least 288 simulation ticks (one configured simulation day); and
 - the pairing accounts for at least 60 percent of all association evidence for that signal form.
 
-One or two qualifying conventions are labelled `proto_lexicon`. Three or more are labelled only a
-`rudimentary_language_candidate`; the detector makes no claim of grammar, compositionality,
+Only person-to-person evidence is eligible. An emission followed by another emission is excluded:
+it demonstrates continued signaling, not a referent, and cannot provide either evidence or the
+denominator for meaning dominance. The presentation-policy exclusion is handled the same way.
+
+Qualifying conventions with fewer than three **distinct physical meanings** are labelled
+`proto_lexicon`. Three or more distinct meanings are labelled only a
+`rudimentary_language_candidate`; many signal forms converging on the same behavior therefore do
+not satisfy the boundary. The detector makes no claim of grammar, compositionality,
 sentience, intention, or human-like language. Observer glosses name only the associated primitive
 physical behavior and remain explicitly tentative. Violence-adjacent glosses are withheld under the
 presentation policy.
