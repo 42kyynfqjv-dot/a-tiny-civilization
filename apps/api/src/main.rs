@@ -135,8 +135,6 @@ enum Command {
             default_value = "https://atinycivilization.com/api/v1/auth/apple/callback"
         )]
         apple_redirect_uri: String,
-        #[arg(long, env = "NEWSLETTER_DAILY_SIGNUP_URL")]
-        newsletter_daily_signup_url: Option<String>,
         #[arg(long, env = "NEWSLETTER_WEEKLY_SIGNUP_URL")]
         newsletter_weekly_signup_url: Option<String>,
     },
@@ -174,7 +172,6 @@ async fn main() -> Result<()> {
         apple_key_id: None,
         apple_private_key: None,
         apple_redirect_uri: "https://atinycivilization.com/api/v1/auth/apple/callback".to_owned(),
-        newsletter_daily_signup_url: None,
         newsletter_weekly_signup_url: None,
     }) {
         Command::Migrate => {
@@ -330,7 +327,6 @@ async fn main() -> Result<()> {
             apple_key_id,
             apple_private_key,
             apple_redirect_uri,
-            newsletter_daily_signup_url,
             newsletter_weekly_signup_url,
         } => {
             let secure_cookies = environment == "production";
@@ -404,23 +400,15 @@ async fn main() -> Result<()> {
                     secure_cookies,
                 );
             }
-            match (
-                nonempty(newsletter_daily_signup_url),
-                nonempty(newsletter_weekly_signup_url),
-            ) {
-                (Some(daily), Some(weekly)) => {
+            match nonempty(newsletter_weekly_signup_url) {
+                Some(weekly) => {
                     state = state.with_newsletter(
-                        external_https_url(&daily)
-                            .context("validate daily newsletter signup URL")?,
                         external_https_url(&weekly)
                             .context("validate weekly newsletter signup URL")?,
                     );
                     tracing::info!("external newsletter signup enabled");
                 }
-                (None, None) => tracing::info!("external newsletter signup disabled"),
-                _ => anyhow::bail!(
-                    "daily and weekly newsletter signup URLs must be configured together"
-                ),
+                None => tracing::info!("external newsletter signup disabled"),
             }
             if let Some(secret) = stripe_webhook_secret.as_ref() {
                 let verifier = StripeWebhookVerifier::new(

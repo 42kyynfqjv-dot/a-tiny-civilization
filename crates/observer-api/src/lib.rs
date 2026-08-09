@@ -140,11 +140,8 @@ impl ApiState {
     }
 
     #[must_use]
-    pub fn with_newsletter(mut self, daily_signup_url: Url, weekly_signup_url: Url) -> Self {
-        self.newsletter = Some(Arc::new(NewsletterRuntime {
-            daily_signup_url,
-            weekly_signup_url,
-        }));
+    pub fn with_newsletter(mut self, weekly_signup_url: Url) -> Self {
+        self.newsletter = Some(Arc::new(NewsletterRuntime { weekly_signup_url }));
         self
     }
 }
@@ -162,7 +159,6 @@ struct AuthRuntime {
 }
 
 struct NewsletterRuntime {
-    daily_signup_url: Url,
     weekly_signup_url: Url,
 }
 
@@ -244,12 +240,14 @@ pub fn router(state: ApiState) -> Router {
 struct NewsletterStatusResponse {
     enabled: bool,
     email_storage: &'static str,
+    cadences: &'static [&'static str],
 }
 
 async fn newsletter_status(State(state): State<ApiState>) -> Json<NewsletterStatusResponse> {
     Json(NewsletterStatusResponse {
         enabled: state.newsletter.is_some(),
         email_storage: "newsletter_provider_only",
+        cadences: &["weekly"],
     })
 }
 
@@ -264,12 +262,11 @@ async fn newsletter_subscribe(
 ) -> Result<Response, ApiError> {
     let newsletter = state.newsletter.as_ref().ok_or(ApiError::NotFound)?;
     let target = match query.cadence.as_str() {
-        "daily" => &newsletter.daily_signup_url,
         "weekly" => &newsletter.weekly_signup_url,
         _ => {
             return Err(ApiError::BadRequest(
                 "invalid_digest_cadence",
-                "digest cadence must be daily or weekly",
+                "digest cadence must be weekly",
             ));
         }
     };

@@ -28,10 +28,7 @@ export function NewsletterPanel() {
       </div>
       <div className="living-newsletter-actions" aria-live="polite">
         {enabled ? (
-          <>
-            <a className="button button-dark" href="/api/v1/newsletter/subscribe?cadence=daily">Daily glimpse</a>
-            <a className="button button-outline" href="/api/v1/newsletter/subscribe?cadence=weekly">Weekly letter</a>
-          </>
+          <a className="button button-dark" href="/api/v1/newsletter/subscribe?cadence=weekly">Get the weekly letter</a>
         ) : (
           <span>{enabled === null ? "Checking the postbox…" : "The postbox is being prepared."}</span>
         )}

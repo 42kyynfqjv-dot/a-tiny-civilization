@@ -230,19 +230,17 @@ identifier. A newsletter subscription is separate from sign-in.
 Apple's web configuration requires a Services ID associated with a primary App ID and
 registered website/return URLs. See [Configure Sign in with Apple for the web](https://developer.apple.com/help/account/capabilities/configure-sign-in-with-apple-for-the-web).
 
-### Hosted daily and weekly digest
+### Hosted weekly digest
 
 The observatory exposes a factual RSS source at
-`/api/v1/worlds/{world_id}/digest.xml` and two controlled redirects for daily and weekly hosted
-signup forms. Configure `NEWSLETTER_DAILY_SIGNUP_URL` and `NEWSLETTER_WEEKLY_SIGNUP_URL` together.
+`/api/v1/worlds/{world_id}/digest.xml` and one controlled redirect for the weekly hosted signup
+form. Configure `NEWSLETTER_WEEKLY_SIGNUP_URL` with the provider-hosted HTTPS URL.
 The application never proxies a signup form, receives a subscriber export, or stores an address.
 
-Buttondown is the current operational fit: its hosted subscribe page can apply `daily` or `weekly`
-tags from the URL, and two external-feed automations can poll the same public RSS source at their
-respective cadence with tag-based audience filters. The account owner must create the newsletter,
-enable double opt-in, make both tags subscriber-editable, configure the two filtered RSS
-automations, and supply the resulting hosted signup URLs. Any equivalent provider remains usable
-because the application boundary is just two HTTPS destinations plus a public RSS feed.
+Buttondown is the current operational fit: its hosted subscribe page owns subscriber addresses and
+one weekly external-feed automation polls the public RSS source. The application never needs tags,
+subscriber exports, or mailing-list access. Any equivalent provider remains usable because the
+application boundary is one HTTPS destination plus a public RSS feed.
 
 ### LLM and Hindsight
 

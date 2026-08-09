@@ -187,12 +187,7 @@ if [[ "${apple_auth_values}" -eq 4 \
   exit 2
 fi
 
-if [[ -n "${NEWSLETTER_DAILY_SIGNUP_URL:-}" && -z "${NEWSLETTER_WEEKLY_SIGNUP_URL:-}" ]] \
-   || [[ -z "${NEWSLETTER_DAILY_SIGNUP_URL:-}" && -n "${NEWSLETTER_WEEKLY_SIGNUP_URL:-}" ]]; then
-  echo "daily and weekly newsletter signup URLs must be configured together" >&2
-  exit 2
-fi
-for name in NEWSLETTER_DAILY_SIGNUP_URL NEWSLETTER_WEEKLY_SIGNUP_URL; do
+for name in NEWSLETTER_WEEKLY_SIGNUP_URL; do
   if [[ -n "${!name:-}" && ! "${!name}" =~ ^https://[^/?#[:space:]]+(/[^#[:space:]]*)?$ ]]; then
     echo "$name must be an absolute HTTPS URL without a fragment" >&2
     exit 2
