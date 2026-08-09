@@ -40,11 +40,31 @@ type Artifact = {
   surface_trace_units: number;
 };
 
+type LanguageConvention = {
+  signal_form: number;
+  tentative_gloss: string;
+  evidence_events: number;
+  learners: number;
+  signal_sources: number;
+  dominance_percent: number;
+  first_sequence: string | number;
+  first_tick: string | number;
+  latest_sequence: string | number;
+  latest_tick: string | number;
+};
+
+type LanguageArchive = {
+  detector_version: number;
+  stage: "undetected" | "proto_lexicon" | "rudimentary_language_candidate";
+  threshold: { minimum_evidence_events: number; minimum_learners: number; minimum_signal_sources: number; minimum_tick_span: number; minimum_dominance_percent: number; conventions_for_language_candidate: number };
+  conventions: LanguageConvention[];
+};
+
 type WikiState =
   | { state: "loading" }
   | { state: "empty" }
   | { state: "error" }
-  | { state: "ready"; world: World; findings: Finding[]; organisms: Organism[]; artifacts: Artifact[] };
+  | { state: "ready"; world: World; findings: Finding[]; organisms: Organism[]; artifacts: Artifact[]; language: LanguageArchive };
 
 /**
  * A read-only index over public observer projections. It intentionally cannot create
@@ -68,16 +88,18 @@ export function WikiIndex() {
         }
 
         const worldId = encodeURIComponent(world.world_id);
-        const [findingsResponse, organismsResponse, artifactsResponse] = await Promise.all([
+        const [findingsResponse, organismsResponse, artifactsResponse, languageResponse] = await Promise.all([
           fetch(`/api/v1/worlds/${worldId}/findings?limit=24`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${worldId}/organisms?limit=200`, { cache: "no-store" }),
           fetch(`/api/v1/worlds/${worldId}/artifacts?limit=24`, { cache: "no-store" }),
+          fetch(`/api/v1/worlds/${worldId}/language`, { cache: "no-store" }),
         ]);
-        if (!findingsResponse.ok || !organismsResponse.ok || !artifactsResponse.ok) throw new Error("wiki records unavailable");
+        if (!findingsResponse.ok || !organismsResponse.ok || !artifactsResponse.ok || !languageResponse.ok) throw new Error("wiki records unavailable");
         const findings = (await findingsResponse.json()) as { findings: Finding[] };
         const organisms = (await organismsResponse.json()) as { organisms: Organism[] };
         const artifacts = (await artifactsResponse.json()) as { artifacts: Artifact[] };
-        if (active) setWiki({ state: "ready", world, findings: findings.findings, organisms: organisms.organisms, artifacts: artifacts.artifacts });
+        const language = (await languageResponse.json()) as LanguageArchive;
+        if (active) setWiki({ state: "ready", world, findings: findings.findings, organisms: organisms.organisms, artifacts: artifacts.artifacts, language });
       } catch {
         if (active) setWiki({ state: "error" });
       }
@@ -124,10 +146,17 @@ export function WikiIndex() {
         </article>
         <article id="language-archive">
           <h3>Language archive and translation</h3>
-          <p>No language has been established. The simulation does not contain a required language milestone or a hidden dictionary.</p>
-          <p>If repeatable, socially learned signal forms emerge, this section will preserve each original form and build a cautious observer dictionary: tentative translation, confidence, first and latest supporting events, usage examples, and competing interpretations. A translation is observer research and can never teach or steer the inhabitants.</p>
+          <p>{languageStage(wiki.language.stage)}</p>
+          {wiki.language.conventions.length === 0 ? <p>Signal emissions alone do not qualify. Detector v{wiki.language.detector_version} requires at least {wiki.language.threshold.minimum_evidence_events} evidence events, {wiki.language.threshold.minimum_learners} independent learners, {wiki.language.threshold.minimum_signal_sources} signal sources, a {wiki.language.threshold.minimum_tick_span}-tick span, and {wiki.language.threshold.minimum_dominance_percent}% meaning dominance.</p> : <ol>{wiki.language.conventions.map((convention) => <li key={`${convention.signal_form}:${convention.tentative_gloss}`}><strong>Signal form {convention.signal_form} · “{convention.tentative_gloss}”</strong><span>Tentative observer gloss · {convention.dominance_percent}% of this form’s evidence</span><small>{convention.evidence_events} events · {convention.learners} learners · {convention.signal_sources} sources</small><small>First evidence event {convention.first_sequence}, tick {convention.first_tick} · latest event {convention.latest_sequence}, tick {convention.latest_tick}</small></li>)}</ol>}
+          <p>Dictionary entries are observer research over committed evidence. They never teach, steer, or reveal a translation to the inhabitants.</p>
         </article>
       </div>
     </section>
   );
+}
+
+function languageStage(stage: LanguageArchive["stage"]) {
+  if (stage === "rudimentary_language_candidate") return "Several stable, socially learned conventions now support a rudimentary language candidate. This is not evidence of grammar or human-like language.";
+  if (stage === "proto_lexicon") return "At least one stable, socially learned signal convention supports a proto-lexicon; it is not yet classified as a language.";
+  return "No stable signal convention has crossed the public evidence threshold. The world currently has signaling, not an established language.";
 }

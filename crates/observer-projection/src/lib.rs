@@ -39,6 +39,8 @@ pub const PUBLIC_ARTIFACT_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_ARTIFACT_PROJECTION_NAME: &str = "public-artifact-v1";
 pub const PUBLIC_HABITAT_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
+pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -653,6 +655,74 @@ pub trait ObserverHabitatStore: Send + Sync {
         world_id: WorldId,
         query: PublicHabitatQuery,
     ) -> Result<PublicHabitatView, ObserverProjectionStoreError>;
+}
+
+/// Versioned, deliberately conservative evidence boundary for observer-side
+/// language research. These values never enter the canonical world.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicLanguageStage {
+    Undetected,
+    ProtoLexicon,
+    RudimentaryLanguageCandidate,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicLanguageThreshold {
+    pub minimum_evidence_events: u32,
+    pub minimum_learners: u32,
+    pub minimum_signal_sources: u32,
+    pub minimum_tick_span: u64,
+    pub minimum_dominance_percent: u16,
+    pub conventions_for_language_candidate: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicLanguageConvention {
+    pub signal_form: u8,
+    pub tentative_gloss: String,
+    pub associated_action: PrimitiveActionKind,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub movement_direction: Option<u8>,
+    pub evidence_events: u32,
+    pub learners: u32,
+    pub signal_sources: u32,
+    pub dominance_percent: u16,
+    pub first_event_id: EventId,
+    pub first_sequence: EventSequence,
+    pub first_tick: SimTick,
+    pub latest_event_id: EventId,
+    pub latest_sequence: EventSequence,
+    pub latest_tick: SimTick,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicLanguageArchive {
+    pub projection_version: u16,
+    pub detector_version: u16,
+    pub world_id: WorldId,
+    pub through_sequence: EventSequence,
+    pub stage: PublicLanguageStage,
+    pub threshold: PublicLanguageThreshold,
+    pub conventions: Vec<PublicLanguageConvention>,
+}
+
+#[async_trait]
+pub trait ObserverLanguageStore: Send + Sync {
+    async fn apply_public_language_batches(
+        &self,
+        batches: &[EventBatch],
+    ) -> Result<u64, ObserverProjectionStoreError>;
+
+    async fn public_language_cursor(
+        &self,
+        world_id: WorldId,
+    ) -> Result<EventSequence, ObserverProjectionStoreError>;
+
+    async fn public_language_archive(
+        &self,
+        world_id: WorldId,
+    ) -> Result<PublicLanguageArchive, ObserverProjectionStoreError>;
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,

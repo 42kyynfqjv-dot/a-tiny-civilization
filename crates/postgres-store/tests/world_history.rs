@@ -21,9 +21,10 @@ use observer_auth::{
 };
 use observer_projection::{
     CommittedBirth, ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
-    ObserverHistoryCommitmentStore, ObserverOrganismStore, ObserverTimelineStore,
-    ObserverWorldStore, PublicHabitatDetail, PublicHabitatQuery, PublicWorldInputStatus,
-    ReservationRequest, ReservationState, ReservationTarget, SupporterReservationStore,
+    ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverOrganismStore,
+    ObserverTimelineStore, ObserverWorldStore, PublicHabitatDetail, PublicHabitatQuery,
+    PublicLanguageStage, PublicWorldInputStatus, ReservationRequest, ReservationState,
+    ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{
@@ -1052,6 +1053,48 @@ async fn habitat_projection_tracks_motion_and_bounds_every_view(pool: PgPool) ->
     assert_eq!(planet.clusters.len(), 1);
     assert_eq!(planet.clusters[0].people, 1);
     assert_eq!(planet.clusters[0].total, 1);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(101_103);
+    store.create_world(&manifest, None).await?;
+    let learners = (0..4).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+    let sources = (0..3).map(|_| Uuid::new_v4()).collect::<Vec<_>>();
+    for index in 0..12_i64 {
+        let tick = if index == 11 { 300 } else { index + 1 };
+        sqlx::query(
+            r#"
+            INSERT INTO observer_language_evidence (
+                projection_version,world_id,source_event_id,source_sequence,source_tick,
+                source_event_index,observer_id,actor_id,signal_form,action,movement_direction
+            ) VALUES (1,$1,$2,$3,$4,0,$5,$6,7,'rest',NULL)
+            "#,
+        )
+        .bind(manifest.world_id.as_uuid())
+        .bind(Uuid::new_v4())
+        .bind(index + 1)
+        .bind(tick)
+        .bind(learners[usize::try_from(index % 4)?])
+        .bind(sources[usize::try_from(index % 3)?])
+        .execute(&pool)
+        .await?;
+    }
+
+    let archive = store.public_language_archive(manifest.world_id).await?;
+    assert_eq!(archive.stage, PublicLanguageStage::ProtoLexicon);
+    assert_eq!(archive.conventions.len(), 1);
+    let convention = &archive.conventions[0];
+    assert_eq!(convention.signal_form, 7);
+    assert_eq!(convention.tentative_gloss, "resting");
+    assert_eq!(convention.evidence_events, 12);
+    assert_eq!(convention.learners, 4);
+    assert_eq!(convention.signal_sources, 3);
+    assert_eq!(convention.dominance_percent, 100);
+    assert_eq!(convention.first_tick, SimTick::new(1));
+    assert_eq!(convention.latest_tick, SimTick::new(300));
     Ok(())
 }
 

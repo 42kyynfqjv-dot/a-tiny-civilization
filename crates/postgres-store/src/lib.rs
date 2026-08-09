@@ -17,6 +17,7 @@ mod observer_artifacts;
 mod observer_findings;
 mod observer_habitat;
 mod observer_history_commitments;
+mod observer_language;
 mod observer_organisms;
 mod observer_timeline;
 mod observer_worlds;

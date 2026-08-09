@@ -18,11 +18,11 @@ use observer_auth::{
 };
 use observer_projection::{
     ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
-    ObserverHistoryCommitmentStore, ObserverOrganismStore, ObserverTimelineStore,
-    ObserverWorldStore, PublicArtifact, PublicArtifactTrace, PublicFinding, PublicHabitatDetail,
-    PublicHabitatQuery, PublicHabitatView, PublicHistoryCommitmentPage, PublicOrganism,
-    PublicTimelineItem, PublicWikiEntry, PublicWorld, PublicWorldTelemetry,
-    compose_public_wiki_entries,
+    ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverOrganismStore,
+    ObserverTimelineStore, ObserverWorldStore, PublicArtifact, PublicArtifactTrace, PublicFinding,
+    PublicHabitatDetail, PublicHabitatQuery, PublicHabitatView, PublicHistoryCommitmentPage,
+    PublicLanguageArchive, PublicOrganism, PublicTimelineItem, PublicWikiEntry, PublicWorld,
+    PublicWorldTelemetry, compose_public_wiki_entries,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -52,6 +52,7 @@ pub trait ObserverReadStore:
     + ObserverArtifactStore
     + ObserverHistoryCommitmentStore
     + ObserverHabitatStore
+    + ObserverLanguageStore
 {
 }
 
@@ -64,6 +65,7 @@ impl<T> ObserverReadStore for T where
         + ObserverArtifactStore
         + ObserverHistoryCommitmentStore
         + ObserverHabitatStore
+        + ObserverLanguageStore
 {
 }
 
@@ -193,6 +195,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/worlds/{world_id}/wiki", get(public_wiki))
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route("/api/v1/worlds/{world_id}/habitat", get(public_habitat))
+        .route("/api/v1/worlds/{world_id}/language", get(public_language))
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
             get(public_organism),
@@ -1223,6 +1226,21 @@ async fn public_habitat(
         .await
         .map_err(log_observer_error)?;
     Ok(Json(view))
+}
+
+async fn public_language(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+) -> Result<Json<PublicLanguageArchive>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let archive = state
+        .store
+        .public_language_archive(world_id)
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(archive))
 }
 
 async fn public_organisms(

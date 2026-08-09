@@ -42,6 +42,8 @@ perception, cognition, Hindsight memory, action selection, or reproductive match
 may silently promote a candidate form; model-assisted research, if later offered, must remain a
 separately labelled interpretation over the same cited evidence.
 
+ADR 0144 defines the first versioned deterministic evidence threshold used by that archive.
+
 ## Consequences
 
 - The world can remain permanently non-linguistic without being treated as stalled or incomplete.

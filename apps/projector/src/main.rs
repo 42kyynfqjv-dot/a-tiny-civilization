@@ -4,8 +4,8 @@ use anyhow::{Context, Result};
 use application::{FoundationStore, ServiceHeartbeat, WorldStore};
 use clap::{Parser, Subcommand};
 use observer_projection::{
-    ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore, ObserverOrganismStore,
-    ObserverTimelineStore, SupporterReservationStore,
+    ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore, ObserverLanguageStore,
+    ObserverOrganismStore, ObserverTimelineStore, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use serde_json::json;
@@ -159,12 +159,17 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             .public_habitat_cursor(*world_id)
             .await
             .context("load public habitat cursor")?;
+        let mut language_cursor = store
+            .public_language_cursor(*world_id)
+            .await
+            .context("load public language cursor")?;
         let mut applied = 0;
         let mut indexed = 0;
         let mut findings = 0;
         let mut telemetry = 0;
         let mut artifacts = 0;
         let mut habitat = 0;
+        let mut language = 0;
 
         loop {
             let earliest_cursor = timeline_cursor
@@ -172,7 +177,8 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
                 .min(finding_cursor)
                 .min(telemetry_cursor)
                 .min(artifact_cursor)
-                .min(habitat_cursor);
+                .min(habitat_cursor)
+                .min(language_cursor);
             if earliest_cursor >= target_sequence {
                 break;
             }
@@ -199,6 +205,7 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
                 batches.partition_point(|batch| batch.sequence <= telemetry_cursor);
             let artifact_start = batches.partition_point(|batch| batch.sequence <= artifact_cursor);
             let habitat_start = batches.partition_point(|batch| batch.sequence <= habitat_cursor);
+            let language_start = batches.partition_point(|batch| batch.sequence <= language_cursor);
             // The default projector pool has four connections. Keep at most four
             // long-lived projection transactions concurrent, then run the remaining
             // projections from their independent cursors.
@@ -210,12 +217,14 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             )?;
             let page_artifacts = project_artifacts(store, &batches[artifact_start..]).await?;
             let page_habitat = project_habitat(store, &batches[habitat_start..]).await?;
+            let page_language = project_language(store, &batches[language_start..]).await?;
             applied += page_applied;
             indexed += page_indexed;
             findings += page_findings;
             telemetry += page_telemetry;
             artifacts += page_artifacts;
             habitat += page_habitat;
+            language += page_language;
 
             if timeline_start < batches.len() {
                 timeline_cursor = page_end;
@@ -234,6 +243,9 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             }
             if habitat_start < batches.len() {
                 habitat_cursor = page_end;
+            }
+            if language_start < batches.len() {
+                language_cursor = page_end;
             }
         }
         // Archive is already an immutable canonical fact. Checking the durable lifecycle
@@ -264,11 +276,22 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             telemetry_batches = telemetry,
             artifact_batches = artifacts,
             habitat_batches = habitat,
+            language_batches = language,
             expired_reservations,
             "public timeline projection completed"
         );
     }
     Ok(())
+}
+
+async fn project_language(
+    store: &PostgresStore,
+    batches: &[world_domain::EventBatch],
+) -> Result<u64> {
+    store
+        .apply_public_language_batches(batches)
+        .await
+        .context("persist public language evidence batch range")
 }
 
 async fn project_habitat(

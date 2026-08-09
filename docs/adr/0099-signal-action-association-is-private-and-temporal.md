@@ -46,3 +46,11 @@ eleven closed primitive actions. No lifetime can grow it beyond that fixed bound
 This is a substrate for a convention, not proof of communication. Random correlations may fade in
 relevance while repeated situated correlations can influence behavior. Whether anything stable or
 language-like arises remains history.
+
+## Observer research amendment
+
+ADR 0144 supersedes “discarded by every public projection” only for a versioned, thresholded
+aggregate language detector. Raw per-organism association state and learner/source identities remain
+private and are never returned by the API or wiki. Only qualifying aggregate counts, tentative
+physical-behavior glosses, and canonical evidence references may be published; they cannot flow back
+into the world.
