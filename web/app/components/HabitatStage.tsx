@@ -374,6 +374,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   };
 
   const wheelZoom = (event: React.WheelEvent<HTMLCanvasElement>) => {
+    if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
     if (detailRef.current !== "local") {
       zoomBy(event.deltaY < 0 ? 1 : -1);
@@ -409,7 +410,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   return <section className={`habitat-stage ${interacting ? "is-interacting" : ""} ${selected ? "has-selected-life" : ""}`} aria-label="Deep-space observatory window onto the live habitat">
     <div className="habitat-starfield" aria-hidden="true"><i /><i /><i /></div>
     <div className="habitat-window">
-    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={cancelPointer} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, pinch or scroll to zoom, and select a point to inspect it." />
+    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={cancelPointer} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, pinch or use Control or Command plus scroll to zoom, and select a point to inspect it." />
     <div className="habitat-wash" aria-hidden="true" />
     <div className="habitat-glass" aria-hidden="true"><i /><span className="glass-corner corner-nw" /><span className="glass-corner corner-ne" /><span className="glass-corner corner-sw" /><span className="glass-corner corner-se" /></div>
     <header className="habitat-toolbar">
@@ -426,7 +427,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     </aside>
     <MemoryTelemetry worldId={worldId} labels={labels} />
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
-      {selected ? <><p>{labels.get(selected.organism_id) ?? "Unindexed life"} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
+      {selected ? <><p>{labels.get(selected.organism_id) ?? "Unindexed life"} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or use the zoom controls to move closer. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
     <footer><span>Drag to explore · tap a light to follow a life</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `showing ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives nearby` : `${formatNumber(view?.clusters.length ?? 0)} groups in view`}</span></footer>
     </div>

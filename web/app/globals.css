@@ -1019,7 +1019,7 @@ select {
 .living-habitat-hero { display: block; min-height: min(900px, calc(100vh - 76px)); }
 .living-habitat-hero::before { display: none; }
 .habitat-stage { background: #061712; box-shadow: inset 0 0 0 1px rgba(210,231,217,.13), inset 0 0 110px rgba(0,0,0,.82); height: min(900px, calc(100vh - 76px)); isolation: isolate; min-height: 690px; overflow: hidden; position: relative; }
-.habitat-stage canvas { -webkit-tap-highlight-color: transparent; cursor: grab; display: block; height: 100%; overscroll-behavior: contain; touch-action: none; user-select: none; width: 100%; will-change: contents; }
+.habitat-stage canvas { -webkit-tap-highlight-color: transparent; cursor: grab; display: block; height: 100%; overscroll-behavior: auto; touch-action: pan-y; user-select: none; width: 100%; will-change: contents; }
 .habitat-stage canvas:active, .habitat-stage.is-interacting canvas { cursor: grabbing; }
 .habitat-wash { background: radial-gradient(ellipse at 52% 47%, transparent 35%, rgba(1,9,8,.2) 68%, rgba(0,5,4,.82) 112%), linear-gradient(0deg, rgba(2,13,11,.56), transparent 20%); inset: 0; pointer-events: none; position: absolute; z-index: 2; }
 .habitat-glass { background: linear-gradient(112deg, transparent 0 17%, rgba(221,242,230,.035) 24%, transparent 34% 66%, rgba(206,235,219,.025) 73%, transparent 82%), repeating-linear-gradient(0deg, rgba(225,244,233,.012) 0 1px, transparent 1px 4px); box-shadow: inset 0 0 0 1px rgba(226,242,232,.1), inset 0 0 80px rgba(0,0,0,.55); inset: 0; pointer-events: none; position: absolute; z-index: 4; }
@@ -1058,7 +1058,7 @@ select {
 }
 @media (max-width: 660px) {
   .living-habitat-hero { min-height: 0; }
-  .habitat-stage { height: calc(100svh - 66px); height: calc(100dvh - 66px); min-height: 560px; overscroll-behavior: contain; }
+  .habitat-stage { height: calc(100svh - 66px); height: calc(100dvh - 66px); min-height: 560px; overscroll-behavior: auto; }
   .living-habitat-caption { gap: 24px; grid-template-columns: 1fr; padding: 38px 22px; }
   .living-habitat-caption h1 { font-size: 52px; }.living-habitat-caption .world-input-status { display: none; }
   .habitat-toolbar { align-items: start; left: max(14px, env(safe-area-inset-left)); right: max(14px, env(safe-area-inset-right)); top: max(12px, env(safe-area-inset-top)); }
