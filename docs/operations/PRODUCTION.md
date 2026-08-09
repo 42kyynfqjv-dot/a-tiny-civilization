@@ -92,7 +92,7 @@ containers with the checked-in helper; it loads the root-protected application
 environment itself and never removes unrelated containers such as Hindsight.
 
 ```bash
-sudo ./scripts/deploy-production-app.sh \
+sudo env POSTGRES_PORT=55432 ./scripts/deploy-production-app.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
@@ -130,19 +130,19 @@ equivalent, preventing a copied preflight command from becoming a deployment by 
 Every production mutation helper also requires a clean Git checkout with no staged, unstaged, or
 untracked files and reports its exact 40-character commit before proceeding. Reviewed source-tree
 admissions and operational scripts therefore cannot be mixed with local uncommitted changes.
-The helper also refuses to mutate Compose when ports 3000, 5432, or 8080 are held by any container
-outside the `a-tiny-civilization` production project. On the long-term host this intentionally
-requires the legacy development stack to be stopped during the deliberate cutover; its separate
-volume and 139,382-tick development world are retained, not promoted or deleted.
+The helper also refuses to mutate Compose when any Compose-resolved web, database, or API loopback
+port is held by a container outside the `a-tiny-civilization` production project. On the long-term
+host this intentionally requires the legacy development stack to be stopped during the deliberate
+cutover; its separate volume and development world are retained, not promoted or deleted.
 The same guard rejects foreign running containers attached to any production data volume or the
 shared `atiny-ollama` model volume. This prevents concurrent local-model writers during cutover.
 
-For a first genesis, stop the legacy development stack during the deliberate cutover, provision the
-production volumes, and use the private preparation helper to start only `db` and `migrate` with
-the protected environment:
+For this first genesis, use host port 55432 consistently through every private and public production
+command. This lets the private preparation helper start only `db` and `migrate` while the legacy
+observatory remains live on 5432:
 
 ```bash
-sudo ./scripts/prepare-production-genesis-database.sh \
+sudo env POSTGRES_PORT=55432 ./scripts/prepare-production-genesis-database.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
@@ -161,7 +161,7 @@ The full deployment guard still requires every legacy listener and shared-model 
 before public cutover. Commit the admitted world while the database is still private:
 
 ```bash
-sudo ./scripts/activate-production-genesis.sh \
+sudo env POSTGRES_PORT=55432 ./scripts/activate-production-genesis.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
@@ -505,8 +505,8 @@ Immediately before the first public production deployment, stop the superseded p
 the checked helper instead of manually naming containers:
 
 ```bash
-sudo ./scripts/stop-legacy-public-stack-for-cutover.sh --check
-sudo ./scripts/stop-legacy-public-stack-for-cutover.sh \
+sudo env POSTGRES_PORT=55432 ./scripts/stop-legacy-public-stack-for-cutover.sh --check
+sudo env POSTGRES_PORT=55432 ./scripts/stop-legacy-public-stack-for-cutover.sh \
   --confirm-legacy-public-cutover
 ```
 
