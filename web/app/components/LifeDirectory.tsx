@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createPublicLifeLabels } from "./lifeLabels";
+import { commonSpeciesName } from "./speciesNames";
 
 type World = { world_id: string; status: "initializing" | "running" | "extinct" | "archived" };
 type Organism = { organism_id: string; role: "person" | "fauna"; species: { scientific_name: string; source_url: string }; introduced_sequence: string | number; introduced_tick: string | number; ended_event_id: string | null };
@@ -53,7 +54,7 @@ export function LifeDirectory() {
             <a className="life-card-main" href={`/lives/${encodeURIComponent(directory.world.world_id)}/${encodeURIComponent(organism.organism_id)}`}>
               <span className="life-card-mark">{organism.role === "person" ? "P" : "A"}</span>
               <p>{organism.role === "person" ? "Person" : "Animal"} observer ID · {organism.ended_event_id ? "record ended" : "alive"}</p>
-              <h3>{label}</h3><em>{organism.species.scientific_name}</em><small>In the record since moment {formatNumber(organism.introduced_tick)}</small>
+              <h3>{label}</h3><em title={organism.species.scientific_name}>{commonSpeciesName(organism.species.scientific_name)}</em><small>In the record since moment {formatNumber(organism.introduced_tick)}</small>
             </a>
             <button type="button" onClick={() => { window.localStorage.setItem("atiny.followed-organism", organism.organism_id); setFollowedId(organism.organism_id); }}>{followedId === organism.organism_id ? "Following" : "Follow"}</button>
           </article>;

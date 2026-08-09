@@ -1005,7 +1005,8 @@ select {
 .living-habitat-hero { display: block; min-height: min(900px, calc(100vh - 76px)); }
 .living-habitat-hero::before { display: none; }
 .habitat-stage { background: #0b2b22; height: min(900px, calc(100vh - 76px)); min-height: 690px; overflow: hidden; position: relative; }
-.habitat-stage canvas { cursor: crosshair; display: block; height: 100%; touch-action: manipulation; width: 100%; }
+.habitat-stage canvas { cursor: grab; display: block; height: 100%; touch-action: none; width: 100%; }
+.habitat-stage canvas:active { cursor: grabbing; }
 .habitat-wash { background: linear-gradient(90deg, rgba(3,18,14,.92) 0, rgba(3,18,14,.52) 31%, transparent 58%), linear-gradient(0deg, rgba(2,13,11,.7), transparent 30%); inset: 0; pointer-events: none; position: absolute; }
 .living-habitat-intro { left: clamp(24px, 5.5vw, 90px); max-width: min(520px, 38vw); pointer-events: none; position: absolute; top: clamp(112px, 18vh, 180px); z-index: 5; }
 .living-habitat-intro .living-live-label { margin-bottom: 24px; }

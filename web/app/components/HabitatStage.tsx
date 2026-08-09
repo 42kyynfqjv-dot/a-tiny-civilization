@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { commonSpeciesName } from "./speciesNames";
 
 type Detail = "planet" | "region" | "local";
 type Role = "person" | "fauna";
@@ -23,6 +24,7 @@ type HabitatActivity = { source_event_id: string; source_sequence: string | numb
 type HabitatView = { through_sequence: string | number; detail: Detail; entities: HabitatEntity[]; clusters: HabitatCluster[]; activity: HabitatActivity[]; truncated: boolean; maximum_entities: number };
 type Point = { id: string; x: number; y: number; radius: number; entity?: HabitatEntity; cluster?: HabitatCluster };
 type Bounds = { west: number; south: number; east: number; north: number };
+type Camera = { latitude: number; longitude: number };
 
 const WORLD_BOUNDS: Bounds = { west: -1_799_999_999, south: -900_000_000, east: 1_799_999_999, north: 900_000_000 };
 
@@ -30,14 +32,16 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const pointsRef = useRef<Point[]>([]);
   const viewRef = useRef<HabitatView | null>(null);
+  const dragRef = useRef<{ x: number; y: number; pointerId: number } | null>(null);
   const [view, setView] = useState<HabitatView | null>(null);
   const [detail, setDetail] = useState<Detail>("local");
-  const [center, setCenter] = useState({ latitude: 0, longitude: 0 });
+  const [center, setCenter] = useState<Camera>({ latitude: 0, longitude: 0 });
+  const [localZoom, setLocalZoom] = useState(1);
   const [selectedId, setSelectedId] = useState<string | null>(() => typeof window === "undefined" ? null : window.localStorage.getItem("atiny.followed-organism"));
   const [status, setStatus] = useState<"loading" | "live" | "error">("loading");
 
-  const fetchView = useCallback(async (nextDetail: Detail, nextCenter: { latitude: number; longitude: number }) => {
-    const bounds = boundsFor(nextDetail, nextCenter);
+  const fetchView = useCallback(async (nextDetail: Detail, nextCenter: Camera, nextZoom: number) => {
+    const bounds = boundsFor(nextDetail, nextCenter, nextZoom);
     const params = new URLSearchParams({
       detail: nextDetail,
       west_e7: String(bounds.west), south_e7: String(bounds.south), east_e7: String(bounds.east), north_e7: String(bounds.north),
@@ -53,13 +57,17 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     let active = true;
     async function bootstrap() {
       try {
-        const planet = await fetchView("planet", { latitude: 0, longitude: 0 });
+        const planet = await fetchView("planet", { latitude: 0, longitude: 0 }, 1);
         const focus = [...planet.clusters].sort((a, b) => b.total - a.total)[0];
-        const nextCenter = focus ? { latitude: focus.latitude_e7, longitude: focus.longitude_e7 } : { latitude: 0, longitude: 0 };
+        let nextCenter = focus ? { latitude: focus.latitude_e7, longitude: focus.longitude_e7 } : { latitude: 0, longitude: 0 };
+        if (!active) return;
+        const overview = await fetchView("local", nextCenter, 1);
+        const fitted = fitLocalCamera(overview.entities, nextCenter);
+        nextCenter = fitted.center;
+        const local = fitted.zoom > 1.05 ? await fetchView("local", nextCenter, fitted.zoom) : overview;
         if (!active) return;
         setCenter(nextCenter);
-        const local = await fetchView("local", nextCenter);
-        if (!active) return;
+        setLocalZoom(fitted.zoom);
         viewRef.current = local;
         setView(local);
         setStatus("live");
@@ -74,7 +82,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     let active = true;
     async function refresh() {
       try {
-        const next = await fetchView(detail, center);
+        const next = await fetchView(detail, center, localZoom);
         if (!active) return;
         viewRef.current = next;
         setView(next);
@@ -84,7 +92,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     void refresh();
     const timer = window.setInterval(refresh, 3_000);
     return () => { active = false; window.clearInterval(timer); };
-  }, [center, detail, fetchView, status]);
+  }, [center, detail, fetchView, localZoom, status]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -104,20 +112,22 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     resize.observe(canvas);
     function draw(now: number) {
       const rect = canvas.getBoundingClientRect();
-      pointsRef.current = drawHabitat(context, rect.width, rect.height, viewRef.current, detail, center, Math.min(1, (now - start) / 2_400), selectedId, labels);
+      pointsRef.current = drawHabitat(context, rect.width, rect.height, viewRef.current, detail, center, localZoom, Math.min(1, (now - start) / 2_400), selectedId, labels);
       frame = requestAnimationFrame(draw);
     }
     frame = requestAnimationFrame(draw);
     return () => { cancelAnimationFrame(frame); resize.disconnect(); };
-  }, [center, detail, labels, selectedId]);
+  }, [center, detail, labels, localZoom, selectedId]);
 
   const selected = view?.entities.find((entity) => entity.organism_id === selectedId);
   const activity = useMemo(() => view?.activity.slice(0, 8) ?? [], [view]);
-  const chooseDetail = async (next: Detail, focus = center) => {
+  const chooseDetail = async (next: Detail, focus = center, nextZoom = next === "local" ? localZoom : 1) => {
     setDetail(next);
+    setCenter(focus);
+    setLocalZoom(nextZoom);
     setStatus("loading");
     try {
-      const nextView = await fetchView(next, focus);
+      const nextView = await fetchView(next, focus, nextZoom);
       viewRef.current = nextView;
       setView(nextView);
       setStatus("live");
@@ -135,6 +145,38 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       void chooseDetail(detail === "planet" ? "region" : "local", nextCenter);
     }
   };
+  const beginPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    dragRef.current = { x: event.clientX, y: event.clientY, pointerId: event.pointerId };
+    event.currentTarget.setPointerCapture(event.pointerId);
+  };
+  const endPointer = (event: React.PointerEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    dragRef.current = null;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    event.currentTarget.releasePointerCapture(event.pointerId);
+    const dx = event.clientX - drag.x;
+    const dy = event.clientY - drag.y;
+    if (Math.hypot(dx, dy) < 6) {
+      selectPoint(event);
+      return;
+    }
+    const rect = event.currentTarget.getBoundingClientRect();
+    const bounds = boundsFor(detail, center, localZoom);
+    setCenter(clampCamera({
+      longitude: center.longitude - dx / Math.max(1, rect.width) * (bounds.east - bounds.west),
+      latitude: center.latitude + dy / Math.max(1, rect.height) * (bounds.north - bounds.south),
+    }));
+  };
+  const zoomBy = (direction: 1 | -1) => {
+    if (direction > 0 && detail === "planet") { void chooseDetail("region", center, 1); return; }
+    if (direction > 0 && detail === "region") { void chooseDetail("local", center, 1); return; }
+    if (direction < 0 && detail === "region") { void chooseDetail("planet", center, 1); return; }
+    if (direction < 0 && detail === "local" && localZoom <= 1.05) { void chooseDetail("region", center, 1); return; }
+    if (detail === "local") {
+      const nextZoom = Math.max(1, Math.min(64, localZoom * (direction > 0 ? 1.65 : 1 / 1.65)));
+      void chooseDetail("local", center, nextZoom);
+    }
+  };
   const followSelected = () => {
     if (!selectedId) return;
     window.localStorage.setItem("atiny.followed-organism", selectedId);
@@ -142,12 +184,13 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   };
 
   return <section className="habitat-stage" aria-label="Live habitat view">
-    <canvas ref={canvasRef} onPointerUp={selectPoint} aria-label="Live positions of inhabitants and animals. Select a point to inspect it." />
+    <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerUp={endPointer} onPointerCancel={() => { dragRef.current = null; }} onWheel={(event) => { event.preventDefault(); zoomBy(event.deltaY < 0 ? 1 : -1); }} aria-label="Live positions of inhabitants and animals. Drag to pan, scroll to zoom, and select a point to inspect it." />
     <div className="habitat-wash" aria-hidden="true" />
     <header className="habitat-toolbar">
       <div><span className={`habitat-status ${status}`} /> <strong>{status === "live" ? "Live habitat" : status === "loading" ? "Locating life" : "Reconnecting"}</strong><small>Moment {formatNumber(worldTick)}</small></div>
       <nav aria-label="Habitat detail">
         {(["planet", "region", "local"] as Detail[]).map((item) => <button type="button" className={detail === item ? "active" : undefined} onClick={() => void chooseDetail(item)} key={item}>{item}</button>)}
+        <button type="button" aria-label="Zoom out" onClick={() => zoomBy(-1)}>−</button><button type="button" aria-label="Zoom in" onClick={() => zoomBy(1)}>+</button>
       </nav>
     </header>
     <div className="habitat-key"><span className="person" /> People <span className="animal" /> Animals <i /> committed movement</div>
@@ -156,20 +199,20 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       {activity.length === 0 ? <span>The habitat is quiet.</span> : <ol>{activity.map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
     </aside>
     <div className="habitat-selection">
-      {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong>{selected.species.scientific_name}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Every point is one committed life. Cluster circles replace individuals as the population grows.</span></>}
+      {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan and scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
-    <footer><span>Actual committed positions · motion interpolated between ticks</span><span>{view?.truncated ? `View capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
+    <footer><span>Committed positions · overlap separation is visual only · drag / scroll to explore</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
   </section>;
 }
 
-function drawHabitat(context: CanvasRenderingContext2D, width: number, height: number, view: HabitatView | null, detail: Detail, center: { latitude: number; longitude: number }, progress: number, selectedId: string | null, labels: Map<string, string>): Point[] {
+function drawHabitat(context: CanvasRenderingContext2D, width: number, height: number, view: HabitatView | null, detail: Detail, center: Camera, localZoom: number, progress: number, selectedId: string | null, labels: Map<string, string>): Point[] {
   context.clearRect(0, 0, width, height);
   const gradient = context.createLinearGradient(0, 0, width, height);
   gradient.addColorStop(0, "#0f3126"); gradient.addColorStop(.52, "#173c2b"); gradient.addColorStop(1, "#071d18");
   context.fillStyle = gradient; context.fillRect(0, 0, width, height);
   drawTerrain(context, width, height);
   if (!view) return [];
-  const bounds = visibleBounds(view, detail, center);
+  const bounds = boundsFor(detail, center, localZoom);
   const project = (longitude: number, latitude: number) => ({
     x: ((longitude - bounds.west) / Math.max(1, bounds.east - bounds.west)) * width,
     y: height - ((latitude - bounds.south) / Math.max(1, bounds.north - bounds.south)) * height,
@@ -186,13 +229,18 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     }
     return points;
   }
-  for (const entity of view.entities) {
+  const positioned = separateOverlaps(view.entities.map((entity) => {
     const from = project(entity.previous_longitude_e7, entity.previous_latitude_e7);
     const to = project(entity.longitude_e7, entity.latitude_e7);
-    const x = from.x + (to.x - from.x) * ease(progress);
-    const y = from.y + (to.y - from.y) * ease(progress);
+    return { entity, from, to, anchorX: from.x + (to.x - from.x) * ease(progress), anchorY: from.y + (to.y - from.y) * ease(progress) };
+  }), selectedId);
+  for (const marker of positioned) {
+    const { entity, from, to, anchorX, anchorY, x, y } = marker;
     if (Math.hypot(to.x - from.x, to.y - from.y) > 1) {
       context.beginPath(); context.moveTo(from.x, from.y); context.lineTo(to.x, to.y); context.strokeStyle = entity.role === "person" ? "rgba(236,132,89,.34)" : "rgba(229,202,113,.23)"; context.lineWidth = 1; context.stroke();
+    }
+    if (Math.hypot(x - anchorX, y - anchorY) > 2) {
+      context.beginPath(); context.moveTo(anchorX, anchorY); context.lineTo(x, y); context.strokeStyle = "rgba(223,231,211,.18)"; context.lineWidth = .7; context.stroke();
     }
     const selected = entity.organism_id === selectedId;
     const radius = entity.role === "person" ? 5.5 : 3.8;
@@ -205,6 +253,36 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     points.push({ id: entity.organism_id, x, y, radius, entity });
   }
   return points;
+}
+
+type PositionedEntity = { entity: HabitatEntity; from: { x: number; y: number }; to: { x: number; y: number }; anchorX: number; anchorY: number; x: number; y: number };
+
+function separateOverlaps(items: Omit<PositionedEntity, "x" | "y">[], selectedId: string | null): PositionedEntity[] {
+  const cellSize = 12;
+  const occupied = new Map<string, { x: number; y: number }[]>();
+  const ordered = [...items].sort((a, b) => Number(a.entity.organism_id === selectedId) - Number(b.entity.organism_id === selectedId));
+  const result: PositionedEntity[] = [];
+  const nearby = (x: number, y: number) => {
+    const cellX = Math.floor(x / cellSize); const cellY = Math.floor(y / cellSize);
+    for (let offsetX = -1; offsetX <= 1; offsetX++) for (let offsetY = -1; offsetY <= 1; offsetY++) {
+      for (const point of occupied.get(`${cellX + offsetX}:${cellY + offsetY}`) ?? []) if (Math.hypot(point.x - x, point.y - y) < 10) return true;
+    }
+    return false;
+  };
+  for (const item of ordered) {
+    let x = item.anchorX; let y = item.anchorY;
+    for (let attempt = 0; attempt < 96 && nearby(x, y); attempt++) {
+      const radius = 5 + Math.sqrt(attempt + 1) * 6.5;
+      const angle = attempt * 2.3999632297;
+      x = item.anchorX + Math.cos(angle) * radius;
+      y = item.anchorY + Math.sin(angle) * radius;
+    }
+    const key = `${Math.floor(x / cellSize)}:${Math.floor(y / cellSize)}`;
+    const bucket = occupied.get(key) ?? [];
+    bucket.push({ x, y }); occupied.set(key, bucket);
+    result.push({ ...item, x, y });
+  }
+  return result;
 }
 
 function drawTerrain(context: CanvasRenderingContext2D, width: number, height: number) {
@@ -222,28 +300,34 @@ function drawTerrain(context: CanvasRenderingContext2D, width: number, height: n
   context.restore();
 }
 
-function visibleBounds(view: HabitatView, detail: Detail, center: { latitude: number; longitude: number }): Bounds {
+function boundsFor(detail: Detail, center: Camera, localZoom = 1): Bounds {
   if (detail === "planet") return WORLD_BOUNDS;
-  if (detail === "region") return boundsFor(detail, center);
-  const coordinates = view.entities.flatMap((entity) => [[entity.longitude_e7, entity.latitude_e7], [entity.previous_longitude_e7, entity.previous_latitude_e7]]);
-  if (coordinates.length === 0) return boundsFor(detail, center);
-  const west = Math.min(...coordinates.map(([longitude]) => longitude));
-  const east = Math.max(...coordinates.map(([longitude]) => longitude));
-  const south = Math.min(...coordinates.map(([, latitude]) => latitude));
-  const north = Math.max(...coordinates.map(([, latitude]) => latitude));
-  const longitudePad = Math.max(45_000, (east - west) * .18);
-  const latitudePad = Math.max(45_000, (north - south) * .18);
-  return { west: west - longitudePad, east: east + longitudePad, south: south - latitudePad, north: north + latitudePad };
-}
-
-function boundsFor(detail: Detail, center: { latitude: number; longitude: number }): Bounds {
-  if (detail === "planet") return WORLD_BOUNDS;
-  const span = detail === "region" ? 100_000_000 : 6_000_000;
+  const span = detail === "region" ? 100_000_000 : 6_000_000 / Math.max(1, localZoom);
   return {
     west: Math.max(WORLD_BOUNDS.west, Math.round(center.longitude - span)),
     east: Math.min(WORLD_BOUNDS.east, Math.round(center.longitude + span)),
     south: Math.max(WORLD_BOUNDS.south, Math.round(center.latitude - span)),
     north: Math.min(WORLD_BOUNDS.north, Math.round(center.latitude + span)),
+  };
+}
+
+function fitLocalCamera(entities: HabitatEntity[], fallback: Camera): { center: Camera; zoom: number } {
+  if (entities.length === 0) return { center: fallback, zoom: 1 };
+  const longitudes = entities.flatMap((entity) => [entity.longitude_e7, entity.previous_longitude_e7]);
+  const latitudes = entities.flatMap((entity) => [entity.latitude_e7, entity.previous_latitude_e7]);
+  const west = Math.min(...longitudes); const east = Math.max(...longitudes);
+  const south = Math.min(...latitudes); const north = Math.max(...latitudes);
+  const range = Math.max(90_000, east - west, north - south);
+  return {
+    center: { longitude: (west + east) / 2, latitude: (south + north) / 2 },
+    zoom: Math.max(1, Math.min(64, 12_000_000 / (range * 1.5))),
+  };
+}
+
+function clampCamera(camera: Camera): Camera {
+  return {
+    longitude: Math.max(WORLD_BOUNDS.west, Math.min(WORLD_BOUNDS.east, camera.longitude)),
+    latitude: Math.max(WORLD_BOUNDS.south, Math.min(WORLD_BOUNDS.north, camera.latitude)),
   };
 }
 

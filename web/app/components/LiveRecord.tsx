@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
 import { createPublicLifeLabels } from "./lifeLabels";
 import { HabitatStage } from "./HabitatStage";
+import { commonSpeciesName } from "./speciesNames";
 
 type World = WorldInputMetadata & {
   world_id: string;
@@ -102,7 +103,7 @@ export function LiveRecord() {
             <div>
               <p>{featured ? `${labelFor(featured)} · ${featured.ended_event_id ? "record ended" : "alive"}` : "No life in the public record"}</p>
               <h3>{featured ? "A life at the beginning" : "Waiting for a life"}</h3>
-              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer">{featured.species.scientific_name}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. {labelFor(featured)} is an observer ID, not a name known inside the world. If inhabitants develop names, their name becomes primary and this ID remains for audit.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>The observatory will open a biography when the public record contains one.</small>}
+              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer" title={featured.species.scientific_name}>{commonSpeciesName(featured.species.scientific_name)}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. {labelFor(featured)} is an observer ID, not a name known inside the world. If inhabitants develop names, their name becomes primary and this ID remains for audit.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>The observatory will open a biography when the public record contains one.</small>}
             </div>
           </article>
           <article className="living-recent">
@@ -110,7 +111,7 @@ export function LiveRecord() {
             {timeline.length === 0 ? <p className="living-quiet">Nothing public has changed yet. Quiet time remains quiet.</p> : <ol>{timeline.slice(0, 5).map((item) => <li key={item.source_event_id}><time>Moment {formatNumber(item.source_tick)}</time><div><strong>{item.title}</strong><span>{item.summary}</span></div></li>)}</ol>}
           </article>
         </div>
-        {organisms.length > 1 && <div className="living-life-ribbon" id="animals">{organisms.filter((organism) => organism.organism_id !== featured?.organism_id).slice(0, 8).map((organism) => <a href={lifeHref(world.world_id, organism.organism_id)} key={organism.organism_id}><span>{lifeMonogram(labelFor(organism))}</span><div><strong>{labelFor(organism)}</strong><small>{organism.species.scientific_name} · {organism.ended_event_id ? "record ended" : "alive"}</small></div></a>)}</div>}
+        {organisms.length > 1 && <div className="living-life-ribbon" id="animals">{organisms.filter((organism) => organism.organism_id !== featured?.organism_id).slice(0, 8).map((organism) => <a href={lifeHref(world.world_id, organism.organism_id)} key={organism.organism_id}><span>{lifeMonogram(labelFor(organism))}</span><div><strong>{labelFor(organism)}</strong><small title={organism.species.scientific_name}>{commonSpeciesName(organism.species.scientific_name)} · {organism.ended_event_id ? "record ended" : "alive"}</small></div></a>)}</div>}
         <a className="living-browse-lives" href={`/lives?world=${encodeURIComponent(world.world_id)}`}>Browse all {formatNumber(organisms.length)} recorded lives <span aria-hidden="true">→</span></a>
       </section>
 

@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import type { FormEvent } from "react";
+import { commonSpeciesName } from "./speciesNames";
 
 type Species = {
   catalog: string;
@@ -200,7 +201,7 @@ export function SupporterPanel() {
             Species
             <select value={selectedSpecies?.identifier ?? ""} onChange={(event) => setSpeciesIdentifier(event.target.value)}>
               {panel.animalSpecies.map((species) => (
-                <option key={`${species.catalog}:${species.identifier}`} value={species.identifier}>{species.scientific_name}</option>
+                <option key={`${species.catalog}:${species.identifier}`} value={species.identifier}>{commonSpeciesName(species.scientific_name)}</option>
               ))}
             </select>
           </label>
@@ -257,7 +258,7 @@ async function loadPanel(signal?: AbortSignal): Promise<PanelState> {
     for (const organism of organisms) {
       if (organism.role === "fauna") species.set(`${organism.species.catalog}:${organism.species.identifier}`, organism.species);
     }
-    return { kind: "ready", world, animalSpecies: [...species.values()].sort((a, b) => a.scientific_name.localeCompare(b.scientific_name)), reservations };
+    return { kind: "ready", world, animalSpecies: [...species.values()].sort((a, b) => commonSpeciesName(a.scientific_name).localeCompare(commonSpeciesName(b.scientific_name))), reservations };
   } catch {
     return { kind: "unavailable" };
   }
@@ -272,7 +273,7 @@ function csrfToken() {
 }
 
 function reservationTarget(reservation: Reservation) {
-  return reservation.target.type === "person" ? `Person · ${reservation.birth_category}` : `${reservation.target.data.species.scientific_name} · ${reservation.birth_category}`;
+  return reservation.target.type === "person" ? `Person · ${reservation.birth_category}` : `${commonSpeciesName(reservation.target.data.species.scientific_name)} · ${reservation.birth_category}`;
 }
 
 function humanState(reservation: Reservation) {
