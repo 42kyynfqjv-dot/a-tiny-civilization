@@ -7,12 +7,15 @@ helper="${project_root}/scripts/stop-legacy-public-stack-for-cutover.sh"
 required=(
   "legacy_project='emergent-civilization'"
   "production_project='a-tiny-civilization'"
+  '--check'
   '--confirm-legacy-public-cutover'
   'com.docker.compose.project.working_dir'
   'service_is_allowed'
   'refusing to stop unknown service'
   'refusing ambiguous legacy service'
   'production Compose project is already running'
+  'no state changed'
+  'Planned stop order:'
   'docker stop --time 60'
   'production-port-preflight.sh'
   'without removing containers or volumes'

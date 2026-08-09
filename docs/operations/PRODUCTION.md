@@ -505,13 +505,15 @@ Immediately before the first public production deployment, stop the superseded p
 the checked helper instead of manually naming containers:
 
 ```bash
+sudo ./scripts/stop-legacy-public-stack-for-cutover.sh --check
 sudo ./scripts/stop-legacy-public-stack-for-cutover.sh \
   --confirm-legacy-public-cutover
 ```
 
 The helper discovers only the `emergent-civilization` Compose project, validates each service and
 its checkout working-directory label, refuses an already-running `a-tiny-civilization` production
-project, stops canonical writers before public and persistence services, and reruns the production
+project, and prints the exact ordered set without mutation in `--check` mode. The confirmed mode
+stops canonical writers before public and persistence services, then reruns the production
 port/volume preflight. It never removes a container, network, image, or volume. Its printed exact
 container identities are the incident rollback set if deployment fails before production becomes
 public; do not start them while a production container owns the same ports or protected volumes.

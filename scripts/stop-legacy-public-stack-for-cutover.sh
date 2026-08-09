@@ -12,15 +12,23 @@ readonly production_project='a-tiny-civilization'
 readonly -a allowed_services=(
   runner cognition-worker memory-worker projector web api migrate hindsight local-cognition db
 )
-confirmed=0
+mode=''
 
-if [[ "${1:-}" == '--confirm-legacy-public-cutover' && $# -eq 1 ]]; then
-  confirmed=1
-fi
-if ((confirmed != 1)); then
-  echo "stopping the legacy public stack requires the literal --confirm-legacy-public-cutover argument" >&2
-  exit 2
-fi
+case "${1:-}" in
+  --check)
+    [[ $# -eq 1 ]] || exit 2
+    mode='check'
+    ;;
+  --confirm-legacy-public-cutover)
+    [[ $# -eq 1 ]] || exit 2
+    mode='stop'
+    ;;
+  *)
+    echo "usage: $0 --check | --confirm-legacy-public-cutover" >&2
+    echo "stopping the legacy public stack requires the literal --confirm-legacy-public-cutover argument" >&2
+    exit 2
+    ;;
+esac
 if ((EUID != 0)); then
   echo "run this cutover helper as root so Docker ownership cannot change between inspection and stop" >&2
   exit 2
@@ -76,6 +84,20 @@ if docker ps --filter "label=com.docker.compose.project=${production_project}" -
   exit 1
 fi
 
+if [[ "$mode" == 'check' ]]; then
+  planned_names=()
+  for service in "${allowed_services[@]}"; do
+    container_id="${service_ids[$service]:-}"
+    [[ -n "$container_id" ]] || continue
+    name="$(docker inspect --format '{{.Name}}' "$container_id")"
+    planned_names+=("${name#/}")
+  done
+  printf 'Validated %d exact running legacy container(s); no state changed.\n' \
+    "${#planned_names[@]}"
+  printf 'Planned stop order: %s\n' "${planned_names[*]}"
+  exit 0
+fi
+
 stopped_names=()
 for service in "${allowed_services[@]}"; do
   container_id="${service_ids[$service]:-}"
@@ -90,4 +112,3 @@ done
 printf 'Stopped %d exact legacy container(s) without removing containers or volumes.\n' \
   "${#stopped_names[@]}"
 printf 'Rollback identities: %s\n' "${stopped_names[*]}"
-
