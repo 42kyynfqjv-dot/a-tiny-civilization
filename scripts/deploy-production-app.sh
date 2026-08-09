@@ -101,7 +101,10 @@ ATINY_QUALITY_ADMISSION_FILE="$quality_admission" \
 "${project_root}/scripts/provision-runtime-volumes.sh"
 
 "${compose_command[@]}" "${compose_args[@]}" config --quiet
-"${compose_command[@]}" "${compose_args[@]}" build migrate api projector runner web
+# Every Rust service inherits the same build and image tag. Build that image exactly once through
+# `api`; asking Compose to build all aliases concurrently creates redundant provenance variants
+# racing to assign the same mutable local tag.
+"${compose_command[@]}" "${compose_args[@]}" build api web
 
 # Bring up only the private persistence/cognition foundation first. Public-serving and canonical
 # processes must not start until this database is already bound to the exact admitted world. A

@@ -49,6 +49,11 @@ carrying the canonical public Host receives an exact method-preserving `308` to 
 target. The production Compose render independently confirmed that the ruleset-32 v24 stage is the
 runner's single read-only `/runtime` mount.
 
+The deployment build was also reduced to one Rust image build and one observatory image build;
+the API, migration, projector, and runner services all consume that one Rust tag instead of racing
+four equivalent builds onto it. Repeating the deduplicated protected-environment build reproduced
+the two exact image IDs recorded above.
+
 The read-only cutover inventory reports exactly four legacy-development conflicts: web on loopback
 port 3000, PostgreSQL on 5432, the observer API on 8080, and the local-cognition container's use of
 the shared `atiny-ollama` volume. No unexpected production-volume consumer exists. The improved

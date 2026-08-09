@@ -526,7 +526,10 @@ a world or changing a service:
 sudo ./scripts/public-genesis-preflight.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
-  --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY"
+  --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --admission-file "$QUALITY_WORLD_ADMISSION_FILE" \
+  --observatory-admission-file "$PUBLIC_OBSERVATORY_ADMISSION_FILE" \
+  --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY"
 ```
 
 - a complete, hash-pinned provisional full-Earth artifact set and unpreviewed public

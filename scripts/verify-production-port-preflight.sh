@@ -26,7 +26,7 @@ for contract in "${required[@]}"; do
 done
 
 port_line="$(rg -n -m1 'production-port-preflight\.sh' "$deployment")"
-mutation_line="$(rg -n -m1 'compose_args\[@.*build migrate' "$deployment")"
+mutation_line="$(rg -n -m1 'compose_args\[@.*build api web' "$deployment")"
 port_number="${port_line%%:*}"
 mutation_number="${mutation_line%%:*}"
 if ((port_number >= mutation_number)); then

@@ -10,7 +10,7 @@ checkout_verifier="${project_root}/scripts/verify-production-checkout.sh"
 
 preflight_line="$(rg -n -m1 'public-genesis-preflight\.sh' "$deployment")"
 checkout_line="$(rg -n -m1 'verify-production-checkout\.sh' "$deployment")"
-mutation_line="$(rg -n -m1 'compose_args\[@.*build migrate' "$deployment")"
+mutation_line="$(rg -n -m1 'compose_args\[@.*build api web' "$deployment")"
 public_edge_line="$(rg -n -m1 'verify-public-edge\.sh.*https://atinycivilization\.com' "$deployment")"
 live_genesis_line="$(rg -n -m1 'verify-live-genesis\.sh' "$deployment")"
 private_foundation_line="$(rg -n -m1 'up -d db migrate local-cognition hindsight' "$deployment")"
@@ -73,6 +73,10 @@ for contract in \
 done
 if ! rg -q 'requires the literal --confirm-public-deployment argument' "$deployment"; then
   echo "production deployment lost its explicit confirmation boundary" >&2
+  exit 1
+fi
+if rg -q 'build .*(migrate|projector|runner)' "$deployment"; then
+  echo "production deployment redundantly builds aliases of the shared Rust image" >&2
   exit 1
 fi
 for contract in '--genesis-directory' '--evidence-directory' '--runtime-root' \
