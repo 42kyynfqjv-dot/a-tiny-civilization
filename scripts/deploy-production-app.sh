@@ -11,6 +11,7 @@ environment_file="${ATINY_PRODUCTION_ENV_FILE:-/etc/a-tiny-civilization-producti
 genesis_directory="${ATINY_CANONICAL_GENESIS_DIRECTORY:-}"
 evidence_directory="${ATINY_QUALIFICATION_EVIDENCE_DIRECTORY:-}"
 quality_admission="${ATINY_QUALITY_ADMISSION_FILE:-${project_root}/docs/operations/QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json}"
+observatory_admission="${ATINY_PUBLIC_OBSERVATORY_ADMISSION_FILE:-${project_root}/docs/operations/PUBLIC_OBSERVATORY_ADMISSION_RULESET32_2026-08-09.json}"
 runtime_root="${ATINY_RUNTIME_ARTIFACT_ROOT:-${project_root}/runtime-artifacts}"
 confirmed=0
 
@@ -32,12 +33,20 @@ while (($#)); do
       runtime_root="${2:-}"
       shift 2
       ;;
+    --admission-file)
+      quality_admission="${2:-}"
+      shift 2
+      ;;
+    --observatory-admission-file)
+      observatory_admission="${2:-}"
+      shift 2
+      ;;
     --confirm-public-deployment)
       confirmed=1
       shift
       ;;
     *)
-      echo "usage: $0 [--env-file /absolute/path/to/production.env] --genesis-directory /absolute/path --evidence-directory /absolute/path [--runtime-root /absolute/path] --confirm-public-deployment" >&2
+      echo "usage: $0 [--env-file /absolute/path/to/production.env] --genesis-directory /absolute/path --evidence-directory /absolute/path [--admission-file /absolute/path] [--observatory-admission-file /absolute/path] [--runtime-root /absolute/path] --confirm-public-deployment" >&2
       exit 2
       ;;
   esac
@@ -52,6 +61,10 @@ if [[ -z "$genesis_directory" || -z "$evidence_directory" ]]; then
 fi
 if [[ "$quality_admission" != /* || ! -f "$quality_admission" || -L "$quality_admission" ]]; then
   echo "deployment requires an absolute, regular quality-admission file" >&2
+  exit 2
+fi
+if [[ "$observatory_admission" != /* || ! -f "$observatory_admission" || -L "$observatory_admission" ]]; then
+  echo "deployment requires an absolute, regular observatory-admission file" >&2
   exit 2
 fi
 if [[ "$runtime_root" != /* || ! -d "$runtime_root" || -L "$runtime_root" ]]; then
@@ -92,11 +105,12 @@ cd "$project_root"
 # Deployment remains a separate literal authorization, but it cannot begin until the exact
 # candidate evidence, quality-world admission, reviewed observer tree, production configuration,
 # and staged runtime closure all pass the same composed read-only gate used by the runbook.
-ATINY_QUALITY_ADMISSION_FILE="$quality_admission" \
-  "${project_root}/scripts/public-genesis-preflight.sh" \
+"${project_root}/scripts/public-genesis-preflight.sh" \
   --env-file "$environment_file" \
   --genesis-directory "$genesis_directory" \
   --evidence-directory "$evidence_directory" \
+  --admission-file "$quality_admission" \
+  --observatory-admission-file "$observatory_admission" \
   --runtime-root "$runtime_root"
 "${project_root}/scripts/provision-runtime-volumes.sh"
 

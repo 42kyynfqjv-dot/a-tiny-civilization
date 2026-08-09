@@ -79,8 +79,9 @@ if rg -q 'build .*(migrate|projector|runner)' "$deployment"; then
   echo "production deployment redundantly builds aliases of the shared Rust image" >&2
   exit 1
 fi
-for contract in '--genesis-directory' '--evidence-directory' '--runtime-root' \
-  'ATINY_RUNTIME_ARTIFACT_ROOT' 'ATINY_QUALITY_ADMISSION_FILE'; do
+for contract in '--genesis-directory' '--evidence-directory' '--admission-file' \
+  '--observatory-admission-file' '--runtime-root' 'ATINY_RUNTIME_ARTIFACT_ROOT' \
+  'ATINY_QUALITY_ADMISSION_FILE' 'ATINY_PUBLIC_OBSERVATORY_ADMISSION_FILE'; do
   if ! rg -q -- "$contract" "$deployment"; then
     echo "production deployment lost required public-genesis input: $contract" >&2
     exit 1
@@ -104,6 +105,9 @@ for contract in \
   'migration-ready and empty for qualified activation' \
   'already contains the exact running qualified world' \
   'ATINY_QUALITY_ADMISSION_FILE' \
+  'ATINY_PUBLIC_OBSERVATORY_ADMISSION_FILE' \
+  '--admission-file' \
+  '--observatory-admission-file' \
   'ATINY_RUNTIME_ARTIFACT_ROOT' \
   '--runtime-root' \
   'validate-production-world-state\.py' \
@@ -135,6 +139,9 @@ for contract in \
   'production-preflight\.sh.*--env-file' \
   '127\.0\.0\.1' \
   'ATINY_QUALITY_ADMISSION_FILE' \
+  'ATINY_PUBLIC_OBSERVATORY_ADMISSION_FILE' \
+  '--admission-file' \
+  '--observatory-admission-file' \
   'ATINY_RUNTIME_ARTIFACT_ROOT' \
   '--runtime-root' \
   'no service or public route was started'; do
@@ -178,6 +185,17 @@ if ! rg -q 'ATINY_RUNTIME_ARTIFACT_ROOT.*runtime-artifacts.*:/runtime:ro' \
   echo "runner runtime mount is not controlled by the validated production runtime root" >&2
   exit 1
 fi
+
+for helper in "$deployment" "$database_preparation" "$production_activation"; do
+  for exact_admission in \
+    '--admission-file "$quality_admission"' \
+    '--observatory-admission-file "$observatory_admission"'; do
+    if ! grep -Fq -- "$exact_admission" "$helper"; then
+      echo "production mutation helper does not carry its exact admission: ${helper} ${exact_admission}" >&2
+      exit 1
+    fi
+  done
+done
 
 for helper_and_confirmation in \
   'prepare-production-genesis-database.sh --confirm-private-database-preparation' \

@@ -96,6 +96,8 @@ sudo ./scripts/deploy-production-app.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --admission-file "$QUALITY_WORLD_ADMISSION_FILE" \
+  --observatory-admission-file "$PUBLIC_OBSERVATORY_ADMISSION_FILE" \
   --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY" \
   --confirm-public-deployment
 ```
@@ -144,6 +146,8 @@ sudo ./scripts/prepare-production-genesis-database.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --admission-file "$QUALITY_WORLD_ADMISSION_FILE" \
+  --observatory-admission-file "$PUBLIC_OBSERVATORY_ADMISSION_FILE" \
   --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY" \
   --confirm-private-database-preparation
 ```
@@ -161,6 +165,8 @@ sudo ./scripts/activate-production-genesis.sh \
   --env-file /etc/a-tiny-civilization-production.env \
   --genesis-directory "$QUALIFICATION_GENESIS_DIRECTORY" \
   --evidence-directory "$QUALIFICATION_EVIDENCE_DIRECTORY" \
+  --admission-file "$QUALITY_WORLD_ADMISSION_FILE" \
+  --observatory-admission-file "$PUBLIC_OBSERVATORY_ADMISSION_FILE" \
   --runtime-root "$QUALIFIED_RUNTIME_DIRECTORY" \
   --confirm-experimental-genesis
 ```

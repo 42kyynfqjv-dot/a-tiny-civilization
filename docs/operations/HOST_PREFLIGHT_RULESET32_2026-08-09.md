@@ -75,3 +75,8 @@ Compose-resolved PostgreSQL loopback port and `a-tiny-civilization-postgres-v1`.
 current default it reports exactly the legacy database on port 5432; a read-only protected Compose
 render with production port 55432 passed while the legacy web, API, and local-model services kept
 running. No protected environment value or production service was changed during that proof.
+
+Every mutation wrapper now accepts, validates, and forwards the exact quality-world and
+public-observatory admission files alongside genesis, qualification evidence, and runtime root.
+Defaults remain ruleset 32 for operator convenience, but the documented release commands name both
+admissions explicitly so a later default cannot change a copied historical cutover command.
