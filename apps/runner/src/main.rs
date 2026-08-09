@@ -25,11 +25,11 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
-    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
-    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
-    run_partition_capacity_probe,
+    CELESTIAL_DRIVER_RULESET_VERSION, CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+    COGNITION_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance,
+    InitialOrganism, LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION,
+    PartitionCapacityProbe, REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay,
+    replay_from_snapshot, run_partition_capacity_probe,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
@@ -54,7 +54,8 @@ use world_domain::{
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
 /// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = ADULT_BODY_MASS_STATE_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = CLOSE_KIN_EXCLUSION_RULESET_VERSION;
+const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
 // 60-second request-to-simulation-deadline window.
@@ -206,7 +207,7 @@ enum Command {
         #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
         ruleset_version: u32,
     },
-    /// Prove canonical ruleset-32 genesis construction and replay without PostgreSQL.
+    /// Prove canonical current-ruleset genesis construction and replay without PostgreSQL.
     VerifyProvisionalGenesis {
         #[arg(long)]
         world_id: WorldId,
@@ -1005,6 +1006,38 @@ async fn init_proof_world(
     Ok(())
 }
 
+fn provisional_human_founders(
+    world_id: WorldId,
+    initial_patch: S2CellId,
+) -> Result<Vec<InitialOrganism>> {
+    let species = SpeciesIdentity::new(
+        "gbif",
+        "2436436",
+        "Homo sapiens",
+        "https://www.gbif.org/species/2436436",
+    )?;
+    (0..PROVISIONAL_HUMAN_FOUNDER_COUNT)
+        .map(|ordinal| {
+            let identity = format!("provisional-human-founder-{ordinal:02}");
+            let birth_category = if ordinal % 2 == 0 { "female" } else { "male" };
+            Ok(InitialOrganism {
+                organism_id: EntityId::deterministic(world_id, identity.as_bytes()),
+                species: species.clone(),
+                role: OrganismRole::Person,
+                birth_category: BirthCategory::new(birth_category)?,
+                initial_age_ticks: 0,
+                location_id: None,
+                embodied_patch: Some(initial_patch),
+                metabolic_rate: None,
+                adult_body_mass: None,
+                physiological_regulation: None,
+                reproductive_physiology: None,
+                heritable_disposition_profile: None,
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn verify_provisional_genesis(
     world_id: WorldId,
@@ -1304,34 +1337,7 @@ async fn init_provisional_full_earth_world(
             origin_climate_normals.digest.to_string(),
         );
     }
-    let species = SpeciesIdentity::new(
-        "gbif",
-        "2436436",
-        "Homo sapiens",
-        "https://www.gbif.org/species/2436436",
-    )?;
-    let mut initial_organisms = [
-        (b"provisional-founder-a".as_slice(), "female"),
-        (b"provisional-founder-b".as_slice(), "male"),
-    ]
-    .into_iter()
-    .map(|(identity, birth_category)| {
-        Ok(InitialOrganism {
-            organism_id: EntityId::deterministic(world_id, identity),
-            species: species.clone(),
-            role: OrganismRole::Person,
-            birth_category: BirthCategory::new(birth_category)?,
-            initial_age_ticks: 0,
-            location_id: None,
-            embodied_patch: Some(initial_patch),
-            metabolic_rate: None,
-            adult_body_mass: None,
-            physiological_regulation: None,
-            reproductive_physiology: None,
-            heritable_disposition_profile: None,
-        })
-    })
-    .collect::<Result<Vec<_>>>()?;
+    let mut initial_organisms = provisional_human_founders(world_id, initial_patch)?;
     let fauna = load_provisional_fauna_initial_organisms(
         world_id,
         WorldSeed::new(seed),
@@ -3322,8 +3328,43 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, ADULT_BODY_MASS_STATE_RULESET_VERSION);
+        assert_eq!(ruleset_version, CLOSE_KIN_EXCLUSION_RULESET_VERSION);
         assert!(refuse_other_worlds);
+    }
+
+    #[test]
+    fn provisional_genesis_starts_with_twenty_four_balanced_unrelated_people() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x2400));
+        let patch = S2CellId::new(0x89c259b000000000).expect("fixture patch");
+        let founders = provisional_human_founders(world_id, patch).expect("human founders");
+        assert_eq!(founders.len(), 24);
+        assert_eq!(
+            founders
+                .iter()
+                .filter(|founder| founder.birth_category.as_str() == "female")
+                .count(),
+            12
+        );
+        assert_eq!(
+            founders
+                .iter()
+                .filter(|founder| founder.birth_category.as_str() == "male")
+                .count(),
+            12
+        );
+        assert_eq!(
+            founders
+                .iter()
+                .map(|founder| founder.organism_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            24
+        );
+        assert!(
+            founders
+                .iter()
+                .all(|founder| founder.role == OrganismRole::Person)
+        );
     }
 
     #[test]
@@ -3354,7 +3395,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, ADULT_BODY_MASS_STATE_RULESET_VERSION);
+        assert_eq!(ruleset_version, CLOSE_KIN_EXCLUSION_RULESET_VERSION);
     }
 
     #[test]

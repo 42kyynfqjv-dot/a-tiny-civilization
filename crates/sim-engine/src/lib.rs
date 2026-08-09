@@ -151,6 +151,10 @@ pub const MASS_SCALED_METABOLISM_RULESET_VERSION: u32 = 31;
 /// Ruleset thirty-two makes each exact adult-mass commitment durable canonical
 /// organism state so later physical couplings never infer it from derived power.
 pub const ADULT_BODY_MASS_STATE_RULESET_VERSION: u32 = 32;
+/// Ruleset thirty-three prevents reproductive pair formation between close
+/// genealogical relatives through first cousins. The relation is private
+/// physiology state, not an in-world kinship label or learned social rule.
+pub const CLOSE_KIN_EXCLUSION_RULESET_VERSION: u32 = 33;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -1029,6 +1033,10 @@ impl EngineState {
 
     fn uses_topsoil_movement_driver(&self) -> bool {
         self.manifest.ruleset_version >= TOPSOIL_MOVEMENT_RULESET_VERSION
+    }
+
+    fn uses_close_kin_exclusion_driver(&self) -> bool {
+        self.manifest.ruleset_version >= CLOSE_KIN_EXCLUSION_RULESET_VERSION
     }
 
     fn local_temperature_at_tick(
@@ -2671,12 +2679,54 @@ impl EngineState {
             || left.embodied_patch.is_none()
             || left.embodied_patch != right.embodied_patch
             || left.reproductive_physiology != right.reproductive_physiology
+            || (self.uses_close_kin_exclusion_driver() && self.are_close_kin(left, right))
         {
             return None;
         }
         let profile = left.reproductive_physiology.as_ref()?;
         let developing_parent_id = Self::reproductive_category_developer(profile, left, right)?;
         Some((profile.clone(), developing_parent_id))
+    }
+
+    /// Private genealogy guard. Including the organism itself at depth zero
+    /// makes direct ancestry and shared ancestry one uniform intersection test.
+    /// A combined path of four covers siblings, avuncular relations, and first
+    /// cousins while leaving unrelated founders eligible.
+    fn are_close_kin(&self, left: &OrganismState, right: &OrganismState) -> bool {
+        const MAX_ANCESTOR_DEPTH: u8 = 3;
+        const MAX_COMBINED_PATH: u8 = 4;
+        let left_ancestry = self.ancestry_depths(left.organism_id, MAX_ANCESTOR_DEPTH);
+        let right_ancestry = self.ancestry_depths(right.organism_id, MAX_ANCESTOR_DEPTH);
+        left_ancestry.iter().any(|(ancestor, left_depth)| {
+            right_ancestry.get(ancestor).is_some_and(|right_depth| {
+                left_depth.saturating_add(*right_depth) <= MAX_COMBINED_PATH
+            })
+        })
+    }
+
+    fn ancestry_depths(&self, organism_id: EntityId, maximum_depth: u8) -> BTreeMap<EntityId, u8> {
+        let mut depths = BTreeMap::from([(organism_id, 0)]);
+        let mut frontier = vec![(organism_id, 0_u8)];
+        while let Some((descendant_id, depth)) = frontier.pop() {
+            if depth >= maximum_depth {
+                continue;
+            }
+            let Some(descendant) = self.organisms.get(&descendant_id) else {
+                continue;
+            };
+            let next_depth = depth + 1;
+            for parent_id in descendant.parent_ids.iter().rev() {
+                if depths
+                    .get(parent_id)
+                    .is_some_and(|known| *known <= next_depth)
+                {
+                    continue;
+                }
+                depths.insert(*parent_id, next_depth);
+                frontier.push((*parent_id, next_depth));
+            }
+        }
+        depths
     }
 
     fn reproductive_category_developer(
@@ -13983,5 +14033,84 @@ mod tests {
         snapshot
             .verify_integrity()
             .expect("adult-body-mass snapshot integrity");
+    }
+
+    #[test]
+    fn close_kin_exclusion_covers_direct_shared_and_first_cousin_ancestry() {
+        let legacy_manifest = manifest();
+        let initial = EngineState::new(legacy_manifest.clone());
+        let founder = initial_person(legacy_manifest.world_id);
+        let founder_a = founder.organism_id;
+        let (mut state, _) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial.plan_genesis(vec![founder]).expect("genesis plan"),
+            )
+            .expect("genesis commit");
+        state.manifest = WorldManifest::new(
+            legacy_manifest.world_id,
+            legacy_manifest.seed,
+            CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+        );
+
+        let founder_b = EntityId::deterministic(state.world_id(), b"kin-founder-b");
+        let unrelated_a = EntityId::deterministic(state.world_id(), b"kin-unrelated-a");
+        let unrelated_b = EntityId::deterministic(state.world_id(), b"kin-unrelated-b");
+        let sibling_a = EntityId::deterministic(state.world_id(), b"kin-sibling-a");
+        let sibling_b = EntityId::deterministic(state.world_id(), b"kin-sibling-b");
+        let cousin_a = EntityId::deterministic(state.world_id(), b"kin-cousin-a");
+        let cousin_b = EntityId::deterministic(state.world_id(), b"kin-cousin-b");
+        let template = state.organisms[&founder_a].clone();
+        for (organism_id, parent_ids) in [
+            (founder_b, vec![]),
+            (unrelated_a, vec![]),
+            (unrelated_b, vec![]),
+            (sibling_a, vec![founder_a, founder_b]),
+            (sibling_b, vec![founder_a, founder_b]),
+            (cousin_a, vec![sibling_a, unrelated_a]),
+            (cousin_b, vec![sibling_b, unrelated_b]),
+        ] {
+            let mut organism = template.clone();
+            organism.organism_id = organism_id;
+            organism.parent_ids = parent_ids;
+            state.organisms.insert(organism_id, organism);
+        }
+
+        assert!(!state.are_close_kin(&state.organisms[&founder_a], &state.organisms[&unrelated_a]));
+        assert!(state.are_close_kin(&state.organisms[&sibling_a], &state.organisms[&cousin_a]));
+        assert!(state.are_close_kin(&state.organisms[&sibling_a], &state.organisms[&sibling_b]));
+        assert!(state.are_close_kin(&state.organisms[&sibling_b], &state.organisms[&cousin_a]));
+        assert!(state.are_close_kin(&state.organisms[&cousin_a], &state.organisms[&cousin_b]));
+    }
+
+    #[test]
+    fn close_kin_exclusion_ruleset_reuses_the_latest_compatible_schemas() {
+        let state = EngineState::new(WorldManifest::new(
+            WorldId::from_uuid(Uuid::from_u128(0x3300)),
+            WorldSeed::new(0x3300),
+            CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+        ));
+        assert_eq!(
+            state.event_schema_version(),
+            ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            state.state_hash_schema_version(),
+            ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&state),
+            Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
+        );
+        let snapshot = Snapshot::new(state, EventSequence::ZERO, Digest::ZERO)
+            .expect("close-kin-exclusion snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("close-kin-exclusion snapshot integrity");
     }
 }
