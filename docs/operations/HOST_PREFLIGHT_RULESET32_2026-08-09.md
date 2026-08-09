@@ -31,3 +31,18 @@ The production Compose project intentionally remains stopped and empty. Public d
 canonical-world activation remain separate literal-confirmation operations, and both admissions
 continue to record `public_deployment_authorized: false`. This checkpoint proves readiness of the
 inputs and operations path; it is not an activation record.
+
+After the production wrappers were corrected to carry one explicit validated runtime root through
+preflight and the runner's read-only Compose mount, the exact commit `33e59634d736fb7c1d334eee0b1eda051be9c0c6`
+was built without starting services. The resulting locally tagged candidates are:
+
+- `a-tiny-civilization-app:candidate-33e5963` —
+  `sha256:09c8afcce93865c3653da02322fd406d3de435373832a4b288f4d1a65f503bc0`, user
+  `civilization`; and
+- `a-tiny-civilization-web:candidate-33e5963` —
+  `sha256:abbfcfdd22fc335f0a8abf00eb72c439a93a53416f50b4e7120be927bf3f2262`, user `node`.
+
+Both passed the checked-in isolated image smoke with a read-only root filesystem, all capabilities
+dropped, no-new-privileges, a bounded no-exec temporary filesystem, and only an ephemeral
+loopback binding for the web process. The production Compose render independently confirmed that
+the ruleset-32 v24 stage is the runner's single read-only `/runtime` mount.
