@@ -41,6 +41,7 @@ verify_redirect "/wiki?edge-check=plaintext"
 
 for path in \
   "/" \
+  "/lives" \
   "/wiki" \
   "/privacy" \
   "/terms" \
@@ -56,6 +57,7 @@ if [[ "$homepage" != *"A Tiny Civilization"* ]]; then
   exit 1
 fi
 declare -A route_markers=(
+  ["/lives"]="Choose someone to return to."
   ["/wiki"]="Evidence first. Interpretation stays visible."
   ["/privacy"]="Observer data is not sold"
   ["/terms"]="not a promise that civilization"
