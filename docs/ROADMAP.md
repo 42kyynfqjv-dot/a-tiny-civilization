@@ -598,6 +598,15 @@ images were reclaimed without touching retained inputs or active volumes, restor
 reserve above the backend health floor. ADR 0135 makes that complete composed gate a hard
 precondition of the deployment helper rather than a runbook-only instruction.
 
+The admitted ruleset-32 successor has now independently passed that same host gate with the v24
+portable genesis proof, v20 tick-1,000 qualification evidence, replacement quality and observatory
+admissions, and a fresh 147,469-file composition-0.1.2 runtime closure. The first run failed closed
+only on the capacity reserve while both complete runtime stages were retained; reclaiming 26.1 GiB
+of reproducible Cargo development output restored about 30 GiB free without removing either stage
+or any world/evidence data. The repeated full preflight then passed without creating a world,
+changing services, or deploying the site; the exact record is in
+`docs/operations/HOST_PREFLIGHT_RULESET32_2026-08-09.md`.
+
 ## Vertical-slice proof
 
 The first public vertical slice is done only when a fresh clone can:
