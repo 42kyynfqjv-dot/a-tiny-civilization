@@ -194,16 +194,8 @@ volumes:
 networks:
   backend:
     driver: bridge
-    driver_opts:
-      com.docker.network.bridge.name: br-atiny-back
   edge:
     driver: bridge
-    driver_opts:
-      com.docker.network.bridge.name: br-atiny-edge
   web-api:
     driver: bridge
     internal: true
-    driver_opts:
-      # Linux network-interface names are limited to 15 bytes. Keep this
-      # private bridge name beneath that host-kernel limit.
-      com.docker.network.bridge.name: br-atiny-api
