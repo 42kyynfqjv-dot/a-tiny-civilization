@@ -5,7 +5,7 @@ import { LifeProfile } from "../../../components/LifeProfile";
 
 export const metadata: Metadata = {
   title: "Life Record",
-  description: "Follow one individual life through the committed public record.",
+  description: "Follow one life inside A Tiny Civilization and return to see where the world carries them.",
 };
 
 export default async function LifePage({ params }: { params: Promise<{ worldId: string; organismId: string }> }) {
@@ -17,7 +17,7 @@ export default async function LifePage({ params }: { params: Promise<{ worldId: 
           <span className="living-brand-world" aria-hidden="true" />
           <span><strong>A Tiny Civilization</strong><small>Life record</small></span>
         </Link>
-        <nav><Link href="/">World</Link><Link href="/lives">All lives</Link><Link href="/wiki">Wiki</Link></nav>
+        <nav><Link href="/">World</Link><Link href="/lives">All lives</Link><Link href="/memory">Memories</Link></nav>
         <FoundationPulse compact />
       </header>
       <LifeProfile worldId={worldId} organismId={organismId} />

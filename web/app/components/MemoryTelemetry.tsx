@@ -23,9 +23,7 @@ export function MemoryTelemetry({ worldId, labels }: { worldId: string; labels: 
   const latest = stream?.observations.slice(0, 3) ?? [];
   const recalled = new Set(stream?.recalls.flatMap((recall) => recall.document_ids) ?? []);
   return <aside className="habitat-memory" aria-live="polite" aria-label="Live memory stream">
-    <div><span className="habitat-memory-pulse" aria-hidden="true" /><p><strong>Memory live</strong><small>{stream ? `${stream.recalls.length} recent recall ${stream.recalls.length === 1 ? "pulse" : "pulses"}` : "reading the array"}</small></p><a href="/memory"><span className="habitat-memory-open-long">Open graph </span><span className="habitat-memory-open-short">Explore </span><span aria-hidden="true">↗</span></a></div>
-    {latest.length > 0 && <ol>{latest.map((memory) => <li className={recalled.has(memory.document_id) ? "is-recalled" : undefined} key={memory.document_id}><span>{labels.get(memory.agent_id) ?? "Unindexed life"}</span><small>{memory.channel} · {memory.property_code.replaceAll("_", " ")} · {formatNumber(memory.quantized_value)}</small></li>)}</ol>}
+    <div><span className="habitat-memory-pulse" aria-hidden="true" /><p><strong>Something remembered</strong><small>{stream ? `${stream.recalls.length} recent ${stream.recalls.length === 1 ? "memory" : "memories"} resurfaced` : "listening"}</small></p><a href="/memory"><span className="habitat-memory-open-long">See memories </span><span className="habitat-memory-open-short">Explore </span><span aria-hidden="true">↗</span></a></div>
+    {latest.length > 0 && <ol>{latest.map((memory) => <li className={recalled.has(memory.document_id) ? "is-recalled" : undefined} key={memory.document_id}><span>{labels.get(memory.agent_id) ?? "A life"}</span><small>{memory.channel === "interoception" ? "felt something within" : memory.channel === "odour" ? "noticed a scent" : memory.channel === "vision" ? "noticed something nearby" : memory.channel === "touch" ? "felt a surface" : memory.channel === "sound" ? "heard something" : "noticed a taste"}</small></li>)}</ol>}
   </aside>;
 }
-
-function formatNumber(value: number) { return new Intl.NumberFormat("en-US").format(value); }

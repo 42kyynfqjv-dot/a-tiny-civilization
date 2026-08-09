@@ -5,7 +5,7 @@ import { MemoryIndex } from "../components/MemoryIndex";
 
 export const metadata: Metadata = {
   title: "Living Memory",
-  description: "Watch direct experiences become retained and recalled context inside the live world.",
+  description: "Watch small experiences stay with the lives inside A Tiny Civilization.",
 };
 
 export default function MemoryPage() {
@@ -15,13 +15,13 @@ export default function MemoryPage() {
         <span className="living-brand-world" aria-hidden="true" />
         <span><strong>A Tiny Civilization</strong><small>Deep-space observatory</small></span>
       </Link>
-      <nav><Link href="/">World</Link><Link href="/lives">Lives</Link><Link aria-current="page" href="/memory">Memory</Link><Link href="/wiki">Wiki</Link></nav>
+      <nav><Link href="/">World</Link><Link href="/lives">Lives</Link><Link aria-current="page" href="/memory">Memories</Link></nav>
       <FoundationPulse compact />
     </header>
     <section className="memory-hero">
-      <p className="eyebrow">Observer memory array · live</p>
-      <h1>Watch experience leave a trace.</h1>
-      <p>Every glow began as a direct sensation. Bright returning lines are memories admitted into a new cognition request—not thoughts we wrote, meanings we assigned, or proof that the memory caused an action.</p>
+      <p className="eyebrow">Inside their memories · live</p>
+      <h1>What stays with them?</h1>
+      <p>A sound. A scent. A patch of ground. Another life passing close by. Watch small experiences remain—and sometimes return later.</p>
     </section>
     <MemoryIndex />
   </main>;

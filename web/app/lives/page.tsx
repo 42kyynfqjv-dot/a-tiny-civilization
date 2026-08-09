@@ -16,13 +16,13 @@ export default function LivesPage() {
           <span className="living-brand-world" aria-hidden="true" />
           <span><strong>A Tiny Civilization</strong><small>Live observatory</small></span>
         </Link>
-        <nav><Link href="/">World</Link><Link aria-current="page" href="/lives">Lives</Link><Link href="/memory">Memory</Link><Link href="/wiki">Wiki</Link></nav>
+        <nav><Link href="/">World</Link><Link aria-current="page" href="/lives">Lives</Link><Link href="/memory">Memories</Link></nav>
         <FoundationPulse compact />
       </header>
       <section className="life-directory-hero">
         <p className="eyebrow">Lives inside the world</p>
         <h1>Choose someone to return to.</h1>
-        <p>Every person and individually represented animal has a numerical observer ID until the inhabitants develop their own naming. Following changes only your observatory; it cannot be perceived inside the world.</p>
+        <p>Pick a person or animal. Follow their wandering, their memories, and the lives they keep meeting. They will never know you are there.</p>
       </section>
       <LifeDirectory />
     </main>

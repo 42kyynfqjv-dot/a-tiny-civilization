@@ -44,7 +44,7 @@ export function LifeDirectory() {
   return (
     <section className="life-directory" aria-labelledby="life-directory-title">
       <div className="life-directory-tools">
-        <div><p className="eyebrow">Public life index · readable observer IDs</p><h2 id="life-directory-title">{directory.organisms.length} recorded lives</h2><p>People are Human N; animals carry their recognizable species and number. These labels remain until inhabitants develop their own names, while the permanent audit identity stays underneath.</p></div>
+        <div><p className="eyebrow">Everyone you can follow</p><h2 id="life-directory-title">{directory.organisms.length} lives</h2><p>We call them Human N or by species and number for now. If they ever invent names, their own names take over.</p></div>
         <div role="group" aria-label="Filter lives">{(["all", "person", "fauna"] as const).map((value) => <button className={filter === value ? "active" : undefined} key={value} onClick={() => setFilter(value)} type="button">{value === "fauna" ? "Animals" : value === "person" ? "People" : "Everyone"}</button>)}</div>
       </div>
       <div className="life-directory-grid">

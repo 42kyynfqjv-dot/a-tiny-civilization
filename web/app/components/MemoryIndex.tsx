@@ -77,20 +77,20 @@ export function MemoryIndex() {
 
   return <>
     <section className="memory-overview" aria-label="Memory activity at a glance">
-      <article><span>Retained observations</span><strong>{formatNumber(record.stream.observations.length)}</strong><small>latest public window</small></article>
-      <article><span>Lives remembering</span><strong>{formatNumber(agents.length)}</strong><small>private banks, observer view</small></article>
-      <article><span>Recall pulses</span><strong>{formatNumber(record.stream.recalls.length)}</strong><small>entered recent cognition</small></article>
+      <article><span>Memories in view</span><strong>{formatNumber(record.stream.observations.length)}</strong><small>recent experiences that stayed</small></article>
+      <article><span>Lives remembering</span><strong>{formatNumber(agents.length)}</strong><small>each with a private past</small></article>
+      <article><span>Memories returning</span><strong>{formatNumber(record.stream.recalls.length)}</strong><small>recently brought back</small></article>
     </section>
     <section className="memory-workbench">
       <div className="memory-controls">
-        <div><p className="eyebrow">Live connection map</p><h2>Experience becoming context.</h2><p>A line means an observation was retained or recalled. It does not mean the individual understood it, named it, or acted because of it.</p></div>
-        <label>Follow one memory bank<select value={selectedAgent ?? ""} onChange={(event) => setSelectedAgent(event.target.value || null)}><option value="">All remembering lives</option>{agents.map((agent) => <option value={agent} key={agent}>{label(agent)}</option>)}</select></label>
+        <div><p className="eyebrow">Connections forming now</p><h2>Watch memories gather around a life.</h2><p>Faint lines are experiences that stayed. A bright pulse means one returned. We do not decide what it means to them.</p></div>
+        <label>Choose a life<select value={selectedAgent ?? ""} onChange={(event) => setSelectedAgent(event.target.value || null)}><option value="">Everyone remembering</option>{agents.map((agent) => <option value={agent} key={agent}>{label(agent)}</option>)}</select></label>
       </div>
       <MemoryCanvas observations={visible} recalls={recalls} label={label} />
     </section>
     <section className="memory-ledger" aria-labelledby="memory-ledger-title">
-      <header><p className="eyebrow">Latest retained experience</p><h2 id="memory-ledger-title">No invented inner monologue.</h2><p>These are label-free sensory records. Observer wording is only a readable rendering of the stored channel, property, value, and provenance.</p></header>
-      <ol>{visible.slice(0, 36).map((memory) => <li key={memory.document_id}><time>Moment {formatNumber(memory.tick)}</time><div><strong>{label(memory.agent_id)} retained {channelLabel(memory.channel)}</strong><span>{observationSentence(memory, subjectLabel)}</span><small>Event {formatNumber(memory.source_sequence)} · uncertainty {formatNumber(memory.uncertainty)} · memory {memory.document_id.slice(0, 8)}</small></div></li>)}</ol>
+      <header><p className="eyebrow">Latest memories</p><h2 id="memory-ledger-title">Little moments that stayed.</h2><p>This is not an inner monologue. It is the simpler, stranger beginning of a past: things seen, heard, smelled, touched, tasted, or felt.</p><a className="memory-research-link" href="/wiki">Researchers: methods &amp; raw evidence →</a></header>
+      <ol>{visible.slice(0, 36).map((memory) => <li key={memory.document_id}><time>Moment {formatNumber(memory.tick)}</time><div><strong>{label(memory.agent_id)} remembered {channelLabel(memory.channel)}</strong><span>{friendlyObservation(memory, subjectLabel)}</span><details className="memory-raw"><summary>Raw record</summary><small>Event {formatNumber(memory.source_sequence)} · {memory.property_code.replaceAll("_", " ")} · value {formatNumber(memory.quantized_value)} · uncertainty {formatNumber(memory.uncertainty)} · memory {memory.document_id.slice(0, 8)}</small></details></div></li>)}</ol>
     </section>
   </>;
 }
@@ -148,5 +148,13 @@ function radialPoint(index: number, total: number, x: number, y: number, radius:
 function hashUnit(value: string) { let hash = 2166136261; for (const char of value) hash = Math.imul(hash ^ char.charCodeAt(0), 16777619); return (hash >>> 0) / 4294967295; }
 function channelColor(channel: MemoryObservation["channel"]) { return ({ vision: "#8cc8e5", touch: "#e2bd72", sound: "#aa9ee8", odour: "#8bcf9d", taste: "#e89584", interoception: "#d6d5ce" } as const)[channel]; }
 function channelLabel(channel: MemoryObservation["channel"]) { return channel === "interoception" ? "a bodily sensation" : channel === "odour" ? "a scent" : channel === "sound" ? "a sound" : channel === "vision" ? "a sight" : channel === "taste" ? "a taste" : "a touch"; }
-function observationSentence(memory: MemoryObservation, label: (id: string) => string) { const subject = memory.subject_id ? label(memory.subject_id) : "their own body or surroundings"; return `${subject} · ${memory.property_code.replaceAll("_", " ")} registered ${formatNumber(memory.quantized_value)}.`; }
+function friendlyObservation(memory: MemoryObservation, label: (id: string) => string) {
+  const subject = memory.subject_id ? label(memory.subject_id) : "the world around them";
+  if (memory.channel === "vision") return `Something about ${subject} caught their sight.`;
+  if (memory.channel === "sound") return `A sound from ${subject} stayed with them.`;
+  if (memory.channel === "odour") return `They kept a trace of ${subject}'s scent.`;
+  if (memory.channel === "taste") return `A taste connected to ${subject} remained.`;
+  if (memory.channel === "interoception") return "A feeling from inside their own body remained.";
+  return `They remembered the feel of ${subject}.`;
+}
 function formatNumber(value: string | number) { return new Intl.NumberFormat("en-US").format(Number(value)); }

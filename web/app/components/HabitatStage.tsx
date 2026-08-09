@@ -415,11 +415,11 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     <header className="habitat-toolbar">
       <div><span className={`habitat-status ${status}`} /> <strong>{status === "live" ? "Live habitat" : status === "loading" ? "Locating life" : "Reconnecting"}</strong><small>Moment {formatNumber(worldTick)}</small></div>
       <nav aria-label="Habitat detail">
-        {(["planet", "region", "local"] as Detail[]).map((item) => <button type="button" className={detail === item ? "active" : undefined} onClick={() => void chooseDetail(item)} key={item}>{item}</button>)}
+        {(["planet", "region", "local"] as Detail[]).map((item) => <button type="button" className={detail === item ? "active" : undefined} onClick={() => void chooseDetail(item)} key={item}>{item === "planet" ? "World" : item === "region" ? "Near" : "Close"}</button>)}
         <button type="button" aria-label="Zoom out" onClick={() => zoomBy(-1)}>−</button><button type="button" aria-label="Zoom in" onClick={() => zoomBy(1)}>+</button>
       </nav>
     </header>
-    <div className="habitat-key"><span className="person" /> People <span className="animal" /> Animals <i /> committed movement</div>
+    <div className="habitat-key"><span className="person" /> People <span className="animal" /> Animals <i /> paths</div>
     <aside className="habitat-activity" aria-live="polite">
       <p>Happening now</p>
       {activity.length === 0 ? <span>The habitat is quiet.</span> : <ol>{activity.map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
@@ -428,7 +428,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
       {selected ? <><p>{labels.get(selected.organism_id) ?? "Unindexed life"} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
-    <footer><span>Positions are committed · orbital glass and terrain are observer styling · drag / pinch / scroll</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
+    <footer><span>Drag to explore · tap a light to follow a life</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `showing ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives nearby` : `${formatNumber(view?.clusters.length ?? 0)} groups in view`}</span></footer>
     </div>
     <div className="habitat-observatory-frame" aria-hidden="true"><span>ATC · DEEP-SPACE OBSERVATORY</span><i /><i /></div>
   </section>;

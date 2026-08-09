@@ -82,24 +82,24 @@ export function LiveRecord() {
           <h1 id="live-record-title">Watch life unfold.</h1>
         </div>
         <div>
-          <p>Every point is one person or animal at its latest committed position. Zoom in, select a life, and stay with it as the world changes.</p>
-          {latestMoment && <small><strong>Latest lasting event</strong>{latestMoment.title} · moment {formatNumber(latestMoment.source_tick)}</small>}
-          <WorldInputStatus world={world} />
+          <p>Every light is a living creature. Zoom in, choose one, and come back tomorrow to see where life carried them.</p>
+          {latestMoment && <small><strong>Something just happened</strong>{latestMoment.title} · moment {formatNumber(latestMoment.source_tick)}</small>}
+          <details className="living-science-drawer"><summary>How is this world built?</summary><WorldInputStatus world={world} /><p>Open the research wiki for sources, assumptions, raw records, and replay details.</p><a href="/wiki">Research &amp; methods →</a></details>
         </div>
       </div>
 
       <div className="living-glance" aria-label="Current world at a glance">
-        <article><span>People alive</span><strong>{formatNumber(people.length)}</strong><small>individual public records</small></article>
-        <article><span>Animals alive</span><strong>{formatNumber(animals.length)}</strong><small>individually represented</small></article>
-        <article><span>Recorded moments</span><strong>{formatNumber(world.through_sequence)}</strong><small>append-only history</small></article>
-        <article><span>Observed findings</span><strong>{formatNumber(findings.length)}</strong><small>firsts, records, and streaks</small></article>
+        <article><span>People alive</span><strong>{formatNumber(people.length)}</strong><small>each living their own life</small></article>
+        <article><span>Animals nearby</span><strong>{formatNumber(animals.length)}</strong><small>each one individually followed</small></article>
+        <article><span>Moments lived</span><strong>{formatNumber(world.through_sequence)}</strong><small>the world keeps moving</small></article>
+        <article><span>New things</span><strong>{formatNumber(findings.length)}</strong><small>firsts, records, and lasting habits</small></article>
       </div>
 
       <section className="living-lives" id="people" aria-labelledby="lives-title">
         <header>
           <p className="eyebrow">Every life has a history</p>
           <h2 id="lives-title">Start with someone.</h2>
-          <p>There are no protagonists here. The observatory identifies each person as Human N and each animal by recognizable species and number. These labels stand in for names only until the inhabitants discover naming for themselves.</p>
+          <p>Pick anyone. Follow where they wander, what they notice, and which lives they meet again. Human N and animal numbers are simply what we call them until they invent names of their own.</p>
         </header>
         <div className="living-lives-grid">
           <article className="living-featured-life">
@@ -107,7 +107,7 @@ export function LiveRecord() {
             <div>
               <p>{featured ? `${labelFor(featured)} · ${featured.ended_event_id ? "record ended" : "alive"}` : "No life in the public record"}</p>
               <h3>{featured ? "A life at the beginning" : "Waiting for a life"}</h3>
-              {featured ? <><a href={featured.species.source_url} target="_blank" rel="noreferrer" title={featured.species.scientific_name}>{commonSpeciesName(featured.species.scientific_name)}</a><small>Present since moment {formatNumber(featured.introduced_tick)}. {labelFor(featured)} is an observer ID, not a name known inside the world. If inhabitants develop names, their name becomes primary and this ID remains for audit.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>The observatory will open a biography when the public record contains one.</small>}
+              {featured ? <><span className="living-species-name" title={featured.species.scientific_name}>{commonSpeciesName(featured.species.scientific_name)}</span><small>Here since moment {formatNumber(featured.introduced_tick)}. {labelFor(featured)} is what the observatory calls this life for now. If naming emerges inside the world, their own name takes over.</small><div className="living-life-actions"><a href={lifeHref(world.world_id, featured.organism_id)}>Open this life</a><button type="button" className={followed?.organism_id === featured.organism_id ? "is-following" : undefined} onClick={() => followLife(featured.organism_id, setFollowedOrganismId)}>{followed?.organism_id === featured.organism_id ? "Following" : "Follow this life"}</button></div></> : <small>Choose a life when one appears.</small>}
             </div>
           </article>
           <article className="living-recent">
@@ -120,13 +120,13 @@ export function LiveRecord() {
       </section>
 
       <section className="living-evidence" id="discoveries" aria-labelledby="evidence-title">
-        <div className="living-section-heading"><div><p className="eyebrow">What the record supports</p><h2 id="evidence-title">Evidence before interpretation.</h2></div><p>The observatory finds noteworthy patterns. It never adds knowledge to the inhabitants or turns guesses into history.</p></div>
-        {findings.length === 0 ? <div className="living-empty-evidence"><span>00</span><p>No first, record, or durable streak has crossed the public threshold yet.</p></div> : <div className="living-finding-grid">{findings.map((finding) => <article key={finding.finding_key}><span>{finding.kind}</span><h3>{finding.title}</h3><p>{finding.summary}</p></article>)}</div>}
+        <div className="living-section-heading"><div><p className="eyebrow">Never seen here before</p><h2 id="evidence-title">What is changing?</h2></div><p>First meetings. Unusual journeys. Habits that keep returning. This is where the world starts to surprise us.</p></div>
+        {findings.length === 0 ? <div className="living-empty-evidence"><span>00</span><p>Nothing truly new yet. That is okay—the world does not perform on command.</p></div> : <div className="living-finding-grid">{findings.map((finding) => <article key={finding.finding_key}><span>{finding.kind === "first" ? "A first" : finding.kind === "record" ? "A new record" : "A lasting pattern"}</span><h3>{finding.title}</h3><p>{finding.summary}</p></article>)}</div>}
         {artifacts.length > 0 && <div className="living-artifacts"><p className="eyebrow">Material traces</p>{artifacts.map((artifact) => <article key={artifact.object_id}><strong><a href={artifact.material.source_url} target="_blank" rel="noreferrer">{artifact.material.canonical_name}</a></strong><span>First changed at moment {formatNumber(artifact.first_trace_tick)} · latest trace {formatNumber(artifact.latest_trace_tick)} · surface trace {formatNumber(artifact.surface_trace_units)}</span></article>)}</div>}
       </section>
 
       <details className="living-verification">
-        <summary>Verify this history <span>seed, event head, and state hashes</span></summary>
+        <summary>For researchers: verify this history <span>sources, record head, and replay fingerprints</span></summary>
         <dl><div><dt>Manifest</dt><dd title={world.manifest_hash}>{shortHash(world.manifest_hash)}</dd></div><div><dt>Event head</dt><dd title={world.event_hash}>{shortHash(world.event_hash)}</dd></div><div><dt>State</dt><dd title={world.state_hash}>{shortHash(world.state_hash)}</dd></div>{world.composition_hash && <div><dt>Input composition</dt><dd title={world.composition_hash}>{shortHash(world.composition_hash)}</dd></div>}</dl>
       </details>
     </section>

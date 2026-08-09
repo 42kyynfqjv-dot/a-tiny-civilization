@@ -88,19 +88,20 @@ test("server-renders the civilization observatory", async () => {
   const html = await response.text();
   assert.match(html, /<title>Live World · A Tiny Civilization<\/title>/i);
   assert.match(html, /A world where every life writes its own story\./);
-  assert.match(html, /The whole world beneath every life\./);
-  assert.match(html, /Living Atlas|A living Earth/);
-  assert.match(html, /Every claim has a trail/);
+  assert.match(html, /No quests\. No script\. No idea what comes next\./);
+  assert.match(html, /Their world/);
+  assert.match(html, /A whole world beneath every life/);
   assert.doesNotMatch(html, /River basin · seed awaiting launch/);
-  assert.match(html, /The public wiki/);
+  assert.match(html, /Their unfolding story/);
   assert.match(html, /Give a future life a name\./);
   assert.match(html, /civilization cannot perceive reservations or supporters/);
   assert.match(html, /Checking supporter access/);
   assert.doesNotMatch(html, /Opens after first births/);
-  assert.match(html, /Nothing lived here is discarded\./);
-  assert.match(html, /If every person dies/);
-  assert.match(html, /Lives with a past/);
-  assert.match(html, /href="\/memory">Memory/);
+  assert.match(html, /Nothing that lived here disappears\./);
+  assert.match(html, /If everyone dies/);
+  assert.match(html, /Lives you can return to/);
+  assert.match(html, /href="\/memory">Memories/);
+  assert.match(html, /Research &amp; wiki/);
   assert.doesNotMatch(html, /class="sidebar"|class="app-shell"/);
   assert.doesNotMatch(html, /Scientific reference|Committed observer record|Integrity rule 01/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
@@ -124,9 +125,9 @@ test("server-renders a selectable life directory", async () => {
   const html = await response.text();
   assert.match(html, /<title>Lives · A Tiny Civilization<\/title>/i);
   assert.match(html, /Choose someone to return to\./);
-  assert.match(html, /Following changes only your observatory/);
+  assert.match(html, /They will never know you are there/);
   assert.match(html, /Opening the life index/);
-  assert.match(html, /numerical observer ID/i);
+  assert.doesNotMatch(html, /numerical observer ID/i);
 });
 
 test("server-renders the live memory array as a separate observer route", async () => {
@@ -134,9 +135,9 @@ test("server-renders the live memory array as a separate observer route", async 
   assert.equal(response.status, 200);
   const html = await response.text();
   assert.match(html, /<title>Living Memory · A Tiny Civilization<\/title>/i);
-  assert.match(html, /Watch experience leave a trace\./);
+  assert.match(html, /What stays with them\?/);
   assert.match(html, /Opening the live memory record/);
-  assert.match(html, /not thoughts we wrote/i);
+  assert.match(html, /small experiences remain/i);
 });
 
 test("server-renders an individual life route", async () => {
