@@ -188,7 +188,7 @@ services:
 
 volumes:
   postgres-data:
-    name: a-tiny-civilization-postgres-v1
+    name: a-tiny-civilization-postgres-ruleset33-v1
     external: true
 
 networks:
