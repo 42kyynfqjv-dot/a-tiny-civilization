@@ -1,5 +1,5 @@
+/* eslint-disable @next/next/no-html-link-for-pages -- observatory navigation must work without client routing */
 import type { Metadata } from "next";
-import Link from "next/link";
 import { FoundationPulse } from "../components/FoundationPulse";
 import { WikiIndex } from "../components/WikiIndex";
 
@@ -19,11 +19,11 @@ export default function ObserverWikiPage() {
   return (
     <main className="wiki-page">
       <header className="wiki-topbar">
-        <Link className="brand" href="/" aria-label="Return to A Tiny Civilization Observatory">
+        <a className="brand" href="/" aria-label="Return to A Tiny Civilization Observatory">
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
           <span><strong>A Tiny</strong><small>Civilization Observatory</small></span>
-        </Link>
-        <nav aria-label="Observer wiki navigation"><Link href="/">Live world</Link><Link aria-current="page" href="/wiki">Observer wiki</Link></nav>
+        </a>
+        <nav aria-label="Observer wiki navigation"><a href="/">Live world</a><a aria-current="page" href="/wiki">Observer wiki</a></nav>
         <FoundationPulse compact />
       </header>
 

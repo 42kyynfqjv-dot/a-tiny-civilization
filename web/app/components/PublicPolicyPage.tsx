@@ -1,4 +1,4 @@
-import Link from "next/link";
+/* eslint-disable @next/next/no-html-link-for-pages -- policy navigation must work without client routing */
 import { FoundationPulse } from "./FoundationPulse";
 
 export type PublicPolicy = {
@@ -15,14 +15,14 @@ export function PublicPolicyPage({ policy }: { policy: PublicPolicy }) {
   return (
     <main className="policy-page">
       <header className="wiki-topbar">
-        <Link className="brand" href="/" aria-label="Return to A Tiny Civilization Observatory">
+        <a className="brand" href="/" aria-label="Return to A Tiny Civilization Observatory">
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
           <span><strong>A Tiny</strong><small>Civilization Observatory</small></span>
-        </Link>
+        </a>
         <nav aria-label="Policy navigation">
-          <Link href="/">Live world</Link>
-          <Link href="/privacy">Privacy</Link>
-          <Link href="/terms">Terms</Link>
+          <a href="/">Live world</a>
+          <a href="/privacy">Privacy</a>
+          <a href="/terms">Terms</a>
         </nav>
         <FoundationPulse compact />
       </header>
@@ -41,10 +41,10 @@ export function PublicPolicyPage({ policy }: { policy: PublicPolicy }) {
           </section>
         ))}
         <nav className="policy-index" aria-label="All public policies">
-          <Link href="/privacy">Privacy notice</Link>
-          <Link href="/terms">Terms of use</Link>
-          <Link href="/supporter-policy">Supporter naming</Link>
-          <Link href="/presentation-policy">World presentation</Link>
+          <a href="/privacy">Privacy notice</a>
+          <a href="/terms">Terms of use</a>
+          <a href="/supporter-policy">Supporter naming</a>
+          <a href="/presentation-policy">World presentation</a>
         </nav>
       </article>
     </main>

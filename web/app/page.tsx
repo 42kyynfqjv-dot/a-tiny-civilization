@@ -1,5 +1,4 @@
 import type { Metadata } from "next";
-import Link from "next/link";
 import { ArchiveIndex } from "./components/ArchiveIndex";
 import { FoundationPulse } from "./components/FoundationPulse";
 import { LiveRecord } from "./components/LiveRecord";
@@ -23,7 +22,7 @@ export default function Home() {
           <a href="#live">World</a>
           <a href="#people">Lives</a>
           <a href="#discoveries">Discoveries</a>
-          <Link href="/wiki">Wiki</Link>
+          <a href="/wiki">Wiki</a>
         </nav>
         <FoundationPulse compact />
       </header>
@@ -60,7 +59,7 @@ export default function Home() {
               Lives, places, evidence, and discoveries are connected to their source events. If
               writing, art, tools, or research emerge, their artifacts receive a dedicated archive.
             </p>
-            <Link className="living-text-link" href="/wiki">Open the world notebook <span aria-hidden="true">↗</span></Link>
+            <a className="living-text-link" href="/wiki">Open the world notebook <span aria-hidden="true">↗</span></a>
           </div>
           <div className="living-notebook-stack" aria-label="Wiki sections">
             <article><span>People &amp; animals</span><strong>Lives with a past</strong><small>Birth, lineage, movement, memory, and the traces each life leaves.</small></article>
@@ -98,8 +97,8 @@ export default function Home() {
       <footer className="living-footer">
         <div><strong>A Tiny Civilization</strong><span>We can look in. We cannot reach in.</span></div>
         <nav aria-label="Project policies">
-          <Link href="/privacy">Privacy</Link><Link href="/terms">Terms</Link>
-          <Link href="/supporter-policy">Supporter policy</Link><Link href="/presentation-policy">Presentation</Link>
+          <a href="/privacy">Privacy</a><a href="/terms">Terms</a>
+          <a href="/supporter-policy">Supporter policy</a><a href="/presentation-policy">Presentation</a>
         </nav>
         <p>Open source · Apache 2.0</p>
       </footer>
