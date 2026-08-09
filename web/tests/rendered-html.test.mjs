@@ -136,7 +136,7 @@ test("server-renders an individual life route", async () => {
 });
 
 for (const [path, title, marker] of [
-  ["/privacy", "Privacy notice", "Observer data is not sold"],
+  ["/privacy", "Privacy notice", "Global Privacy Control"],
   ["/terms", "Terms of use", "not a promise that civilization"],
   ["/supporter-policy", "Supporter naming policy", "never creates, schedules, delays"],
   ["/presentation-policy", "World presentation policy", "never presents sexual activity"],
@@ -150,6 +150,21 @@ for (const [path, title, marker] of [
     assert.match(html, /Public project policy/);
   });
 }
+
+test("public pages fail closed against third-party tracking", async () => {
+  for (const path of ["/", "/wiki", "/privacy", "/terms", "/supporter-policy", "/presentation-policy"]) {
+    const response = await render(path);
+    const html = await response.text();
+    assert.doesNotMatch(
+      html,
+      /google-analytics|googletagmanager|meta-pixel|connect\.facebook|hotjar|fullstory|posthog|segment\.com|mixpanel|clarity\.ms/i,
+    );
+    assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+    assert.equal(response.headers.get("x-dns-prefetch-control"), "off");
+    assert.match(response.headers.get("content-security-policy") ?? "", /connect-src 'self'/);
+    assert.match(response.headers.get("permissions-policy") ?? "", /browsing-topics=\(\)/);
+  }
+});
 
 test("proxies only observer API paths when configured", async () => {
   const workerUrl = new URL("../dist/server/index.js", import.meta.url);
