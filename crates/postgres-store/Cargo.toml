@@ -12,6 +12,7 @@ observer-projection = { path = "../observer-projection" }
 observer-auth = { path = "../observer-auth" }
 async-trait.workspace = true
 chrono.workspace = true
+serde.workspace = true
 serde_json.workspace = true
 sim-engine = { path = "../sim-engine" }
 sqlx.workspace = true

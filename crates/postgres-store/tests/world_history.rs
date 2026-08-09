@@ -21,10 +21,10 @@ use observer_auth::{
 };
 use observer_projection::{
     CommittedBirth, ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
-    ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverOrganismStore,
-    ObserverTimelineStore, ObserverWorldStore, PublicHabitatDetail, PublicHabitatQuery,
-    PublicLanguageStage, PublicWorldInputStatus, ReservationRequest, ReservationState,
-    ReservationTarget, SupporterReservationStore,
+    ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverMemoryStore,
+    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicHabitatDetail,
+    PublicHabitatQuery, PublicLanguageStage, PublicWorldInputStatus, ReservationRequest,
+    ReservationState, ReservationTarget, SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{
@@ -1398,8 +1398,8 @@ async fn subjective_memory_delivery_is_atomic_leased_and_immutable(pool: PgPool)
         genesis_batch.sequence,
         genesis_batch.tick,
         0,
-        "A cold gust was followed by discomfort.",
-        "direct perception",
+        r#"{"subject_id":null,"channel":"touch","property_code":"temperature","quantized_value":-12,"uncertainty":2}"#,
+        "canonical-direct-perception-v1",
     )?;
     let effects = TransitionEffects {
         memory_retains: vec![retain.clone()],
@@ -1449,6 +1449,17 @@ async fn subjective_memory_delivery_is_atomic_leased_and_immutable(pool: PgPool)
     assert_eq!(accepted.0, Some(retain.operation_id.to_string()));
     assert_eq!(accepted.1.as_deref(), Some("test-hindsight-adapter"));
     assert!(accepted.2.is_some());
+
+    let public_memory = store.public_memory_stream(manifest.world_id, 10).await?;
+    assert_eq!(public_memory.observations.len(), 1);
+    assert_eq!(
+        public_memory.observations[0].document_id,
+        retain.document_id
+    );
+    assert_eq!(public_memory.observations[0].agent_id, person_id);
+    assert_eq!(public_memory.observations[0].property_code, "temperature");
+    assert_eq!(public_memory.observations[0].quantized_value, -12);
+    assert!(public_memory.recalls.is_empty());
 
     let recall_request = MemoryRecallRequest::new(
         manifest.world_id,

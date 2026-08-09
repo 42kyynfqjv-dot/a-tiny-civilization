@@ -11,8 +11,8 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
     BirthCategory, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence,
-    MaterialIdentity, OrganismRole, PrimitiveActionKind, S2CellId, SimTick, SpeciesIdentity,
-    WorldId, WorldStatus,
+    MaterialIdentity, OrganismRole, PerceptionChannel, PrimitiveActionKind, S2CellId, SimTick,
+    SpeciesIdentity, WorldId, WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -41,6 +41,7 @@ pub const PUBLIC_HABITAT_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
+pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -727,6 +728,51 @@ pub trait ObserverLanguageStore: Send + Sync {
         &self,
         world_id: WorldId,
     ) -> Result<PublicLanguageArchive, ObserverProjectionStoreError>;
+}
+
+/// One direct, label-free observation retained by an individual. This is an
+/// observer-only view over immutable memory-delivery provenance; it never feeds
+/// back into the world or assigns meaning to the sensed property.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicMemoryObservation {
+    pub document_id: Uuid,
+    pub agent_id: EntityId,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subject_id: Option<EntityId>,
+    pub source_sequence: EventSequence,
+    pub tick: SimTick,
+    pub channel: PerceptionChannel,
+    pub property_code: String,
+    pub quantized_value: i32,
+    pub uncertainty: u16,
+}
+
+/// A memory was admitted into one recorded cognition request. This is evidence
+/// of retrieval, not a claim that the memory caused the eventual action.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicMemoryRecall {
+    pub request_id: Uuid,
+    pub agent_id: EntityId,
+    pub selected_tick: SimTick,
+    pub deadline_tick: SimTick,
+    pub document_ids: Vec<Uuid>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicMemoryStream {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub observations: Vec<PublicMemoryObservation>,
+    pub recalls: Vec<PublicMemoryRecall>,
+}
+
+#[async_trait]
+pub trait ObserverMemoryStore: Send + Sync {
+    async fn public_memory_stream(
+        &self,
+        world_id: WorldId,
+        limit: u16,
+    ) -> Result<PublicMemoryStream, ObserverProjectionStoreError>;
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,

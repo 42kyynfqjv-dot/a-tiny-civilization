@@ -98,6 +98,7 @@ test("server-renders the civilization observatory", async () => {
   assert.match(html, /Nothing lived here is discarded\./);
   assert.match(html, /If every person dies/);
   assert.match(html, /Lives with a past/);
+  assert.match(html, /href="\/memory">Memory/);
   assert.doesNotMatch(html, /class="sidebar"|class="app-shell"/);
   assert.doesNotMatch(html, /Scientific reference|Committed observer record|Integrity rule 01/);
   assert.doesNotMatch(html, /codex-preview|react-loading-skeleton|Starter Project/i);
@@ -126,6 +127,16 @@ test("server-renders a selectable life directory", async () => {
   assert.match(html, /numerical observer ID/i);
 });
 
+test("server-renders the live memory array as a separate observer route", async () => {
+  const response = await render("/memory");
+  assert.equal(response.status, 200);
+  const html = await response.text();
+  assert.match(html, /<title>Living Memory · A Tiny Civilization<\/title>/i);
+  assert.match(html, /Watch experience leave a trace\./);
+  assert.match(html, /Opening the live memory record/);
+  assert.match(html, /not thoughts we wrote/i);
+});
+
 test("server-renders an individual life route", async () => {
   const response = await render("/lives/b3ea736d-7a5a-5161-a74b-fa8c4302d333/00000000-0000-0000-0000-000000000001");
   assert.equal(response.status, 200);
@@ -152,7 +163,7 @@ for (const [path, title, marker] of [
 }
 
 test("public pages fail closed against third-party tracking", async () => {
-  for (const path of ["/", "/wiki", "/privacy", "/terms", "/supporter-policy", "/presentation-policy"]) {
+  for (const path of ["/", "/memory", "/wiki", "/privacy", "/terms", "/supporter-policy", "/presentation-policy"]) {
     const response = await render(path);
     const html = await response.text();
     assert.doesNotMatch(

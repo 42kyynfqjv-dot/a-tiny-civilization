@@ -18,11 +18,12 @@ use observer_auth::{
 };
 use observer_projection::{
     ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
-    ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverOrganismStore,
-    ObserverTimelineStore, ObserverWorldStore, PublicArtifact, PublicArtifactTrace, PublicFinding,
-    PublicHabitatDetail, PublicHabitatQuery, PublicHabitatView, PublicHistoryCommitmentPage,
-    PublicLanguageArchive, PublicOrganism, PublicTimelineItem, PublicWikiEntry, PublicWorld,
-    PublicWorldTelemetry, compose_public_wiki_entries,
+    ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverMemoryStore,
+    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicArtifact,
+    PublicArtifactTrace, PublicFinding, PublicHabitatDetail, PublicHabitatQuery, PublicHabitatView,
+    PublicHistoryCommitmentPage, PublicLanguageArchive, PublicMemoryStream, PublicOrganism,
+    PublicTimelineItem, PublicWikiEntry, PublicWorld, PublicWorldTelemetry,
+    compose_public_wiki_entries,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -53,6 +54,7 @@ pub trait ObserverReadStore:
     + ObserverHistoryCommitmentStore
     + ObserverHabitatStore
     + ObserverLanguageStore
+    + ObserverMemoryStore
 {
 }
 
@@ -66,6 +68,7 @@ impl<T> ObserverReadStore for T where
         + ObserverHistoryCommitmentStore
         + ObserverHabitatStore
         + ObserverLanguageStore
+        + ObserverMemoryStore
 {
 }
 
@@ -196,6 +199,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/worlds/{world_id}/organisms", get(public_organisms))
         .route("/api/v1/worlds/{world_id}/habitat", get(public_habitat))
         .route("/api/v1/worlds/{world_id}/language", get(public_language))
+        .route("/api/v1/worlds/{world_id}/memory", get(public_memory))
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
             get(public_organism),
@@ -1260,6 +1264,22 @@ async fn public_organisms(
         projection_version: observer_projection::PUBLIC_ORGANISM_PROJECTION_VERSION,
         organisms,
     }))
+}
+
+async fn public_memory(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<PublicMemoryStream>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let stream = state
+        .store
+        .public_memory_stream(world_id, query.limit.unwrap_or(120))
+        .await
+        .map_err(log_observer_error)?;
+    Ok(Json(stream))
 }
 
 async fn public_organism(

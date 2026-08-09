@@ -21,6 +21,7 @@ export default function Home() {
         <nav aria-label="Observatory navigation">
           <a href="#live">World</a>
           <a href="#people">Lives</a>
+          <a href="/memory">Memory</a>
           <a href="#discoveries">Discoveries</a>
           <a href="/wiki">Wiki</a>
         </nav>
@@ -97,7 +98,7 @@ export default function Home() {
       <footer className="living-footer">
         <div><strong>A Tiny Civilization</strong><span>We can look in. We cannot reach in.</span></div>
         <nav aria-label="Project policies">
-          <a href="/privacy">Privacy</a><a href="/terms">Terms</a>
+          <a href="/memory">Memory</a><a href="/privacy">Privacy</a><a href="/terms">Terms</a>
           <a href="/supporter-policy">Supporter policy</a><a href="/presentation-policy">Presentation</a>
         </nav>
         <p>Open source · Apache 2.0</p>

@@ -23,7 +23,7 @@ export default function ObserverWikiPage() {
           <span className="brand-mark" aria-hidden="true"><span /><span /><span /></span>
           <span><strong>A Tiny</strong><small>Civilization Observatory</small></span>
         </a>
-        <nav aria-label="Observer wiki navigation"><a href="/">Live world</a><a aria-current="page" href="/wiki">Observer wiki</a></nav>
+        <nav aria-label="Observer wiki navigation"><a href="/">Live world</a><a href="/memory">Memory</a><a aria-current="page" href="/wiki">Observer wiki</a></nav>
         <FoundationPulse compact />
       </header>
 

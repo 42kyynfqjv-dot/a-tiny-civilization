@@ -16,7 +16,7 @@ export default function LivesPage() {
           <span className="living-brand-world" aria-hidden="true" />
           <span><strong>A Tiny Civilization</strong><small>Live observatory</small></span>
         </Link>
-        <nav><Link href="/">World</Link><Link aria-current="page" href="/lives">Lives</Link><Link href="/wiki">Wiki</Link></nav>
+        <nav><Link href="/">World</Link><Link aria-current="page" href="/lives">Lives</Link><Link href="/memory">Memory</Link><Link href="/wiki">Wiki</Link></nav>
         <FoundationPulse compact />
       </header>
       <section className="life-directory-hero">

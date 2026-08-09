@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { commonSpeciesName } from "./speciesNames";
+import { MemoryTelemetry } from "./MemoryTelemetry";
 
 type Detail = "planet" | "region" | "local";
 type Role = "person" | "fauna";
@@ -405,7 +406,9 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     }, 120);
   };
 
-  return <section className={`habitat-stage ${interacting ? "is-interacting" : ""}`} aria-label="Live habitat view">
+  return <section className={`habitat-stage ${interacting ? "is-interacting" : ""}`} aria-label="Deep-space observatory window onto the live habitat">
+    <div className="habitat-starfield" aria-hidden="true"><i /><i /><i /></div>
+    <div className="habitat-window">
     <canvas ref={canvasRef} onPointerDown={beginPointer} onPointerMove={movePointer} onPointerUp={endPointer} onPointerCancel={cancelPointer} onWheel={wheelZoom} aria-label="Live positions of inhabitants and animals. Drag to pan, pinch or scroll to zoom, and select a point to inspect it." />
     <div className="habitat-wash" aria-hidden="true" />
     <div className="habitat-glass" aria-hidden="true"><i /><span className="glass-corner corner-nw" /><span className="glass-corner corner-ne" /><span className="glass-corner corner-sw" /><span className="glass-corner corner-se" /></div>
@@ -421,10 +424,13 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       <p>Happening now</p>
       {activity.length === 0 ? <span>The habitat is quiet.</span> : <ol>{activity.map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
     </aside>
+    <MemoryTelemetry worldId={worldId} labels={labels} />
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
       {selected ? <><p>{labels.get(selected.organism_id) ?? shortId(selected.organism_id)} · {selected.role === "person" ? "person" : "animal"}</p><strong title={selected.species.scientific_name}>{commonSpeciesName(selected.species.scientific_name)}</strong><span>{actionSentence(selected.last_action, selected.signal_form)}</span><div><button type="button" onClick={followSelected}>Follow this life</button><a href={`/lives/${encodeURIComponent(worldId)}/${encodeURIComponent(selected.organism_id)}`}>Open record</a></div></> : <><p>Look closely</p><strong>Select any moving point</strong><span>Drag to pan; pinch or scroll to zoom. Nearby markers fan apart visually so each committed life remains selectable.</span></>}
     </div>
-    <footer><span>Positions are committed · lens and terrain are observer styling · drag / pinch / scroll</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
+    <footer><span>Positions are committed · orbital glass and terrain are observer styling · drag / pinch / scroll</span><span>{detail === "local" ? `${localZoom.toFixed(localZoom < 10 ? 1 : 0)}× · ` : ""}{view?.truncated ? `view capped at ${formatNumber(view.maximum_entities)} lives` : detail === "local" ? `${formatNumber(view?.entities.length ?? 0)} lives in view` : `${formatNumber(view?.clusters.length ?? 0)} population clusters`}</span></footer>
+    </div>
+    <div className="habitat-observatory-frame" aria-hidden="true"><span>ATC · DEEP-SPACE OBSERVATORY</span><i /><i /></div>
   </section>;
 }
 

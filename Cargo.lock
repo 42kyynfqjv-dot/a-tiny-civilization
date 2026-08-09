@@ -1958,6 +1958,7 @@ dependencies = [
  "chrono",
  "observer-auth",
  "observer-projection",
+ "serde",
  "serde_json",
  "sim-engine",
  "sqlx",
