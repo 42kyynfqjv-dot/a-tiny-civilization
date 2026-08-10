@@ -85,6 +85,7 @@ impl WorldExperimentCommitment {
 #[serde(deny_unknown_fields)]
 pub struct CancerResearchBootstrap {
     pub schema_version: u16,
+    pub target: CancerResearchTarget,
     pub initial_resident_count: u32,
     pub initial_affected_resident_count: u32,
     pub initial_cohort_assignment: CancerCohortAssignment,
@@ -94,6 +95,7 @@ pub struct CancerResearchBootstrap {
     pub affected_person_terminal_objective: CancerTerminalObjective,
     pub objective_priority: ObjectivePriority,
     pub research_diversity: ResearchDiversity,
+    pub evidence_protocol: ResearchEvidenceProtocol,
     pub cognition_route: ResearchCognitionRoute,
     pub disease_scope: DiseaseScope,
     pub survival_environment: SurvivalEnvironment,
@@ -102,8 +104,14 @@ pub struct CancerResearchBootstrap {
 impl CancerResearchBootstrap {
     #[must_use]
     pub const fn english_literate_abundant_world() -> Self {
+        Self::for_target(CancerResearchTarget::AdultGlioblastoma)
+    }
+
+    #[must_use]
+    pub const fn for_target(target: CancerResearchTarget) -> Self {
         Self {
             schema_version: CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION,
+            target,
             initial_resident_count: CANCER_RESEARCH_INITIAL_RESIDENTS,
             initial_affected_resident_count: CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS,
             initial_cohort_assignment: CancerCohortAssignment::SeededStratifiedByBirthCategory,
@@ -114,6 +122,8 @@ impl CancerResearchBootstrap {
                 CancerTerminalObjective::PermanentEliminationOfCancerFamily,
             objective_priority: ObjectivePriority::OverridesAllNonInstrumentalGoals,
             research_diversity: ResearchDiversity::IndependentSeededProfilesWithReplication,
+            evidence_protocol:
+                ResearchEvidenceProtocol::PreregisteredBlindDiscoveryThenLiteratureAudit,
             cognition_route: ResearchCognitionRoute::DeepseekV4ProPaidFromGenesis,
             disease_scope: DiseaseScope::CancerFamilyOnly,
             survival_environment: SurvivalEnvironment::Abundant,
@@ -133,6 +143,14 @@ impl CancerResearchBootstrap {
         }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchTarget {
+    AdultGlioblastoma,
+    PancreaticDuctalAdenocarcinoma,
+    ExtensiveStageSmallCellLungCancer,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -190,6 +208,16 @@ pub enum ResearchDiversity {
     /// to challenge consensus. Results can update these dispositions; no single
     /// centrally authored research plan is installed.
     IndependentSeededProfilesWithReplication,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ResearchEvidenceProtocol {
+    /// Discovery teams see biological primitives, raw datasets, and returned
+    /// experimental observations without live literature retrieval. They commit
+    /// predictions and falsification criteria before separate literature-audit
+    /// and replication teams can compare the artifact with existing work.
+    PreregisteredBlindDiscoveryThenLiteratureAudit,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -320,6 +348,14 @@ mod tests {
         assert_eq!(
             cancer_json["experiment"]["commitment"]["initial_cohort_assignment"],
             "seeded_stratified_by_birth_category"
+        );
+        assert_eq!(
+            cancer_json["experiment"]["commitment"]["target"],
+            "adult_glioblastoma"
+        );
+        assert_eq!(
+            cancer_json["experiment"]["commitment"]["evidence_protocol"],
+            "preregistered_blind_discovery_then_literature_audit"
         );
     }
 }

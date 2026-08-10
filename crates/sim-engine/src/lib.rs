@@ -22,8 +22,9 @@ use world_domain::{
     ACTION_VALUE_STATE_SCHEMA_VERSION, ADULT_BODY_MASS_EVENT_SCHEMA_VERSION, ActionValueState,
     AdultBodyMassCommitment, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
     BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, BodilyNeedState, BodilyRegulationState,
-    CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
-    COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+    CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION, CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS,
+    CANCER_RESEARCH_INITIAL_RESIDENTS, CELESTIAL_STATE_EVENT_SCHEMA_VERSION,
+    COGNITION_EVENT_SCHEMA_VERSION, COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
     COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
     CanonicalHashError, CelestialState, CognitionDeadlineInput, CognitionInputOutcome,
     CognitionReading, CognitionRequestSelection, CognitionUnavailableReason,
@@ -51,9 +52,9 @@ use world_domain::{
     SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
     SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
-    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION,
-    WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldManifestError,
-    WorldStatus, decode_s2_face_ij, s2_edge_neighbors,
+    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
+    WorldConfigurationError, WorldExperimentCommitment, WorldId, WorldManifest, WorldManifestError,
+    WorldSeed, WorldStatus, decode_s2_face_ij, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -219,6 +220,7 @@ pub const TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 30;
 pub const MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION: u16 = 31;
 pub const ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION: u16 = 32;
 pub const WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 33;
+pub const CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION: u16 = 34;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -270,7 +272,7 @@ const TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 29;
 const TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 30;
 const MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION: u16 = 31;
 const ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION: u16 = 32;
-const WORLD_EXPERIMENT_STATE_HASH_SCHEMA_VERSION: u16 = 33;
+const CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION: u16 = 34;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = world_domain::SIGNAL_FORM_VARIANT_COUNT as u16;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize =
@@ -1184,6 +1186,43 @@ fn species_identity_key(species: &SpeciesIdentity) -> (&str, &str, &str, &str) {
     )
 }
 
+fn seeded_cancer_research_cohort<'a>(
+    seed: WorldSeed,
+    people: impl Iterator<Item = (EntityId, &'a str)>,
+) -> Result<Vec<EntityId>, EngineError> {
+    let mut strata: BTreeMap<&str, Vec<(Digest, EntityId)>> = BTreeMap::new();
+    for (resident_id, birth_category) in people {
+        let rank = Digest::canonical(&("cancer-research-initial-cohort-v1", seed, resident_id))?;
+        strata
+            .entry(birth_category)
+            .or_default()
+            .push((rank, resident_id));
+    }
+    let total = strata.values().map(Vec::len).sum::<usize>();
+    if total != CANCER_RESEARCH_INITIAL_RESIDENTS as usize
+        || strata
+            .values()
+            .any(|stratum| !stratum.len().is_multiple_of(2))
+    {
+        return Err(EngineError::InvalidCancerResearchInitialCohort);
+    }
+    let mut affected = Vec::with_capacity(CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS as usize);
+    for stratum in strata.values_mut() {
+        stratum.sort_unstable();
+        affected.extend(
+            stratum
+                .iter()
+                .take(stratum.len() / 2)
+                .map(|(_, resident_id)| *resident_id),
+        );
+    }
+    affected.sort_unstable();
+    if affected.len() != CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS as usize {
+        return Err(EngineError::InvalidCancerResearchInitialCohort);
+    }
+    Ok(affected)
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct EngineState {
     manifest: WorldManifest,
@@ -1198,6 +1237,8 @@ pub struct EngineState {
     pending_reproductive_developments: BTreeMap<EntityId, PendingReproductiveDevelopment>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pending_cognition_requests: BTreeMap<Uuid, CognitionRequestSelection>,
+    #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
+    initial_cancer_research_cohort: BTreeSet<EntityId>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<PartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1500,6 +1541,7 @@ impl EngineState {
             material_instances: BTreeMap::new(),
             pending_reproductive_developments: BTreeMap::new(),
             pending_cognition_requests: BTreeMap::new(),
+            initial_cancer_research_cohort: BTreeSet::new(),
             partition_schedule: None,
             celestial_state: None,
             celestial_tick: None,
@@ -1514,6 +1556,11 @@ impl EngineState {
     #[must_use]
     pub const fn configuration(&self) -> Option<&WorldConfiguration> {
         self.configuration.as_ref()
+    }
+
+    #[must_use]
+    pub fn is_initial_cancer_research_resident(&self, resident_id: EntityId) -> bool {
+        self.initial_cancer_research_cohort.contains(&resident_id)
     }
 
     #[must_use]
@@ -1659,6 +1706,19 @@ impl EngineState {
                 }
             }
         }
+
+        let initial_cancer_research_cohort = match &self.manifest.experiment {
+            Some(WorldExperimentCommitment::CancerResearch(_)) => {
+                Some(seeded_cancer_research_cohort(
+                    self.manifest.seed,
+                    initial_organisms.iter().filter_map(|organism| {
+                        (organism.role == OrganismRole::Person)
+                            .then_some((organism.organism_id, organism.birth_category.as_str()))
+                    }),
+                )?)
+            }
+            None => None,
+        };
 
         let mut events = Vec::with_capacity(
             initial_organisms
@@ -1842,6 +1902,11 @@ impl EngineState {
                     commitment,
                 });
             }
+        }
+        if let Some(affected_resident_ids) = initial_cancer_research_cohort {
+            events.push(DomainEvent::CancerResearchCohortCommitted {
+                affected_resident_ids,
+            });
         }
         for instance in initial_materials {
             events.push(DomainEvent::MaterialInstanceInitialized {
@@ -4122,6 +4187,11 @@ impl EngineState {
                 .values()
                 .collect(),
             pending_cognition_requests: self.pending_cognition_requests.values().collect(),
+            initial_cancer_research_cohort: self
+                .initial_cancer_research_cohort
+                .iter()
+                .copied()
+                .collect(),
             partition_schedule: self.partition_schedule.as_ref(),
             celestial_state: self.celestial_state,
             celestial_tick: self.celestial_tick,
@@ -4949,6 +5019,7 @@ impl EngineState {
                 .and_then(|organism| organism.embodied_patch),
             DomainEvent::WorldStarted { .. }
             | DomainEvent::WorldConfigured { .. }
+            | DomainEvent::CancerResearchCohortCommitted { .. }
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::WorldExtinct
@@ -5839,7 +5910,7 @@ impl EngineState {
 
     fn event_schema_version(&self) -> u16 {
         if self.uses_world_experiment_bootstrap() {
-            WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
         } else if self.uses_competitive_signal_learning_driver() {
             COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
         } else if self.uses_adult_body_mass_state_driver() {
@@ -5936,7 +6007,7 @@ impl EngineState {
 
     fn state_hash_schema_version(&self) -> u16 {
         if self.uses_world_experiment_bootstrap() {
-            WORLD_EXPERIMENT_STATE_HASH_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_mass_scaled_metabolism_driver() {
@@ -6189,6 +6260,27 @@ impl EngineState {
                     ));
                 }
                 organism.adult_body_mass = Some(commitment.clone());
+            }
+            DomainEvent::CancerResearchCohortCommitted {
+                affected_resident_ids,
+            } => {
+                if self.tick != SimTick::ZERO
+                    || !self.uses_world_experiment_bootstrap()
+                    || !self.initial_cancer_research_cohort.is_empty()
+                {
+                    return Err(EngineError::InvalidCancerResearchInitialCohort);
+                }
+                let expected = seeded_cancer_research_cohort(
+                    self.manifest.seed,
+                    self.organisms.values().filter_map(|organism| {
+                        (organism.role == OrganismRole::Person)
+                            .then_some((organism.organism_id, organism.birth_category.as_str()))
+                    }),
+                )?;
+                if affected_resident_ids != &expected {
+                    return Err(EngineError::InvalidCancerResearchInitialCohort);
+                }
+                self.initial_cancer_research_cohort = expected.into_iter().collect();
             }
             DomainEvent::MaterialInstanceInitialized {
                 object_id,
@@ -7673,6 +7765,27 @@ impl EngineState {
         {
             return Err(EngineError::WorldExperimentRequiresNewerRuleset);
         }
+        if self.status == WorldStatus::Initializing {
+            if !self.initial_cancer_research_cohort.is_empty() {
+                return Err(EngineError::InvalidCancerResearchInitialCohort);
+            }
+        } else if self.uses_world_experiment_bootstrap() {
+            if self.initial_cancer_research_cohort.len()
+                != CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS as usize
+                || self
+                    .initial_cancer_research_cohort
+                    .iter()
+                    .any(|resident_id| {
+                        self.organisms
+                            .get(resident_id)
+                            .is_none_or(|organism| organism.role != OrganismRole::Person)
+                    })
+            {
+                return Err(EngineError::InvalidCancerResearchInitialCohort);
+            }
+        } else if !self.initial_cancer_research_cohort.is_empty() {
+            return Err(EngineError::InvalidCancerResearchInitialCohort);
+        }
         if let Some(configuration) = &self.configuration {
             configuration.validate()?;
         }
@@ -8335,6 +8448,8 @@ struct StateHashMaterial<'a> {
     pending_reproductive_developments: Vec<&'a PendingReproductiveDevelopment>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pending_cognition_requests: Vec<&'a CognitionRequestSelection>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    initial_cancer_research_cohort: Vec<EntityId>,
     #[serde(skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<&'a PartitionSchedule>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -8362,7 +8477,7 @@ impl Snapshot {
         state.validate()?;
         let state_hash = state.state_hash()?;
         let snapshot_schema_version = if state.uses_world_experiment_bootstrap() {
-            WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_mass_scaled_metabolism_driver() {
@@ -8483,13 +8598,14 @@ impl Snapshot {
                 | MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
                 | ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
                 | WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+                | CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
         let expected_schema_version = if self.state.uses_world_experiment_bootstrap() {
-            WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_mass_scaled_metabolism_driver() {
@@ -8633,7 +8749,7 @@ pub fn replay_from_snapshot(
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
     if state.uses_world_experiment_bootstrap() {
-        Some(WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION)
+        Some(CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION)
     } else if state.uses_competitive_signal_learning_driver() {
         Some(COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION)
     } else if state.uses_adult_body_mass_state_driver() {
@@ -8859,6 +8975,10 @@ pub enum EngineError {
     InvalidGenesisState,
     #[error("initial organism list contains a duplicate identity")]
     DuplicateInitialOrganism,
+    #[error(
+        "Cancer World requires exactly 1,000 initial residents and a seed-selected 500-person affected cohort"
+    )]
+    InvalidCancerResearchInitialCohort,
     #[error("initial material list contains a duplicate identity")]
     DuplicateInitialMaterial,
     #[error("a ruleset-fourteen genesis requires at least one person")]
@@ -15040,20 +15160,63 @@ mod tests {
             .expect("ruleset thirty-seven experiment state");
         assert_eq!(
             state.event_schema_version(),
-            WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
         );
         assert_eq!(
             state.state_hash_schema_version(),
-            WORLD_EXPERIMENT_STATE_HASH_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION
         );
         let snapshot =
             Snapshot::new(state, EventSequence::ZERO, Digest::ZERO).expect("experiment snapshot");
         assert_eq!(
             snapshot.snapshot_schema_version,
-            WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+            CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
         );
         snapshot
             .verify_integrity()
             .expect("valid experiment snapshot");
+    }
+
+    #[test]
+    fn cancer_research_cohort_is_exact_stratified_and_seed_deterministic() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xCA4CE3));
+        let people = (0..1_000_u32)
+            .map(|ordinal| {
+                (
+                    EntityId::deterministic(
+                        world_id,
+                        format!("cancer-resident-{ordinal:04}").as_bytes(),
+                    ),
+                    if ordinal.is_multiple_of(2) {
+                        "female"
+                    } else {
+                        "male"
+                    },
+                )
+            })
+            .collect::<Vec<_>>();
+
+        let first = seeded_cancer_research_cohort(WorldSeed::new(37), people.iter().copied())
+            .expect("valid initial cohort");
+        let repeated = seeded_cancer_research_cohort(WorldSeed::new(37), people.iter().copied())
+            .expect("repeat cohort");
+        let other_seed = seeded_cancer_research_cohort(WorldSeed::new(38), people.iter().copied())
+            .expect("other-seed cohort");
+
+        assert_eq!(first, repeated);
+        assert_ne!(first, other_seed);
+        assert_eq!(first.len(), 500);
+        let affected = first.into_iter().collect::<BTreeSet<_>>();
+        let affected_female = people
+            .iter()
+            .filter(|(resident_id, category)| {
+                *category == "female" && affected.contains(resident_id)
+            })
+            .count();
+        let affected_male = people
+            .iter()
+            .filter(|(resident_id, category)| *category == "male" && affected.contains(resident_id))
+            .count();
+        assert_eq!((affected_female, affected_male), (250, 250));
     }
 }

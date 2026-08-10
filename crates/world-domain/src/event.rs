@@ -104,6 +104,9 @@ pub const COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION: u16 = 33;
 /// Schema thirty-four permits a world manifest to commit an explicit artificial
 /// experiment bootstrap. Open-ended genesis manifests retain their older bytes.
 pub const WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION: u16 = 34;
+/// Schema thirty-five records the exact seed-selected initial affected cohort for
+/// Cancer World after every initial resident has been committed.
+pub const CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION: u16 = 35;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -192,6 +195,12 @@ pub enum DomainEvent {
     OrganismAdultBodyMassCommitted {
         organism_id: EntityId,
         commitment: AdultBodyMassCommitment,
+    },
+    /// The complete immutable initial affected cohort for a Cancer World. The
+    /// identifiers are sorted, unique, and derived from the manifest seed rather
+    /// than operator selection. No disease mechanism or treatment claim is implied.
+    CancerResearchCohortCommitted {
+        affected_resident_ids: Vec<EntityId>,
     },
     /// A physical material instance. Its identity is citable, but its affordances
     /// and effects are intentionally not inferred by this event.
@@ -567,6 +576,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
             | COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
             | WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
+            | CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -586,6 +596,11 @@ fn validate_event_for_schema(
         {
             return Err(EventBatchError::EventRequiresNewerSchema);
         }
+    }
+    if event_schema_version < CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::CancerResearchCohortCommitted { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
     }
     if event_schema_version == LEGACY_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::WorldConfigured { .. })

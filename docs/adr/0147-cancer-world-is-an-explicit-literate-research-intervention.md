@@ -10,6 +10,9 @@ commitment and receives none of its capabilities or knowledge.
 
 Cancer World begins with:
 
+- adult glioblastoma as the immutable first-world research target; later fresh
+  worlds may select pancreatic ductal adenocarcinoma or extensive-stage small-cell
+  lung cancer without changing an active world's target;
 - exactly 1,000 adult residents, with exactly 500 assigned an initial cancer
   condition by a seed-derived, birth-category-stratified rule fixed before genesis;
 - fluent spoken and written English, interpersonal communication, teaching, and
@@ -26,6 +29,10 @@ Cancer World begins with:
   exploration tolerance, evidentiary threshold, replication preference, and
   willingness to challenge consensus. The shared objective does not install a shared
   theory or centrally authored research plan; and
+- a preregistered evidence firewall: blind-discovery teams receive biological
+  primitives, raw datasets, and returned observations but no live paper retrieval
+  before freezing a hypothesis, predictions, and falsification test. Separate
+  literature-audit and replication teams then assess novelty and prior evidence;
 - a dedicated paid DeepSeek V4 Pro cognition route from genesis, with a separate
   deployment key, V4 Flash failure fallback, a $2.50 monthly target, and an immutable
   $3 monthly hard stop. Earth Genesis retains its free-first ladder.
@@ -73,9 +80,9 @@ the NCI PDMR and HCMI resources:
 
 ## Consequences
 
-- Ruleset 37, event schema 34, and snapshot/state-hash schema 33 identify the first
-  experiment-capable state boundary. Older manifests omit the field and preserve
-  their published JSON and hashes.
+- Ruleset 37 and event schema 34 introduce the experiment manifest. Event schema
+  35 plus snapshot/state-hash schema 34 retain the exact initial affected cohort.
+  Older manifests omit the field and preserve their published JSON and hashes.
 - Bootstrap schema 2 fixes the 1,000-person initial population and 500-person
   affected cohort. The cohort cannot be hand-picked or changed after genesis.
 - The research-language substrate must support claims, citations, hypotheses,
