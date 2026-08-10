@@ -101,6 +101,9 @@ pub const ADULT_BODY_MASS_EVENT_SCHEMA_VERSION: u16 = 32;
 /// directly observed signal prediction. Positive evidence and negative evidence
 /// are therefore both durable and replayable.
 pub const COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION: u16 = 33;
+/// Schema thirty-four permits a world manifest to commit an explicit artificial
+/// experiment bootstrap. Open-ended genesis manifests retain their older bytes.
+pub const WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION: u16 = 34;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -563,6 +566,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
             | ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
             | COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
+            | WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -573,6 +577,16 @@ fn validate_event_for_schema(
     event_schema_version: u16,
     event: &DomainEvent,
 ) -> Result<(), EventBatchError> {
+    if let DomainEvent::WorldStarted { manifest } = event {
+        manifest
+            .validate()
+            .map_err(|error| EventBatchError::InvalidManifest(error.to_string()))?;
+        if manifest.experiment.is_some()
+            && event_schema_version < WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
+        {
+            return Err(EventBatchError::EventRequiresNewerSchema);
+        }
+    }
     if event_schema_version == LEGACY_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::WorldConfigured { .. })
     {
@@ -1303,6 +1317,8 @@ pub enum EventBatchError {
     },
     #[error(transparent)]
     CanonicalHash(#[from] CanonicalHashError),
+    #[error("invalid world manifest: {0}")]
+    InvalidManifest(String),
 }
 
 #[cfg(test)]
@@ -2238,5 +2254,41 @@ mod tests {
             ),
             Err(EventBatchError::InvalidEmbodiedEvent(_))
         ));
+    }
+
+    #[test]
+    fn artificial_world_bootstrap_requires_schema_thirty_four() {
+        let mut manifest = manifest();
+        manifest.ruleset_version = 37;
+        manifest.experiment = Some(crate::WorldExperimentCommitment::CancerResearch(
+            crate::CancerResearchBootstrap::english_literate_abundant_world(),
+        ));
+        let event = DomainEvent::WorldStarted {
+            manifest: manifest.clone(),
+        };
+        assert!(matches!(
+            EventBatch::new(
+                COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::ZERO,
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"pre-experiment schema"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::ZERO,
+            manifest.ruleset_version,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"experiment schema"),
+        )
+        .expect("schema thirty-four accepts the explicit experiment bootstrap");
     }
 }

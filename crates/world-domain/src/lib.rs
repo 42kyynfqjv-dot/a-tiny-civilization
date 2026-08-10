@@ -76,7 +76,7 @@ pub use event::{
     SELECTABLE_MOVEMENT_EVENT_SCHEMA_VERSION, SIGNAL_ACTION_ASSOCIATION_EVENT_SCHEMA_VERSION,
     SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
     SOCIAL_LEARNING_EVENT_SCHEMA_VERSION, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
-    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION,
+    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
@@ -96,7 +96,13 @@ pub use illumination::{
     EarthFixedSunVector, EcefSurfacePosition, IlluminationGeometryError, LocalIlluminationGeometry,
     RadialHorizonClassification, SunVectorFrame,
 };
-pub use manifest::{SpeciesIdentity, SpeciesIdentityError, WorldManifest};
+pub use manifest::{
+    CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION, CancerPerception, CancerResearchBootstrap,
+    CancerTerminalObjective, DiseaseScope, ObjectivePriority, ResearchCognitionRoute,
+    ResearchCommunication, ResearchDiversity, ResearchLanguage, SpeciesIdentity,
+    SpeciesIdentityError, SurvivalEnvironment, WorldExperimentCommitment, WorldManifest,
+    WorldManifestError,
+};
 pub use material::{
     MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION, MaterialIdentity, MaterialIdentityError,
     MaterialReservoirCommitment, MaterialReservoirCommitmentError,

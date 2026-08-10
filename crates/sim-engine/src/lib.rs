@@ -51,9 +51,9 @@ use world_domain::{
     SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
     SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
-    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, decode_s2_face_ij,
-    s2_edge_neighbors,
+    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION,
+    WorldConfiguration, WorldConfigurationError, WorldId, WorldManifest, WorldManifestError,
+    WorldStatus, decode_s2_face_ij, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -173,6 +173,11 @@ pub const LOCAL_INTERACTION_RULESET_VERSION: u32 = 35;
 /// one strongest incompatible hypothesis weakens, coordinated imitation receives
 /// additional reinforcement, and only distinctive mappings bias later behavior.
 pub const GROUNDED_PREDICTIVE_COGNITION_RULESET_VERSION: u32 = 36;
+/// Ruleset thirty-seven admits an explicitly artificial Cancer World bootstrap:
+/// fluent English speech/literacy/publication, private cancer-state awareness,
+/// abundant survival resources, and one overriding cure objective. It does not
+/// itself encode oncology facts, experiments, treatments, or successful outcomes.
+pub const CANCER_RESEARCH_WORLD_RULESET_VERSION: u32 = 37;
 /// The already-running public ruleset-33 world receives the stateless ruleset-34
 /// policy driver at this disclosed boundary. Earlier ruleset-33 transitions retain
 /// their exact candidate set and replay behavior.
@@ -213,6 +218,7 @@ pub const TERRAIN_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 29;
 pub const TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 30;
 pub const MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION: u16 = 31;
 pub const ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION: u16 = 32;
+pub const WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 33;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -264,6 +270,7 @@ const TERRAIN_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 29;
 const TOPSOIL_MOVEMENT_STATE_HASH_SCHEMA_VERSION: u16 = 30;
 const MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION: u16 = 31;
 const ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION: u16 = 32;
+const WORLD_EXPERIMENT_STATE_HASH_SCHEMA_VERSION: u16 = 33;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = world_domain::SIGNAL_FORM_VARIANT_COUNT as u16;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize =
@@ -1202,6 +1209,10 @@ pub struct EngineState {
 type LocalOrganismIndex = BTreeMap<S2CellId, Vec<EntityId>>;
 
 impl EngineState {
+    fn uses_world_experiment_bootstrap(&self) -> bool {
+        self.manifest.experiment.is_some()
+    }
+
     fn uses_adult_body_mass_state_driver(&self) -> bool {
         self.manifest.ruleset_version >= ADULT_BODY_MASS_STATE_RULESET_VERSION
     }
@@ -5827,7 +5838,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_competitive_signal_learning_driver() {
+        if self.uses_world_experiment_bootstrap() {
+            WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_competitive_signal_learning_driver() {
             COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
         } else if self.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
@@ -5922,7 +5935,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_adult_body_mass_state_driver() {
+        if self.uses_world_experiment_bootstrap() {
+            WORLD_EXPERIMENT_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION
@@ -7649,8 +7664,14 @@ impl EngineState {
     }
 
     fn validate(&self) -> Result<(), EngineError> {
+        self.manifest.validate()?;
         if self.manifest.ruleset_version == 0 {
             return Err(EngineError::ZeroRulesetVersion);
+        }
+        if self.uses_world_experiment_bootstrap()
+            && self.manifest.ruleset_version < CANCER_RESEARCH_WORLD_RULESET_VERSION
+        {
+            return Err(EngineError::WorldExperimentRequiresNewerRuleset);
         }
         if let Some(configuration) = &self.configuration {
             configuration.validate()?;
@@ -8340,7 +8361,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_adult_body_mass_state_driver() {
+        let snapshot_schema_version = if state.uses_world_experiment_bootstrap() {
+            WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
@@ -8459,12 +8482,15 @@ impl Snapshot {
                 | TOPSOIL_MOVEMENT_SNAPSHOT_SCHEMA_VERSION
                 | MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
                 | ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+                | WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_adult_body_mass_state_driver() {
+        let expected_schema_version = if self.state.uses_world_experiment_bootstrap() {
+            WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_SNAPSHOT_SCHEMA_VERSION
@@ -8606,7 +8632,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_competitive_signal_learning_driver() {
+    if state.uses_world_experiment_bootstrap() {
+        Some(WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION)
+    } else if state.uses_competitive_signal_learning_driver() {
         Some(COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION)
     } else if state.uses_adult_body_mass_state_driver() {
         Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
@@ -9075,6 +9103,8 @@ pub enum EngineError {
     BatchWorldMismatch,
     #[error("event batch ruleset does not match the world manifest")]
     BatchRulesetMismatch,
+    #[error("an experiment bootstrap requires ruleset thirty-seven or later")]
+    WorldExperimentRequiresNewerRuleset,
     #[error("event schema mismatch: world expects {expected}, batch uses {actual}")]
     BatchEventSchemaMismatch { expected: u16, actual: u16 },
     #[error("event sequence mismatch: expected {expected}, found {actual}")]
@@ -9106,6 +9136,8 @@ pub enum EngineError {
     SpeciesIdentity(#[from] SpeciesIdentityError),
     #[error(transparent)]
     WorldConfiguration(#[from] WorldConfigurationError),
+    #[error(transparent)]
+    WorldManifest(#[from] WorldManifestError),
     #[error(transparent)]
     TimeOverflow(#[from] TimeOverflow),
     #[error(transparent)]
@@ -14976,5 +15008,52 @@ mod tests {
                 .verify_integrity()
                 .expect("stateless-ruleset snapshot integrity");
         }
+    }
+
+    #[test]
+    fn cancer_research_bootstrap_is_ruleset_gated_and_hash_distinct() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xCA4CE2));
+        let mut legacy_manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(37),
+            GROUNDED_PREDICTIVE_COGNITION_RULESET_VERSION,
+        );
+        legacy_manifest.experiment = Some(world_domain::WorldExperimentCommitment::CancerResearch(
+            world_domain::CancerResearchBootstrap::english_literate_abundant_world(),
+        ));
+        assert!(matches!(
+            EngineState::new(legacy_manifest).validate(),
+            Err(EngineError::WorldExperimentRequiresNewerRuleset)
+        ));
+
+        let mut manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(37),
+            CANCER_RESEARCH_WORLD_RULESET_VERSION,
+        );
+        manifest.experiment = Some(world_domain::WorldExperimentCommitment::CancerResearch(
+            world_domain::CancerResearchBootstrap::english_literate_abundant_world(),
+        ));
+        let state = EngineState::new(manifest);
+        state
+            .validate()
+            .expect("ruleset thirty-seven experiment state");
+        assert_eq!(
+            state.event_schema_version(),
+            WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            state.state_hash_schema_version(),
+            WORLD_EXPERIMENT_STATE_HASH_SCHEMA_VERSION
+        );
+        let snapshot =
+            Snapshot::new(state, EventSequence::ZERO, Digest::ZERO).expect("experiment snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("valid experiment snapshot");
     }
 }
