@@ -352,6 +352,10 @@ enum Command {
         #[arg(long, env = "OPENROUTER_API_KEY", hide_env_values = true)]
         openrouter_api_key: Option<String>,
 
+        /// Dedicated Cancer World key. It is never used by the general free-first ladder.
+        #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
+        cancer_openrouter_api_key: Option<String>,
+
         #[arg(long, env = "COGNITION_PAID_ENABLED", default_value_t = false)]
         paid_enabled: bool,
     },
@@ -602,6 +606,7 @@ async fn main() -> Result<()> {
             groq_api_key,
             cerebras_api_key,
             openrouter_api_key,
+            cancer_openrouter_api_key,
             paid_enabled,
         } => {
             let timeout = Duration::from_secs(request_timeout_seconds.max(1));
@@ -614,6 +619,7 @@ async fn main() -> Result<()> {
                 groq_api_key,
                 cerebras_api_key,
                 openrouter_api_key,
+                cancer_openrouter_api_key,
                 timeout,
             )?;
             let external_provider_count = adapters
@@ -2404,6 +2410,7 @@ fn cognition_adapters(
     groq_api_key: Option<String>,
     cerebras_api_key: Option<String>,
     openrouter_api_key: Option<String>,
+    cancer_openrouter_api_key: Option<String>,
     timeout: Duration,
 ) -> Result<BTreeMap<CognitionProviderId, Arc<dyn CognitionModel>>> {
     let mut adapters = BTreeMap::<CognitionProviderId, Arc<dyn CognitionModel>>::new();
@@ -2452,6 +2459,15 @@ fn cognition_adapters(
         insert_cognition_adapter(
             &mut adapters,
             CognitionProviderId::openrouter(),
+            "https://openrouter.ai/api/v1",
+            api_key,
+            timeout,
+        )?;
+    }
+    if let Some(api_key) = nonempty(cancer_openrouter_api_key) {
+        insert_cognition_adapter(
+            &mut adapters,
+            CognitionProviderId::openrouter_cancer(),
             "https://openrouter.ai/api/v1",
             api_key,
             timeout,

@@ -348,7 +348,7 @@ fn api_request(
             }
         });
     }
-    if provider.as_str() == "openrouter" {
+    if matches!(provider.as_str(), "openrouter" | "openrouter_cancer") {
         payload["provider"] = json!({
             "require_parameters": true,
             "allow_fallbacks": true

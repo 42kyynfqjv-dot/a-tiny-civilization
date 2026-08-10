@@ -12,6 +12,7 @@ pub use world_domain::{CognitionReading as CognitionInputReading, cognition_requ
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 1;
+pub const CANCER_RESEARCH_ROUTE_POLICY_VERSION: u16 = 2;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
 pub const COGNITION_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 3_000_000;
@@ -68,6 +69,11 @@ impl CognitionProviderId {
     }
 
     #[must_use]
+    pub fn openrouter_cancer() -> Self {
+        Self::known("openrouter_cancer")
+    }
+
+    #[must_use]
     pub fn cerebras() -> Self {
         Self::known("cerebras")
     }
@@ -96,6 +102,7 @@ pub enum CognitionBillingClass {
 #[serde(rename_all = "snake_case")]
 pub enum CognitionRoutePurpose {
     ProductionWorld,
+    CancerResearch,
     Development,
 }
 
@@ -225,6 +232,24 @@ impl CognitionModelRoute {
         }
     }
 
+    #[must_use]
+    pub fn openrouter_cancer_deepseek_v4_pro() -> Self {
+        Self {
+            provider: CognitionProviderId::openrouter_cancer(),
+            requested_model: "deepseek/deepseek-v4-pro".to_owned(),
+            billing_class: CognitionBillingClass::PaidApproved,
+        }
+    }
+
+    #[must_use]
+    pub fn openrouter_cancer_deepseek_v4_flash() -> Self {
+        Self {
+            provider: CognitionProviderId::openrouter_cancer(),
+            requested_model: "deepseek/deepseek-v4-flash".to_owned(),
+            billing_class: CognitionBillingClass::PaidApproved,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), CognitionContractError> {
         CognitionProviderId::new(self.provider.as_str())?;
         if self.requested_model.trim() != self.requested_model
@@ -267,6 +292,10 @@ impl CognitionModelRoute {
             ("openrouter", CognitionBillingClass::PaidApproved) => {
                 self.requested_model == "deepseek/deepseek-v4-flash"
             }
+            ("openrouter_cancer", CognitionBillingClass::PaidApproved) => matches!(
+                self.requested_model.as_str(),
+                "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash"
+            ),
             _ => false,
         };
         if !allowed {
@@ -316,8 +345,25 @@ impl CognitionRouteRegistry {
         registry
     }
 
+    #[must_use]
+    pub fn cancer_research() -> Self {
+        Self {
+            policy_version: CANCER_RESEARCH_ROUTE_POLICY_VERSION,
+            routes: vec![
+                CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+                CognitionModelRoute::openrouter_cancer_deepseek_v4_flash(),
+            ],
+        }
+    }
+
     pub fn validate(&self, purpose: CognitionRoutePurpose) -> Result<(), CognitionContractError> {
-        if self.policy_version != COGNITION_ROUTE_POLICY_VERSION {
+        let expected_policy_version = match purpose {
+            CognitionRoutePurpose::CancerResearch => CANCER_RESEARCH_ROUTE_POLICY_VERSION,
+            CognitionRoutePurpose::ProductionWorld | CognitionRoutePurpose::Development => {
+                COGNITION_ROUTE_POLICY_VERSION
+            }
+        };
+        if self.policy_version != expected_policy_version {
             return Err(CognitionContractError::UnsupportedRoutePolicyVersion(
                 self.policy_version,
             ));
@@ -334,7 +380,7 @@ impl CognitionRouteRegistry {
             if !seen.insert((route.provider.clone(), route.requested_model.clone())) {
                 return Err(CognitionContractError::DuplicateRoute);
             }
-            if purpose == CognitionRoutePurpose::ProductionWorld
+            if purpose != CognitionRoutePurpose::Development
                 && matches!(
                     route.billing_class,
                     CognitionBillingClass::TrialCredit | CognitionBillingClass::DevelopmentOnly
@@ -353,13 +399,34 @@ impl CognitionRouteRegistry {
             previous_rank = rank;
             if route.billing_class == CognitionBillingClass::PaidApproved {
                 paid_count += 1;
-                if paid_count > 1 || index + 1 != self.routes.len() {
-                    return Err(CognitionContractError::InvalidPaidRoute);
-                }
-                if route != &CognitionModelRoute::openrouter_deepseek_v4_flash() {
+                if purpose == CognitionRoutePurpose::ProductionWorld
+                    && (index + 1 != self.routes.len()
+                        || route != &CognitionModelRoute::openrouter_deepseek_v4_flash())
+                {
                     return Err(CognitionContractError::InvalidPaidRoute);
                 }
             }
+        }
+        match purpose {
+            CognitionRoutePurpose::ProductionWorld => {
+                if paid_count != 1
+                    || self.routes.last()
+                        != Some(&CognitionModelRoute::openrouter_deepseek_v4_flash())
+                {
+                    return Err(CognitionContractError::InvalidPaidRoute);
+                }
+            }
+            CognitionRoutePurpose::CancerResearch => {
+                if self.routes
+                    != vec![
+                        CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+                        CognitionModelRoute::openrouter_cancer_deepseek_v4_flash(),
+                    ]
+                {
+                    return Err(CognitionContractError::InvalidPaidRoute);
+                }
+            }
+            CognitionRoutePurpose::Development => {}
         }
         Ok(())
     }
@@ -1112,6 +1179,8 @@ mod tests {
             CognitionModelRoute::cerebras_llama3_1_8b(),
             CognitionModelRoute::nvidia_nemotron_3_ultra_development(),
             CognitionModelRoute::openrouter_deepseek_v4_flash(),
+            CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+            CognitionModelRoute::openrouter_cancer_deepseek_v4_flash(),
         ] {
             assert_eq!(route.validate(), Ok(()));
         }
@@ -1165,5 +1234,31 @@ mod tests {
             early_paid.validate(CognitionRoutePurpose::ProductionWorld),
             Err(CognitionContractError::InvalidPaidRoute)
         );
+    }
+
+    #[test]
+    fn cancer_registry_is_paid_pro_first_and_isolated_from_general_openrouter() {
+        let registry = CognitionRouteRegistry::cancer_research();
+        assert_eq!(
+            registry.validate(CognitionRoutePurpose::CancerResearch),
+            Ok(())
+        );
+        assert_eq!(
+            registry.routes,
+            vec![
+                CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+                CognitionModelRoute::openrouter_cancer_deepseek_v4_flash(),
+            ]
+        );
+        assert!(
+            registry
+                .routes
+                .iter()
+                .all(|route| route.provider == CognitionProviderId::openrouter_cancer())
+        );
+        assert!(matches!(
+            registry.validate(CognitionRoutePurpose::ProductionWorld),
+            Err(CognitionContractError::UnsupportedRoutePolicyVersion(_))
+        ));
     }
 }
