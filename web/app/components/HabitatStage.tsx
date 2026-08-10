@@ -22,7 +22,19 @@ type HabitatEntity = {
 };
 type HabitatCluster = { cluster_key: string; latitude_e7: number; longitude_e7: number; people: number; animals: number; total: number };
 type HabitatActivity = { source_event_id: string; source_sequence: string | number; source_tick: string | number; organism_id: string; action: Action; signal_form?: number };
-type HabitatView = { through_sequence: string | number; detail: Detail; entities: HabitatEntity[]; clusters: HabitatCluster[]; activity: HabitatActivity[]; truncated: boolean; maximum_entities: number };
+type HabitatCommunication = {
+  source_event_id: string;
+  source_sequence: string | number;
+  source_tick: string | number;
+  source_event_index: number;
+  kind: "heard_signal" | "associated_action";
+  source_organism_id: string;
+  observer_organism_id: string;
+  signal_form: number;
+  associated_action?: Action;
+};
+type HabitatView = { through_sequence: string | number; detail: Detail; entities: HabitatEntity[]; clusters: HabitatCluster[]; activity: HabitatActivity[]; communication?: HabitatCommunication[]; truncated: boolean; maximum_entities: number };
+type CommunicationStory = { key: string; tick: string | number; kind: "heard" | "learned"; sentence: string };
 type Point = { id: string; x: number; y: number; radius: number; entity?: HabitatEntity; cluster?: HabitatCluster };
 type Bounds = { west: number; south: number; east: number; north: number };
 type Camera = { latitude: number; longitude: number };
@@ -167,6 +179,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
 
   const selected = view?.entities.find((entity) => entity.organism_id === selectedId);
   const activity = useMemo(() => view?.activity.slice(0, 8) ?? [], [view]);
+  const communication = useMemo(() => communicationStories(view?.communication ?? [], labels), [labels, view]);
   const chooseDetail = async (next: Detail, focus = center, nextZoom = next === "local" ? localZoom : 1) => {
     detailRef.current = next;
     cameraRef.current = focus;
@@ -421,9 +434,14 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
       </nav>
     </header>
     <div className="habitat-key"><span className="person" /> People <span className="animal" /> Animals <i /> paths</div>
-    <aside className="habitat-activity" aria-live="polite">
-      <p>Happening now</p>
-      {activity.length === 0 ? <span>The habitat is quiet.</span> : <ol>{activity.map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
+    <aside className={`habitat-activity ${communication.length > 0 ? "has-contact" : ""}`} aria-live="polite">
+      <div className="habitat-contact-heading"><p>Signs of connection</p><span>Pre-language</span></div>
+      {communication.length > 0
+        ? <ol>{communication.map((story) => <li className={story.kind} key={story.key}><time>{formatNumber(story.tick)}</time><span>{story.sentence}</span></li>)}</ol>
+        : activity.length === 0
+          ? <span>Listening for one life to notice another.</span>
+          : <ol>{activity.slice(0, 4).map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
+      <small>Calls are physical signals. A connection means a directly observed pattern—not a word or meaning yet.</small>
     </aside>
     <MemoryTelemetry worldId={worldId} labels={labels} />
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
@@ -473,6 +491,7 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     const to = project(entity.longitude_e7, entity.latitude_e7);
     return { entity, from, to, anchorX: from.x + (to.x - from.x) * ease(progress), anchorY: from.y + (to.y - from.y) * ease(progress) };
   }), selectedId);
+  drawCommunicationLinks(context, positioned, view.communication ?? [], height);
   const pulse = Math.sin(Date.now() / 350) * 2;
   const depthOrdered = positioned.sort((a, b) => a.y - b.y || Number(a.entity.organism_id === selectedId) - Number(b.entity.organism_id === selectedId));
   for (const marker of depthOrdered) {
@@ -506,6 +525,54 @@ function drawHabitat(context: CanvasRenderingContext2D, width: number, height: n
     points.push({ id: entity.organism_id, x, y: orbY, radius, entity });
   }
   return points;
+}
+
+function drawCommunicationLinks(
+  context: CanvasRenderingContext2D,
+  positioned: PositionedEntity[],
+  communication: HabitatCommunication[],
+  height: number,
+) {
+  const positions = new Map(positioned.map((marker) => {
+    const depth = Math.max(0, Math.min(1, (marker.y - height * .16) / Math.max(1, height * .84)));
+    return [marker.entity.organism_id, { x: marker.x, y: marker.y - (3 + depth * 6) }] as const;
+  }));
+  const shown = new Set<string>();
+  let linkCount = 0;
+  for (const moment of communication) {
+    const key = `${moment.kind}:${moment.source_organism_id}:${moment.observer_organism_id}`;
+    if (shown.has(key)) continue;
+    const source = positions.get(moment.source_organism_id);
+    const observer = positions.get(moment.observer_organism_id);
+    if (!source || !observer) continue;
+    shown.add(key);
+    linkCount += 1;
+    if (linkCount > 12) break;
+    const learned = moment.kind === "associated_action";
+    const midpointX = (source.x + observer.x) / 2;
+    const midpointY = Math.min(source.y, observer.y) - Math.min(34, Math.hypot(observer.x - source.x, observer.y - source.y) * .18);
+    context.save();
+    context.beginPath();
+    context.moveTo(source.x, source.y);
+    context.quadraticCurveTo(midpointX, midpointY, observer.x, observer.y);
+    context.strokeStyle = learned ? "rgba(234,190,103,.62)" : "rgba(103,224,189,.44)";
+    context.lineWidth = learned ? 1.5 : 1;
+    context.setLineDash(learned ? [4, 4] : []);
+    context.lineDashOffset = -Date.now() / (learned ? 180 : 90);
+    context.shadowColor = learned ? "rgba(234,190,103,.72)" : "rgba(103,224,189,.65)";
+    context.shadowBlur = learned ? 8 : 5;
+    context.stroke();
+    context.setLineDash([]);
+    if (!learned) {
+      const wave = 5 + (Date.now() / 110 + linkCount * 2.3) % 12;
+      context.beginPath();
+      context.arc(source.x, source.y, wave, 0, Math.PI * 2);
+      context.strokeStyle = `rgba(103,224,189,${Math.max(.08, .4 - wave / 38)})`;
+      context.lineWidth = .8;
+      context.stroke();
+    }
+    context.restore();
+  }
 }
 
 type PositionedEntity = { entity: HabitatEntity; from: { x: number; y: number }; to: { x: number; y: number }; anchorX: number; anchorY: number; x: number; y: number };
@@ -695,6 +762,57 @@ function worldAtScreen(detail: Detail, camera: Camera, zoom: number, point: Poin
 }
 
 function activitySentence(item: HabitatActivity, labels: Map<string, string>) { return `${labels.get(item.organism_id) ?? "Unindexed life"} ${actionSentence(item.action, item.signal_form)}`; }
+function communicationStories(moments: HabitatCommunication[], labels: Map<string, string>): CommunicationStory[] {
+  const heard = new Map<string, { tick: string | number; source: string; observers: string[] }>();
+  const learned: CommunicationStory[] = [];
+  for (const moment of moments) {
+    const source = labels.get(moment.source_organism_id) ?? "One person";
+    const observer = labels.get(moment.observer_organism_id) ?? "another person";
+    if (moment.kind === "associated_action" && moment.associated_action) {
+      learned.push({
+        key: moment.source_event_id,
+        tick: moment.source_tick,
+        kind: "learned",
+        sentence: `${observer} connected ${possessive(source)} call with ${associationAction(moment.associated_action)}.`,
+      });
+      continue;
+    }
+    const key = `${moment.source_tick}:${moment.source_organism_id}:${moment.signal_form}`;
+    const group = heard.get(key) ?? { tick: moment.source_tick, source, observers: [] };
+    if (!group.observers.includes(observer)) group.observers.push(observer);
+    heard.set(key, group);
+  }
+  const heardStories = [...heard.entries()].map(([key, group]): CommunicationStory => {
+    const visible = group.observers.slice(0, 2).join(" and ");
+    const remainder = group.observers.length - 2;
+    return {
+      key,
+      tick: group.tick,
+      kind: "heard",
+      sentence: `${group.source} called. ${visible}${remainder > 0 ? ` and ${remainder} ${remainder === 1 ? "other" : "others"}` : ""} heard it.`,
+    };
+  });
+  return [...learned.slice(0, 3), ...heardStories.slice(0, 3)]
+    .sort((left, right) => Number(right.tick) - Number(left.tick))
+    .slice(0, 6);
+}
+
+function possessive(label: string) { return `${label}${label.endsWith("s") ? "’" : "’s"}`; }
+function associationAction(action: Action) {
+  switch (action) {
+    case "move": return "moving";
+    case "orient": return "turning";
+    case "reach": return "reaching";
+    case "grasp": return "grasping";
+    case "release": return "letting go";
+    case "apply_force": return "pressing a surface";
+    case "chew": return "chewing";
+    case "swallow": return "swallowing";
+    case "rest": return "resting";
+    case "emit_signal": return "another call";
+    default: return "an observed action";
+  }
+}
 function actionSentence(action?: Action, signalForm?: number) {
   switch (action) {
     case "move": return "crossed into a neighboring patch";

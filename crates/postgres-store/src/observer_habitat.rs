@@ -4,13 +4,14 @@ use async_trait::async_trait;
 use observer_projection::{
     ObserverHabitatStore, ObserverProjectionStoreError, PUBLIC_HABITAT_PROJECTION_NAME,
     PUBLIC_HABITAT_PROJECTION_VERSION, PublicHabitatActivity, PublicHabitatCluster,
-    PublicHabitatDetail, PublicHabitatEntity, PublicHabitatQuery, PublicHabitatView,
+    PublicHabitatCommunication, PublicHabitatCommunicationKind, PublicHabitatDetail,
+    PublicHabitatEntity, PublicHabitatQuery, PublicHabitatView,
 };
 use sqlx::FromRow;
 use world_domain::{
-    DomainEvent, EntityId, EventId, EventSequence, OrganismRole, PrimitiveActionKind, S2CellId,
-    SimTick, SpeciesIdentity, WorldId, decode_s2_face_ij, s2_face_ij_center_uv, s2_face_uv_to_ray,
-    s2_ray_to_geographic_e7,
+    DomainEvent, EntityId, EventId, EventSequence, OrganismRole, PerceptionChannel,
+    PrimitiveActionKind, S2CellId, SimTick, SpeciesIdentity, WorldId, decode_s2_face_ij,
+    s2_face_ij_center_uv, s2_face_uv_to_ray, s2_ray_to_geographic_e7,
 };
 
 use crate::{
@@ -18,6 +19,7 @@ use crate::{
 };
 
 const RETAINED_ACTIVITY: i64 = 512;
+const RETAINED_COMMUNICATION: i64 = 512;
 const MAX_ENTITY_RESPONSE: u16 = 2_000;
 const MAX_CLUSTER_RESPONSE: i64 = 1_024;
 
@@ -62,6 +64,19 @@ struct Activity {
     signal_form: Option<u8>,
 }
 
+#[derive(Clone, Copy)]
+struct Communication {
+    event_id: EventId,
+    sequence: EventSequence,
+    tick: SimTick,
+    event_index: u32,
+    kind: PublicHabitatCommunicationKind,
+    source_organism_id: EntityId,
+    observer_organism_id: EntityId,
+    signal_form: u8,
+    associated_action: Option<PrimitiveActionKind>,
+}
+
 #[derive(FromRow)]
 struct EntityRow {
     organism_id: uuid::Uuid,
@@ -103,6 +118,19 @@ struct ActivityRow {
     signal_form: Option<i32>,
 }
 
+#[derive(FromRow)]
+struct CommunicationRow {
+    source_event_id: uuid::Uuid,
+    source_sequence: i64,
+    source_tick: i64,
+    source_event_index: i32,
+    kind: String,
+    source_organism_id: uuid::Uuid,
+    observer_organism_id: uuid::Uuid,
+    signal_form: i32,
+    associated_action: Option<String>,
+}
+
 impl PostgresStore {
     pub async fn apply_public_habitat_batches_inner(
         &self,
@@ -138,6 +166,8 @@ impl PostgresStore {
         let mut actions = HashMap::<EntityId, Action>::new();
         let mut endings = HashMap::<EntityId, Ending>::new();
         let mut activity = VecDeque::<Activity>::with_capacity(RETAINED_ACTIVITY as usize);
+        let mut communication =
+            VecDeque::<Communication>::with_capacity(RETAINED_COMMUNICATION as usize);
 
         for batch in pending {
             for record in &batch.events {
@@ -231,6 +261,57 @@ impl PostgresStore {
                             );
                         }
                     }
+                    DomainEvent::OrganismPerceived {
+                        organism_id,
+                        perception,
+                    } => {
+                        let signal_form = perception.readings.iter().find_map(|reading| {
+                            (reading.channel == PerceptionChannel::Sound
+                                && reading.property_code == "signal_amplitude")
+                                .then(|| u8::try_from(reading.quantized_value).ok())
+                                .flatten()
+                        });
+                        if let (Some(source_organism_id), Some(signal_form)) =
+                            (perception.subject_id, signal_form)
+                            && (1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(&signal_form)
+                        {
+                            push_communication(
+                                &mut communication,
+                                Communication {
+                                    event_id: record.event_id,
+                                    sequence: batch.sequence,
+                                    tick: batch.tick,
+                                    event_index: record.index,
+                                    kind: PublicHabitatCommunicationKind::HeardSignal,
+                                    source_organism_id,
+                                    observer_organism_id: *organism_id,
+                                    signal_form,
+                                    associated_action: None,
+                                },
+                            );
+                        }
+                    }
+                    DomainEvent::OrganismSignalActionAssociationChanged {
+                        observer_id,
+                        actor_id,
+                        to,
+                        ..
+                    } if public_habitat_action(to.action_kind) => {
+                        push_communication(
+                            &mut communication,
+                            Communication {
+                                event_id: record.event_id,
+                                sequence: batch.sequence,
+                                tick: batch.tick,
+                                event_index: record.index,
+                                kind: PublicHabitatCommunicationKind::AssociatedAction,
+                                source_organism_id: *actor_id,
+                                observer_organism_id: *observer_id,
+                                signal_form: to.signal_intensity,
+                                associated_action: Some(to.action_kind),
+                            },
+                        );
+                    }
                     DomainEvent::OrganismDied { organism_id, .. } => {
                         endings.insert(
                             *organism_id,
@@ -259,6 +340,9 @@ impl PostgresStore {
         for item in activity {
             insert_activity(&mut transaction, first.world_id, item).await?;
         }
+        for item in communication {
+            insert_communication(&mut transaction, first.world_id, item).await?;
+        }
         sqlx::query(
             r#"
             DELETE FROM observer_habitat_activity
@@ -273,6 +357,23 @@ impl PostgresStore {
         .bind(i32::from(PUBLIC_HABITAT_PROJECTION_VERSION))
         .bind(first.world_id.as_uuid())
         .bind(RETAINED_ACTIVITY)
+        .execute(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        sqlx::query(
+            r#"
+            DELETE FROM observer_habitat_communication
+            WHERE projection_version = $1 AND world_id = $2 AND source_event_id IN (
+                SELECT source_event_id FROM observer_habitat_communication
+                WHERE projection_version = $1 AND world_id = $2
+                ORDER BY source_sequence DESC, source_event_index DESC
+                OFFSET $3
+            )
+            "#,
+        )
+        .bind(i32::from(PUBLIC_HABITAT_PROJECTION_VERSION))
+        .bind(first.world_id.as_uuid())
+        .bind(RETAINED_COMMUNICATION)
         .execute(&mut *transaction)
         .await
         .map_err(unavailable)?;
@@ -398,6 +499,7 @@ impl ObserverHabitatStore for PostgresStore {
             }
         };
         let activity = load_activity(self, world_id, query.activity_limit).await?;
+        let communication = load_communication(self, world_id, query.activity_limit).await?;
         Ok(PublicHabitatView {
             projection_version: PUBLIC_HABITAT_PROJECTION_VERSION,
             world_id,
@@ -406,6 +508,7 @@ impl ObserverHabitatStore for PostgresStore {
             entities,
             clusters,
             activity,
+            communication,
             truncated,
             maximum_entities: MAX_ENTITY_RESPONSE,
         })
@@ -417,6 +520,13 @@ fn push_activity(activity: &mut VecDeque<Activity>, item: Activity) {
         activity.pop_front();
     }
     activity.push_back(item);
+}
+
+fn push_communication(communication: &mut VecDeque<Communication>, item: Communication) {
+    if communication.len() == RETAINED_COMMUNICATION as usize {
+        communication.pop_front();
+    }
+    communication.push_back(item);
 }
 
 /// The habitat is a family-safe observer projection. Canonical events remain
@@ -579,6 +689,44 @@ async fn insert_activity(
     Ok(())
 }
 
+async fn insert_communication(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    world_id: WorldId,
+    communication: Communication,
+) -> Result<(), ObserverProjectionStoreError> {
+    sqlx::query(
+        r#"
+        INSERT INTO observer_habitat_communication (
+            projection_version,world_id,source_event_id,source_sequence,source_tick,
+            source_event_index,kind,source_organism_id,observer_organism_id,signal_form,
+            associated_action
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+        ON CONFLICT (projection_version,world_id,source_event_id) DO NOTHING
+        "#,
+    )
+    .bind(i32::from(PUBLIC_HABITAT_PROJECTION_VERSION))
+    .bind(world_id.as_uuid())
+    .bind(communication.event_id.as_uuid())
+    .bind(to_i64(
+        communication.sequence.get(),
+        "communication sequence",
+    )?)
+    .bind(to_i64(communication.tick.get(), "communication tick")?)
+    .bind(
+        i32::try_from(communication.event_index)
+            .map_err(|_| corrupt("communication event index"))?,
+    )
+    .bind(communication_kind_code(communication.kind))
+    .bind(communication.source_organism_id.as_uuid())
+    .bind(communication.observer_organism_id.as_uuid())
+    .bind(i32::from(communication.signal_form))
+    .bind(communication.associated_action.map(action_code))
+    .execute(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    Ok(())
+}
+
 async fn load_activity(
     store: &PostgresStore,
     world_id: WorldId,
@@ -616,6 +764,63 @@ async fn load_activity(
                 signal_form: row
                     .signal_form
                     .map(|value| u8::try_from(value).map_err(|_| corrupt("signal form")))
+                    .transpose()?,
+            })
+        })
+        .collect()
+}
+
+async fn load_communication(
+    store: &PostgresStore,
+    world_id: WorldId,
+    limit: u16,
+) -> Result<Vec<PublicHabitatCommunication>, ObserverProjectionStoreError> {
+    let rows = sqlx::query_as::<_, CommunicationRow>(
+        r#"
+        SELECT communication.source_event_id,communication.source_sequence,
+            communication.source_tick,communication.source_event_index,communication.kind,
+            communication.source_organism_id,communication.observer_organism_id,
+            communication.signal_form,communication.associated_action
+        FROM observer_habitat_communication communication
+        JOIN observer_habitat_entities source
+          ON source.projection_version=communication.projection_version
+         AND source.world_id=communication.world_id
+         AND source.organism_id=communication.source_organism_id
+        JOIN observer_habitat_entities observer
+          ON observer.projection_version=communication.projection_version
+         AND observer.world_id=communication.world_id
+         AND observer.organism_id=communication.observer_organism_id
+        WHERE communication.projection_version=$1 AND communication.world_id=$2
+          AND source.role='person' AND observer.role='person'
+        ORDER BY communication.source_sequence DESC,communication.source_event_index DESC
+        LIMIT $3
+        "#,
+    )
+    .bind(i32::from(PUBLIC_HABITAT_PROJECTION_VERSION))
+    .bind(world_id.as_uuid())
+    .bind(i64::from(limit.clamp(1, 64)))
+    .fetch_all(store.pool())
+    .await
+    .map_err(unavailable)?;
+    rows.into_iter()
+        .map(|row| {
+            Ok(PublicHabitatCommunication {
+                source_event_id: EventId::from_uuid(row.source_event_id),
+                source_sequence: EventSequence::new(to_u64(
+                    row.source_sequence,
+                    "communication sequence",
+                )?),
+                source_tick: SimTick::new(to_u64(row.source_tick, "communication tick")?),
+                source_event_index: u32::try_from(row.source_event_index)
+                    .map_err(|_| corrupt("communication event index"))?,
+                kind: parse_communication_kind(&row.kind)?,
+                source_organism_id: EntityId::from_uuid(row.source_organism_id),
+                observer_organism_id: EntityId::from_uuid(row.observer_organism_id),
+                signal_form: u8::try_from(row.signal_form)
+                    .map_err(|_| corrupt("communication signal form"))?,
+                associated_action: row
+                    .associated_action
+                    .map(|action| parse_action(&action))
                     .transpose()?,
             })
         })
@@ -685,6 +890,23 @@ fn parse_role(value: &str) -> Result<OrganismRole, ObserverProjectionStoreError>
         "person" => Ok(OrganismRole::Person),
         "fauna" => Ok(OrganismRole::Fauna),
         _ => Err(corrupt("organism role")),
+    }
+}
+
+const fn communication_kind_code(kind: PublicHabitatCommunicationKind) -> &'static str {
+    match kind {
+        PublicHabitatCommunicationKind::HeardSignal => "heard_signal",
+        PublicHabitatCommunicationKind::AssociatedAction => "associated_action",
+    }
+}
+
+fn parse_communication_kind(
+    value: &str,
+) -> Result<PublicHabitatCommunicationKind, ObserverProjectionStoreError> {
+    match value {
+        "heard_signal" => Ok(PublicHabitatCommunicationKind::HeardSignal),
+        "associated_action" => Ok(PublicHabitatCommunicationKind::AssociatedAction),
+        _ => Err(corrupt("habitat communication kind")),
     }
 }
 

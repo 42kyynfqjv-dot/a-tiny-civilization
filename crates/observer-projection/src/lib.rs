@@ -634,6 +634,30 @@ pub struct PublicHabitatActivity {
     pub signal_form: Option<u8>,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicHabitatCommunicationKind {
+    HeardSignal,
+    AssociatedAction,
+}
+
+/// One observer-side, provenance-linked view of a direct acoustic interaction.
+/// It reports physical hearing or a private learned association, never inferred
+/// meaning, intention, a word, or language.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicHabitatCommunication {
+    pub source_event_id: EventId,
+    pub source_sequence: EventSequence,
+    pub source_tick: SimTick,
+    pub source_event_index: u32,
+    pub kind: PublicHabitatCommunicationKind,
+    pub source_organism_id: EntityId,
+    pub observer_organism_id: EntityId,
+    pub signal_form: u8,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub associated_action: Option<PrimitiveActionKind>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublicHabitatView {
     pub projection_version: u16,
@@ -643,6 +667,7 @@ pub struct PublicHabitatView {
     pub entities: Vec<PublicHabitatEntity>,
     pub clusters: Vec<PublicHabitatCluster>,
     pub activity: Vec<PublicHabitatActivity>,
+    pub communication: Vec<PublicHabitatCommunication>,
     pub truncated: bool,
     pub maximum_entities: u16,
 }

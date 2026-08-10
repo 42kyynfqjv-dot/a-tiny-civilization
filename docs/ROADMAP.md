@@ -892,3 +892,9 @@ toward directly heard sources that can produce exact-patch physical encounters. 
 requires exact contact and is never scheduled. The live ruleset-33 world activates the stateless
 driver after tick 75,000; ADR 0146 records the replay boundary and the remaining scientific
 limitations.
+
+The live habitat now projects bounded person-to-person communication moments: a call being directly
+heard and a listener privately associating that call with the source's next observed action. The
+glass renders those relationships as temporary links and plain-language “pre-language” stories on
+desktop and mobile while the conservative language detector remains authoritative. ADR 0147 records
+the observer-only boundary.
