@@ -140,6 +140,32 @@ test("server-renders the live memory array as a separate observer route", async 
   assert.match(html, /small experiences remain/i);
 });
 
+test("keeps the Cancer World console unlinked and available only through its configured path", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("cancer-console", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const env = {
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    CANCER_CONSOLE_TOKEN: "private-test-token",
+    CANCER_WORLD_ID: "00000000-0000-0000-0000-000000000037",
+  };
+  const context = { waitUntil() {}, passThroughOnException() {} };
+
+  const direct = await worker.fetch(new Request("http://localhost/cancer-console"), env, context);
+  assert.equal(direct.status, 404);
+
+  const hidden = await worker.fetch(
+    new Request("http://localhost/research/private-test-token", { headers: { accept: "text/html" } }),
+    env,
+    context,
+  );
+  assert.equal(hidden.status, 200);
+  assert.equal(hidden.headers.get("x-robots-tag"), "noindex, nofollow, noarchive, nosnippet");
+  const html = await hidden.text();
+  assert.match(html, /CANCER WORLD/);
+  assert.match(html, /00000000-0000-0000-0000-000000000037/);
+});
+
 test("server-renders an individual life route", async () => {
   const response = await render("/lives/b3ea736d-7a5a-5161-a74b-fa8c4302d333/00000000-0000-0000-0000-000000000001");
   assert.equal(response.status, 200);

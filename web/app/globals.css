@@ -1106,3 +1106,13 @@ select {
 }
 @keyframes memory-arrive { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 @media (prefers-reduced-motion: reduce) { .habitat-memory-pulse, .habitat-memory li { animation: none; } }
+
+/* Unlinked Cancer World operator console. */
+.cancer-console { background: #030507; color: #d9eee7; font-family: var(--font-geist-mono), monospace; min-height: 100vh; padding: clamp(22px, 4vw, 64px); }
+.cancer-console header { align-items: center; border-bottom: 1px solid #183028; display: flex; font-size: 11px; justify-content: space-between; letter-spacing: .16em; padding-bottom: 20px; }
+.cancer-console header div { align-items: center; display: flex; gap: 10px; }.cancer-console header time { color: #577068; font-size: 8px; }
+.cancer-console-pulse { background: #71827c; border-radius: 50%; height: 7px; width: 7px; }.cancer-console-pulse.online { background: #55efaa; box-shadow: 0 0 16px rgba(85,239,170,.72); }.cancer-console-pulse.offline { background: #e86d60; }
+.cancer-console-grid { display: grid; gap: 1px; grid-template-columns: repeat(4, 1fr); margin-top: 34px; }
+.cancer-console-grid article { background: #08100d; min-height: 136px; padding: 22px; }.cancer-console-grid span { color: #587168; display: block; font-size: 8px; letter-spacing: .13em; }.cancer-console-grid strong { display: block; font-size: clamp(20px, 3vw, 42px); font-weight: 400; margin-top: 30px; overflow-wrap: anywhere; }
+.cancer-console-ledger { border-top: 1px solid #183028; margin-top: 34px; }.cancer-console-ledger div { border-bottom: 1px solid #111f1a; display: grid; gap: 24px; grid-template-columns: minmax(120px, .25fr) 1fr; padding: 15px 4px; }.cancer-console-ledger dt { color: #587168; font-size: 8px; letter-spacing: .13em; }.cancer-console-ledger dd { font-size: 10px; margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 720px) { .cancer-console-grid { grid-template-columns: repeat(2, 1fr); }.cancer-console-grid article { min-height: 112px; }.cancer-console-ledger div { grid-template-columns: 100px 1fr; } }

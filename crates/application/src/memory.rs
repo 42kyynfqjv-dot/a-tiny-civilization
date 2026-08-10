@@ -631,6 +631,21 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn the_same_life_identifier_cannot_share_a_bank_across_worlds() {
+        let first_world = WorldId::from_uuid(Uuid::from_u128(17));
+        let second_world = WorldId::from_uuid(Uuid::from_u128(18));
+        let first_agent = EntityId::deterministic(first_world, b"cancer-world-memory-test-agent");
+        let second_agent = EntityId::deterministic(second_world, b"cancer-world-memory-test-agent");
+
+        let first_bank = memory_bank_id(first_world, first_agent);
+        let second_bank = memory_bank_id(second_world, second_agent);
+
+        assert_ne!(first_bank, second_bank);
+        assert!(first_bank.starts_with(&format!("atc-{first_world}-")));
+        assert!(second_bank.starts_with(&format!("atc-{second_world}-")));
+    }
+
     #[tokio::test]
     async fn recorded_memory_refuses_a_changed_request() {
         let (world_id, agent_id) = identities();

@@ -5,6 +5,8 @@ import handler from "vinext/server/app-router-entry";
 interface Env {
   ASSETS: Fetcher;
   OBSERVER_API_URL?: string;
+  CANCER_CONSOLE_TOKEN?: string;
+  CANCER_WORLD_ID?: string;
   IMAGES: {
     input(stream: ReadableStream): {
       transform(options: Record<string, unknown>): {
@@ -28,6 +30,35 @@ interface ExecutionContext {
 const worker = {
   async fetch(request: Request, env: Env | undefined, ctx: ExecutionContext): Promise<Response> {
     const url = new URL(request.url);
+    const cancerConsoleToken =
+      env?.CANCER_CONSOLE_TOKEN ??
+      (typeof process === "undefined" ? undefined : process.env.CANCER_CONSOLE_TOKEN);
+    const cancerWorldId =
+      env?.CANCER_WORLD_ID ??
+      (typeof process === "undefined" ? undefined : process.env.CANCER_WORLD_ID);
+    const cancerConsolePath = cancerConsoleToken ? `/research/${cancerConsoleToken}` : undefined;
+
+    if (url.pathname === "/cancer-console") {
+      return withSecurityHeaders(new Response("Not found", { status: 404 }), url.pathname);
+    }
+
+    let routedRequest = request;
+    let isCancerConsole = false;
+    if (cancerConsolePath && url.pathname === cancerConsolePath) {
+      isCancerConsole = true;
+      url.pathname = "/cancer-console";
+      const headers = new Headers(request.headers);
+      if (cancerWorldId) headers.set("x-atc-cancer-world-id", cancerWorldId);
+      const requestInit: RequestInit = {
+        headers,
+        method: request.method,
+        redirect: request.redirect,
+      };
+      if (request.method !== "GET" && request.method !== "HEAD") {
+        requestInit.body = request.body;
+      }
+      routedRequest = new Request(url, requestInit);
+    }
 
     // Cloudflare's zone-level Always Use HTTPS setting is the preferred first
     // hop. Keep the same invariant at the application boundary so a missing or
@@ -79,7 +110,11 @@ const worker = {
       }, allowedWidths), url.pathname);
     }
 
-    return withSecurityHeaders(await handler.fetch(request, env, ctx), url.pathname);
+    const response = withSecurityHeaders(await handler.fetch(routedRequest, env, ctx), url.pathname);
+    if (!isCancerConsole) return response;
+    const headers = new Headers(response.headers);
+    headers.set("x-robots-tag", "noindex, nofollow, noarchive, nosnippet");
+    return new Response(response.body, { headers, status: response.status, statusText: response.statusText });
   },
 };
 
