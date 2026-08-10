@@ -25,9 +25,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
-    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_INTERACTION_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
+    CANCER_RESEARCH_WORLD_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION,
+    COGNITION_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance,
+    InitialOrganism, LOCAL_INTERACTION_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
     MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
     run_partition_capacity_probe,
@@ -46,10 +46,11 @@ use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
 use world_domain::{
-    BirthCategory, BodilyNeedState, CapacityExhaustionPolicy, CelestialState, Digest, EntityId,
-    OrganismRole, PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline,
-    ProvisionalLocalSurfaceBaseline, ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind,
-    SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest,
+    BirthCategory, BodilyNeedState, CANCER_RESEARCH_INITIAL_RESIDENTS, CancerResearchBootstrap,
+    CapacityExhaustionPolicy, CelestialState, Digest, EntityId, OrganismRole, PartitionedExecution,
+    PersonRepresentation, ProvisionalLocalEnvironmentBaseline, ProvisionalLocalSurfaceBaseline,
+    ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind, SimTick, SpeciesIdentity,
+    TdbSecondsSinceJ2000, WorldConfiguration, WorldExperimentCommitment, WorldId, WorldManifest,
     WorldSeed, WorldStatus,
 };
 
@@ -207,6 +208,11 @@ enum Command {
         /// Ruleset three and later require the pinned DE441 source driver at every tick.
         #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
         ruleset_version: u32,
+
+        /// Construct the explicitly artificial Cancer World experiment instead of
+        /// an open-ended Earth Genesis world. Requires ruleset 37 exactly.
+        #[arg(long, default_value_t = false)]
+        cancer_research: bool,
     },
     /// Prove canonical current-ruleset genesis construction and replay without PostgreSQL.
     VerifyProvisionalGenesis {
@@ -237,6 +243,10 @@ enum Command {
 
         #[arg(long, default_value_t = DEFAULT_PROVISIONAL_RULESET_VERSION)]
         ruleset_version: u32,
+
+        /// Verify the Cancer World genesis variant without writing PostgreSQL.
+        #[arg(long, default_value_t = false)]
+        cancer_research: bool,
     },
     /// Replay one stored world from genesis and verify its snapshot, cursor, and hashes.
     VerifyWorld {
@@ -465,6 +475,7 @@ async fn main() -> Result<()> {
         tick_duration_seconds,
         max_events_per_partition_transition,
         ruleset_version,
+        cancer_research,
     }) = &cli.command
     {
         return verify_provisional_genesis(
@@ -476,6 +487,7 @@ async fn main() -> Result<()> {
             *tick_duration_seconds,
             *max_events_per_partition_transition,
             *ruleset_version,
+            *cancer_research,
         )
         .await;
     }
@@ -524,6 +536,7 @@ async fn main() -> Result<()> {
             tick_duration_seconds,
             max_events_per_partition_transition,
             ruleset_version,
+            cancer_research,
         } => {
             init_provisional_full_earth_world(
                 Some(&store),
@@ -551,6 +564,7 @@ async fn main() -> Result<()> {
                 tick_duration_seconds,
                 max_events_per_partition_transition,
                 ruleset_version,
+                cancer_research,
             )
             .await
         }
@@ -1045,6 +1059,46 @@ fn provisional_human_founders(
         .collect()
 }
 
+fn cancer_research_human_founders(
+    world_id: WorldId,
+    initial_patch: S2CellId,
+    tick_duration_seconds: u32,
+) -> Result<Vec<InitialOrganism>> {
+    let species = SpeciesIdentity::new(
+        "gbif",
+        "2436436",
+        "Homo sapiens",
+        "https://www.gbif.org/species/2436436",
+    )?;
+    let seconds_per_julian_year = 31_557_600_u64;
+    let tick_duration_seconds = u64::from(tick_duration_seconds.max(1));
+    (0..CANCER_RESEARCH_INITIAL_RESIDENTS)
+        .map(|ordinal| {
+            let identity = format!("cancer-resident-{ordinal:04}");
+            let birth_category = if ordinal % 2 == 0 { "female" } else { "male" };
+            let adult_age_years = 25_u64 + u64::from(ordinal % 31);
+            let initial_age_ticks = adult_age_years
+                .checked_mul(seconds_per_julian_year)
+                .context("Cancer World founder age overflow")?
+                / tick_duration_seconds;
+            Ok(InitialOrganism {
+                organism_id: EntityId::deterministic(world_id, identity.as_bytes()),
+                species: species.clone(),
+                role: OrganismRole::Person,
+                birth_category: BirthCategory::new(birth_category)?,
+                initial_age_ticks,
+                location_id: None,
+                embodied_patch: Some(initial_patch),
+                metabolic_rate: None,
+                adult_body_mass: None,
+                physiological_regulation: None,
+                reproductive_physiology: None,
+                heritable_disposition_profile: None,
+            })
+        })
+        .collect()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn verify_provisional_genesis(
     world_id: WorldId,
@@ -1055,6 +1109,7 @@ async fn verify_provisional_genesis(
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
     ruleset_version: u32,
+    cancer_research: bool,
 ) -> Result<()> {
     let manifest_digest = verify_portable_genesis_manifest(genesis_directory)?;
     println!("portable genesis manifest: {manifest_digest}");
@@ -1097,6 +1152,7 @@ async fn verify_provisional_genesis(
         tick_duration_seconds,
         max_events_per_partition_transition,
         ruleset_version,
+        cancer_research,
     )
     .await
 }
@@ -1199,7 +1255,13 @@ async fn init_provisional_full_earth_world(
     tick_duration_seconds: u32,
     max_events_per_partition_transition: u32,
     ruleset_version: u32,
+    cancer_research: bool,
 ) -> Result<()> {
+    if cancer_research && ruleset_version != CANCER_RESEARCH_WORLD_RULESET_VERSION {
+        anyhow::bail!(
+            "Cancer World genesis requires exact ruleset {CANCER_RESEARCH_WORLD_RULESET_VERSION}"
+        );
+    }
     if refuse_other_worlds {
         let store = store.context("exclusive initialization requires PostgreSQL")?;
         let other_worlds = store
@@ -1320,6 +1382,11 @@ async fn init_provisional_full_earth_world(
     }
 
     let mut manifest = WorldManifest::new(world_id, WorldSeed::new(seed), ruleset_version);
+    if cancer_research {
+        manifest.experiment = Some(WorldExperimentCommitment::CancerResearch(
+            CancerResearchBootstrap::english_literate_abundant_world(),
+        ));
+    }
     if let Some(selection_digest) = initial_origin.selection_digest {
         manifest.scientific_datasets.insert(
             "provisional_land_origin_selection".to_owned(),
@@ -1344,7 +1411,11 @@ async fn init_provisional_full_earth_world(
             origin_climate_normals.digest.to_string(),
         );
     }
-    let mut initial_organisms = provisional_human_founders(world_id, initial_patch)?;
+    let mut initial_organisms = if cancer_research {
+        cancer_research_human_founders(world_id, initial_patch, tick_duration_seconds)?
+    } else {
+        provisional_human_founders(world_id, initial_patch)?
+    };
     let fauna = load_provisional_fauna_initial_organisms(
         world_id,
         WorldSeed::new(seed),
@@ -1478,8 +1549,13 @@ async fn init_provisional_full_earth_world(
         )
         .await
         .context("initialize provisional full-Earth world")?;
+        let world_kind = if cancer_research {
+            "Cancer World research experiment"
+        } else {
+            "provisional full-Earth world"
+        };
         println!(
-            "initialized provisional full-Earth world {world_id} from {}@{}",
+            "initialized {world_kind} {world_id} from {}@{}",
             composition_reference.composition_id, composition_reference.composition_version
         );
         println!("status: provisional-not-scientifically-admitted");
@@ -1514,7 +1590,12 @@ async fn init_provisional_full_earth_world(
         println!(
             "{}",
             serde_json::to_string_pretty(&json!({
-                "mode": "database-free-canonical-genesis-proof",
+                "mode": if cancer_research {
+                    "database-free-cancer-world-genesis-proof"
+                } else {
+                    "database-free-canonical-genesis-proof"
+                },
+                "cancer_research": cancer_research,
                 "world_id": world_id,
                 "seed": seed,
                 "ruleset_version": ruleset_version,
@@ -3340,6 +3421,7 @@ mod tests {
         let Some(Command::InitProvisionalFullEarth {
             ruleset_version,
             refuse_other_worlds,
+            cancer_research,
             ..
         }) = cli.command
         else {
@@ -3347,6 +3429,7 @@ mod tests {
         };
         assert_eq!(ruleset_version, LOCAL_INTERACTION_RULESET_VERSION);
         assert!(refuse_other_worlds);
+        assert!(!cancer_research);
     }
 
     #[test]
@@ -3382,6 +3465,65 @@ mod tests {
                 .iter()
                 .all(|founder| founder.role == OrganismRole::Person)
         );
+    }
+
+    #[test]
+    fn cancer_genesis_mode_commits_one_thousand_balanced_adults() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "verify-provisional-genesis",
+            "--world-id",
+            "00000000-0000-0000-0000-000000000001",
+            "--seed",
+            "37",
+            "--genesis-directory",
+            "genesis",
+            "--ruleset-version",
+            "37",
+            "--cancer-research",
+        ])
+        .expect("parse Cancer World genesis proof");
+        let Some(Command::VerifyProvisionalGenesis {
+            ruleset_version,
+            cancer_research,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Cancer World genesis verification command");
+        };
+        assert_eq!(ruleset_version, CANCER_RESEARCH_WORLD_RULESET_VERSION);
+        assert!(cancer_research);
+
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xca6ce7));
+        let patch = S2CellId::new(0x89c259b000000000).expect("fixture patch");
+        let founders =
+            cancer_research_human_founders(world_id, patch, 300).expect("Cancer World founders");
+        let resident_count =
+            usize::try_from(CANCER_RESEARCH_INITIAL_RESIDENTS).expect("resident count fits usize");
+        assert_eq!(founders.len(), resident_count);
+        assert_eq!(
+            founders
+                .iter()
+                .filter(|founder| founder.birth_category.as_str() == "female")
+                .count(),
+            resident_count / 2
+        );
+        assert_eq!(
+            founders
+                .iter()
+                .filter(|founder| founder.birth_category.as_str() == "male")
+                .count(),
+            resident_count / 2
+        );
+        assert_eq!(
+            founders
+                .iter()
+                .map(|founder| founder.organism_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            resident_count
+        );
+        assert!(founders.iter().all(|founder| founder.initial_age_ticks > 0));
     }
 
     #[test]
