@@ -50,7 +50,8 @@ use world_domain::{
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
     SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
     TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, s2_edge_neighbors,
+    WorldConfigurationError, WorldId, WorldManifest, WorldStatus, decode_s2_face_ij,
+    s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -160,10 +161,19 @@ pub const CLOSE_KIN_EXCLUSION_RULESET_VERSION: u32 = 33;
 /// strongly weighted by the organism's current embodied context. It adds no word,
 /// referent, intention, or observer-authored meaning.
 pub const SIGNAL_CONVENTION_REUSE_RULESET_VERSION: u32 = 34;
+/// Ruleset thirty-five replaces exact-cell-only hearing and social attention with a
+/// bounded local landscape neighborhood, and gives movement a neutral tendency to
+/// reduce distance to the nearest directly heard signal source. Reproduction
+/// still requires exact embodied contact and remains private physiology.
+pub const LOCAL_INTERACTION_RULESET_VERSION: u32 = 35;
 /// The already-running public ruleset-33 world receives the stateless ruleset-34
 /// policy driver at this disclosed boundary. Earlier ruleset-33 transitions retain
 /// their exact candidate set and replay behavior.
 pub const RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK: u64 = 65_000;
+/// The running public ruleset-33 world receives the stateless local-interaction
+/// driver at this disclosed boundary. Earlier transitions remain byte-for-byte
+/// replayable under their original exact-cell behavior.
+pub const RULESET_33_LOCAL_INTERACTION_ACTIVATION_TICK: u64 = 75_000;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -205,6 +215,8 @@ const COGNITION_REQUEST_ORDINAL: u32 = 0;
 const COGNITION_ACTION_WEIGHT_BONUS: u32 = 2;
 const SIGNAL_IMITATION_WEIGHT_BONUS: u32 = 16;
 const SIGNAL_CONTEXT_REUSE_MAX_BONUS: u32 = 24;
+const LOCAL_COHESION_WEIGHT_BONUS: u32 = 24;
+const MAX_LOCAL_SIGNAL_RECIPIENTS: usize = 8;
 const COGNITION_MEMORY_QUERY_V1: &str =
     "recent direct experiences matching current bodily pressure and situated property readings";
 /// The first deterministic execution phase: every living embodied organism receives
@@ -628,6 +640,38 @@ fn signal_convention_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= SIGNAL_CONVENTION_REUSE_RULESET_VERSION
         || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
             && tick.get() >= RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK)
+}
+
+fn local_interaction_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= LOCAL_INTERACTION_RULESET_VERSION
+        || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
+            && tick.get() >= RULESET_33_LOCAL_INTERACTION_ACTIVATION_TICK)
+}
+
+fn apply_local_cohesion_weights(
+    patch: S2CellId,
+    target_patch: S2CellId,
+    candidates: &mut [PolicyCandidate],
+) -> Result<(), EngineError> {
+    if target_patch == patch {
+        return Ok(());
+    }
+    let current_distance = EngineState::patch_grid_distance(patch, target_patch);
+    let neighbors = s2_edge_neighbors(patch)?;
+    for candidate in candidates {
+        let Some(direction) = candidate.action.movement_direction else {
+            continue;
+        };
+        if EngineState::patch_grid_distance(neighbors[usize::from(direction)], target_patch)
+            < current_distance
+        {
+            candidate.weight = candidate
+                .weight
+                .checked_add(LOCAL_COHESION_WEIGHT_BONUS)
+                .ok_or(EngineError::TooManyEvents)?;
+        }
+    }
+    Ok(())
 }
 
 fn inherited_candidate_weight(
@@ -1088,6 +1132,45 @@ impl EngineState {
 
     fn uses_close_kin_exclusion_driver(&self) -> bool {
         self.manifest.ruleset_version >= CLOSE_KIN_EXCLUSION_RULESET_VERSION
+    }
+
+    fn uses_local_interaction_driver(&self) -> bool {
+        local_interaction_active(self.manifest.ruleset_version, self.tick)
+    }
+
+    fn local_interaction_level(&self) -> Result<u8, EngineError> {
+        self.configuration
+            .as_ref()
+            .and_then(WorldConfiguration::full_earth_grid)
+            .map(|grid| grid.levels.active_landscape)
+            .ok_or_else(|| {
+                EngineError::InvalidEmbodiedEvent(
+                    "local interaction requires full-Earth landscape geometry".to_owned(),
+                )
+            })
+    }
+
+    fn patches_share_local_vicinity(
+        &self,
+        left: S2CellId,
+        right: S2CellId,
+    ) -> Result<bool, EngineError> {
+        if left == right {
+            return Ok(true);
+        }
+        let level = self.local_interaction_level()?;
+        let left = left.ancestor(level)?;
+        let right = right.ancestor(level)?;
+        Ok(left == right || s2_edge_neighbors(left)?.contains(&right))
+    }
+
+    fn patch_grid_distance(left: S2CellId, right: S2CellId) -> u64 {
+        let left = decode_s2_face_ij(left);
+        let right = decode_s2_face_ij(right);
+        if left.face != right.face || left.level != right.level {
+            return u64::MAX;
+        }
+        u64::from(left.i.abs_diff(right.i)) + u64::from(left.j.abs_diff(right.j))
     }
 
     fn local_temperature_at_tick(
@@ -2089,15 +2172,36 @@ impl EngineState {
             .get(&source_id)
             .and_then(|organism| organism.embodied_patch)
             .ok_or(EngineError::MissingEmbodiedPatch(source_id))?;
-        Ok(self
+        let mut recipients = Vec::new();
+        for recipient in self
             .organisms
             .values()
-            .filter(|recipient| {
-                recipient.organism_id != source_id
-                    && recipient.is_alive()
-                    && recipient.embodied_patch == Some(source_patch)
-            })
-            .map(|recipient| DomainEvent::OrganismPerceived {
+            .filter(|recipient| recipient.organism_id != source_id && recipient.is_alive())
+        {
+            let Some(patch) = recipient.embodied_patch else {
+                continue;
+            };
+            let audible = if self.uses_local_interaction_driver() {
+                self.patches_share_local_vicinity(source_patch, patch)?
+            } else {
+                source_patch == patch
+            };
+            if audible {
+                recipients.push((recipient, patch));
+            }
+        }
+        recipients.sort_by_key(|(recipient, patch)| {
+            (
+                Self::patch_grid_distance(source_patch, *patch),
+                recipient.organism_id,
+            )
+        });
+        if self.uses_local_interaction_driver() {
+            recipients.truncate(MAX_LOCAL_SIGNAL_RECIPIENTS);
+        }
+        Ok(recipients
+            .into_iter()
+            .map(|(recipient, _)| DomainEvent::OrganismPerceived {
                 organism_id: recipient.organism_id,
                 perception: SituatedPerception {
                     subject_id: Some(source_id),
@@ -2133,6 +2237,44 @@ impl EngineState {
         let index = usize::try_from(first_digest_u64(digest) % length)
             .map_err(|_| EngineError::TooManyEvents)?;
         Ok(Some(object_ids[index]))
+    }
+
+    fn nearest_recent_signal_source_patch(
+        &self,
+        organism: &OrganismState,
+    ) -> Result<Option<S2CellId>, EngineError> {
+        let source_patch = organism
+            .embodied_patch
+            .ok_or(EngineError::MissingEmbodiedPatch(organism.organism_id))?;
+        let mut nearby = Vec::new();
+        for memory in organism.perception_memory.iter().filter(|memory| {
+            memory.observed_at == self.tick
+                && memory.channel == PerceptionChannel::Sound
+                && memory.property_code == "signal_amplitude"
+        }) {
+            let Some(source_id) = memory.subject_id else {
+                continue;
+            };
+            let Some(source) = self
+                .organisms
+                .get(&source_id)
+                .filter(|source| source.is_alive())
+            else {
+                continue;
+            };
+            let Some(patch) = source.embodied_patch else {
+                continue;
+            };
+            if self.patches_share_local_vicinity(source_patch, patch)? {
+                nearby.push((
+                    Self::patch_grid_distance(source_patch, patch),
+                    source_id,
+                    patch,
+                ));
+            }
+        }
+        nearby.sort_unstable();
+        Ok(nearby.first().map(|(_, _, patch)| *patch))
     }
 
     #[cfg(test)]
@@ -2433,6 +2575,12 @@ impl EngineState {
             }
         }
 
+        if self.uses_local_interaction_driver()
+            && let Some(target_patch) = self.nearest_recent_signal_source_patch(organism)?
+        {
+            apply_local_cohesion_weights(patch, target_patch, &mut candidates)?;
+        }
+
         if self.uses_signal_action_association_driver()
             && let Some(signal_intensity) = organism.recent_signal(self.tick)
         {
@@ -2722,6 +2870,49 @@ impl EngineState {
         &self,
         actions: &BTreeMap<EntityId, PrimitiveAction>,
     ) -> Result<BTreeMap<EntityId, EntityId>, EngineError> {
+        if self.uses_local_interaction_driver() {
+            let mut observations = BTreeMap::new();
+            for observer_id in actions.keys() {
+                let observer = self
+                    .organisms
+                    .get(observer_id)
+                    .ok_or(EngineError::UnknownOrganism(*observer_id))?;
+                let observer_patch = observer
+                    .embodied_patch
+                    .ok_or(EngineError::MissingEmbodiedPatch(*observer_id))?;
+                let mut nearby = Vec::new();
+                for actor_id in actions.keys().filter(|actor_id| *actor_id != observer_id) {
+                    let actor = self
+                        .organisms
+                        .get(actor_id)
+                        .ok_or(EngineError::UnknownOrganism(*actor_id))?;
+                    let actor_patch = actor
+                        .embodied_patch
+                        .ok_or(EngineError::MissingEmbodiedPatch(*actor_id))?;
+                    if self.patches_share_local_vicinity(observer_patch, actor_patch)? {
+                        nearby.push(*actor_id);
+                    }
+                }
+                if nearby.is_empty() {
+                    continue;
+                }
+                let nearby_digest = Digest::canonical(&nearby)?;
+                let digest = Digest::canonical(&SocialAttentionDraw {
+                    social_attention_version: 2,
+                    world_seed: self.manifest.seed.get(),
+                    observer_id: *observer_id,
+                    tick: self.tick.checked_next()?,
+                    co_located_actor_digest: nearby_digest,
+                })?;
+                let actor_index = usize::try_from(
+                    first_digest_u64(digest)
+                        % u64::try_from(nearby.len()).expect("nearby length fits u64"),
+                )
+                .expect("bounded nearby actor index fits usize");
+                observations.insert(*observer_id, nearby[actor_index]);
+            }
+            return Ok(observations);
+        }
         let mut by_patch = BTreeMap::<S2CellId, Vec<EntityId>>::new();
         for organism in self.organisms.values().filter(|organism| {
             organism.is_alive()
@@ -8611,6 +8802,37 @@ mod tests {
             signal_convention_candidate_weight(2, 8, Some(7), 6, Some(association)),
             2
         );
+
+        assert!(!local_interaction_active(
+            CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+            SimTick::new(RULESET_33_LOCAL_INTERACTION_ACTIVATION_TICK - 1),
+        ));
+        assert!(local_interaction_active(
+            CLOSE_KIN_EXCLUSION_RULESET_VERSION,
+            SimTick::new(RULESET_33_LOCAL_INTERACTION_ACTIVATION_TICK),
+        ));
+        assert!(local_interaction_active(
+            LOCAL_INTERACTION_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+
+        let patch: S2CellId = "0000000000004000".parse().expect("L23 patch");
+        let target = s2_edge_neighbors(patch).expect("neighbor patches")[0];
+        let mut movement = (0..4_u8)
+            .map(|direction| PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::Move,
+                    target_id: None,
+                    intensity: 1,
+                    contact_region: None,
+                    movement_direction: Some(direction),
+                },
+                weight: 2,
+            })
+            .collect::<Vec<_>>();
+        apply_local_cohesion_weights(patch, target, &mut movement).expect("cohesion weighting");
+        assert_eq!(movement[0].weight, 2 + LOCAL_COHESION_WEIGHT_BONUS);
+        assert!(movement[1..].iter().all(|candidate| candidate.weight == 2));
     }
 
     fn manifest() -> WorldManifest {
@@ -9770,6 +9992,125 @@ mod tests {
                 .expect("scheduled signal replay")
                 .state,
             after_tick
+        );
+    }
+
+    #[test]
+    fn local_interaction_reaches_nearby_landscape_cells_but_remains_bounded() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x135));
+        let legacy_manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x10ca1),
+            SIGNAL_PROPAGATION_RULESET_VERSION,
+        );
+        let source_patch: S2CellId = "0000000000004000".parse().expect("L23 source patch");
+        let source_landscape = source_patch.ancestor(18).expect("L18 landscape");
+        let neighboring_landscape =
+            s2_edge_neighbors(source_landscape).expect("landscape neighbors")[0];
+        let nearby_patch = neighboring_landscape
+            .descendants_at(23)
+            .expect("nearby embodied descendants")[0];
+        let audible_landscapes = std::iter::once(source_landscape)
+            .chain(s2_edge_neighbors(source_landscape).expect("audible neighbors"))
+            .collect::<BTreeSet<_>>();
+        let remote_landscape = s2_edge_neighbors(neighboring_landscape)
+            .expect("second landscape ring")
+            .into_iter()
+            .find(|candidate| !audible_landscapes.contains(candidate))
+            .expect("a landscape beyond the audible ring");
+        let remote_patch = remote_landscape
+            .descendants_at(23)
+            .expect("remote embodied descendants")[0];
+
+        let mut source = full_earth_person(world_id);
+        source.organism_id = EntityId::from_uuid(Uuid::from_u128(0x13501));
+        source.embodied_patch = Some(source_patch);
+        let mut organisms = vec![source.clone()];
+        for ordinal in 0..10_u128 {
+            let mut recipient = full_earth_person(world_id);
+            recipient.organism_id = EntityId::from_uuid(Uuid::from_u128(0x13510 + ordinal));
+            recipient.embodied_patch = Some(nearby_patch);
+            organisms.push(recipient);
+        }
+        let mut remote = full_earth_person(world_id);
+        remote.organism_id = EntityId::from_uuid(Uuid::from_u128(0x135ff));
+        remote.embodied_patch = Some(remote_patch);
+        organisms.push(remote.clone());
+
+        let initial = EngineState::new(legacy_manifest);
+        let genesis_events = initial
+            .plan_configured_genesis(
+                environmental_provisional_full_earth_configuration(),
+                organisms,
+            )
+            .expect("local-interaction fixture genesis");
+        let (mut running, _) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("local-interaction fixture commit");
+        running.manifest.ruleset_version = LOCAL_INTERACTION_RULESET_VERSION;
+
+        let signal_events = running
+            .plan_action(
+                source.organism_id,
+                PrimitiveAction {
+                    kind: PrimitiveActionKind::EmitSignal,
+                    target_id: None,
+                    intensity: 7,
+                    contact_region: None,
+                    movement_direction: None,
+                },
+            )
+            .expect("nearby signal plan");
+        let recipients = signal_events
+            .iter()
+            .filter_map(|event| match event {
+                DomainEvent::OrganismPerceived { organism_id, .. } => Some(*organism_id),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(recipients.len(), MAX_LOCAL_SIGNAL_RECIPIENTS);
+        assert!(!recipients.contains(&remote.organism_id));
+        assert!(recipients.iter().all(|recipient_id| {
+            running.organisms[recipient_id].embodied_patch == Some(nearby_patch)
+        }));
+        let mut after_signal = running.clone();
+        after_signal
+            .apply_events(&signal_events)
+            .expect("direct sound becomes private perception memory");
+        let recipient = after_signal
+            .organisms
+            .get(&recipients[0])
+            .expect("bounded recipient");
+        assert_eq!(
+            after_signal
+                .nearest_recent_signal_source_patch(recipient)
+                .expect("heard-source target"),
+            Some(source_patch)
+        );
+
+        let actions = running
+            .organisms
+            .keys()
+            .copied()
+            .map(|organism_id| {
+                (
+                    organism_id,
+                    PrimitiveAction {
+                        kind: PrimitiveActionKind::Rest,
+                        target_id: None,
+                        intensity: 1,
+                        contact_region: None,
+                        movement_direction: None,
+                    },
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let observations = running
+            .social_observations(&actions)
+            .expect("nearby social observations");
+        assert_ne!(
+            observations.get(&source.organism_id),
+            Some(&remote.organism_id)
         );
     }
 
@@ -14229,32 +14570,38 @@ mod tests {
     }
 
     #[test]
-    fn close_kin_exclusion_ruleset_reuses_the_latest_compatible_schemas() {
-        let state = EngineState::new(WorldManifest::new(
-            WorldId::from_uuid(Uuid::from_u128(0x3300)),
-            WorldSeed::new(0x3300),
+    fn stateless_rulesets_reuse_the_latest_compatible_schemas() {
+        for ruleset_version in [
             CLOSE_KIN_EXCLUSION_RULESET_VERSION,
-        ));
-        assert_eq!(
-            state.event_schema_version(),
-            ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
-        );
-        assert_eq!(
-            state.state_hash_schema_version(),
-            ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
-        );
-        assert_eq!(
-            latest_ruleset_event_schema_for_replay(&state),
-            Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
-        );
-        let snapshot = Snapshot::new(state, EventSequence::ZERO, Digest::ZERO)
-            .expect("close-kin-exclusion snapshot");
-        assert_eq!(
-            snapshot.snapshot_schema_version,
-            ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
-        );
-        snapshot
-            .verify_integrity()
-            .expect("close-kin-exclusion snapshot integrity");
+            SIGNAL_CONVENTION_REUSE_RULESET_VERSION,
+            LOCAL_INTERACTION_RULESET_VERSION,
+        ] {
+            let state = EngineState::new(WorldManifest::new(
+                WorldId::from_uuid(Uuid::from_u128(0x3300 + u128::from(ruleset_version))),
+                WorldSeed::new(u64::from(ruleset_version)),
+                ruleset_version,
+            ));
+            assert_eq!(
+                state.event_schema_version(),
+                ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+            );
+            assert_eq!(
+                state.state_hash_schema_version(),
+                ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION
+            );
+            assert_eq!(
+                latest_ruleset_event_schema_for_replay(&state),
+                Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
+            );
+            let snapshot = Snapshot::new(state, EventSequence::ZERO, Digest::ZERO)
+                .expect("stateless-ruleset snapshot");
+            assert_eq!(
+                snapshot.snapshot_schema_version,
+                ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION
+            );
+            snapshot
+                .verify_integrity()
+                .expect("stateless-ruleset snapshot integrity");
+        }
     }
 }
