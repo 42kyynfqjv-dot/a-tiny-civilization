@@ -56,7 +56,9 @@ pub enum SpeciesIdentityError {
 /// Schema for the deliberately artificial research-world bootstrap. This is
 /// absent from an open-ended genesis world and therefore cannot silently leak
 /// modern human knowledge into it.
-pub const CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION: u16 = 2;
+pub const CANCER_RESEARCH_INITIAL_RESIDENTS: u32 = 1_000;
+pub const CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS: u32 = 500;
 
 /// A world may be a neutral open-ended history or an explicitly intervened
 /// experiment. The enum is intentionally narrow: new experiment designs require
@@ -83,6 +85,9 @@ impl WorldExperimentCommitment {
 #[serde(deny_unknown_fields)]
 pub struct CancerResearchBootstrap {
     pub schema_version: u16,
+    pub initial_resident_count: u32,
+    pub initial_affected_resident_count: u32,
+    pub initial_cohort_assignment: CancerCohortAssignment,
     pub language: ResearchLanguage,
     pub communication: ResearchCommunication,
     pub affected_person_perception: CancerPerception,
@@ -99,6 +104,9 @@ impl CancerResearchBootstrap {
     pub const fn english_literate_abundant_world() -> Self {
         Self {
             schema_version: CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION,
+            initial_resident_count: CANCER_RESEARCH_INITIAL_RESIDENTS,
+            initial_affected_resident_count: CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS,
+            initial_cohort_assignment: CancerCohortAssignment::SeededStratifiedByBirthCategory,
             language: ResearchLanguage::English,
             communication: ResearchCommunication::SpokenWrittenAndDurablePublication,
             affected_person_perception: CancerPerception::LocationBurdenAndTrajectory,
@@ -118,8 +126,23 @@ impl CancerResearchBootstrap {
                 self.schema_version,
             ));
         }
+        if self.initial_resident_count != CANCER_RESEARCH_INITIAL_RESIDENTS
+            || self.initial_affected_resident_count != CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS
+        {
+            return Err(WorldManifestError::InvalidCancerResearchInitialCohort);
+        }
         Ok(())
     }
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerCohortAssignment {
+    /// Rank deterministic seed-derived identities within each birth category,
+    /// then select equal affected counts from every equally sized stratum. This
+    /// fixes the cohort before genesis without giving later history a label or
+    /// allowing operator selection of particular residents.
+    SeededStratifiedByBirthCategory,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -193,6 +216,8 @@ pub enum SurvivalEnvironment {
 pub enum WorldManifestError {
     #[error("unsupported cancer-research bootstrap schema {0}")]
     UnsupportedCancerResearchBootstrap(u16),
+    #[error("Cancer World must begin with 1,000 residents and exactly 500 affected residents")]
+    InvalidCancerResearchInitialCohort,
 }
 
 /// Immutable inputs pinned before a world's genesis event.
@@ -283,6 +308,18 @@ mod tests {
         assert_eq!(
             cancer_json["experiment"]["commitment"]["cognition_route"],
             "deepseek_v4_pro_paid_from_genesis"
+        );
+        assert_eq!(
+            cancer_json["experiment"]["commitment"]["initial_resident_count"],
+            1_000
+        );
+        assert_eq!(
+            cancer_json["experiment"]["commitment"]["initial_affected_resident_count"],
+            500
+        );
+        assert_eq!(
+            cancer_json["experiment"]["commitment"]["initial_cohort_assignment"],
+            "seeded_stratified_by_birth_category"
         );
     }
 }

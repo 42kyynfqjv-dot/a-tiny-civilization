@@ -97,11 +97,12 @@ pub use illumination::{
     RadialHorizonClassification, SunVectorFrame,
 };
 pub use manifest::{
-    CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION, CancerPerception, CancerResearchBootstrap,
-    CancerTerminalObjective, DiseaseScope, ObjectivePriority, ResearchCognitionRoute,
-    ResearchCommunication, ResearchDiversity, ResearchLanguage, SpeciesIdentity,
-    SpeciesIdentityError, SurvivalEnvironment, WorldExperimentCommitment, WorldManifest,
-    WorldManifestError,
+    CANCER_RESEARCH_BOOTSTRAP_SCHEMA_VERSION, CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS,
+    CANCER_RESEARCH_INITIAL_RESIDENTS, CancerCohortAssignment, CancerPerception,
+    CancerResearchBootstrap, CancerTerminalObjective, DiseaseScope, ObjectivePriority,
+    ResearchCognitionRoute, ResearchCommunication, ResearchDiversity, ResearchLanguage,
+    SpeciesIdentity, SpeciesIdentityError, SurvivalEnvironment, WorldExperimentCommitment,
+    WorldManifest, WorldManifestError,
 };
 pub use material::{
     MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION, MaterialIdentity, MaterialIdentityError,

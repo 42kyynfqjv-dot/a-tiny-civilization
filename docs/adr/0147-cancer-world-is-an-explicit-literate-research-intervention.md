@@ -10,6 +10,8 @@ commitment and receives none of its capabilities or knowledge.
 
 Cancer World begins with:
 
+- exactly 1,000 adult residents, with exactly 500 assigned an initial cancer
+  condition by a seed-derived, birth-category-stratified rule fixed before genesis;
 - fluent spoken and written English, interpersonal communication, teaching, and
   durable publication;
 - abundant ordinary survival resources;
@@ -74,6 +76,8 @@ the NCI PDMR and HCMI resources:
 - Ruleset 37, event schema 34, and snapshot/state-hash schema 33 identify the first
   experiment-capable state boundary. Older manifests omit the field and preserve
   their published JSON and hashes.
+- Bootstrap schema 2 fixes the 1,000-person initial population and 500-person
+  affected cohort. The cohort cannot be hand-picked or changed after genesis.
 - The research-language substrate must support claims, citations, hypotheses,
   criticism, experiment proposals, results, retractions, and papers as canonical
   events rather than unrecorded model prose.
@@ -82,4 +86,3 @@ the NCI PDMR and HCMI resources:
 - Observer pages must label all Cancer World output as simulation-generated
   hypotheses, not medical guidance. No result becomes a cure claim without external
   reproducible biological and clinical validation.
-
