@@ -408,6 +408,10 @@ impl MovementDirectionValueState {
 
 pub const SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION: u16 = 1;
 pub const SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION: u16 = 2;
+/// Schema three stores a bounded prediction strength learned through reinforcement
+/// and direct competition. It remains a private sensorimotor association, not a
+/// word, referent, belief, or observer-supplied meaning.
+pub const COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION: u16 = 3;
 /// The bounded physical signal-form space. These values have no built-in meaning;
 /// learned conventions, if any, must arise from situated repetition.
 pub const SIGNAL_FORM_VARIANT_COUNT: u8 = 32;
@@ -430,7 +434,9 @@ impl SignalActionAssociationState {
     pub fn validate(self) -> Result<(), EmbodimentError> {
         if !matches!(
             self.association_schema_version,
-            SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION | SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+            SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
+                | SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+                | COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
         ) {
             return Err(EmbodimentError::UnsupportedSignalActionAssociationSchema);
         }
@@ -439,7 +445,7 @@ impl SignalActionAssociationState {
             || !(1..=ACTION_VALUE_MAX).contains(&self.value)
             || (self.association_schema_version == SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
                 && self.movement_direction.is_some())
-            || (self.association_schema_version == SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+            || (self.association_schema_version >= SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
                 && ((self.action_kind == PrimitiveActionKind::Move
                     && !self
                         .movement_direction

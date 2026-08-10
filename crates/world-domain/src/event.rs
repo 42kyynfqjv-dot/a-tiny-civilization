@@ -97,6 +97,10 @@ pub const MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION: u16 = 31;
 /// Schema thirty-two retains the exact adult-body-mass commitment in organism
 /// state instead of leaving it reachable only through an external genesis plan.
 pub const ADULT_BODY_MASS_EVENT_SCHEMA_VERSION: u16 = 32;
+/// Schema thirty-three adds one explicit competing association transition to a
+/// directly observed signal prediction. Positive evidence and negative evidence
+/// are therefore both durable and replayable.
+pub const COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION: u16 = 33;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -372,6 +376,10 @@ pub enum DomainEvent {
         actor_id: EntityId,
         from: Option<SignalActionAssociationState>,
         to: SignalActionAssociationState,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inhibited_from: Option<SignalActionAssociationState>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        inhibited_to: Option<SignalActionAssociationState>,
     },
     /// One world-total, simulated-time-budgeted optional cognition request. It
     /// contains only body-owned situated inputs and cannot directly change state.
@@ -554,6 +562,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION
             | MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
             | ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
+            | COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -1028,11 +1037,15 @@ fn validate_event_for_schema(
             actor_id,
             from,
             to,
+            inhibited_from,
+            inhibited_to,
         } => {
             to.validate()
                 .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
             let expected_schema =
-                if event_schema_version >= SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION {
+                if event_schema_version >= COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION {
+                    crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                } else if event_schema_version >= SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION {
                     crate::SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
                 } else {
                     crate::SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
@@ -1070,13 +1083,71 @@ fn validate_event_for_schema(
                 }
                 None => 1,
             };
-            let expected_value = from
-                .map_or(1_i16, |from| from.value.saturating_add(1))
-                .min(crate::ACTION_VALUE_MAX);
-            if to.observations != expected_observations || to.value != expected_value {
+            let valid_value =
+                if event_schema_version >= COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION {
+                    from.map_or(matches!(to.value, 4 | 8), |from| {
+                        to.value == from.value.saturating_add(4).min(crate::ACTION_VALUE_MAX)
+                            || to.value == from.value.saturating_add(8).min(crate::ACTION_VALUE_MAX)
+                    })
+                } else {
+                    let expected_value = from
+                        .map_or(1_i16, |from| from.value.saturating_add(1))
+                        .min(crate::ACTION_VALUE_MAX);
+                    to.value == expected_value
+                };
+            if to.observations != expected_observations || !valid_value {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "invalid signal-action association transition".to_owned(),
                 ));
+            }
+            if event_schema_version < COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION {
+                if inhibited_from.is_some() || inhibited_to.is_some() {
+                    return Err(EventBatchError::EventRequiresNewerSchema);
+                }
+            } else {
+                match (inhibited_from, inhibited_to) {
+                    (None, None) => {}
+                    (Some(inhibited_from), Some(inhibited_to)) => {
+                        inhibited_from.validate().map_err(|error| {
+                            EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                        })?;
+                        inhibited_to.validate().map_err(|error| {
+                            EventBatchError::InvalidEmbodiedEvent(error.to_string())
+                        })?;
+                        let reinforced_key =
+                            (to.signal_intensity, to.action_kind, to.movement_direction);
+                        let inhibited_key = (
+                            inhibited_to.signal_intensity,
+                            inhibited_to.action_kind,
+                            inhibited_to.movement_direction,
+                        );
+                        let competes = (reinforced_key.0 == inhibited_key.0
+                            && (reinforced_key.1, reinforced_key.2)
+                                != (inhibited_key.1, inhibited_key.2))
+                            || ((reinforced_key.1, reinforced_key.2)
+                                == (inhibited_key.1, inhibited_key.2)
+                                && reinforced_key.0 != inhibited_key.0);
+                        if inhibited_from.association_schema_version != expected_schema
+                            || inhibited_to.association_schema_version != expected_schema
+                            || inhibited_from.signal_intensity != inhibited_to.signal_intensity
+                            || inhibited_from.action_kind != inhibited_to.action_kind
+                            || inhibited_from.movement_direction != inhibited_to.movement_direction
+                            || inhibited_to.observations
+                                != inhibited_from.observations.saturating_add(1)
+                            || inhibited_to.value != inhibited_from.value.saturating_sub(2).max(1)
+                            || !competes
+                        {
+                            return Err(EventBatchError::InvalidEmbodiedEvent(
+                                "invalid inhibited signal prediction transition".to_owned(),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(EventBatchError::InvalidEmbodiedEvent(
+                            "signal prediction inhibition is incomplete".to_owned(),
+                        ));
+                    }
+                }
             }
         }
         DomainEvent::CognitionRequestSelected { selection } => selection
@@ -2086,5 +2157,86 @@ mod tests {
             Digest::sha256(b"adult mass state"),
         )
         .expect("schema thirty-two accepts exact adult-body-mass state");
+    }
+
+    #[test]
+    fn competitive_signal_learning_records_positive_and_negative_evidence_atomically() {
+        let manifest = manifest();
+        let reinforced_from = SignalActionAssociationState {
+            association_schema_version: crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: 7,
+            action_kind: crate::PrimitiveActionKind::Move,
+            movement_direction: Some(2),
+            observations: 3,
+            value: 12,
+        };
+        let inhibited_from = SignalActionAssociationState {
+            association_schema_version: crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            signal_intensity: 7,
+            action_kind: crate::PrimitiveActionKind::Rest,
+            movement_direction: None,
+            observations: 5,
+            value: 10,
+        };
+        let event = DomainEvent::OrganismSignalActionAssociationChanged {
+            observer_id: EntityId::from_uuid(Uuid::from_u128(0xC001)),
+            actor_id: EntityId::from_uuid(Uuid::from_u128(0xC002)),
+            from: Some(reinforced_from),
+            to: SignalActionAssociationState {
+                observations: 4,
+                value: 20,
+                ..reinforced_from
+            },
+            inhibited_from: Some(inhibited_from),
+            inhibited_to: Some(SignalActionAssociationState {
+                observations: 6,
+                value: 8,
+                ..inhibited_from
+            }),
+        };
+        assert!(
+            EventBatch::new(
+                ADULT_BODY_MASS_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                36,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"competitive prediction state"),
+            )
+            .is_err()
+        );
+        EventBatch::new(
+            COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(1),
+            SimTick::new(1),
+            36,
+            Digest::ZERO,
+            vec![event.clone()],
+            Digest::sha256(b"competitive prediction state"),
+        )
+        .expect("schema thirty-three accepts one reinforced and one inhibited prediction");
+
+        let mut incomplete = event;
+        if let DomainEvent::OrganismSignalActionAssociationChanged { inhibited_to, .. } =
+            &mut incomplete
+        {
+            *inhibited_to = None;
+        }
+        assert!(matches!(
+            EventBatch::new(
+                COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(1),
+                SimTick::new(1),
+                36,
+                Digest::ZERO,
+                vec![incomplete],
+                Digest::sha256(b"invalid competitive prediction state"),
+            ),
+            Err(EventBatchError::InvalidEmbodiedEvent(_))
+        ));
     }
 }

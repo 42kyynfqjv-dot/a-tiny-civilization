@@ -23,8 +23,10 @@ use world_domain::{
     AdultBodyMassCommitment, BODILY_REGULATION_EVENT_SCHEMA_VERSION,
     BODY_PROVENANCE_EVENT_SCHEMA_VERSION, BirthCategory, BodilyNeedState, BodilyRegulationState,
     CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
-    CONFIGURED_EVENT_SCHEMA_VERSION, CanonicalHashError, CelestialState, CognitionDeadlineInput,
-    CognitionInputOutcome, CognitionReading, CognitionRequestSelection, CognitionUnavailableReason,
+    COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+    COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
+    CanonicalHashError, CelestialState, CognitionDeadlineInput, CognitionInputOutcome,
+    CognitionReading, CognitionRequestSelection, CognitionUnavailableReason,
     DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
     EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
     EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
@@ -166,6 +168,11 @@ pub const SIGNAL_CONVENTION_REUSE_RULESET_VERSION: u32 = 34;
 /// reduce distance to the nearest directly heard signal source. Reproduction
 /// still requires exact embodied contact and remains private physiology.
 pub const LOCAL_INTERACTION_RULESET_VERSION: u32 = 35;
+/// Ruleset thirty-six replaces cumulative positive-only signal co-occurrence with
+/// grounded prediction-error learning: directly supported mappings strengthen,
+/// one strongest incompatible hypothesis weakens, coordinated imitation receives
+/// additional reinforcement, and only distinctive mappings bias later behavior.
+pub const GROUNDED_PREDICTIVE_COGNITION_RULESET_VERSION: u32 = 36;
 /// The already-running public ruleset-33 world receives the stateless ruleset-34
 /// policy driver at this disclosed boundary. Earlier ruleset-33 transitions retain
 /// their exact candidate set and replay behavior.
@@ -215,6 +222,9 @@ const COGNITION_REQUEST_ORDINAL: u32 = 0;
 const COGNITION_ACTION_WEIGHT_BONUS: u32 = 2;
 const SIGNAL_IMITATION_WEIGHT_BONUS: u32 = 16;
 const SIGNAL_CONTEXT_REUSE_MAX_BONUS: u32 = 24;
+const SIGNAL_PREDICTION_REINFORCEMENT: i16 = 4;
+const SIGNAL_COORDINATION_REINFORCEMENT: i16 = 8;
+const SIGNAL_PREDICTION_INHIBITION: i16 = 2;
 const LOCAL_COHESION_WEIGHT_BONUS: u32 = 24;
 const MAX_LOCAL_SIGNAL_RECIPIENTS: usize = 8;
 const COGNITION_MEMORY_QUERY_V1: &str =
@@ -636,6 +646,24 @@ fn signal_convention_candidate_weight(
     )
 }
 
+fn competitive_signal_convention_candidate_weight(
+    base: u32,
+    signal_intensity: u8,
+    recent_signal: Option<u8>,
+    distinctive_strength: Option<u32>,
+) -> u32 {
+    let imitative = if recent_signal == Some(signal_intensity) {
+        base.saturating_add(SIGNAL_IMITATION_WEIGHT_BONUS)
+    } else {
+        base
+    };
+    imitative.saturating_add(
+        distinctive_strength
+            .unwrap_or(0)
+            .min(SIGNAL_CONTEXT_REUSE_MAX_BONUS),
+    )
+}
+
 fn signal_convention_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= SIGNAL_CONVENTION_REUSE_RULESET_VERSION
         || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
@@ -1035,6 +1063,72 @@ impl OrganismState {
             )
             .ok()
             .map(|index| self.signal_action_associations[index])
+    }
+
+    /// Returns a mapping only when it is the unique strongest prediction for the
+    /// heard form. A raw co-occurrence therefore cannot bias behavior merely by
+    /// having accumulated alongside every incompatible behavior.
+    fn distinctive_signal_prediction(
+        &self,
+        signal_intensity: u8,
+        action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
+    ) -> Option<SignalActionAssociationState> {
+        let association =
+            self.signal_action_association(signal_intensity, action_kind, movement_direction)?;
+        let competing_maximum = self
+            .signal_action_associations
+            .iter()
+            .filter(|entry| {
+                entry.signal_intensity == signal_intensity
+                    && (entry.action_kind, entry.movement_direction)
+                        != (action_kind, movement_direction)
+            })
+            .map(|entry| entry.value)
+            .max()
+            .unwrap_or(0);
+        (association.value > competing_maximum).then_some(association)
+    }
+
+    /// Measures how distinct one form is both from alternative meanings for that
+    /// form and from alternative forms for the same situated motor prediction.
+    /// This soft two-way competition leaves room for change but prevents every
+    /// form from receiving the same saturated production bonus.
+    fn signal_convention_strength(
+        &self,
+        signal_intensity: u8,
+        action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
+    ) -> Option<u32> {
+        let association =
+            self.distinctive_signal_prediction(signal_intensity, action_kind, movement_direction)?;
+        let alternative_form_maximum = self
+            .signal_action_associations
+            .iter()
+            .filter(|entry| {
+                entry.signal_intensity != signal_intensity
+                    && (entry.action_kind, entry.movement_direction)
+                        == (action_kind, movement_direction)
+            })
+            .map(|entry| entry.value)
+            .max()
+            .unwrap_or(0);
+        let meaning_margin = association.value.saturating_sub(
+            self.signal_action_associations
+                .iter()
+                .filter(|entry| {
+                    entry.signal_intensity == signal_intensity
+                        && (entry.action_kind, entry.movement_direction)
+                            != (action_kind, movement_direction)
+                })
+                .map(|entry| entry.value)
+                .max()
+                .unwrap_or(0),
+        );
+        let form_margin = association.value.saturating_sub(alternative_form_maximum);
+        (form_margin > 0).then_some(
+            u32::from(meaning_margin.unsigned_abs()) + u32::from(form_margin.unsigned_abs()),
+        )
     }
 
     fn recent_signal_from(&self, actor_id: EntityId, at_tick: SimTick) -> Option<u8> {
@@ -2653,16 +2747,22 @@ impl EngineState {
             && let Some(signal_intensity) = organism.recent_signal(self.tick)
         {
             for candidate in &mut candidates {
-                candidate.weight = associated_candidate_weight(
-                    candidate.weight,
+                let association = if self.uses_competitive_signal_learning_driver() {
+                    organism.distinctive_signal_prediction(
+                        signal_intensity,
+                        candidate.action.kind,
+                        candidate.action.movement_direction,
+                    )
+                } else {
                     organism.signal_action_association(
                         signal_intensity,
                         candidate.action.kind,
                         self.uses_signal_motor_association_driver()
                             .then_some(candidate.action.movement_direction)
                             .flatten(),
-                    ),
-                );
+                    )
+                };
+                candidate.weight = associated_candidate_weight(candidate.weight, association);
             }
         }
 
@@ -2680,17 +2780,30 @@ impl EngineState {
                 let signal_intensity = u8::try_from(candidate.action.intensity)
                     .expect("bounded signal intensity fits u8");
                 if let Some((context_action, context_weight)) = &context {
-                    candidate.weight = signal_convention_candidate_weight(
-                        candidate.weight,
-                        signal_intensity,
-                        recent_signal,
-                        *context_weight,
-                        organism.signal_action_association(
+                    candidate.weight = if self.uses_competitive_signal_learning_driver() {
+                        competitive_signal_convention_candidate_weight(
+                            candidate.weight,
                             signal_intensity,
-                            context_action.kind,
-                            context_action.movement_direction,
-                        ),
-                    );
+                            recent_signal,
+                            organism.signal_convention_strength(
+                                signal_intensity,
+                                context_action.kind,
+                                context_action.movement_direction,
+                            ),
+                        )
+                    } else {
+                        signal_convention_candidate_weight(
+                            candidate.weight,
+                            signal_intensity,
+                            recent_signal,
+                            *context_weight,
+                            organism.signal_action_association(
+                                signal_intensity,
+                                context_action.kind,
+                                context_action.movement_direction,
+                            ),
+                        )
+                    };
                 } else {
                     candidate.weight = signal_convention_candidate_weight(
                         candidate.weight,
@@ -2895,10 +3008,13 @@ impl EngineState {
         organism: &OrganismState,
         signal_intensity: u8,
         action: &PrimitiveAction,
+        coordinated: bool,
     ) -> Result<
         (
             Option<SignalActionAssociationState>,
             SignalActionAssociationState,
+            Option<SignalActionAssociationState>,
+            Option<SignalActionAssociationState>,
         ),
         EngineError,
     > {
@@ -2914,23 +3030,78 @@ impl EngineState {
                     EngineError::ActionValueObservationOverflow(organism.organism_id),
                 )
             })?;
-        let value = prior
-            .map_or(1_i16, |prior| prior.value.saturating_add(1))
-            .min(ACTION_VALUE_MAX);
+        let competitive = self.uses_competitive_signal_learning_driver();
+        let reinforcement = if coordinated {
+            SIGNAL_COORDINATION_REINFORCEMENT
+        } else {
+            SIGNAL_PREDICTION_REINFORCEMENT
+        };
+        let value = if competitive {
+            prior
+                .map_or(reinforcement, |prior| {
+                    prior.value.saturating_add(reinforcement)
+                })
+                .min(ACTION_VALUE_MAX)
+        } else {
+            prior
+                .map_or(1_i16, |prior| prior.value.saturating_add(1))
+                .min(ACTION_VALUE_MAX)
+        };
+        let association_schema_version = if competitive {
+            COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+        } else if self.uses_signal_motor_association_driver() {
+            SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
+        } else {
+            SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
+        };
+        let inhibited_from = competitive
+            .then(|| {
+                organism
+                    .signal_action_associations
+                    .iter()
+                    .copied()
+                    .filter(|entry| {
+                        let same_form_competing_meaning = entry.signal_intensity
+                            == signal_intensity
+                            && (entry.action_kind, entry.movement_direction)
+                                != (action.kind, movement_direction);
+                        let same_meaning_competing_form = entry.signal_intensity
+                            != signal_intensity
+                            && (entry.action_kind, entry.movement_direction)
+                                == (action.kind, movement_direction);
+                        same_form_competing_meaning || same_meaning_competing_form
+                    })
+                    .max_by_key(|entry| {
+                        (
+                            entry.value,
+                            entry.observations,
+                            entry.signal_intensity,
+                            entry.action_kind,
+                            entry.movement_direction,
+                        )
+                    })
+            })
+            .flatten();
+        let inhibited_to = inhibited_from.map(|from| SignalActionAssociationState {
+            observations: from.observations.saturating_add(1),
+            value: from
+                .value
+                .saturating_sub(SIGNAL_PREDICTION_INHIBITION)
+                .max(1),
+            ..from
+        });
         Ok((
             prior,
             SignalActionAssociationState {
-                association_schema_version: if self.uses_signal_motor_association_driver() {
-                    SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
-                } else {
-                    SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
-                },
+                association_schema_version,
                 signal_intensity,
                 action_kind: action.kind,
                 movement_direction,
                 observations,
                 value,
             },
+            inhibited_from,
+            inhibited_to,
         ))
     }
 
@@ -4421,16 +4592,25 @@ impl EngineState {
                         && let Some(signal_intensity) =
                             observer.recent_signal_from(actor_id, self.tick)
                     {
-                        let (from, to) = self.next_signal_action_association(
-                            observer,
-                            signal_intensity,
-                            action,
-                        )?;
+                        let observer_action = actions
+                            .get(&observer_id)
+                            .expect("social observer has a scheduled action");
+                        let coordinated = observer_action.kind == action.kind
+                            && observer_action.movement_direction == action.movement_direction;
+                        let (from, to, inhibited_from, inhibited_to) = self
+                            .next_signal_action_association(
+                                observer,
+                                signal_intensity,
+                                action,
+                                coordinated,
+                            )?;
                         events.push(DomainEvent::OrganismSignalActionAssociationChanged {
                             observer_id,
                             actor_id,
                             from,
                             to,
+                            inhibited_from,
+                            inhibited_to,
                         });
                     }
                 }
@@ -4621,6 +4801,10 @@ impl EngineState {
 
     fn uses_signal_convention_reuse_driver(&self) -> bool {
         signal_convention_reuse_active(self.manifest.ruleset_version, self.tick)
+    }
+
+    fn uses_competitive_signal_learning_driver(&self) -> bool {
+        self.manifest.ruleset_version >= GROUNDED_PREDICTIVE_COGNITION_RULESET_VERSION
     }
 
     fn uses_person_only_cognition(&self) -> bool {
@@ -5428,19 +5612,37 @@ impl EngineState {
                             actor_id,
                             from,
                             to,
-                        } if *observer_id == observer.organism_id => Some((*actor_id, *from, *to)),
+                            inhibited_from,
+                            inhibited_to,
+                        } if *observer_id == observer.organism_id => {
+                            Some((*actor_id, *from, *to, *inhibited_from, *inhibited_to))
+                        }
                         _ => None,
                     })
                     .collect::<Vec<_>>();
                 match (expected, matches.as_slice()) {
                     (None, []) => {}
-                    (Some((actor_id, intensity)), [(actual_actor, from, to)])
-                        if actor_id == *actual_actor =>
-                    {
+                    (
+                        Some((actor_id, intensity)),
+                        [(actual_actor, from, to, inhibited_from, inhibited_to)],
+                    ) if actor_id == *actual_actor => {
                         let action = actions.get(&actor_id).expect("selected action exists");
-                        let expected =
-                            self.next_signal_action_association(observer, intensity, action)?;
-                        if expected.0 != *from || expected.1 != *to {
+                        let observer_action = actions
+                            .get(&observer.organism_id)
+                            .expect("social observer has a scheduled action");
+                        let coordinated = observer_action.kind == action.kind
+                            && observer_action.movement_direction == action.movement_direction;
+                        let expected = self.next_signal_action_association(
+                            observer,
+                            intensity,
+                            action,
+                            coordinated,
+                        )?;
+                        if expected.0 != *from
+                            || expected.1 != *to
+                            || expected.2 != *inhibited_from
+                            || expected.3 != *inhibited_to
+                        {
                             return Err(EngineError::InvalidSignalActionAssociation(
                                 observer.organism_id,
                             ));
@@ -5625,7 +5827,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_adult_body_mass_state_driver() {
+        if self.uses_competitive_signal_learning_driver() {
+            COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
+        } else if self.uses_adult_body_mass_state_driver() {
             ADULT_BODY_MASS_EVENT_SCHEMA_VERSION
         } else if self.uses_mass_scaled_metabolism_driver() {
             MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION
@@ -6852,6 +7056,8 @@ impl EngineState {
                 actor_id,
                 from,
                 to,
+                inhibited_from,
+                inhibited_to,
             } => {
                 if !self.uses_signal_action_association_driver() || observer_id == actor_id {
                     return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
@@ -6865,6 +7071,7 @@ impl EngineState {
                 } else {
                     MAX_SIGNAL_ACTION_ASSOCIATIONS
                 };
+                let competitive_signal_learning = self.uses_competitive_signal_learning_driver();
                 let observer = self
                     .organisms
                     .get_mut(observer_id)
@@ -6874,9 +7081,6 @@ impl EngineState {
                         .checked_add(1)
                         .ok_or(EngineError::ActionValueObservationOverflow(*observer_id))
                 })?;
-                let expected_value = from
-                    .map_or(1_i16, |from| from.value.saturating_add(1))
-                    .min(ACTION_VALUE_MAX);
                 if observer.signal_action_associations_updated_at == Some(self.tick)
                     || observer.signal_action_association(
                         to.signal_intensity,
@@ -6884,9 +7088,74 @@ impl EngineState {
                         to.movement_direction,
                     ) != *from
                     || to.observations != expected_observations
-                    || to.value != expected_value
                 {
                     return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                }
+                if competitive_signal_learning {
+                    let valid_reinforcement = from.map_or_else(
+                        || {
+                            matches!(
+                                to.value,
+                                SIGNAL_PREDICTION_REINFORCEMENT | SIGNAL_COORDINATION_REINFORCEMENT
+                            )
+                        },
+                        |from| {
+                            to.value
+                                == from
+                                    .value
+                                    .saturating_add(SIGNAL_PREDICTION_REINFORCEMENT)
+                                    .min(ACTION_VALUE_MAX)
+                                || to.value
+                                    == from
+                                        .value
+                                        .saturating_add(SIGNAL_COORDINATION_REINFORCEMENT)
+                                        .min(ACTION_VALUE_MAX)
+                        },
+                    );
+                    if to.association_schema_version
+                        != COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                        || !valid_reinforcement
+                    {
+                        return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                    }
+                    match (inhibited_from, inhibited_to) {
+                        (None, None) => {}
+                        (Some(inhibited_from), Some(inhibited_to)) => {
+                            let current = observer.signal_action_association(
+                                inhibited_from.signal_intensity,
+                                inhibited_from.action_kind,
+                                inhibited_from.movement_direction,
+                            );
+                            if current != Some(*inhibited_from)
+                                || inhibited_to.association_schema_version
+                                    != COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                                || inhibited_to.observations
+                                    != inhibited_from.observations.saturating_add(1)
+                                || inhibited_to.value
+                                    != inhibited_from
+                                        .value
+                                        .saturating_sub(SIGNAL_PREDICTION_INHIBITION)
+                                        .max(1)
+                            {
+                                return Err(EngineError::InvalidSignalActionAssociation(
+                                    *observer_id,
+                                ));
+                            }
+                        }
+                        _ => {
+                            return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                        }
+                    }
+                } else {
+                    let expected_value = from
+                        .map_or(1_i16, |from| from.value.saturating_add(1))
+                        .min(ACTION_VALUE_MAX);
+                    if to.value != expected_value
+                        || inhibited_from.is_some()
+                        || inhibited_to.is_some()
+                    {
+                        return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
+                    }
                 }
                 let key = (to.signal_intensity, to.action_kind, to.movement_direction);
                 match observer
@@ -6905,6 +7174,24 @@ impl EngineState {
                         }
                         observer.signal_action_associations.insert(index, *to);
                     }
+                }
+                if let Some(inhibited_to) = inhibited_to {
+                    let inhibited_key = (
+                        inhibited_to.signal_intensity,
+                        inhibited_to.action_kind,
+                        inhibited_to.movement_direction,
+                    );
+                    let inhibited_index = observer
+                        .signal_action_associations
+                        .binary_search_by_key(&inhibited_key, |entry| {
+                            (
+                                entry.signal_intensity,
+                                entry.action_kind,
+                                entry.movement_direction,
+                            )
+                        })
+                        .map_err(|_| EngineError::InvalidSignalActionAssociation(*observer_id))?;
+                    observer.signal_action_associations[inhibited_index] = *inhibited_to;
                 }
                 observer.signal_action_associations_updated_at = Some(self.tick);
             }
@@ -7701,7 +7988,9 @@ impl EngineState {
                 } else {
                     MAX_SIGNAL_ACTION_ASSOCIATIONS
                 };
-                let expected_schema = if self.uses_signal_motor_association_driver() {
+                let expected_schema = if self.uses_competitive_signal_learning_driver() {
+                    COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                } else if self.uses_signal_motor_association_driver() {
                     SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
                 } else {
                     SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
@@ -8317,7 +8606,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_adult_body_mass_state_driver() {
+    if state.uses_competitive_signal_learning_driver() {
+        Some(COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION)
+    } else if state.uses_adult_body_mass_state_driver() {
         Some(ADULT_BODY_MASS_EVENT_SCHEMA_VERSION)
     } else if state.uses_mass_scaled_metabolism_driver() {
         Some(MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION)
