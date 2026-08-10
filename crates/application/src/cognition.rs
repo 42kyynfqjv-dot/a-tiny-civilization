@@ -17,6 +17,8 @@ pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
 pub const COGNITION_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 3_000_000;
+pub const CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
+pub const CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 2_850_000;
 pub const MAX_PAID_COGNITION_RESERVATION_MICRO_USD: u64 = 50_000;
 const MAX_INPUT_READINGS: usize = 32;
 pub const MAX_COGNITION_RECALLED_MEMORIES: usize = 8;
@@ -97,6 +99,46 @@ pub enum CognitionBillingClass {
     TrialCredit,
     DevelopmentOnly,
     PaidApproved,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CognitionBillingScope {
+    Production,
+    CancerResearch,
+}
+
+impl CognitionBillingScope {
+    #[must_use]
+    pub fn for_route(route: &CognitionModelRoute) -> Self {
+        if route.provider == CognitionProviderId::openrouter_cancer() {
+            Self::CancerResearch
+        } else {
+            Self::Production
+        }
+    }
+
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Production => "production",
+            Self::CancerResearch => "cancer_research",
+        }
+    }
+
+    #[must_use]
+    pub const fn monthly_limits_micro_usd(self) -> (u64, u64) {
+        match self {
+            Self::Production => (
+                COGNITION_TARGET_MICRO_USD_PER_MONTH,
+                COGNITION_HARD_STOP_MICRO_USD_PER_MONTH,
+            ),
+            Self::CancerResearch => (
+                CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH,
+                CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH,
+            ),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -1015,6 +1057,7 @@ pub const fn is_network_terminal_status(status: CognitionRouteAttemptStatus) -> 
 #[serde(deny_unknown_fields)]
 pub struct PaidCognitionAuthorization {
     pub request_id: Uuid,
+    pub billing_scope: CognitionBillingScope,
     pub billing_month: NaiveDate,
     pub reserved_micro_usd: u64,
 }
@@ -1304,5 +1347,29 @@ mod tests {
             registry.validate(CognitionRoutePurpose::ProductionWorld),
             Err(CognitionContractError::UnsupportedRoutePolicyVersion(_))
         ));
+    }
+
+    #[test]
+    fn cancer_paid_routes_have_a_smaller_isolated_treasury() {
+        assert_eq!(
+            CognitionBillingScope::for_route(
+                &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
+            ),
+            CognitionBillingScope::CancerResearch
+        );
+        assert_eq!(
+            CognitionBillingScope::for_route(&CognitionModelRoute::openrouter_deepseek_v4_flash()),
+            CognitionBillingScope::Production
+        );
+        assert_eq!(
+            CognitionBillingScope::CancerResearch.monthly_limits_micro_usd(),
+            (
+                CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH,
+                CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
+            )
+        );
+        assert!(
+            CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH < COGNITION_HARD_STOP_MICRO_USD_PER_MONTH
+        );
     }
 }

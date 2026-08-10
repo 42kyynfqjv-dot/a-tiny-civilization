@@ -1,12 +1,13 @@
 use anyhow::Result;
 use application::{
     AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CognitionAttemptPersistenceState,
-    CognitionJobEntry, CognitionJobStore, CognitionModel, CognitionModelError, CognitionModelRoute,
-    CognitionProviderId, CognitionRecallRecord, CognitionRouteAttempt, CognitionRouteAttemptStatus,
-    CognitionRoutePurpose, CognitionRouteRegistry, CognitionWorkerConfiguration,
-    CognitionWorkerStep, FoundationStore, MemoryAdapterError, MemoryFactKind, MemoryOutboxStore,
-    MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt,
-    ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
+    CognitionBillingScope, CognitionJobEntry, CognitionJobStore, CognitionModel,
+    CognitionModelError, CognitionModelRoute, CognitionProviderId, CognitionRecallRecord,
+    CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
+    CognitionRouteRegistry, CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore,
+    MemoryAdapterError, MemoryFactKind, MemoryOutboxStore, MemoryRecallOutcome,
+    MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt, ModelCognitionLadderResult,
+    ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
     PaidCognitionReservationDecision, RecallUnavailableReason, RecalledMemory, ServiceHeartbeat,
     StoreError, StoredWorld, TransitionEffects, WorldStore, advance_world,
     initialize_or_resume_configured_world, initialize_or_resume_configured_world_with_materials,
@@ -2474,6 +2475,63 @@ async fn paid_dispatch_requires_a_durable_reservation_and_release_restores_budge
             .fetch_one(&pool)
             .await?;
     assert_eq!(reservation_status, "released");
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cancer_research_and_production_use_distinct_cost_accounts(pool: PgPool) -> Result<()> {
+    let (store, cancer) = claimed_cognition_job(&pool, 630, "cancer-budget-worker").await?;
+    store
+        .record_cognition_recall(
+            "cancer-budget-worker",
+            &cancer,
+            &unavailable_cognition_recall(&cancer)?,
+        )
+        .await?;
+    let cancer_authorization = match store
+        .reserve_paid_cognition(
+            "cancer-budget-worker",
+            &cancer,
+            &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+            30_000,
+        )
+        .await?
+    {
+        PaidCognitionReservationDecision::Authorized(authorization) => authorization,
+        PaidCognitionReservationDecision::DeniedHardStop => panic!("fresh cancer treasury"),
+    };
+
+    assert_eq!(
+        cancer_authorization.billing_scope,
+        CognitionBillingScope::CancerResearch
+    );
+    sqlx::query(
+        r#"
+        INSERT INTO cognition_cost_accounts (
+            billing_scope, billing_month, target_micro_usd, hard_stop_micro_usd
+        )
+        VALUES ('production', $1, 2500000, 3000000)
+        "#,
+    )
+    .bind(cancer_authorization.billing_month)
+    .execute(&pool)
+    .await?;
+    let accounts = sqlx::query_as::<_, (String, i64, i64)>(
+        r#"
+        SELECT billing_scope, reserved_micro_usd, hard_stop_micro_usd
+        FROM cognition_cost_accounts
+        ORDER BY billing_scope
+        "#,
+    )
+    .fetch_all(&pool)
+    .await?;
+    assert_eq!(
+        accounts,
+        vec![
+            ("cancer_research".to_owned(), 30_000, 2_850_000),
+            ("production".to_owned(), 0, 3_000_000),
+        ]
+    );
     Ok(())
 }
 

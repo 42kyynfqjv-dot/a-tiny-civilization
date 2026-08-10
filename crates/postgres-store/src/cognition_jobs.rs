@@ -1,11 +1,11 @@
 use application::{
-    COGNITION_HARD_STOP_MICRO_USD_PER_MONTH, COGNITION_TARGET_MICRO_USD_PER_MONTH,
-    CognitionAttemptPersistenceState, CognitionBillingClass, CognitionJobEntry, CognitionJobStore,
-    CognitionModelRoute, CognitionRecallRecord, CognitionRouteAttempt, CognitionRouteAttemptRecord,
-    CognitionRouteAttemptStatus, CognitionRoutePurpose, CognitionRouteRegistry,
-    MAX_PAID_COGNITION_RESERVATION_MICRO_USD, MemoryOutboxStore, ModelCognitionLadderResult,
-    ModelCognitionReceipt, ModelCognitionRequest, PaidCognitionAuthorization,
-    PaidCognitionReservationDecision, StoreError, is_network_terminal_status, is_skip_status,
+    CognitionAttemptPersistenceState, CognitionBillingClass, CognitionBillingScope,
+    CognitionJobEntry, CognitionJobStore, CognitionModelRoute, CognitionRecallRecord,
+    CognitionRouteAttempt, CognitionRouteAttemptRecord, CognitionRouteAttemptStatus,
+    CognitionRoutePurpose, CognitionRouteRegistry, MAX_PAID_COGNITION_RESERVATION_MICRO_USD,
+    MemoryOutboxStore, ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest,
+    PaidCognitionAuthorization, PaidCognitionReservationDecision, StoreError,
+    is_network_terminal_status, is_skip_status,
 };
 use async_trait::async_trait;
 use chrono::NaiveDate;
@@ -62,6 +62,7 @@ struct CognitionAttemptRow {
 
 #[derive(FromRow)]
 struct CostReservationRow {
+    billing_scope: String,
     billing_month: NaiveDate,
     reserved_micro_usd: i64,
     status: String,
@@ -764,6 +765,8 @@ impl CognitionJobStore for PostgresStore {
             ));
         }
         let reserved_i64 = to_i64(reserved_micro_usd, "paid cognition reservation")?;
+        let billing_scope = CognitionBillingScope::for_route(route);
+        let (target_micro_usd, hard_stop_micro_usd) = billing_scope.monthly_limits_micro_usd();
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
         ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
         require_recorded_recall(&mut transaction, entry.selection.request_id).await?;
@@ -775,23 +778,19 @@ impl CognitionJobStore for PostgresStore {
         sqlx::query(
             r#"
             INSERT INTO cognition_cost_accounts (
+                billing_scope,
                 billing_month,
                 target_micro_usd,
                 hard_stop_micro_usd
             )
-            VALUES ($1, $2, $3)
-            ON CONFLICT (billing_month) DO NOTHING
+            VALUES ($1, $2, $3, $4)
+            ON CONFLICT (billing_scope, billing_month) DO NOTHING
             "#,
         )
+        .bind(billing_scope.as_str())
         .bind(billing_month)
-        .bind(to_i64(
-            COGNITION_TARGET_MICRO_USD_PER_MONTH,
-            "monthly cognition target",
-        )?)
-        .bind(to_i64(
-            COGNITION_HARD_STOP_MICRO_USD_PER_MONTH,
-            "monthly cognition hard stop",
-        )?)
+        .bind(to_i64(target_micro_usd, "monthly cognition target")?)
+        .bind(to_i64(hard_stop_micro_usd, "monthly cognition hard stop")?)
         .execute(&mut *transaction)
         .await
         .map_err(operation_error)?;
@@ -799,6 +798,7 @@ impl CognitionJobStore for PostgresStore {
             fetch_cost_reservation(&mut transaction, entry.selection.request_id, false).await?;
         if let Some(existing) = existing {
             if existing.billing_month == billing_month
+                && existing.billing_scope == billing_scope.as_str()
                 && existing.reserved_micro_usd == reserved_i64
                 && existing.status == "reserved"
             {
@@ -806,6 +806,7 @@ impl CognitionJobStore for PostgresStore {
                 return Ok(PaidCognitionReservationDecision::Authorized(
                     PaidCognitionAuthorization {
                         request_id: entry.selection.request_id,
+                        billing_scope,
                         billing_month,
                         reserved_micro_usd,
                     },
@@ -819,10 +820,11 @@ impl CognitionJobStore for PostgresStore {
             r#"
             SELECT reserved_micro_usd, spent_micro_usd, hard_stop_micro_usd
             FROM cognition_cost_accounts
-            WHERE billing_month = $1
+            WHERE billing_scope = $1 AND billing_month = $2
             FOR UPDATE
             "#,
         )
+        .bind(billing_scope.as_str())
         .bind(billing_month)
         .fetch_one(&mut *transaction)
         .await
@@ -842,14 +844,16 @@ impl CognitionJobStore for PostgresStore {
             r#"
             INSERT INTO cognition_cost_reservations (
                 request_id,
+                billing_scope,
                 billing_month,
                 reserved_micro_usd,
                 status
             )
-            VALUES ($1, $2, $3, 'reserved')
+            VALUES ($1, $2, $3, $4, 'reserved')
             "#,
         )
         .bind(entry.selection.request_id)
+        .bind(billing_scope.as_str())
         .bind(billing_month)
         .bind(reserved_i64)
         .execute(&mut *transaction)
@@ -858,10 +862,11 @@ impl CognitionJobStore for PostgresStore {
         sqlx::query(
             r#"
             UPDATE cognition_cost_accounts
-            SET reserved_micro_usd = reserved_micro_usd + $2, updated_at = NOW()
-            WHERE billing_month = $1
+            SET reserved_micro_usd = reserved_micro_usd + $3, updated_at = NOW()
+            WHERE billing_scope = $1 AND billing_month = $2
             "#,
         )
+        .bind(billing_scope.as_str())
         .bind(billing_month)
         .bind(reserved_i64)
         .execute(&mut *transaction)
@@ -871,6 +876,7 @@ impl CognitionJobStore for PostgresStore {
         Ok(PaidCognitionReservationDecision::Authorized(
             PaidCognitionAuthorization {
                 request_id: entry.selection.request_id,
+                billing_scope,
                 billing_month,
                 reserved_micro_usd,
             },
@@ -884,7 +890,7 @@ impl CognitionJobStore for PostgresStore {
         entry.validate().map_err(corrupt)?;
         let row = sqlx::query_as::<_, CostReservationRow>(
             r#"
-            SELECT billing_month, reserved_micro_usd, status, actual_micro_usd
+            SELECT billing_scope, billing_month, reserved_micro_usd, status, actual_micro_usd
             FROM cognition_cost_reservations
             WHERE request_id = $1
             "#,
@@ -908,6 +914,7 @@ impl CognitionJobStore for PostgresStore {
             .map_err(|_| StoreError::Corrupt("negative cognition reservation amount".to_owned()))?;
         let authorization = PaidCognitionAuthorization {
             request_id: entry.selection.request_id,
+            billing_scope: parse_billing_scope(&row.billing_scope)?,
             billing_month: row.billing_month,
             reserved_micro_usd,
         };
@@ -1470,6 +1477,16 @@ fn parse_billing_class(value: &str) -> Result<CognitionBillingClass, StoreError>
     }
 }
 
+fn parse_billing_scope(value: &str) -> Result<CognitionBillingScope, StoreError> {
+    match value {
+        "production" => Ok(CognitionBillingScope::Production),
+        "cancer_research" => Ok(CognitionBillingScope::CancerResearch),
+        other => Err(StoreError::Corrupt(format!(
+            "unknown cognition billing scope {other}"
+        ))),
+    }
+}
+
 fn attempt_status_text(status: CognitionRouteAttemptStatus) -> &'static str {
     match status {
         CognitionRouteAttemptStatus::Succeeded => "succeeded",
@@ -1510,14 +1527,14 @@ async fn fetch_cost_reservation(
 ) -> Result<Option<CostReservationRow>, StoreError> {
     let query = if for_update {
         r#"
-        SELECT billing_month, reserved_micro_usd, status, actual_micro_usd
+        SELECT billing_scope, billing_month, reserved_micro_usd, status, actual_micro_usd
         FROM cognition_cost_reservations
         WHERE request_id = $1
         FOR UPDATE
         "#
     } else {
         r#"
-        SELECT billing_month, reserved_micro_usd, status, actual_micro_usd
+        SELECT billing_scope, billing_month, reserved_micro_usd, status, actual_micro_usd
         FROM cognition_cost_reservations
         WHERE request_id = $1
         "#
@@ -1547,7 +1564,8 @@ async fn resolve_paid_reservation(
         authorization.reserved_micro_usd,
         "paid cognition reservation",
     )?;
-    if existing.billing_month != authorization.billing_month
+    if existing.billing_scope != authorization.billing_scope.as_str()
+        || existing.billing_month != authorization.billing_month
         || existing.reserved_micro_usd != reserved
         || existing.status != "reserved"
         || existing.actual_micro_usd.is_some()
@@ -1574,13 +1592,15 @@ async fn resolve_paid_reservation(
             r#"
             UPDATE cognition_cost_accounts
             SET
-                reserved_micro_usd = reserved_micro_usd - $2,
-                spent_micro_usd = spent_micro_usd + $3,
+                reserved_micro_usd = reserved_micro_usd - $3,
+                spent_micro_usd = spent_micro_usd + $4,
                 updated_at = NOW()
-            WHERE billing_month = $1
-              AND reserved_micro_usd >= $2
+            WHERE billing_scope = $1
+              AND billing_month = $2
+              AND reserved_micro_usd >= $3
             "#,
         )
+        .bind(authorization.billing_scope.as_str())
         .bind(authorization.billing_month)
         .bind(release_reserved)
         .bind(add_spent)
