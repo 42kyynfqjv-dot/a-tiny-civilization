@@ -25,7 +25,7 @@ done
 maximum_age_seconds="${BACKEND_HEARTBEAT_MAX_AGE_SECONDS:-60}"
 maximum_projection_lag="${BACKEND_PROJECTION_MAX_LAG_SEQUENCES:-100}"
 maximum_async_age_seconds="${BACKEND_ASYNC_MAX_AGE_SECONDS:-300}"
-minimum_free_mib="${BACKEND_MIN_FREE_MIB:-10240}"
+minimum_free_mib="${BACKEND_MIN_FREE_MIB:-20480}"
 if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]] || ((wait_seconds > 300)); then
   echo "--wait-seconds must be an integer from 0 through 300" >&2
   exit 2

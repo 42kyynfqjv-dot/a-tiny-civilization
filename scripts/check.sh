@@ -45,6 +45,7 @@ python3 ./scripts/verify-jpl-de441-tools.py
 ./scripts/verify-launch-operations.sh
 ./scripts/verify-live-genesis-gate.sh
 ./scripts/verify-backend-status.sh
+./scripts/verify-production-disk-guard.sh
 ./scripts/verify-production-monitor-installer.sh
 python3 -m py_compile ./scripts/send-operations-alert.py
 python3 ./scripts/test_send_operations_alert.py
@@ -56,7 +57,9 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/prepare-production-genesis-database.sh ./scripts/activate-production-genesis.sh \
   ./scripts/verify-production-checkout.sh \
   ./scripts/install-production-backend-monitor.sh \
+  ./scripts/production-disk-guard.sh ./scripts/verify-production-disk-guard.sh \
   ./scripts/render-production-backend-monitor-override.sh \
+  ./scripts/render-production-disk-guard-override.sh \
   ./scripts/render-production-alert-override.sh \
   ./scripts/verify-launch-operations.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \

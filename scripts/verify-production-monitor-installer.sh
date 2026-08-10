@@ -5,6 +5,7 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 installer="${project_root}/scripts/install-production-backend-monitor.sh"
 renderer="${project_root}/scripts/render-production-backend-monitor-override.sh"
 alert_renderer="${project_root}/scripts/render-production-alert-override.sh"
+disk_guard_renderer="${project_root}/scripts/render-production-disk-guard-override.sh"
 deployment="${project_root}/scripts/deploy-production-app.sh"
 notifier="${project_root}/scripts/send-operations-alert.py"
 
@@ -19,6 +20,9 @@ required_installer_contracts=(
   'production-preflight\.sh.*--env-file'
   'render-production-backend-monitor-override\.sh'
   'render-production-alert-override\.sh'
+  'render-production-disk-guard-override\.sh'
+  'a-tiny-civilization-disk-guard\.service'
+  'a-tiny-civilization-disk-guard\.timer'
   'a-tiny-civilization-operations-alert@\.service'
   'install -m 0644.*service_name'
   'install -m 0644.*timer_name'
@@ -40,17 +44,26 @@ trap 'rm -rf "$temporary_directory"' EXIT
 service_name="a-tiny-civilization-backend-status.service"
 timer_name="a-tiny-civilization-backend-status.timer"
 alert_service_name="a-tiny-civilization-operations-alert@.service"
+disk_guard_service_name="a-tiny-civilization-disk-guard.service"
+disk_guard_timer_name="a-tiny-civilization-disk-guard.timer"
 mkdir -p "${temporary_directory}/${service_name}.d"
 mkdir -p "${temporary_directory}/${alert_service_name}.d"
+mkdir -p "${temporary_directory}/${disk_guard_service_name}.d"
 cp "${project_root}/ops/systemd/${service_name}" "${temporary_directory}/${service_name}"
 cp "${project_root}/ops/systemd/${timer_name}" "${temporary_directory}/${timer_name}"
 cp "${project_root}/ops/systemd/${alert_service_name}" \
   "${temporary_directory}/${alert_service_name}"
+cp "${project_root}/ops/systemd/${disk_guard_service_name}" \
+  "${temporary_directory}/${disk_guard_service_name}"
+cp "${project_root}/ops/systemd/${disk_guard_timer_name}" \
+  "${temporary_directory}/${disk_guard_timer_name}"
 touch "${temporary_directory}/production.env"
 "$renderer" "$project_root" "${temporary_directory}/production.env" \
   "${temporary_directory}/${service_name}.d/10-host-paths.conf"
 "$alert_renderer" "$project_root" "${temporary_directory}/production.env" \
   "${temporary_directory}/${alert_service_name}.d/10-host-paths.conf"
+"$disk_guard_renderer" "$project_root" "${temporary_directory}/production.env" \
+  "${temporary_directory}/${disk_guard_service_name}.d/10-host-paths.conf"
 
 override="${temporary_directory}/${service_name}.d/10-host-paths.conf"
 for exact_line in \
@@ -85,8 +98,30 @@ for exact_line in \
     exit 1
   fi
 done
+
+disk_guard_override="${temporary_directory}/${disk_guard_service_name}.d/10-host-paths.conf"
+for exact_line in \
+  "WorkingDirectory=${project_root}" \
+  'EnvironmentFile=' \
+  "EnvironmentFile=-${temporary_directory}/production.env" \
+  'ExecStart=' \
+  "ExecStart=/usr/bin/env bash ${project_root}/scripts/production-disk-guard.sh" \
+  'ProtectHome=read-only' \
+  'ReadWritePaths=' \
+  "ReadWritePaths=-${project_root}/target/debug /var/lib/docker /run/a-tiny-civilization"; do
+  if ! grep -Fxq -- "$exact_line" "$disk_guard_override"; then
+    echo "rendered disk guard override lost exact line: $exact_line" >&2
+    exit 1
+  fi
+done
+if ! grep -Fxq 'OnFailure=a-tiny-civilization-operations-alert@%n.service' \
+  "${temporary_directory}/${disk_guard_service_name}"; then
+  echo "disk guard no longer routes failures to the operator alert unit" >&2
+  exit 1
+fi
 SYSTEMD_UNIT_PATH="${temporary_directory}:/usr/local/lib/systemd/system:/usr/lib/systemd/system:/lib/systemd/system" \
-  systemd-analyze verify "$service_name" "$timer_name" "$alert_service_name"
+  systemd-analyze verify "$service_name" "$timer_name" "$disk_guard_service_name" \
+    "$disk_guard_timer_name" "$alert_service_name"
 
 edge_line="$(rg -n -m1 'verify-public-edge\.sh.*https://atinycivilization\.com' "$deployment")"
 install_line="$(rg -n -m1 'install-production-backend-monitor\.sh' "$deployment")"

@@ -208,10 +208,10 @@ sudo systemctl start a-tiny-civilization-backend-status.service
 systemctl status a-tiny-civilization-backend-status.service
 ```
 
-It fails when the project filesystem has less than 10 GiB free or is at least 95% full, when the web
+It fails when the project filesystem has less than 20 GiB free or is at least 95% full, when the web
 edge, API, Hindsight, or exact pinned local model is unreachable, or when any required Rust-service
 heartbeat is older than `BACKEND_HEARTBEAT_MAX_AGE_SECONDS` (60 seconds by default). The free-space
-floor may be raised with bounded `BACKEND_MIN_FREE_MIB`; configure host alerting for the failed unit
+floor may be changed with bounded `BACKEND_MIN_FREE_MIB`; configure host alerting for the failed unit
 before genesis. The installer now wires every backend-check failure to the checked-in, rate-limited
 `a-tiny-civilization-operations-alert@.service`. Set
 `ATINY_OPERATIONS_ALERT_WEBHOOK_URL` to an HTTPS receiver in the protected environment and,
@@ -220,6 +220,16 @@ failure state, schema version, and wall-clock occurrence time; it never sends wo
 text, environment values, host inventory, or agent memory. Redirects and plaintext external URLs
 are rejected, delivery is attempted three times, and the failed source unit remains visible in
 systemd whether or not a receiver is configured.
+
+The installer also enables `a-tiny-civilization-disk-guard.timer` every five minutes. At less than
+23 GiB free or 90% used, its bounded cleanup first prunes unused Docker build cache older than seven
+days, then clears only the reproducible Rust `target/debug` tree when no Cargo or Rust compiler is
+active, and finally prunes remaining unused Docker build cache only if the 20 GiB reserve is still
+not restored. It never deletes PostgreSQL volumes, world history, runtime artifacts, retained
+scientific sources, derived scientific data, release binaries, or repository files. If a build is
+active or those safe caches cannot restore the reserve, the guard fails visibly through the same
+operations-alert unit rather than expanding its deletion scope. `DISK_GUARD_TRIGGER_FREE_MIB`,
+`DISK_GUARD_REQUIRED_FREE_MIB`, and `DISK_GUARD_MAX_USED_PERCENT` provide bounded host overrides.
 
 The serving runner holds a PostgreSQL session advisory lock for its lifetime. A second
 runner refuses startup instead of racing the canonical cursor; process or connection

@@ -1,0 +1,12 @@
+[Unit]
+Description=Periodic A Tiny Civilization disk reserve protection
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+RandomizedDelaySec=20s
+Persistent=true
+Unit=a-tiny-civilization-disk-guard.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,21 @@
+[Unit]
+Description=A Tiny Civilization bounded production disk guard
+Documentation=https://github.com/42kyynfqjv-dot/a-tiny-civilization/blob/main/docs/operations/PRODUCTION.md
+After=docker.service
+Requires=docker.service
+OnFailure=a-tiny-civilization-operations-alert@%n.service
+OnFailureJobMode=replace
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/opt/a-tiny-civilization
+EnvironmentFile=-/etc/a-tiny-civilization-production.env
+ExecStart=/usr/bin/env bash /opt/a-tiny-civilization/scripts/production-disk-guard.sh
+NoNewPrivileges=true
+PrivateTmp=true
+RuntimeDirectory=a-tiny-civilization
+RuntimeDirectoryMode=0755
+ProtectHome=read-only
+ProtectSystem=full
+ReadWritePaths=-/opt/a-tiny-civilization/target/debug /var/lib/docker /run/a-tiny-civilization

@@ -37,33 +37,49 @@ unit_directory="/etc/systemd/system"
 service_name="a-tiny-civilization-backend-status.service"
 timer_name="a-tiny-civilization-backend-status.timer"
 alert_service_name="a-tiny-civilization-operations-alert@.service"
+disk_guard_service_name="a-tiny-civilization-disk-guard.service"
+disk_guard_timer_name="a-tiny-civilization-disk-guard.timer"
 drop_in_directory="${unit_directory}/${service_name}.d"
 alert_drop_in_directory="${unit_directory}/${alert_service_name}.d"
+disk_guard_drop_in_directory="${unit_directory}/${disk_guard_service_name}.d"
 temporary_directory="$(mktemp -d)"
 trap 'rm -rf "$temporary_directory"' EXIT
 override="${temporary_directory}/10-host-paths.conf"
 alert_override="${temporary_directory}/10-alert-host-paths.conf"
+disk_guard_override="${temporary_directory}/10-disk-guard-host-paths.conf"
 
 "${project_root}/scripts/render-production-backend-monitor-override.sh" \
   "$project_root" "$environment_file" "$override"
 "${project_root}/scripts/render-production-alert-override.sh" \
   "$project_root" "$environment_file" "$alert_override"
+"${project_root}/scripts/render-production-disk-guard-override.sh" \
+  "$project_root" "$environment_file" "$disk_guard_override"
 
-install -d -m 0755 "$unit_directory" "$drop_in_directory" "$alert_drop_in_directory"
+install -d -m 0755 "$unit_directory" "$drop_in_directory" "$alert_drop_in_directory" \
+  "$disk_guard_drop_in_directory"
 install -m 0644 "${project_root}/ops/systemd/${service_name}" "${unit_directory}/${service_name}"
 install -m 0644 "${project_root}/ops/systemd/${timer_name}" "${unit_directory}/${timer_name}"
 install -m 0644 "${project_root}/ops/systemd/${alert_service_name}" \
   "${unit_directory}/${alert_service_name}"
+install -m 0644 "${project_root}/ops/systemd/${disk_guard_service_name}" \
+  "${unit_directory}/${disk_guard_service_name}"
+install -m 0644 "${project_root}/ops/systemd/${disk_guard_timer_name}" \
+  "${unit_directory}/${disk_guard_timer_name}"
 install -m 0644 "$override" "${drop_in_directory}/10-host-paths.conf"
 install -m 0644 "$alert_override" "${alert_drop_in_directory}/10-host-paths.conf"
+install -m 0644 "$disk_guard_override" "${disk_guard_drop_in_directory}/10-host-paths.conf"
 
 systemctl daemon-reload
 systemd-analyze verify \
   "${unit_directory}/${service_name}" \
   "${unit_directory}/${timer_name}" \
+  "${unit_directory}/${disk_guard_service_name}" \
+  "${unit_directory}/${disk_guard_timer_name}" \
   "${unit_directory}/${alert_service_name}"
-systemctl enable --now "$timer_name"
+systemctl enable --now "$timer_name" "$disk_guard_timer_name"
 systemctl is-enabled --quiet "$timer_name"
 systemctl is-active --quiet "$timer_name"
+systemctl is-enabled --quiet "$disk_guard_timer_name"
+systemctl is-active --quiet "$disk_guard_timer_name"
 
 echo "Backend health timer is installed for ${project_root} and active."
