@@ -33,9 +33,12 @@ Cancer World begins with:
   primitives, raw datasets, and returned observations but no live paper retrieval
   before freezing a hypothesis, predictions, and falsification test. Separate
   literature-audit and replication teams then assess novelty and prior evidence;
-- a dedicated paid DeepSeek V4 Pro cognition route from genesis, with a separate
-  deployment key, V4 Flash failure fallback, a $2.50 monthly target, and an immutable
-  $3 monthly hard stop. Earth Genesis retains its free-first ladder.
+- a pinned `nvidia/nemotron-3-ultra-550b-a55b:free` exploration route using the
+  dedicated Cancer World key. Provider failure records an unavailable input and
+  never silently triggers paid work; and
+- a distinct DeepSeek V4 Pro escalation route, with V4 Flash failure fallback,
+  a $2.85 internal monthly stop, and the provider key's $3 monthly hard stop.
+  Earth Genesis retains its unrelated free-first ladder.
 
 The bootstrap supplies no cancer mutation, pathway, target, drug, experiment,
 treatment, or cure conclusion. Those must enter through a versioned evidence corpus,

@@ -124,7 +124,8 @@ impl CancerResearchBootstrap {
             research_diversity: ResearchDiversity::IndependentSeededProfilesWithReplication,
             evidence_protocol:
                 ResearchEvidenceProtocol::PreregisteredBlindDiscoveryThenLiteratureAudit,
-            cognition_route: ResearchCognitionRoute::DeepseekV4ProPaidFromGenesis,
+            cognition_route:
+                ResearchCognitionRoute::PinnedNemotron3UltraFreeWithDeepseekV4ProEscalation,
             disease_scope: DiseaseScope::CancerFamilyOnly,
             survival_environment: SurvivalEnvironment::Abundant,
         }
@@ -223,9 +224,9 @@ pub enum ResearchEvidenceProtocol {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResearchCognitionRoute {
-    /// Cancer World bypasses free inference routes. The separate durable monthly
-    /// treasury and hard stop still bound total spend.
-    DeepseekV4ProPaidFromGenesis,
+    /// Routine research uses one exact free model. Only preregistered candidates
+    /// that pass deterministic gates may enter the separately budgeted paid route.
+    PinnedNemotron3UltraFreeWithDeepseekV4ProEscalation,
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -335,7 +336,7 @@ mod tests {
         );
         assert_eq!(
             cancer_json["experiment"]["commitment"]["cognition_route"],
-            "deepseek_v4_pro_paid_from_genesis"
+            "pinned_nemotron3_ultra_free_with_deepseek_v4_pro_escalation"
         );
         assert_eq!(
             cancer_json["experiment"]["commitment"]["initial_resident_count"],

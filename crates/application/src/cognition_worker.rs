@@ -36,6 +36,28 @@ impl CognitionWorkerConfiguration {
         }
     }
 
+    #[must_use]
+    pub fn cancer_research_exploration() -> Self {
+        Self {
+            registry: CognitionRouteRegistry::cancer_research_exploration(),
+            purpose: CognitionRoutePurpose::CancerResearchExploration,
+            max_network_attempts: DEFAULT_COGNITION_NETWORK_ATTEMPT_LIMIT,
+            paid_enabled: false,
+            paid_reservation_micro_usd: MAX_PAID_COGNITION_RESERVATION_MICRO_USD,
+        }
+    }
+
+    #[must_use]
+    pub fn cancer_research_escalation(paid_enabled: bool) -> Self {
+        Self {
+            registry: CognitionRouteRegistry::cancer_research_escalation(),
+            purpose: CognitionRoutePurpose::CancerResearchEscalation,
+            max_network_attempts: DEFAULT_COGNITION_NETWORK_ATTEMPT_LIMIT,
+            paid_enabled,
+            paid_reservation_micro_usd: MAX_PAID_COGNITION_RESERVATION_MICRO_USD,
+        }
+    }
+
     pub fn validate(&self) -> Result<(), CognitionWorkerError> {
         self.registry
             .validate(self.purpose)

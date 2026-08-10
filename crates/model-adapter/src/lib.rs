@@ -14,7 +14,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT};
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v6";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v7";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -349,10 +349,34 @@ fn api_request(
         });
     }
     if matches!(provider.as_str(), "openrouter" | "openrouter_cancer") {
-        payload["provider"] = json!({
-            "require_parameters": true,
-            "allow_fallbacks": true
-        });
+        let cancer_research = provider.as_str() == "openrouter_cancer";
+        let paid_escalation =
+            cancer_research && route.billing_class == CognitionBillingClass::PaidApproved;
+        payload["provider"] = if paid_escalation {
+            // Escalated Cancer World candidates may contain the complete details
+            // of an unpublished hypothesis. If OpenRouter has no endpoint that
+            // satisfies these policies, routing must fail before content leaves
+            // for a non-compliant provider.
+            json!({
+                "require_parameters": true,
+                "allow_fallbacks": true,
+                "data_collection": "deny",
+                "zdr": true
+            })
+        } else if cancer_research {
+            // The free Nemotron endpoint is an explicitly logged exploration
+            // surface. Keep it exact and never let OpenRouter substitute another
+            // provider when its free allocation is unavailable.
+            json!({
+                "require_parameters": true,
+                "allow_fallbacks": false
+            })
+        } else {
+            json!({
+                "require_parameters": true,
+                "allow_fallbacks": true
+            })
+        };
         payload["include_reasoning"] = Value::Bool(false);
     }
     Ok(payload)
@@ -778,6 +802,30 @@ mod tests {
         let mut zero = request();
         zero.request_id = Uuid::nil();
         assert_eq!(request_seed(&zero), 1);
+    }
+
+    #[test]
+    fn cancer_routes_encode_distinct_provider_data_boundaries() {
+        let request = request();
+        let exploration = api_request(
+            &CognitionProviderId::openrouter_cancer(),
+            &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free(),
+            &request,
+        )
+        .expect("valid exploration request");
+        assert_eq!(exploration["provider"]["allow_fallbacks"], false);
+        assert!(exploration["provider"].get("zdr").is_none());
+        assert!(exploration["provider"].get("data_collection").is_none());
+
+        let escalation = api_request(
+            &CognitionProviderId::openrouter_cancer(),
+            &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+            &request,
+        )
+        .expect("valid escalation request");
+        assert_eq!(escalation["provider"]["allow_fallbacks"], true);
+        assert_eq!(escalation["provider"]["zdr"], true);
+        assert_eq!(escalation["provider"]["data_collection"], "deny");
     }
 
     #[tokio::test]
