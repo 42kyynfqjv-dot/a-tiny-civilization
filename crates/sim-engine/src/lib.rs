@@ -1105,6 +1105,8 @@ pub struct EngineState {
     celestial_tick: Option<SimTick>,
 }
 
+type LocalOrganismIndex = BTreeMap<S2CellId, Vec<EntityId>>;
+
 impl EngineState {
     fn uses_adult_body_mass_state_driver(&self) -> bool {
         self.manifest.ruleset_version >= ADULT_BODY_MASS_STATE_RULESET_VERSION
@@ -1162,6 +1164,46 @@ impl EngineState {
         let left = left.ancestor(level)?;
         let right = right.ancestor(level)?;
         Ok(left == right || s2_edge_neighbors(left)?.contains(&right))
+    }
+
+    fn local_organism_index(&self) -> Result<LocalOrganismIndex, EngineError> {
+        let level = self.local_interaction_level()?;
+        let mut by_landscape_cell = LocalOrganismIndex::new();
+        for organism in self
+            .organisms
+            .values()
+            .filter(|organism| organism.is_alive())
+        {
+            let patch = organism
+                .embodied_patch
+                .ok_or(EngineError::MissingEmbodiedPatch(organism.organism_id))?;
+            by_landscape_cell
+                .entry(patch.ancestor(level)?)
+                .or_default()
+                .push(organism.organism_id);
+        }
+        Ok(by_landscape_cell)
+    }
+
+    fn local_vicinity_organisms<'a>(
+        &self,
+        index: &'a LocalOrganismIndex,
+        patch: S2CellId,
+    ) -> Result<Vec<&'a EntityId>, EngineError> {
+        let landscape_cell = patch.ancestor(self.local_interaction_level()?)?;
+        let mut cells = Vec::with_capacity(5);
+        cells.push(landscape_cell);
+        cells.extend(s2_edge_neighbors(landscape_cell)?);
+        cells.sort_unstable();
+        cells.dedup();
+
+        let mut organism_ids = cells
+            .into_iter()
+            .filter_map(|cell| index.get(&cell))
+            .flat_map(|organisms| organisms.iter())
+            .collect::<Vec<_>>();
+        organism_ids.sort_unstable();
+        Ok(organism_ids)
     }
 
     fn patch_grid_distance(left: S2CellId, right: S2CellId) -> u64 {
@@ -2039,6 +2081,19 @@ impl EngineState {
         organism_id: EntityId,
         action: PrimitiveAction,
     ) -> Result<Vec<DomainEvent>, EngineError> {
+        let local_index = self
+            .uses_local_interaction_driver()
+            .then(|| self.local_organism_index())
+            .transpose()?;
+        self.plan_action_with_local_index(organism_id, action, local_index.as_ref())
+    }
+
+    fn plan_action_with_local_index(
+        &self,
+        organism_id: EntityId,
+        action: PrimitiveAction,
+        local_index: Option<&LocalOrganismIndex>,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
         self.require_living_organism(organism_id)?;
         action
             .validate()
@@ -2136,7 +2191,11 @@ impl EngineState {
             }
         }
         if self.uses_signal_propagation_driver() && action.kind == PrimitiveActionKind::EmitSignal {
-            events.extend(self.local_signal_perceptions(organism_id, action.intensity)?);
+            events.extend(self.local_signal_perceptions_with_index(
+                organism_id,
+                action.intensity,
+                local_index,
+            )?);
         }
         if self.uses_material_ingestion_driver()
             && !self.uses_material_reservoir_driver()
@@ -2162,22 +2221,31 @@ impl EngineState {
 
     /// Resolve a signal into label-free local sound observations. BTreeMap iteration
     /// fixes recipient order; the signal carries no word, intent, or learned meaning.
-    fn local_signal_perceptions(
+    fn local_signal_perceptions_with_index(
         &self,
         source_id: EntityId,
         intensity: u16,
+        local_index: Option<&LocalOrganismIndex>,
     ) -> Result<Vec<DomainEvent>, EngineError> {
         let source_patch = self
             .organisms
             .get(&source_id)
             .and_then(|organism| organism.embodied_patch)
             .ok_or(EngineError::MissingEmbodiedPatch(source_id))?;
+        let candidate_ids = if let Some(index) = local_index {
+            self.local_vicinity_organisms(index, source_patch)?
+        } else {
+            self.organisms.keys().collect()
+        };
         let mut recipients = Vec::new();
-        for recipient in self
-            .organisms
-            .values()
-            .filter(|recipient| recipient.organism_id != source_id && recipient.is_alive())
-        {
+        for recipient_id in candidate_ids {
+            let recipient = self
+                .organisms
+                .get(recipient_id)
+                .expect("spatial index contains only canonical organisms");
+            if recipient.organism_id == source_id || !recipient.is_alive() {
+                continue;
+            }
             let Some(patch) = recipient.embodied_patch else {
                 continue;
             };
@@ -2869,8 +2937,16 @@ impl EngineState {
     fn social_observations(
         &self,
         actions: &BTreeMap<EntityId, PrimitiveAction>,
+        local_index: Option<&LocalOrganismIndex>,
     ) -> Result<BTreeMap<EntityId, EntityId>, EngineError> {
         if self.uses_local_interaction_driver() {
+            let owned_index;
+            let local_index = if let Some(index) = local_index {
+                index
+            } else {
+                owned_index = self.local_organism_index()?;
+                &owned_index
+            };
             let mut observations = BTreeMap::new();
             for observer_id in actions.keys() {
                 let observer = self
@@ -2880,19 +2956,12 @@ impl EngineState {
                 let observer_patch = observer
                     .embodied_patch
                     .ok_or(EngineError::MissingEmbodiedPatch(*observer_id))?;
-                let mut nearby = Vec::new();
-                for actor_id in actions.keys().filter(|actor_id| *actor_id != observer_id) {
-                    let actor = self
-                        .organisms
-                        .get(actor_id)
-                        .ok_or(EngineError::UnknownOrganism(*actor_id))?;
-                    let actor_patch = actor
-                        .embodied_patch
-                        .ok_or(EngineError::MissingEmbodiedPatch(*actor_id))?;
-                    if self.patches_share_local_vicinity(observer_patch, actor_patch)? {
-                        nearby.push(*actor_id);
-                    }
-                }
+                let nearby = self
+                    .local_vicinity_organisms(local_index, observer_patch)?
+                    .into_iter()
+                    .copied()
+                    .filter(|actor_id| actor_id != observer_id && actions.contains_key(actor_id))
+                    .collect::<Vec<_>>();
                 if nearby.is_empty() {
                     continue;
                 }
@@ -3910,6 +3979,10 @@ impl EngineState {
                     .to_owned(),
             ));
         }
+        let local_index = self
+            .uses_local_interaction_driver()
+            .then(|| self.local_organism_index())
+            .transpose()?;
         let plan = schedule.plan_next_tick(self.tick)?;
         let outputs = plan
             .partitions()
@@ -4061,8 +4134,11 @@ impl EngineState {
                                 )?;
                                 let action_kind = action.kind;
                                 let movement_direction = action.movement_direction;
-                                let resolved_action =
-                                    self.plan_action(organism.organism_id, action)?;
+                                let resolved_action = self.plan_action_with_local_index(
+                                    organism.organism_id,
+                                    action,
+                                    local_index.as_ref(),
+                                )?;
                                 for (offset, event) in resolved_action.into_iter().enumerate() {
                                     let offset = u32::try_from(offset)
                                         .map_err(|_| EngineError::TooManyEvents)?;
@@ -4142,7 +4218,11 @@ impl EngineState {
                                     && self.uses_signal_propagation_driver()
                                 {
                                     for (offset, perception) in self
-                                        .local_signal_perceptions(organism.organism_id, 1)?
+                                        .local_signal_perceptions_with_index(
+                                            organism.organism_id,
+                                            1,
+                                            local_index.as_ref(),
+                                        )?
                                         .into_iter()
                                         .enumerate()
                                     {
@@ -4320,7 +4400,9 @@ impl EngineState {
                 }
             }
             if self.uses_social_learning_driver() {
-                for (observer_id, actor_id) in self.social_observations(&actions)? {
+                for (observer_id, actor_id) in
+                    self.social_observations(&actions, local_index.as_ref())?
+                {
                     let observer = self
                         .organisms
                         .get(&observer_id)
@@ -5254,7 +5336,7 @@ impl EngineState {
                     _ => None,
                 })
                 .collect::<BTreeMap<_, _>>();
-            let expected_observations = self.social_observations(&actions)?;
+            let expected_observations = self.social_observations(&actions, None)?;
             for observer in self
                 .organisms
                 .values()
@@ -5324,7 +5406,7 @@ impl EngineState {
                     _ => None,
                 })
                 .collect::<BTreeMap<_, _>>();
-            let expected_observations = self.social_observations(&actions)?;
+            let expected_observations = self.social_observations(&actions, None)?;
             for observer in self
                 .organisms
                 .values()
@@ -10106,7 +10188,7 @@ mod tests {
             })
             .collect::<BTreeMap<_, _>>();
         let observations = running
-            .social_observations(&actions)
+            .social_observations(&actions, None)
             .expect("nearby social observations");
         assert_ne!(
             observations.get(&source.organism_id),

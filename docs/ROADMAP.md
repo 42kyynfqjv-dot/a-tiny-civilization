@@ -887,7 +887,8 @@ all earlier transitions retain their exact replay behavior. ADR 0145 records the
 The same live history then exposed a spatial discretization artifact: all 24 people remained inside
 a roughly 200-metre area while exact level-23 patch equality made them socially isolated. Ruleset 35
 uses the bounded level-18 local landscape vicinity for capped hearing and one-to-one social
-attention, and adds a neutral movement tendency toward directly heard sources that can produce exact-patch physical
-encounters. Reproduction still requires exact contact and is never scheduled. The live ruleset-33
-world activates the stateless driver after tick 75,000; ADR 0146 records the replay boundary and the
-remaining scientific limitations.
+attention, backed by a deterministic per-tick spatial index, and adds a neutral movement tendency
+toward directly heard sources that can produce exact-patch physical encounters. Reproduction still
+requires exact contact and is never scheduled. The live ruleset-33 world activates the stateless
+driver after tick 75,000; ADR 0146 records the replay boundary and the remaining scientific
+limitations.

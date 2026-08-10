@@ -26,6 +26,9 @@ Ruleset 35 adds a stateless deterministic local-interaction driver:
   its four edge-neighbour landscape patches as one bounded vicinity;
 - each signal reaches at most the eight nearest living recipients in that vicinity, ordered by
   exact level-23 IJ grid distance and stable organism identity, bounding event growth;
+- a deterministic per-tick index buckets living organisms by level-18 landscape cell, so local
+  candidate discovery examines only the source cell and its four edge neighbours rather than the
+  global population;
 - each organism socially attends to at most one acting organism in the vicinity per tick through a
   seed- and tick-derived deterministic draw;
 - movement receives a bounded, non-mandatory weight increase only for a primitive direction that
@@ -51,4 +54,7 @@ hearing, and source-bound social-range parameters remain scientific-validation w
   introducing species labels, courtship, partnership, kinship concepts, or observer steering.
 - Signal event volume remains linear in emitters with a fixed recipient cap rather than quadratic
   in local population.
+- Candidate lookup scales with local density rather than total world population. Extremely dense
+  cells still require later hierarchical subdivision and aggregate crowd-pressure/acoustic
+  mechanics; the fixed attention and recording caps remain in force.
 - Replay remains byte-for-byte stable across the disclosed live activation boundary.
