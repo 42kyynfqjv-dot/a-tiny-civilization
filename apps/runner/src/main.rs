@@ -18,7 +18,7 @@ use application::{
     construct_configured_genesis_with_materials,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
     process_next_cancer_research_job, process_next_cognition_job, resume_world,
-    resume_world_from_snapshot, schedule_world_cognition,
+    resume_world_from_snapshot, schedule_due_cancer_research_turn, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -1000,6 +1000,15 @@ async fn advance_one_world_once(
     store: &PostgresStore,
     current: &WorldSession,
 ) -> Result<WorldSession, WorldRuntimeError> {
+    if current.state.ruleset_version() >= CANCER_RESEARCH_WORLD_RULESET_VERSION {
+        schedule_due_cancer_research_turn(store, &current.state)
+            .await
+            .map_err(|error| {
+                WorldRuntimeError::Integrity(format!(
+                    "Cancer World research scheduling failed: {error}"
+                ))
+            })?;
+    }
     if current.state.ruleset_version() >= COGNITION_RULESET_VERSION
         && let Some(selected) = schedule_world_cognition(store, current).await?
     {

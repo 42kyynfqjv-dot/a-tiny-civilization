@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "bundle_id": "atc-cancer-biological-primitives-v1",
+  "records": [
+    {
+      "source_id": "atc:biological-primitive:v1:cell-populations",
+      "content": "A tissue can be observed as a spatial population of cells. For each sampled cell or bounded region, measurable quantities may include cell count, division rate, death rate, movement, morphology, lineage relationship, and change over time. Similar measurements do not establish a shared cause."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:heritable-variation",
+      "content": "Cells carry heritable molecular state. DNA sequence, chromosome copy number, and stable epigenetic state can vary between cells and can be measured across a lineage. An association between a variant and expansion is not by itself evidence that the variant caused the expansion."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:molecular-state",
+      "content": "RNA abundance, protein abundance, protein modification, molecular binding, localization, metabolite abundance, and pathway activity are distinct measurable properties. Measurements may differ by cell type, spatial region, and time. A measured correlation does not determine direction of causation."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:perturbation",
+      "content": "A causal hypothesis can be challenged by a controlled perturbation with a preregistered prediction, matched controls, repeated measurements, and an explicit result that would falsify the hypothesis. Perturbations can have direct, indirect, compensatory, and off-target effects."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:microenvironment",
+      "content": "Cell behavior can vary with neighboring cell types, extracellular matrix, mechanical force, oxygen, nutrients, acidity, soluble signals, vascular access, and immune interaction. These properties can be measured spatially and over time rather than treated as one hidden variable."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:evolution",
+      "content": "When cell populations contain heritable variation, differences in survival and reproduction can change clone frequencies over time. Bottlenecks and sampling can also change observed frequencies. Longitudinal lineage measurements can distinguish some selection hypotheses from drift and measurement error."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:measurement-error",
+      "content": "Every assay has a detection limit, uncertainty, sampling process, batch context, and possible confounders. A research claim should identify the comparison being made, the expected effect, the uncertainty, and a result that would count against it."
+    },
+    {
+      "source_id": "atc:biological-primitive:v1:validation-boundary",
+      "content": "A computational or simulated result is a hypothesis generator. It is not evidence of safety, efficacy, or a cure in living organisms. Independent experimental replication and external validation are required before any biomedical conclusion."
+    }
+  ]
+}
