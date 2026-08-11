@@ -149,6 +149,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 DomainEvent::WorldConfigured { .. }
                 | DomainEvent::OrganismAdultBodyMassCommitted { .. }
                 | DomainEvent::CancerResearchCohortCommitted { .. }
+                | DomainEvent::CancerBurdensAdvanced { .. }
                 | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::MaterialReservoirCommitted { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
@@ -864,6 +865,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::WorldConfigured { .. }
             | DomainEvent::OrganismAdultBodyMassCommitted { .. }
             | DomainEvent::CancerResearchCohortCommitted { .. }
+            | DomainEvent::CancerBurdensAdvanced { .. }
             | DomainEvent::MaterialInstanceInitialized { .. }
             | DomainEvent::MaterialReservoirCommitted { .. }
             | DomainEvent::MaterialInstanceHeld { .. }

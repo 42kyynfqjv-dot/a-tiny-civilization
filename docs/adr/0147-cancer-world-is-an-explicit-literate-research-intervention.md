@@ -1,6 +1,6 @@
 # ADR 0147: Cancer World is an explicit literate research intervention
 
-Status: accepted for a fresh ruleset-37 experimental world; not yet activated.
+Status: accepted for a fresh ruleset-38 experimental world; not yet activated.
 
 ## Decision
 
@@ -86,6 +86,14 @@ the NCI PDMR and HCMI resources:
 - Ruleset 37 and event schema 34 introduce the experiment manifest. Event schema
   35 plus snapshot/state-hash schema 34 retain the exact initial affected cohort.
   Older manifests omit the field and preserve their published JSON and hashes.
+- Ruleset 38, event schema 36, and snapshot/state-hash schema 35 add private,
+  deterministic daily burden state. The first implementation uses bounded,
+  target-specific growth-rate assumptions, seed-derived variation, clone-diversity
+  bookkeeping, and a burden-gated spread transition. These numbers are explicitly
+  provisional engineering assumptions pending the later scientific-validation pass;
+  they are not patient models, prognoses, clinical evidence, or treatment guidance.
+- Published ruleset 37 semantics remain unchanged and replayable. New Cancer World
+  genesis requires ruleset 38 exactly rather than retroactively changing ruleset 37.
 - Bootstrap schema 2 fixes the 1,000-person initial population and 500-person
   affected cohort. The cohort cannot be hand-picked or changed after genesis.
 - The research-language substrate must support claims, citations, hypotheses,

@@ -28,9 +28,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
-    CANCER_RESEARCH_WORLD_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION,
-    COGNITION_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance,
-    InitialOrganism, LOCAL_INTERACTION_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
+    CANCER_BIOLOGY_RULESET_VERSION, CANCER_RESEARCH_WORLD_RULESET_VERSION,
+    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
+    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
+    LOCAL_INTERACTION_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
     MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
     run_partition_capacity_probe,
@@ -213,7 +214,8 @@ enum Command {
         ruleset_version: u32,
 
         /// Construct the explicitly artificial Cancer World experiment instead of
-        /// an open-ended Earth Genesis world. Requires ruleset 37 exactly.
+        /// an open-ended Earth Genesis world. Requires the current Cancer World
+        /// ruleset exactly; older published experiment rulesets remain replay-only.
         #[arg(long, default_value_t = false)]
         cancer_research: bool,
     },
@@ -1366,9 +1368,9 @@ async fn init_provisional_full_earth_world(
     ruleset_version: u32,
     cancer_research: bool,
 ) -> Result<()> {
-    if cancer_research && ruleset_version != CANCER_RESEARCH_WORLD_RULESET_VERSION {
+    if cancer_research && ruleset_version != CANCER_BIOLOGY_RULESET_VERSION {
         anyhow::bail!(
-            "Cancer World genesis requires exact ruleset {CANCER_RESEARCH_WORLD_RULESET_VERSION}"
+            "Cancer World genesis requires exact ruleset {CANCER_BIOLOGY_RULESET_VERSION}"
         );
     }
     if refuse_other_worlds {
@@ -3652,11 +3654,11 @@ mod tests {
             "--world-id",
             "00000000-0000-0000-0000-000000000001",
             "--seed",
-            "37",
+            "38",
             "--genesis-directory",
             "genesis",
             "--ruleset-version",
-            "37",
+            "38",
             "--cancer-research",
         ])
         .expect("parse Cancer World genesis proof");
@@ -3668,7 +3670,7 @@ mod tests {
         else {
             panic!("expected Cancer World genesis verification command");
         };
-        assert_eq!(ruleset_version, CANCER_RESEARCH_WORLD_RULESET_VERSION);
+        assert_eq!(ruleset_version, CANCER_BIOLOGY_RULESET_VERSION);
         assert!(cancer_research);
 
         let world_id = WorldId::from_uuid(Uuid::from_u128(0xca6ce7));

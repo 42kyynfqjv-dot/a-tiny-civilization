@@ -199,6 +199,7 @@ impl ObserverFindingStore for PostgresStore {
                 DomainEvent::WorldConfigured { .. }
                 | DomainEvent::OrganismAdultBodyMassCommitted { .. }
                 | DomainEvent::CancerResearchCohortCommitted { .. }
+                | DomainEvent::CancerBurdensAdvanced { .. }
                 | DomainEvent::MaterialInstanceInitialized { .. }
                 | DomainEvent::MaterialReservoirCommitted { .. }
                 | DomainEvent::MaterialInstanceHeld { .. }
@@ -424,6 +425,7 @@ async fn apply_finding_events(
             DomainEvent::WorldConfigured { .. }
             | DomainEvent::OrganismAdultBodyMassCommitted { .. }
             | DomainEvent::CancerResearchCohortCommitted { .. }
+            | DomainEvent::CancerBurdensAdvanced { .. }
             | DomainEvent::MaterialInstanceInitialized { .. }
             | DomainEvent::MaterialReservoirCommitted { .. }
             | DomainEvent::MaterialInstanceHeld { .. }

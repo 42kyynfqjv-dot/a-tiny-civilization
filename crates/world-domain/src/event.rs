@@ -2,12 +2,12 @@ use serde::{Deserialize, Deserializer, Serialize, de};
 use thiserror::Error;
 
 use crate::{
-    ActionValueState, AdultBodyMassCommitment, BodilyRegulationState, CanonicalHashError,
-    CelestialState, CognitionDeadlineInput, CognitionRequestSelection, Digest, EntityId, EventId,
-    EventSequence, HeritableDisposition, HeritableDispositionProfile, MaterialIdentity,
-    MaterialReservoirCommitment, MetabolicRateCommitment, MovementDirectionValueState,
-    OralTransferCommitment, PhysiologicalRegulationCommitment, PrimitiveAction,
-    ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId,
+    ActionValueState, AdultBodyMassCommitment, BodilyRegulationState, CancerBurdenTransition,
+    CanonicalHashError, CelestialState, CognitionDeadlineInput, CognitionRequestSelection, Digest,
+    EntityId, EventId, EventSequence, HeritableDisposition, HeritableDispositionProfile,
+    MaterialIdentity, MaterialReservoirCommitment, MetabolicRateCommitment,
+    MovementDirectionValueState, OralTransferCommitment, PhysiologicalRegulationCommitment,
+    PrimitiveAction, ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment, S2CellId,
     SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity, WorldConfiguration,
     WorldId, WorldManifest,
 };
@@ -107,6 +107,9 @@ pub const WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION: u16 = 34;
 /// Schema thirty-five records the exact seed-selected initial affected cohort for
 /// Cancer World after every initial resident has been committed.
 pub const CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION: u16 = 35;
+/// Schema thirty-six records deterministic daily cancer-burden transitions. The
+/// values are private experiment mechanics, not clinical claims or advice.
+pub const CANCER_BURDEN_EVENT_SCHEMA_VERSION: u16 = 36;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -201,6 +204,11 @@ pub enum DomainEvent {
     /// than operator selection. No disease mechanism or treatment claim is implied.
     CancerResearchCohortCommitted {
         affected_resident_ids: Vec<EntityId>,
+    },
+    /// One complete, ordered daily transition for every living affected resident.
+    CancerBurdensAdvanced {
+        day_ordinal: u32,
+        transitions: Vec<CancerBurdenTransition>,
     },
     /// A physical material instance. Its identity is citable, but its affordances
     /// and effects are intentionally not inferred by this event.
@@ -577,6 +585,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION
             | WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
             | CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
+            | CANCER_BURDEN_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -599,6 +608,11 @@ fn validate_event_for_schema(
     }
     if event_schema_version < CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::CancerResearchCohortCommitted { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < CANCER_BURDEN_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::CancerBurdensAdvanced { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
