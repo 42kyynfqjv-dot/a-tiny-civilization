@@ -170,7 +170,14 @@ impl ObserverWorldStore for PostgresStore {
                              ? 'provisional_world_composition'
                 LIMIT 1
             ) AS provisional ON TRUE
-            ORDER BY worlds.current_sequence DESC, worlds.id ASC
+            -- The default observatory must select the active open-ended world even
+            -- when a higher-sequence experimental world is running beside it. A
+            -- fresh successor likewise outranks its archived predecessor without
+            -- pretending that sequence numbers are comparable across worlds.
+            ORDER BY (worlds.manifest -> 'experiment' IS NOT NULL) ASC,
+                     CASE worlds.status WHEN 'running' THEN 0 ELSE 1 END ASC,
+                     worlds.created_at DESC,
+                     worlds.id ASC
             "#,
         )
         .fetch_all(self.pool())
