@@ -12,8 +12,13 @@ use world_domain::{
 use crate::PostgresStore;
 
 /// Persist one replay cache checkpoint per this many committed batches. Genesis and
-/// terminal transitions are always retained independently of this cadence.
+/// terminal transitions always produce a checkpoint; only the newest checkpoint is
+/// retained because immutable event batches remain the source of truth.
 const SNAPSHOT_SEQUENCE_INTERVAL: u64 = 64;
+// Snapshots are replaceable replay accelerators, not canonical history. Keeping
+// older checkpoints multiplies storage with no replay benefit because resume
+// always selects the newest checkpoint and verifies its immutable event anchor.
+const SNAPSHOTS_RETAINED_PER_WORLD: i64 = 1;
 
 impl PostgresStore {
     /// Load a bounded page of canonical history for disposable read-side rebuilds.
@@ -855,6 +860,25 @@ async fn insert_snapshot(
     .bind(snapshot_json)
     .bind(snapshot.state_hash.as_bytes().as_slice())
     .bind(snapshot.last_event_hash.as_bytes().as_slice())
+    .execute(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+
+    sqlx::query(
+        r#"
+        DELETE FROM snapshots
+        WHERE world_id = $1
+          AND through_sequence NOT IN (
+              SELECT through_sequence
+              FROM snapshots
+              WHERE world_id = $1
+              ORDER BY through_sequence DESC
+              LIMIT $2
+          )
+        "#,
+    )
+    .bind(snapshot.world_id.as_uuid())
+    .bind(SNAPSHOTS_RETAINED_PER_WORLD)
     .execute(&mut **transaction)
     .await
     .map_err(operation_error)?;

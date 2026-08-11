@@ -1421,7 +1421,11 @@ async fn running_snapshots_are_sparse_and_anchor_fast_resume(pool: PgPool) -> Re
     .bind(manifest.world_id.as_uuid())
     .fetch_all(&pool)
     .await?;
-    assert_eq!(rows, vec![0, 1, 64]);
+    assert_eq!(
+        rows,
+        vec![64],
+        "only the newest replaceable replay checkpoint is retained"
+    );
     assert_eq!(
         resume_world_from_snapshot(&store, manifest.world_id).await?,
         current

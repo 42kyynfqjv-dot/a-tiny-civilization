@@ -245,8 +245,8 @@ impl CancerResearchMemoryInput {
     }
 }
 
-/// Deterministic observer/research-catalog duplicate detector. It deliberately
-/// favors false negatives over merging scientifically distinct qualifiers.
+/// Deterministic title-level duplicate detector retained for compact catalogue
+/// entries. Whole contributions should use [`cancer_research_contributions_duplicate`].
 #[must_use]
 pub fn cancer_research_titles_duplicate(left: &str, right: &str) -> bool {
     let left = cancer_research_title_terms(left);
@@ -257,14 +257,76 @@ pub fn cancer_research_titles_duplicate(left: &str, right: &str) -> bool {
     if left == right {
         return true;
     }
+    if cancer_research_terms_contradict(&left, &right) {
+        return false;
+    }
     let intersection = left.intersection(&right).count();
     let union = left.union(&right).count();
-    intersection >= 4 && intersection.saturating_mul(100) >= union.saturating_mul(82)
+    let shorter = left.len().min(right.len());
+    intersection >= 4
+        && (intersection.saturating_mul(100) >= union.saturating_mul(60)
+            || intersection.saturating_mul(100) >= shorter.saturating_mul(75))
+}
+
+/// Collapses paraphrases by comparing both the title and the contribution's
+/// mechanism-bearing prose. Numeric observations and generic research wording
+/// are excluded, while opposing direction/independence qualifiers prevent a
+/// scientifically distinct claim from being hidden as a duplicate.
+#[must_use]
+pub fn cancer_research_contributions_duplicate(
+    left: &CancerResearchContribution,
+    right: &CancerResearchContribution,
+) -> bool {
+    if left.artifact_kind != right.artifact_kind || left.stage != right.stage {
+        return false;
+    }
+    if cancer_research_titles_duplicate(&left.title, &right.title) {
+        return true;
+    }
+
+    let left_title = cancer_research_title_terms(&left.title);
+    let right_title = cancer_research_title_terms(&right.title);
+    if cancer_research_terms_contradict(&left_title, &right_title) {
+        return false;
+    }
+    let title_intersection = left_title.intersection(&right_title).count();
+    let title_shorter = left_title.len().min(right_title.len());
+    if title_intersection < 3
+        || title_intersection.saturating_mul(100) < title_shorter.saturating_mul(60)
+    {
+        return false;
+    }
+
+    let left_body = cancer_research_contribution_terms(left);
+    let right_body = cancer_research_contribution_terms(right);
+    if cancer_research_terms_contradict(&left_body, &right_body) {
+        return false;
+    }
+    let body_intersection = left_body.intersection(&right_body).count();
+    let body_shorter = left_body.len().min(right_body.len());
+    body_intersection >= 10
+        && body_intersection.saturating_mul(100) >= body_shorter.saturating_mul(68)
+}
+
+fn cancer_research_contribution_terms(
+    contribution: &CancerResearchContribution,
+) -> BTreeSet<String> {
+    let mut terms = cancer_research_text_terms(&contribution.title);
+    terms.extend(cancer_research_text_terms(&contribution.abstract_text));
+    for claim in &contribution.claims {
+        terms.extend(cancer_research_text_terms(&claim.statement));
+        terms.extend(cancer_research_text_terms(&claim.testable_prediction));
+        terms.extend(cancer_research_text_terms(&claim.falsification_test));
+    }
+    terms
 }
 
 fn cancer_research_title_terms(title: &str) -> BTreeSet<String> {
-    title
-        .chars()
+    cancer_research_text_terms(title)
+}
+
+fn cancer_research_text_terms(text: &str) -> BTreeSet<String> {
+    text.chars()
         .flat_map(char::to_lowercase)
         .map(|character| {
             if character.is_alphanumeric() {
@@ -276,6 +338,9 @@ fn cancer_research_title_terms(title: &str) -> BTreeSet<String> {
         .collect::<String>()
         .split_whitespace()
         .filter_map(|term| {
+            if term.chars().all(char::is_numeric) {
+                return None;
+            }
             if matches!(
                 term,
                 "a" | "adult"
@@ -284,6 +349,12 @@ fn cancer_research_title_terms(title: &str) -> BTreeSet<String> {
                     | "as"
                     | "at"
                     | "by"
+                    | "cell"
+                    | "cells"
+                    | "cohort"
+                    | "data"
+                    | "day"
+                    | "days"
                     | "for"
                     | "from"
                     | "glioblastoma"
@@ -292,27 +363,71 @@ fn cancer_research_title_terms(title: &str) -> BTreeSet<String> {
                     | "its"
                     | "of"
                     | "on"
+                    | "patient"
+                    | "patients"
+                    | "primary"
+                    | "propose"
+                    | "proposed"
                     | "role"
+                    | "study"
                     | "test"
                     | "the"
                     | "their"
                     | "to"
+                    | "tumor"
+                    | "tumors"
+                    | "unit"
+                    | "units"
+                    | "using"
+                    | "we"
             ) {
                 return None;
             }
             let normalized = match term {
                 "clonal" | "clones" => "clone",
-                "driven" | "driver" | "drivers" | "drives" | "driving" => "drive",
-                "modulated" | "modulates" | "modulation" => "modulate",
-                "promotes" | "promoting" => "promote",
-                "proliferation" | "proliferative" => "proliferate",
+                "activated" | "activates" | "activation" => "activate",
+                "associated" | "associates" | "association" | "correlated" | "correlates"
+                | "correlation" => "associate",
+                "depleted" | "depletion" | "depleting" | "decreases" | "decreased" | "reduces"
+                | "reduced" | "reduction" => "decrease",
+                "driven" | "driver" | "drivers" | "drives" | "driving" | "induced" | "induces"
+                | "promotes" | "promoting" | "promotion" => "drive",
+                "engaged" => "engagement",
+                "expanded" | "expanding" | "expansion" | "proliferation" | "proliferative" => {
+                    "growth"
+                }
+                "heterogeneity" | "heterogeneous" => "heterogeneous",
+                "hypoxic" => "hypoxia",
+                "inhibited" | "inhibiting" | "inhibition" => "inhibit",
+                "mechanically" => "mechanical",
+                "metabolically" => "metabolic",
+                "modulated" | "modulates" | "modulation" | "influences" | "influenced"
+                | "affects" | "affected" => "modulate",
                 "reprogrammed" | "reprogramming" => "reprogram",
+                "selected" | "selecting" | "selection" | "selectively" => "select",
+                "spatially" => "spatial",
+                "suppressed" | "suppresses" | "suppression" => "suppress",
                 "trajectories" => "trajectory",
                 other => other,
             };
             Some(normalized.to_owned())
         })
         .collect()
+}
+
+fn cancer_research_terms_contradict(left: &BTreeSet<String>, right: &BTreeSet<String>) -> bool {
+    const OPPOSING_TERMS: [(&str, &str); 6] = [
+        ("activate", "inhibit"),
+        ("dependent", "independent"),
+        ("drive", "independent"),
+        ("high", "low"),
+        ("increase", "decrease"),
+        ("drive", "suppress"),
+    ];
+    OPPOSING_TERMS.iter().any(|(positive, negative)| {
+        (left.contains(*positive) && right.contains(*negative))
+            || (left.contains(*negative) && right.contains(*positive))
+    })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -841,8 +956,9 @@ pub enum CancerResearchModelContractError {
 mod tests {
     use super::*;
     use world_domain::{
-        CancerResearchProfile, CancerResearchTarget, CancerResearchTask, EntityId, SimTick,
-        WorldId, WorldSeed,
+        CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CancerResearchArtifactKind,
+        CancerResearchClaim, CancerResearchProfile, CancerResearchTarget, CancerResearchTask,
+        EntityId, SimTick, WorldId, WorldSeed,
     };
 
     fn selection(evidence: Vec<CancerResearchEvidenceReference>) -> CancerResearchTurnSelection {
@@ -923,6 +1039,14 @@ mod tests {
             "Immune-Cell Density Modulates Clonal Growth Trajectories in Adult Glioblastoma",
             "Spatial Immune-Cell Density Modulates Clonal Growth Trajectories in Adult Glioblastoma",
         ));
+        assert!(cancer_research_titles_duplicate(
+            "Spatial Immune-Engagement Modulates Clone Expansion in Adult Glioblastoma",
+            "Immune-Microenvironment Modulates Clonal Expansion in Adult Glioblastoma",
+        ));
+        assert!(cancer_research_titles_duplicate(
+            "Hypoxia-Induced Metabolic Reprogramming Drives Glioblastoma Clonal Expansion",
+            "Hypoxia-Driven Metabolic Reprogramming Promotes Clonal Expansion in Adult Glioblastoma",
+        ));
         assert!(!cancer_research_titles_duplicate(
             "Immune Engagement Modulates Clone Diversity in Adult Glioblastoma",
             "Immune Engagement Drives Clonal Expansion in Adult Glioblastoma",
@@ -930,6 +1054,69 @@ mod tests {
         assert!(!cancer_research_titles_duplicate(
             "Hypoxia-Independent Immune Modulation of Glioblastoma Proliferation",
             "Hypoxia-Driven Immune Modulation of Glioblastoma Proliferation",
+        ));
+    }
+
+    #[test]
+    fn research_contribution_deduplication_uses_mechanism_prose_and_keeps_opposites() {
+        fn contribution(
+            ordinal: u128,
+            title: &str,
+            abstract_text: &str,
+            statement: &str,
+        ) -> CancerResearchContribution {
+            CancerResearchContribution {
+                schema_version: CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION,
+                contribution_id: Uuid::from_u128(ordinal),
+                request_id: Uuid::from_u128(ordinal + 100),
+                selection_hash: Digest::sha256(format!("selection-{ordinal}").as_bytes()),
+                resident_id: EntityId::deterministic(
+                    WorldId::from_uuid(Uuid::from_u128(71)),
+                    format!("resident-{ordinal}").as_bytes(),
+                ),
+                stage: CancerResearchStage::BlindDiscovery,
+                artifact_kind: CancerResearchArtifactKind::Hypothesis,
+                title: title.to_owned(),
+                abstract_text: abstract_text.to_owned(),
+                claims: vec![CancerResearchClaim {
+                    statement: statement.to_owned(),
+                    testable_prediction:
+                        "A spatial perturbation changes immune engagement and clone growth."
+                            .to_owned(),
+                    falsification_test:
+                        "The mechanism fails if immune engagement and clone growth remain unchanged."
+                            .to_owned(),
+                    citation_hashes: Vec::new(),
+                }],
+            }
+        }
+
+        let original = contribution(
+            1,
+            "Spatial immune engagement shapes local growth",
+            "Hypoxia-driven immune engagement selects a spatially heterogeneous clone population and changes its growth trajectory.",
+            "Local hypoxia drives immune modulation that selects metabolically reprogrammed clones.",
+        );
+        let paraphrase = contribution(
+            2,
+            "Spatial immune response alters expansion",
+            "Immune engagement driven by hypoxia selects heterogeneous clones across space and alters their growth trajectory.",
+            "Hypoxia drives local immune modulation and selection of metabolically reprogrammed clones.",
+        );
+        let opposing_mechanism = contribution(
+            3,
+            "Spatial immune response alters expansion",
+            "Hypoxia-independent immune engagement selects heterogeneous clones across space and alters their growth trajectory.",
+            "Local immune modulation selects metabolically reprogrammed clones independently of hypoxia.",
+        );
+
+        assert!(cancer_research_contributions_duplicate(
+            &original,
+            &paraphrase
+        ));
+        assert!(!cancer_research_contributions_duplicate(
+            &original,
+            &opposing_mechanism
         ));
     }
 }

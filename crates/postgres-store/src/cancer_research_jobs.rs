@@ -7,7 +7,7 @@ use application::{
     CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
     CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
-    StoreError, cancer_research_collective_id, cancer_research_titles_duplicate,
+    StoreError, cancer_research_collective_id, cancer_research_contributions_duplicate,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -677,16 +677,18 @@ impl CancerResearchJobStore for PostgresStore {
         .map_err(operation_error)?;
 
         let mut entries: Vec<CancerResearchCatalogItem> = Vec::with_capacity(limit);
+        let mut distinct_contributions: Vec<world_domain::CancerResearchContribution> =
+            Vec::with_capacity(limit);
         for row in rows {
             let (request, result) = parse_historical_research_result(row, world_id)?;
             let receipt = result
                 .receipt
                 .ok_or_else(|| corrupt("successful catalog research result omitted its receipt"))?;
             let contribution = receipt.contribution;
-            if entries.iter().any(|existing| {
-                existing.artifact_kind == contribution.artifact_kind
-                    && cancer_research_titles_duplicate(&existing.title, &contribution.title)
-            }) {
+            if distinct_contributions
+                .iter()
+                .any(|existing| cancer_research_contributions_duplicate(existing, &contribution))
+            {
                 continue;
             }
             entries.push(CancerResearchCatalogItem {
@@ -694,8 +696,9 @@ impl CancerResearchJobStore for PostgresStore {
                 contribution_id: contribution.contribution_id,
                 artifact_hash: contribution.canonical_hash().map_err(corrupt)?,
                 artifact_kind: contribution.artifact_kind,
-                title: contribution.title,
+                title: contribution.title.clone(),
             });
+            distinct_contributions.push(contribution);
             if entries.len() == limit {
                 break;
             }

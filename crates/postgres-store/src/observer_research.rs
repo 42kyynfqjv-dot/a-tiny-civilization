@@ -1,6 +1,6 @@
 use application::{
     CancerResearchLadderResult, CancerResearchModelRequest, cancer_research_collective_id,
-    cancer_research_memory_bank_id, cancer_research_titles_duplicate,
+    cancer_research_contributions_duplicate, cancer_research_memory_bank_id,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -263,11 +263,7 @@ fn collapse_duplicate_research(
     let mut duplicate_count = 0_u64;
     for artifact in artifacts {
         let duplicate_of = canonical.iter_mut().find(|existing| {
-            existing.contribution.artifact_kind == artifact.contribution.artifact_kind
-                && cancer_research_titles_duplicate(
-                    &existing.contribution.title,
-                    &artifact.contribution.title,
-                )
+            cancer_research_contributions_duplicate(&existing.contribution, &artifact.contribution)
         });
         if let Some(original) = duplicate_of {
             original.duplicates.push(PublicCancerResearchDuplicate {

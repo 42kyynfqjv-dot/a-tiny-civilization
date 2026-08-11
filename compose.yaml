@@ -124,7 +124,10 @@ services:
     environment:
       <<: *app-environment
       RUNNER_HEARTBEAT_SECONDS: ${RUNNER_HEARTBEAT_SECONDS:-5}
-      RUNNER_TICK_MILLISECONDS: ${RUNNER_TICK_MILLISECONDS:-1000}
+      # The public host advances one deterministic tick per minute. Simulation
+      # physics still use the world-pinned tick duration; this only controls
+      # wall-clock presentation and caps immutable-ledger growth on one box.
+      RUNNER_TICK_MILLISECONDS: ${RUNNER_TICK_MILLISECONDS:-60000}
       ATINY_CIVILIZATION_DATA_EXECUTABLE: /app/civilization-data
       ATINY_JPL_DE441_INPUT_DIRECTORY: /runtime/data/source-cache/jpl-de441
     depends_on:
