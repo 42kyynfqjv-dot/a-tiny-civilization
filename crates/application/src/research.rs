@@ -566,6 +566,7 @@ impl CancerResearchModelRequest {
         let approved = match self.selection.inference_tier {
             CancerResearchInferenceTier::Exploration => {
                 route == &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()
+                    || route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b()
             }
             CancerResearchInferenceTier::Escalation => {
                 route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
@@ -944,6 +945,7 @@ pub trait CancerResearchJobStore: Send + Sync {
         &self,
         _world_id: world_domain::WorldId,
         _before_ordinal: u32,
+        _program: world_domain::CancerResearchProgram,
     ) -> Result<Option<CancerResearchPriorResult>, StoreError> {
         Ok(None)
     }

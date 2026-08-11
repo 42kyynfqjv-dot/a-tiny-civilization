@@ -11,10 +11,11 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
     BirthCategory, CancerResearchContribution, CancerResearchEvidenceReference,
-    CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchTarget,
-    CancerResearchTask, CancerVirtualExperimentResult, Digest, DomainEvent, EntityId, EventBatch,
-    EventId, EventSequence, MaterialIdentity, OrganismRole, PerceptionChannel, PrimitiveActionKind,
-    S2CellId, SimTick, SpeciesIdentity, WorldId, WorldStatus,
+    CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchProgram,
+    CancerResearchTarget, CancerResearchTask, CancerVirtualExperimentResult, Digest, DomainEvent,
+    EntityId, EventBatch, EventId, EventSequence, MaterialIdentity, OrganismRole,
+    PerceptionChannel, PrimitiveActionKind, S2CellId, SimTick, SpeciesIdentity, WorldId,
+    WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -44,7 +45,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 4;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 5;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -836,6 +837,7 @@ pub struct PublicCancerResearchArtifact {
     pub request_id: Uuid,
     pub selected_at_tick: SimTick,
     pub ordinal: u32,
+    pub program: CancerResearchProgram,
     pub target: CancerResearchTarget,
     pub task: CancerResearchTask,
     pub inference_tier: CancerResearchInferenceTier,
@@ -859,6 +861,19 @@ pub struct PublicCancerResearchArtifact {
     /// They remain immutable and auditable but are collapsed into this original
     /// entry for observers.
     pub duplicates: Vec<PublicCancerResearchDuplicate>,
+}
+
+/// Compact read-side rollup for one independent research program.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerResearchProgramSummary {
+    pub program: CancerResearchProgram,
+    pub distinct_artifacts: u64,
+    pub duplicate_artifacts: u64,
+    pub model_supported: u64,
+    pub model_rejected: u64,
+    pub model_inconclusive: u64,
+    pub awaiting_evaluation: u64,
+    pub newest_ordinal: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -915,6 +930,7 @@ pub struct PublicCancerResearchView {
     pub duplicate_artifacts: u64,
     pub memory_queued: u64,
     pub memory_accepted: u64,
+    pub programs: Vec<PublicCancerResearchProgramSummary>,
     pub artifacts: Vec<PublicCancerResearchArtifact>,
     pub evidence: Vec<PublicCancerResearchEvidence>,
 }

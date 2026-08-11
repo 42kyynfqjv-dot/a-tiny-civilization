@@ -12,7 +12,7 @@ pub use world_domain::{CognitionReading as CognitionInputReading, cognition_requ
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 6;
+pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 7;
 pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
@@ -77,6 +77,11 @@ impl CognitionProviderId {
     }
 
     #[must_use]
+    pub fn fireworks_cancer() -> Self {
+        Self::known("fireworks_cancer")
+    }
+
+    #[must_use]
     pub fn cerebras() -> Self {
         Self::known("cerebras")
     }
@@ -111,7 +116,10 @@ pub enum CognitionBillingScope {
 impl CognitionBillingScope {
     #[must_use]
     pub fn for_route(route: &CognitionModelRoute) -> Self {
-        if route.provider == CognitionProviderId::openrouter_cancer() {
+        if matches!(
+            route.provider.as_str(),
+            "openrouter_cancer" | "fireworks_cancer"
+        ) {
             Self::CancerResearch
         } else {
             Self::Production
@@ -250,6 +258,15 @@ impl CognitionModelRoute {
     }
 
     #[must_use]
+    pub fn fireworks_cancer_gpt_oss_20b() -> Self {
+        Self {
+            provider: CognitionProviderId::fireworks_cancer(),
+            requested_model: "accounts/fireworks/models/gpt-oss-20b".to_owned(),
+            billing_class: CognitionBillingClass::PaidApproved,
+        }
+    }
+
+    #[must_use]
     pub fn cerebras_gpt_oss_120b() -> Self {
         Self {
             provider: CognitionProviderId::cerebras(),
@@ -352,6 +369,9 @@ impl CognitionModelRoute {
             ("openrouter_cancer", CognitionBillingClass::FreeAllocation) => {
                 self.requested_model == "openai/gpt-oss-20b:free"
             }
+            ("fireworks_cancer", CognitionBillingClass::PaidApproved) => {
+                self.requested_model == "accounts/fireworks/models/gpt-oss-20b"
+            }
             _ => false,
         };
         if !allowed {
@@ -405,7 +425,10 @@ impl CognitionRouteRegistry {
     pub fn cancer_research_exploration() -> Self {
         Self {
             policy_version: CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
-            routes: vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()],
+            routes: vec![
+                CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
+            ],
         }
     }
 
@@ -486,7 +509,12 @@ impl CognitionRouteRegistry {
                 }
             }
             CognitionRoutePurpose::CancerResearchExploration => {
-                if self.routes != vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()] {
+                if self.routes
+                    != vec![
+                        CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                        CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
+                    ]
+                {
                     return Err(CognitionContractError::InvalidRouteRegistry);
                 }
             }
@@ -1251,6 +1279,7 @@ mod tests {
             CognitionModelRoute::openrouter_gpt_oss_20b_free(),
             CognitionModelRoute::openrouter_gpt_oss_120b_free(),
             CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+            CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
             CognitionModelRoute::cerebras_gpt_oss_120b(),
             CognitionModelRoute::cerebras_llama3_1_8b(),
             CognitionModelRoute::nvidia_nemotron_3_ultra_development(),
@@ -1321,7 +1350,10 @@ mod tests {
         );
         assert_eq!(
             exploration.routes,
-            vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()]
+            vec![
+                CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
+            ]
         );
         let registry = CognitionRouteRegistry::cancer_research_escalation();
         assert_eq!(

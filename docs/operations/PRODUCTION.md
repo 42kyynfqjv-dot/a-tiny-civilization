@@ -63,8 +63,11 @@ sudo systemctl enable --now \
 Both units load the root-protected production environment through systemd, run as the
 unprivileged project owner, expose no listener, and retain read-only host/filesystem
 hardening. The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
-records from Europe PMC every six hours. The model worker uses the dedicated Cancer
-World key and the independent durable $2.85 monthly circuit breaker. Their Compose
+records from Europe PMC every six hours. The model worker uses dedicated Cancer World
+OpenRouter and optional Fireworks keys. Exploration tries the pinned free GPT-OSS route
+before the metered Fireworks GPT-OSS overflow; literature audits retain their separate
+DeepSeek ladder. All paid calls share the independent durable $2.85 monthly circuit
+breaker. Their Compose
 equivalents are behind the `container-research` profile for development hosts whose
 Docker bridges already have outbound HTTPS; do not run both copies concurrently.
 

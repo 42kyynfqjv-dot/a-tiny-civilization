@@ -450,6 +450,10 @@ enum Command {
         #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
         cancer_openrouter_api_key: String,
 
+        /// Metered overflow for exploration after the OpenRouter free quota.
+        #[arg(long, env = "CANCER_FIREWORKS_API_KEY", hide_env_values = true)]
+        cancer_fireworks_api_key: Option<String>,
+
         #[arg(
             long,
             env = "CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED",
@@ -808,6 +812,7 @@ async fn main() -> Result<()> {
             claim_lease_seconds,
             request_timeout_seconds,
             cancer_openrouter_api_key,
+            cancer_fireworks_api_key,
             external_export_approved,
             paid_enabled,
             paid_reservation_micro_usd,
@@ -828,6 +833,17 @@ async fn main() -> Result<()> {
             .context("configure dedicated Cancer World OpenRouter adapter")?;
             let mut adapters: CancerResearchModelAdapters = BTreeMap::new();
             adapters.insert(provider, Arc::new(adapter) as Arc<dyn CancerResearchModel>);
+            if let Some(api_key) = nonempty(cancer_fireworks_api_key) {
+                let provider = CognitionProviderId::fireworks_cancer();
+                let adapter = OpenAiCompatibleCognition::new(
+                    provider.clone(),
+                    "https://api.fireworks.ai/inference/v1",
+                    api_key,
+                    Duration::from_secs(request_timeout_seconds.max(1)),
+                )
+                .context("configure dedicated Cancer World Fireworks adapter")?;
+                adapters.insert(provider, Arc::new(adapter) as Arc<dyn CancerResearchModel>);
+            }
             let configuration = CancerResearchWorkerConfiguration {
                 claim_lease_seconds,
                 paid_reservation_micro_usd,

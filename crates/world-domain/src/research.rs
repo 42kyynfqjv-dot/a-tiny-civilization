@@ -138,6 +138,35 @@ pub enum CancerResearchInferenceTier {
     Escalation,
 }
 
+/// The two independent Cancer World research programs. The program is derived
+/// from the immutable turn ordinal instead of being added to the persisted turn
+/// schema, so historical requests retain their original canonical hashes.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchProgram {
+    Devices,
+    Treatments,
+}
+
+impl CancerResearchProgram {
+    #[must_use]
+    pub const fn for_ordinal(ordinal: u32) -> Self {
+        if ordinal.is_multiple_of(2) {
+            Self::Devices
+        } else {
+            Self::Treatments
+        }
+    }
+
+    #[must_use]
+    pub const fn ordinal_remainder(self) -> u32 {
+        match self {
+            Self::Devices => 0,
+            Self::Treatments => 1,
+        }
+    }
+}
+
 impl CancerResearchStage {
     const fn identity_code(self) -> &'static str {
         match self {

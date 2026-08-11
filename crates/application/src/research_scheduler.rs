@@ -4,8 +4,9 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
     CancerBurdenState, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
-    CancerResearchInferenceTier, CancerResearchProfile, CancerResearchStage, CancerResearchTask,
-    CancerTrajectory, Digest, EntityId, OrganismRole, SimTick, WorldExperimentCommitment,
+    CancerResearchInferenceTier, CancerResearchProfile, CancerResearchProgram, CancerResearchStage,
+    CancerResearchTask, CancerTrajectory, Digest, EntityId, OrganismRole, SimTick,
+    WorldExperimentCommitment,
 };
 
 use crate::{
@@ -15,8 +16,14 @@ use crate::{
 };
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY: u32 = 12;
-pub const CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS: u32 = 7;
+/// Seven turns per ten canonical ticks is 1,008 turns per 24 wall-clock hours
+/// at the production runner's one-minute cadence. The ratio is integer and
+/// deterministic; a slower runner slows research rather than dropping work.
+pub const CANCER_RESEARCH_TURNS_PER_TEN_TICKS: u64 = 7;
+pub const CANCER_RESEARCH_SCHEDULE_TICK_SPAN: u64 = 10;
+/// Approximately seven simulated days at the accelerated cadence. The odd
+/// interval makes successive audits alternate between the two programs.
+pub const CANCER_RESEARCH_ESCALATION_INTERVAL_TURNS: u32 = 1_411;
 const SECONDS_PER_DAY: u64 = 86_400;
 const BLIND_RESEARCH_MAX_OUTPUT_TOKENS: u16 = 4_096;
 const EMBEDDED_PRIMITIVES: &str =
@@ -56,17 +63,12 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         return Err(CancerResearchSchedulerError::InvalidTickDuration);
     }
     let ticks_per_day = SECONDS_PER_DAY / tick_duration;
-    let turns_per_day = u64::from(CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY);
-    if !ticks_per_day.is_multiple_of(turns_per_day) {
-        return Err(CancerResearchSchedulerError::InvalidTickDuration);
-    }
-    let ticks_per_turn = ticks_per_day / turns_per_day;
     let tick = state.tick().get();
-    if !tick.is_multiple_of(ticks_per_turn) {
+    let Some(turn_ordinal) = research_ordinal_due_at_tick(tick)? else {
         return Ok(None);
-    }
-    let turn_ordinal = u32::try_from(tick / ticks_per_turn)
-        .map_err(|_| CancerResearchSchedulerError::OrdinalOverflow)?;
+    };
+    let program = CancerResearchProgram::for_ordinal(turn_ordinal);
+    let program_turn_ordinal = turn_ordinal / 2;
     let day_ordinal = u32::try_from(tick / ticks_per_day)
         .map_err(|_| CancerResearchSchedulerError::OrdinalOverflow)?;
     let affected_living_people = state
@@ -103,7 +105,7 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
             .filter(|resident_id| living_unaffected.contains(resident_id))
             .collect::<Vec<_>>();
     living_engineers.sort_unstable();
-    let engineering_turn = turn_ordinal % 3 == 2 && !living_engineers.is_empty();
+    let engineering_turn = program_turn_ordinal % 3 == 2 && !living_engineers.is_empty();
     let candidates = if engineering_turn {
         &living_engineers
     } else {
@@ -139,17 +141,14 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         )?);
         evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
     }
-    let escalation_interval_turns = CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS
-        .checked_mul(CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY)
-        .ok_or(CancerResearchSchedulerError::OrdinalOverflow)?;
     let latest_hypothesis = if turn_ordinal > 0 {
         store
-            .load_latest_cancer_research_hypothesis(state.world_id(), turn_ordinal)
+            .load_latest_cancer_research_hypothesis(state.world_id(), turn_ordinal, program)
             .await?
     } else {
         None
     };
-    let promoted = if turn_ordinal.is_multiple_of(escalation_interval_turns) {
+    let promoted = if turn_ordinal.is_multiple_of(CANCER_RESEARCH_ESCALATION_INTERVAL_TURNS) {
         latest_hypothesis.clone()
     } else {
         None
@@ -192,14 +191,17 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         } else {
             (
                 CancerResearchStage::BlindDiscovery,
-                if engineering_turn && turn_ordinal.is_multiple_of(2) {
-                    CancerResearchTask::DesignDiagnosticInstrument
-                } else if engineering_turn {
-                    CancerResearchTask::DesignTreatmentMachine
-                } else if turn_ordinal.is_multiple_of(2) {
-                    CancerResearchTask::GenerateMechanisticHypothesis
-                } else {
-                    CancerResearchTask::ProposeDiscriminatingExperiment
+                match program_turn_ordinal % 3 {
+                    0 => CancerResearchTask::GenerateMechanisticHypothesis,
+                    1 => CancerResearchTask::ProposeDiscriminatingExperiment,
+                    _ => match program {
+                        CancerResearchProgram::Devices => {
+                            CancerResearchTask::DesignDiagnosticInstrument
+                        }
+                        CancerResearchProgram::Treatments => {
+                            CancerResearchTask::DesignTreatmentMachine
+                        }
+                    },
                 },
                 CancerResearchInferenceTier::Exploration,
                 None,
@@ -249,6 +251,26 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
     let request_id = request.request_id;
     store.enqueue_cancer_research_request(&request).await?;
     Ok(Some(request_id))
+}
+
+fn research_ordinal_due_at_tick(tick: u64) -> Result<Option<u32>, CancerResearchSchedulerError> {
+    if tick == 0 {
+        return Ok(None);
+    }
+    let scheduled_through_tick = tick
+        .checked_mul(CANCER_RESEARCH_TURNS_PER_TEN_TICKS)
+        .ok_or(CancerResearchSchedulerError::OrdinalOverflow)?
+        / CANCER_RESEARCH_SCHEDULE_TICK_SPAN;
+    let scheduled_before_tick = (tick - 1)
+        .checked_mul(CANCER_RESEARCH_TURNS_PER_TEN_TICKS)
+        .ok_or(CancerResearchSchedulerError::OrdinalOverflow)?
+        / CANCER_RESEARCH_SCHEDULE_TICK_SPAN;
+    if scheduled_through_tick == scheduled_before_tick {
+        return Ok(None);
+    }
+    u32::try_from(scheduled_through_tick)
+        .map(Some)
+        .map_err(|_| CancerResearchSchedulerError::OrdinalOverflow)
 }
 
 /// Selects exactly one third of the unaffected founder cohort, rounding up, by
@@ -549,6 +571,35 @@ mod tests {
             select_researcher(WorldSeed::new(37), 4, &reversed),
             Err(CancerResearchSchedulerError::NonCanonicalCandidates)
         ));
+    }
+
+    #[test]
+    fn accelerated_schedule_emits_1008_balanced_turns_per_1440_ticks() {
+        let turns = (1..=1_440_u64)
+            .filter_map(|tick| research_ordinal_due_at_tick(tick).expect("bounded schedule"))
+            .collect::<Vec<_>>();
+        assert_eq!(turns.len(), 1_008);
+        assert_eq!(turns.first(), Some(&1));
+        assert_eq!(turns.last(), Some(&1_008));
+        assert_eq!(
+            turns
+                .iter()
+                .filter(|ordinal| {
+                    CancerResearchProgram::for_ordinal(**ordinal) == CancerResearchProgram::Devices
+                })
+                .count(),
+            504
+        );
+        assert_eq!(
+            turns
+                .iter()
+                .filter(|ordinal| {
+                    CancerResearchProgram::for_ordinal(**ordinal)
+                        == CancerResearchProgram::Treatments
+                })
+                .count(),
+            504
+        );
     }
 
     #[test]

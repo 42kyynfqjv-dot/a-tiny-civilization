@@ -8,14 +8,16 @@ use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerResearchArtifact,
     PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
-    PublicCancerResearchView, PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
+    PublicCancerResearchProgramSummary, PublicCancerResearchView,
+    PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
 use world_domain::{
     CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
-    CancerResearchNoveltyAudit, CancerVirtualExperimentResult, Digest, WorldId,
+    CancerResearchNoveltyAudit, CancerResearchProgram, CancerVirtualExperimentInterpretation,
+    CancerVirtualExperimentResult, Digest, WorldId,
 };
 
 use crate::PostgresStore;
@@ -281,6 +283,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 request_id: request.request_id,
                 selected_at_tick: request.selection.selected_at_tick,
                 ordinal: request.selection.ordinal,
+                program: CancerResearchProgram::for_ordinal(request.selection.ordinal),
                 target: request.selection.target,
                 task: request.selection.task,
                 inference_tier: request.selection.inference_tier,
@@ -312,6 +315,13 @@ impl ObserverCancerResearchStore for PostgresStore {
         let (mut artifacts, duplicate_artifacts) = collapse_duplicate_research(artifacts);
         let distinct_artifacts = u64::try_from(artifacts.len())
             .map_err(|_| corrupt("distinct artifact count overflow"))?;
+        let programs = [
+            CancerResearchProgram::Devices,
+            CancerResearchProgram::Treatments,
+        ]
+        .into_iter()
+        .map(|program| summarize_program(program, &artifacts))
+        .collect::<Result<Vec<_>, _>>()?;
         artifacts.truncate(usize::from(limit.clamp(1, 500)));
 
         let evidence_rows = sqlx::query_as::<_, ResearchEvidenceRow>(
@@ -359,6 +369,7 @@ impl ObserverCancerResearchStore for PostgresStore {
             duplicate_artifacts,
             memory_queued: to_u64(stats.memory_queued, "queued memory count")?,
             memory_accepted: to_u64(stats.memory_accepted, "accepted memory count")?,
+            programs,
             artifacts,
             evidence,
         }))
@@ -372,7 +383,11 @@ fn collapse_duplicate_research(
     let mut duplicate_count = 0_u64;
     for artifact in artifacts {
         let duplicate_of = canonical.iter_mut().find(|existing| {
-            cancer_research_contributions_duplicate(&existing.contribution, &artifact.contribution)
+            existing.program == artifact.program
+                && cancer_research_contributions_duplicate(
+                    &existing.contribution,
+                    &artifact.contribution,
+                )
         });
         if let Some(original) = duplicate_of {
             original.duplicates.push(PublicCancerResearchDuplicate {
@@ -402,6 +417,67 @@ fn collapse_duplicate_research(
             .then_with(|| right.ordinal.cmp(&left.ordinal))
     });
     (canonical, duplicate_count)
+}
+
+fn summarize_program(
+    program: CancerResearchProgram,
+    artifacts: &[PublicCancerResearchArtifact],
+) -> Result<PublicCancerResearchProgramSummary, ObserverProjectionStoreError> {
+    let entries = artifacts
+        .iter()
+        .filter(|artifact| artifact.program == program)
+        .collect::<Vec<_>>();
+    let count = |predicate: fn(&PublicCancerResearchArtifact) -> bool| {
+        u64::try_from(
+            entries
+                .iter()
+                .filter(|artifact| predicate(artifact))
+                .count(),
+        )
+        .map_err(|_| corrupt("program summary count overflow"))
+    };
+    Ok(PublicCancerResearchProgramSummary {
+        program,
+        distinct_artifacts: u64::try_from(entries.len())
+            .map_err(|_| corrupt("program artifact count overflow"))?,
+        duplicate_artifacts: entries.iter().try_fold(0_u64, |total, artifact| {
+            u64::try_from(artifact.duplicates.len())
+                .map_err(|_| corrupt("program duplicate count overflow"))
+                .map(|duplicates| total.saturating_add(duplicates))
+        })?,
+        model_supported: count(|artifact| {
+            artifact
+                .virtual_experiment
+                .as_ref()
+                .is_some_and(|experiment| {
+                    experiment.result.interpretation
+                        == CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+                })
+        })?,
+        model_rejected: count(|artifact| {
+            artifact
+                .virtual_experiment
+                .as_ref()
+                .is_some_and(|experiment| {
+                    matches!(
+                        experiment.result.interpretation,
+                        CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
+                            | CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff
+                    )
+                })
+        })?,
+        model_inconclusive: count(|artifact| {
+            artifact
+                .virtual_experiment
+                .as_ref()
+                .is_some_and(|experiment| {
+                    experiment.result.interpretation
+                        == CancerVirtualExperimentInterpretation::ModelInconclusive
+                })
+        })?,
+        awaiting_evaluation: count(|artifact| artifact.virtual_experiment.is_none())?,
+        newest_ordinal: entries.iter().map(|artifact| artifact.ordinal).max(),
+    })
 }
 
 fn digest_from_db(bytes: &[u8], field: &str) -> Result<Digest, ObserverProjectionStoreError> {

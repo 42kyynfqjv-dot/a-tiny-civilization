@@ -918,6 +918,7 @@ impl CancerResearchJobStore for PostgresStore {
         &self,
         world_id: world_domain::WorldId,
         before_ordinal: u32,
+        program: world_domain::CancerResearchProgram,
     ) -> Result<Option<CancerResearchPriorResult>, StoreError> {
         let row = sqlx::query_as::<_, PriorResearchResultRow>(
             r#"
@@ -927,6 +928,7 @@ impl CancerResearchJobStore for PostgresStore {
             JOIN cancer_research_results AS result USING (request_id)
             WHERE request.world_id=$1
               AND request.ordinal < $2
+              AND MOD(request.ordinal, 2) = $4
               AND request.stage='blind_discovery'
               AND result.route_policy_version=$3
               AND result.result_payload->'receipt' IS NOT NULL
@@ -940,6 +942,7 @@ impl CancerResearchJobStore for PostgresStore {
         .bind(i32::from(
             application::CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
         ))
+        .bind(i64::from(program.ordinal_remainder()))
         .fetch_optional(self.pool())
         .await
         .map_err(operation_error)?;
@@ -952,6 +955,8 @@ impl CancerResearchJobStore for PostgresStore {
             serde_json::from_value(row.result_payload).map_err(corrupt)?;
         if request.selection.world_id != world_id
             || request.selection.ordinal >= before_ordinal
+            || world_domain::CancerResearchProgram::for_ordinal(request.selection.ordinal)
+                != program
             || request.canonical_hash().map_err(corrupt)?
                 != digest_from_db(&row.request_checksum, "prior research request checksum")?
             || Digest::canonical(&result).map_err(corrupt)?
@@ -2136,13 +2141,21 @@ mod tests {
         );
         assert_eq!(
             store
-                .load_latest_cancer_research_hypothesis(world_id, 0)
+                .load_latest_cancer_research_hypothesis(
+                    world_id,
+                    0,
+                    world_domain::CancerResearchProgram::Devices,
+                )
                 .await
                 .expect("no prior hypothesis at ordinal zero"),
             None
         );
         let promoted = store
-            .load_latest_cancer_research_hypothesis(world_id, 1)
+            .load_latest_cancer_research_hypothesis(
+                world_id,
+                1,
+                world_domain::CancerResearchProgram::Devices,
+            )
             .await
             .expect("load prior hypothesis")
             .expect("successful hypothesis exists");
