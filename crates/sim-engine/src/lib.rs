@@ -2022,6 +2022,14 @@ impl EngineState {
             let cancer_events = preview.plan_cancer_burden_events()?;
             preview.apply_events(&cancer_events)?;
             events.extend(cancer_events);
+            let terminal_events = preview.plan_cancer_terminal_events();
+            preview.apply_events(&terminal_events)?;
+            events.extend(terminal_events);
+            if preview.uses_reproductive_physiology_driver() {
+                let endings = preview.unavailable_reproductive_endings();
+                preview.apply_events(&endings)?;
+                events.extend(endings);
+            }
         }
         let unavailable_cognition = preview.plan_unavailable_cognition_events()?;
         preview.apply_events(&unavailable_cognition)?;
@@ -2083,6 +2091,25 @@ impl EngineState {
             day_ordinal,
             transitions,
         }])
+    }
+
+    fn plan_cancer_terminal_events(&self) -> Vec<DomainEvent> {
+        self.cancer_burdens
+            .iter()
+            .filter(|(resident_id, burden)| {
+                burden.is_terminal()
+                    && self
+                        .organisms
+                        .get(resident_id)
+                        .is_some_and(OrganismState::is_alive)
+            })
+            .map(|(resident_id, _)| DomainEvent::OrganismDied {
+                organism_id: *resident_id,
+                cause: DeathCause {
+                    mechanism: "cancer_burden".to_owned(),
+                },
+            })
+            .collect()
     }
 
     pub fn plan_death(
@@ -15464,6 +15491,27 @@ mod tests {
                 .cancer_burdens
                 .values()
                 .all(|burden| burden.observed_at == SimTick::new(288))
+        );
+        let terminal_id = *first
+            .cancer_burdens
+            .keys()
+            .next()
+            .expect("affected resident");
+        first
+            .cancer_burdens
+            .get_mut(&terminal_id)
+            .expect("terminal burden")
+            .primary_burden_parts_per_million =
+            world_domain::CANCER_TERMINAL_BURDEN_PARTS_PER_MILLION;
+        let terminal_events = first.plan_cancer_terminal_events();
+        assert_eq!(
+            terminal_events,
+            vec![DomainEvent::OrganismDied {
+                organism_id: terminal_id,
+                cause: DeathCause {
+                    mechanism: "cancer_burden".to_owned()
+                }
+            }]
         );
     }
 }

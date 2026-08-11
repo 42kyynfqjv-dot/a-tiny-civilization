@@ -89,7 +89,8 @@ the NCI PDMR and HCMI resources:
 - Ruleset 38, event schema 36, and snapshot/state-hash schema 35 add private,
   deterministic daily burden state. The first implementation uses bounded,
   target-specific growth-rate assumptions, seed-derived variation, clone-diversity
-  bookkeeping, and a burden-gated spread transition. These numbers are explicitly
+  bookkeeping, a burden-gated spread transition, and non-graphic mechanical
+  mortality after a fixed terminal-burden threshold. These numbers are explicitly
   provisional engineering assumptions pending the later scientific-validation pass;
   they are not patient models, prognoses, clinical evidence, or treatment guidance.
 - Published ruleset 37 semantics remain unchanged and replayable. New Cancer World
