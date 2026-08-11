@@ -9,13 +9,16 @@ use std::{
 
 use anyhow::{Context, Result};
 use application::{
-    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CognitionModel, CognitionModelRoute,
-    CognitionProviderId, CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore,
-    MemoryOutboxStore, ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession,
-    WorldStore, advance_world, advance_world_with_celestial,
-    advance_world_with_celestial_and_cognition, construct_configured_genesis_with_materials,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchModel,
+    CancerResearchModelAdapters, CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
+    CognitionModel, CognitionModelRoute, CognitionProviderId, CognitionWorkerConfiguration,
+    CognitionWorkerStep, FoundationStore, MemoryOutboxStore, ModelCognitionRequest,
+    ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore, advance_world,
+    advance_world_with_celestial, advance_world_with_celestial_and_cognition,
+    construct_configured_genesis_with_materials,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
-    process_next_cognition_job, resume_world, resume_world_from_snapshot, schedule_world_cognition,
+    process_next_cancer_research_job, process_next_cognition_job, resume_world,
+    resume_world_from_snapshot, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -369,6 +372,61 @@ enum Command {
         #[arg(long, env = "COGNITION_PAID_ENABLED", default_value_t = false)]
         paid_enabled: bool,
     },
+    /// Process content-addressed Cancer World research turns. This worker has a
+    /// dedicated provider identity, memory boundary, and monthly treasury.
+    CancerResearchWorker {
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_WORKER_ID",
+            default_value = "local-cancer-research-worker"
+        )]
+        worker_id: String,
+
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_POLL_MILLISECONDS",
+            default_value_t = 1_000
+        )]
+        poll_milliseconds: u64,
+
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_CLAIM_LEASE_SECONDS",
+            default_value_t = 300
+        )]
+        claim_lease_seconds: u32,
+
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS",
+            default_value_t = 120
+        )]
+        request_timeout_seconds: u64,
+
+        #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
+        cancer_openrouter_api_key: String,
+
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED",
+            default_value_t = false
+        )]
+        external_export_approved: bool,
+
+        #[arg(long, env = "CANCER_RESEARCH_PAID_ENABLED", default_value_t = false)]
+        paid_enabled: bool,
+
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD",
+            default_value_t = application::MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+        )]
+        paid_reservation_micro_usd: u64,
+
+        /// Drain every currently ready research turn and exit.
+        #[arg(long, default_value_t = false)]
+        drain: bool,
+    },
 }
 
 #[derive(Serialize)]
@@ -650,6 +708,48 @@ async fn main() -> Result<()> {
                 poll_milliseconds,
                 claim_lease_seconds,
                 &configuration,
+            )
+            .await
+        }
+        Command::CancerResearchWorker {
+            worker_id,
+            poll_milliseconds,
+            claim_lease_seconds,
+            request_timeout_seconds,
+            cancer_openrouter_api_key,
+            external_export_approved,
+            paid_enabled,
+            paid_reservation_micro_usd,
+            drain,
+        } => {
+            if !external_export_approved {
+                anyhow::bail!(
+                    "Cancer World research export requires CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED=true"
+                );
+            }
+            let provider = CognitionProviderId::openrouter_cancer();
+            let adapter = OpenAiCompatibleCognition::new(
+                provider.clone(),
+                "https://openrouter.ai/api/v1",
+                cancer_openrouter_api_key,
+                Duration::from_secs(request_timeout_seconds.max(1)),
+            )
+            .context("configure dedicated Cancer World OpenRouter adapter")?;
+            let mut adapters: CancerResearchModelAdapters = BTreeMap::new();
+            adapters.insert(provider, Arc::new(adapter) as Arc<dyn CancerResearchModel>);
+            let configuration = CancerResearchWorkerConfiguration {
+                claim_lease_seconds,
+                paid_reservation_micro_usd,
+                paid_enabled,
+                ..CancerResearchWorkerConfiguration::default()
+            };
+            serve_cancer_research_worker(
+                &store,
+                &adapters,
+                &worker_id,
+                poll_milliseconds,
+                &configuration,
+                drain,
             )
             .await
         }
@@ -2676,6 +2776,74 @@ async fn serve_cognition_worker(
     Ok(())
 }
 
+async fn serve_cancer_research_worker(
+    store: &PostgresStore,
+    adapters: &CancerResearchModelAdapters,
+    worker_id: &str,
+    poll_milliseconds: u64,
+    configuration: &CancerResearchWorkerConfiguration,
+    drain: bool,
+) -> Result<()> {
+    configuration
+        .validate()
+        .context("validate Cancer World research worker configuration")?;
+    let heartbeat = ServiceHeartbeat {
+        service_name: "cancer-research-worker".to_owned(),
+        instance_id: Uuid::new_v4(),
+        metadata: json!({
+            "worker_id": worker_id,
+            "worker_version": env!("CARGO_PKG_VERSION"),
+            "configured_providers": adapters.len(),
+            "paid_enabled": configuration.paid_enabled,
+            "paid_reservation_micro_usd": configuration.paid_reservation_micro_usd,
+            "mode": "content-addressed-open-research",
+        }),
+    };
+    let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(1)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tracing::info!(
+        worker_id,
+        configured_providers = adapters.len(),
+        paid_enabled = configuration.paid_enabled,
+        drain,
+        "Cancer World research worker started"
+    );
+    loop {
+        tokio::select! {
+            _ = heartbeat_interval.tick(), if !drain => {
+                if let Err(error) = store.record_heartbeat(&heartbeat).await {
+                    tracing::warn!(%error, "Cancer World research-worker heartbeat failed; will retry");
+                }
+            }
+            _ = interval.tick() => {
+                match process_next_cancer_research_job(
+                    store,
+                    adapters,
+                    worker_id,
+                    configuration,
+                ).await {
+                    Ok(CancerResearchWorkerOutcome::Idle) if drain => break,
+                    Ok(CancerResearchWorkerOutcome::Idle) => {}
+                    Ok(CancerResearchWorkerOutcome::Completed { request_id, succeeded }) => {
+                        tracing::info!(%request_id, succeeded, "Cancer World research turn finalized");
+                    }
+                    Err(error) if drain => return Err(error).context("drain Cancer World research queue"),
+                    Err(error) => {
+                        tracing::warn!(%error, "Cancer World research turn failed; worker will continue");
+                    }
+                }
+            }
+            _ = shutdown_signal(), if !drain => {
+                tracing::info!(worker_id, "Cancer World research worker stopping");
+                break;
+            }
+        }
+    }
+    Ok(())
+}
+
 fn retry_delay_seconds(attempt_count: u32) -> u32 {
     let shift = attempt_count.saturating_sub(1).min(8);
     (1_u32 << shift).min(300)
@@ -3654,6 +3822,38 @@ mod tests {
             DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS
         );
         assert!(request_timeout_seconds < 60);
+    }
+
+    #[test]
+    fn cancer_research_worker_requires_a_dedicated_key_and_defaults_paid_off() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "--database-url",
+            "postgres://example",
+            "cancer-research-worker",
+            "--cancer-openrouter-api-key",
+            "test-only-key",
+            "--external-export-approved",
+            "--drain",
+        ])
+        .expect("parse Cancer World research worker command");
+        let Some(Command::CancerResearchWorker {
+            paid_enabled,
+            drain,
+            request_timeout_seconds,
+            paid_reservation_micro_usd,
+            ..
+        }) = cli.command
+        else {
+            panic!("expected Cancer World research worker command");
+        };
+        assert!(!paid_enabled);
+        assert!(drain);
+        assert_eq!(request_timeout_seconds, 120);
+        assert_eq!(
+            paid_reservation_micro_usd,
+            application::MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+        );
     }
 
     #[test]

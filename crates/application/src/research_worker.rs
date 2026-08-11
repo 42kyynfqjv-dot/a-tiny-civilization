@@ -15,6 +15,7 @@ pub struct CancerResearchWorkerConfiguration {
     pub claim_lease_seconds: u32,
     pub retry_after_seconds: u32,
     pub paid_reservation_micro_usd: u64,
+    pub paid_enabled: bool,
 }
 
 impl Default for CancerResearchWorkerConfiguration {
@@ -23,12 +24,13 @@ impl Default for CancerResearchWorkerConfiguration {
             claim_lease_seconds: 300,
             retry_after_seconds: 30,
             paid_reservation_micro_usd: MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+            paid_enabled: false,
         }
     }
 }
 
 impl CancerResearchWorkerConfiguration {
-    fn validate(&self) -> Result<(), CancerResearchWorkerError> {
+    pub fn validate(&self) -> Result<(), CancerResearchWorkerError> {
         if self.claim_lease_seconds == 0
             || self.claim_lease_seconds > 3_600
             || self.retry_after_seconds == 0
@@ -183,6 +185,24 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
             return finalize_result(store, worker_id, entry, &registry, attempts, None).await;
         };
 
+        if route.billing_class == CognitionBillingClass::PaidApproved && !configuration.paid_enabled
+        {
+            for (remaining_position, remaining) in registry.routes.iter().enumerate().skip(position)
+            {
+                attempts.push(CognitionRouteAttempt {
+                    route_index: u16::try_from(remaining_position).map_err(|_| {
+                        CancerResearchWorkerError::Corrupt(
+                            "research route index exceeds u16".to_owned(),
+                        )
+                    })?,
+                    provider: remaining.provider.clone(),
+                    requested_model: remaining.requested_model.clone(),
+                    billing_class: remaining.billing_class,
+                    status: CognitionRouteAttemptStatus::SkippedPaidUnauthorized,
+                });
+            }
+            return finalize_result(store, worker_id, entry, &registry, attempts, None).await;
+        }
         if route.billing_class == CognitionBillingClass::PaidApproved
             && paid_authorization.is_none()
         {
@@ -363,4 +383,23 @@ async fn finalize_result<S: CancerResearchJobStore + ?Sized>(
         request_id: entry.request.request_id,
         succeeded,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn paid_research_is_an_explicit_worker_switch() {
+        let default = CancerResearchWorkerConfiguration::default();
+        assert!(!default.paid_enabled);
+        assert!(default.validate().is_ok());
+
+        let invalid = CancerResearchWorkerConfiguration {
+            paid_reservation_micro_usd: MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+                .saturating_add(1),
+            ..default
+        };
+        assert!(invalid.validate().is_err());
+    }
 }
