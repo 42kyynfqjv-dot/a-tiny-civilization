@@ -8,6 +8,7 @@ repository.workspace = true
 
 [dependencies]
 application = { path = "../application" }
+hindsight-adapter = { path = "../hindsight-adapter" }
 observer-projection = { path = "../observer-projection" }
 observer-auth = { path = "../observer-auth" }
 oidc-adapter = { path = "../oidc-adapter" }

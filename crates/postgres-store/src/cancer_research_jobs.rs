@@ -5,14 +5,15 @@ use application::{
     CancerResearchPaidReservationDecision, CancerResearchPriorResult,
     CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
     CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
-    CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
+    CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
+    StoreError, cancer_research_collective_id,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
-use world_domain::{CancerResearchInferenceTier, CancerResearchStage, Digest};
+use world_domain::{CancerResearchInferenceTier, CancerResearchStage, Digest, EventSequence};
 
 use crate::PostgresStore;
 
@@ -544,6 +545,9 @@ impl CancerResearchJobStore for PostgresStore {
         .execute(&mut *transaction)
         .await
         .map_err(operation_error)?;
+        if let Some(receipt) = result.receipt.as_ref() {
+            enqueue_cancer_research_memory(&mut transaction, &entry.request, receipt).await?;
+        }
         sqlx::query(
             "UPDATE cancer_research_requests SET completed_at=NOW() WHERE request_id=$1 AND claimed_by=$2 AND completed_at IS NULL",
         )
@@ -891,6 +895,132 @@ impl CancerResearchJobStore for PostgresStore {
         .await?;
         transaction.commit().await.map_err(operation_error)
     }
+}
+
+impl PostgresStore {
+    /// Idempotently mirrors successful historical Cancer World contributions into
+    /// the isolated research Hindsight bank. New results are enqueued in the same
+    /// transaction that stores them; this closes the gap for results created
+    /// before that invariant existed.
+    pub async fn backfill_cancer_research_memories(&self) -> Result<u64, StoreError> {
+        let rows = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            WHERE result.result_payload->'receipt' <> 'null'::JSONB
+            ORDER BY request.world_id,request.ordinal,request.request_id
+            "#,
+        )
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let mut inserted = 0_u64;
+        for row in rows {
+            let request: CancerResearchModelRequest =
+                serde_json::from_value(row.request_payload).map_err(corrupt)?;
+            let result: CancerResearchLadderResult =
+                serde_json::from_value(row.result_payload).map_err(corrupt)?;
+            if request.canonical_hash().map_err(corrupt)?
+                != digest_from_db(&row.request_checksum, "research request checksum")?
+                || Digest::canonical(&result).map_err(corrupt)?
+                    != digest_from_db(&row.result_checksum, "research result checksum")?
+            {
+                return Err(StoreError::Corrupt(
+                    "historical cancer research failed its durable checksum".to_owned(),
+                ));
+            }
+            let receipt = result.receipt.as_ref().ok_or_else(|| {
+                StoreError::Corrupt(
+                    "successful historical research result omitted its receipt".to_owned(),
+                )
+            })?;
+            if result.request_id != request.request_id
+                || receipt.request_id != request.request_id
+                || receipt.request_hash != request.canonical_hash().map_err(corrupt)?
+            {
+                return Err(StoreError::Corrupt(
+                    "historical research result crossed its immutable request provenance"
+                        .to_owned(),
+                ));
+            }
+            receipt
+                .contribution
+                .validate_against(&request.selection)
+                .map_err(corrupt)?;
+            let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+            inserted += u64::from(
+                enqueue_cancer_research_memory(&mut transaction, &request, receipt).await?,
+            );
+            transaction.commit().await.map_err(operation_error)?;
+        }
+        Ok(inserted)
+    }
+}
+
+async fn enqueue_cancer_research_memory(
+    transaction: &mut Transaction<'_, Postgres>,
+    request: &CancerResearchModelRequest,
+    receipt: &CancerResearchModelReceipt,
+) -> Result<bool, StoreError> {
+    receipt
+        .contribution
+        .validate_against(&request.selection)
+        .map_err(corrupt)?;
+    let source_sequence: i64 = sqlx::query_scalar(
+        r#"
+        SELECT sequence
+        FROM event_batches
+        WHERE world_id=$1 AND tick <= $2
+        ORDER BY tick DESC, sequence DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(request.selection.world_id.as_uuid())
+    .bind(to_i64(
+        request.selection.selected_at_tick.get(),
+        "research memory selected tick",
+    )?)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    let retain = MemoryRetain::new(
+        request.selection.world_id,
+        cancer_research_collective_id(request.selection.world_id),
+        EventSequence::new(
+            u64::try_from(source_sequence)
+                .map_err(|_| corrupt("research memory source sequence is negative"))?,
+        ),
+        request.selection.selected_at_tick,
+        request.selection.ordinal,
+        serde_json::to_string(&receipt.contribution).map_err(corrupt)?,
+        "Cancer World research artifact",
+    )
+    .map_err(corrupt)?;
+    let payload = serde_json::to_value(&retain).map_err(corrupt)?;
+    let inserted = sqlx::query(
+        r#"
+        INSERT INTO memory_outbox (
+            operation_id, document_id, world_id, agent_id, source_sequence,
+            bank_id, payload_version, payload
+        )
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        ON CONFLICT (operation_id) DO NOTHING
+        "#,
+    )
+    .bind(retain.operation_id)
+    .bind(retain.document_id)
+    .bind(retain.world_id.as_uuid())
+    .bind(retain.agent_id.as_uuid())
+    .bind(source_sequence)
+    .bind(&retain.bank_id)
+    .bind(i32::from(retain.payload_version))
+    .bind(payload)
+    .execute(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    Ok(inserted.rows_affected() == 1)
 }
 
 async fn fetch_research_reservation_from_pool(
@@ -1379,6 +1509,19 @@ mod tests {
         .execute(store.pool())
         .await
         .expect("insert test world");
+        sqlx::query(
+            r#"
+            INSERT INTO event_batches (
+                world_id,sequence,tick,event_schema_version,ruleset_version,payload,
+                checksum,previous_checksum,post_state_checksum
+            ) VALUES ($1,1,0,1,37,'{}'::JSONB,$2,$2,$2)
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(&zero)
+        .execute(store.pool())
+        .await
+        .expect("insert test event provenance");
 
         let resident_id = EntityId::deterministic(world_id, b"research-ledger-resident");
         let selection = CancerResearchTurnSelection::new(
@@ -1484,6 +1627,25 @@ mod tests {
             .complete_cancer_research_request("research-test-worker", &entry, &registry, &result)
             .await
             .expect("complete");
+        let mirrored: (i64, String) = sqlx::query_as(
+            "SELECT COUNT(*),MIN(bank_id) FROM memory_outbox WHERE world_id=$1 AND payload->>'context'='Cancer World research artifact'",
+        )
+        .bind(world_id.as_uuid())
+        .fetch_one(store.pool())
+        .await
+        .expect("research memory mirror");
+        assert_eq!(mirrored.0, 1);
+        assert_eq!(
+            mirrored.1,
+            application::cancer_research_memory_bank_id(world_id)
+        );
+        assert_eq!(
+            store
+                .backfill_cancer_research_memories()
+                .await
+                .expect("idempotent research-memory backfill"),
+            0
+        );
         assert_eq!(
             store
                 .load_cancer_research_result(request.request_id)

@@ -1366,8 +1366,11 @@ mod tests {
                 CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
             )
         );
-        assert!(
-            CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH < COGNITION_HARD_STOP_MICRO_USD_PER_MONTH
-        );
+        const {
+            assert!(
+                CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
+                    < COGNITION_HARD_STOP_MICRO_USD_PER_MONTH
+            );
+        }
     }
 }

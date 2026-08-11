@@ -6,7 +6,7 @@ use uuid::Uuid;
 use world_domain::{
     CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
     CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchStage,
-    CancerResearchTurnSelection, Digest,
+    CancerResearchTurnSelection, Digest, EntityId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -61,6 +61,19 @@ pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_ADAPTER_VERSION_BYTES: usize = 128;
+
+/// Stable synthetic identity for the observer-side research collective. It is
+/// never an organism and gives Cancer World one Hindsight bank isolated from
+/// every resident's subjective-memory bank.
+#[must_use]
+pub fn cancer_research_collective_id(world_id: world_domain::WorldId) -> EntityId {
+    EntityId::deterministic(world_id, b"cancer-research-collective:v1")
+}
+
+#[must_use]
+pub fn cancer_research_memory_bank_id(world_id: world_domain::WorldId) -> String {
+    crate::memory_bank_id(world_id, cancer_research_collective_id(world_id))
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

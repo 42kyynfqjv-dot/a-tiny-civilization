@@ -3194,6 +3194,7 @@ impl EngineState {
         ))
     }
 
+    #[allow(clippy::type_complexity)] // Four before/after association slots form one atomic update.
     fn next_signal_action_association(
         &self,
         organism: &OrganismState,
@@ -4326,10 +4327,7 @@ impl EngineState {
                 } else {
                     execution.max_events_per_partition_transition
                 };
-                (
-                    execution.partition_s2_level,
-                    maximum_events,
-                )
+                (execution.partition_s2_level, maximum_events)
             })
     }
 

@@ -710,6 +710,14 @@ async fn main() -> Result<()> {
                 Duration::from_secs(request_timeout_seconds.max(1)),
             )
             .context("configure Hindsight memory adapter")?;
+            let research_memories = store
+                .backfill_cancer_research_memories()
+                .await
+                .context("backfill Cancer World research memories")?;
+            tracing::info!(
+                inserted = research_memories,
+                "Cancer World research-memory mirror reconciled"
+            );
             serve_memory_worker(
                 &store,
                 &memory,
@@ -2833,6 +2841,7 @@ async fn serve_memory_worker(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // One explicit option per independently configured provider.
 fn cognition_adapters(
     local_base_url: Option<String>,
     cloudflare_base_url: Option<String>,

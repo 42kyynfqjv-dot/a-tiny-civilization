@@ -3,6 +3,7 @@ use std::{net::SocketAddr, sync::Arc, time::Duration};
 use anyhow::{Context, Result};
 use chrono::Utc;
 use clap::{Parser, Subcommand};
+use hindsight_adapter::HindsightMemory;
 use observer_api::ApiState;
 use observer_projection::SupporterReservationStore;
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient};
@@ -137,6 +138,12 @@ enum Command {
         apple_redirect_uri: String,
         #[arg(long, env = "NEWSLETTER_WEEKLY_SIGNUP_URL")]
         newsletter_weekly_signup_url: Option<String>,
+        #[arg(long, env = "HINDSIGHT_BASE_URL")]
+        hindsight_base_url: Option<String>,
+        #[arg(long, env = "HINDSIGHT_API_KEY", hide_env_values = true)]
+        hindsight_api_key: Option<String>,
+        #[arg(long, env = "HINDSIGHT_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
+        hindsight_request_timeout_seconds: u64,
     },
 }
 
@@ -173,6 +180,9 @@ async fn main() -> Result<()> {
         apple_private_key: None,
         apple_redirect_uri: "https://atinycivilization.com/api/v1/auth/apple/callback".to_owned(),
         newsletter_weekly_signup_url: None,
+        hindsight_base_url: None,
+        hindsight_api_key: None,
+        hindsight_request_timeout_seconds: 15,
     }) {
         Command::Migrate => {
             store.migrate().await.context("apply database migrations")?;
@@ -328,9 +338,24 @@ async fn main() -> Result<()> {
             apple_private_key,
             apple_redirect_uri,
             newsletter_weekly_signup_url,
+            hindsight_base_url,
+            hindsight_api_key,
+            hindsight_request_timeout_seconds,
         } => {
             let secure_cookies = environment == "production";
             let mut state = ApiState::new(Arc::new(store.clone()), environment);
+            if let Some(base_url) = nonempty(hindsight_base_url) {
+                let memory = HindsightMemory::new(
+                    &base_url,
+                    nonempty(hindsight_api_key),
+                    Duration::from_secs(hindsight_request_timeout_seconds.max(1)),
+                )
+                .context("configure Cancer World research-memory search")?;
+                state = state.with_research_memory(Arc::new(memory));
+                tracing::info!("Cancer World research-memory search enabled");
+            } else {
+                tracing::info!("Cancer World research-memory search disabled");
+            }
             let stripe_webhook_secret = nonempty(stripe_webhook_secret);
             let stripe_secret_key = nonempty(stripe_secret_key);
             let stripe_supporter_price_id = nonempty(stripe_supporter_price_id);

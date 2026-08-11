@@ -10,9 +10,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence,
-    MaterialIdentity, OrganismRole, PerceptionChannel, PrimitiveActionKind, S2CellId, SimTick,
-    SpeciesIdentity, WorldId, WorldStatus,
+    BirthCategory, CancerResearchContribution, CancerResearchEvidenceReference,
+    CancerResearchInferenceTier, CancerResearchTarget, CancerResearchTask, Digest, DomainEvent,
+    EntityId, EventBatch, EventId, EventSequence, MaterialIdentity, OrganismRole,
+    PerceptionChannel, PrimitiveActionKind, S2CellId, SimTick, SpeciesIdentity, WorldId,
+    WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -42,6 +44,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -808,6 +811,78 @@ pub trait ObserverMemoryStore: Send + Sync {
         world_id: WorldId,
         limit: u16,
     ) -> Result<PublicMemoryStream, ObserverProjectionStoreError>;
+}
+
+/// Delivery state of a successful research contribution in Cancer World's
+/// isolated Hindsight bank. PostgreSQL remains the durable source of truth.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicResearchMemoryState {
+    Queued,
+    Accepted,
+}
+
+/// One validated model contribution with enough provenance to inspect its
+/// evidence and its links to earlier contributions without exposing provider
+/// credentials or raw prompts.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerResearchArtifact {
+    pub request_id: Uuid,
+    pub selected_at_tick: SimTick,
+    pub ordinal: u32,
+    pub target: CancerResearchTarget,
+    pub task: CancerResearchTask,
+    pub inference_tier: CancerResearchInferenceTier,
+    pub contribution: CancerResearchContribution,
+    pub artifact_hash: Digest,
+    pub evidence: Vec<CancerResearchEvidenceReference>,
+    pub recalled_artifact_hashes: Vec<Digest>,
+    pub requested_model: String,
+    pub resolved_model: String,
+    pub prompt_tokens: u32,
+    pub completion_tokens: u32,
+    pub billed_micro_usd: u64,
+    pub result_hash: Digest,
+    pub memory_state: PublicResearchMemoryState,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerResearchEvidence {
+    pub evidence_id: Uuid,
+    pub source_id: String,
+    pub title: String,
+    pub license: String,
+    pub published_at: Option<chrono::NaiveDate>,
+    pub content_hash: Digest,
+    pub retrieved_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerResearchView {
+    pub projection_version: u16,
+    pub world_id: WorldId,
+    pub memory_bank_id: String,
+    pub target: CancerResearchTarget,
+    pub total_requests: u64,
+    pub pending_requests: u64,
+    pub successful_requests: u64,
+    pub unsuccessful_requests: u64,
+    pub memory_queued: u64,
+    pub memory_accepted: u64,
+    pub artifacts: Vec<PublicCancerResearchArtifact>,
+    pub evidence: Vec<PublicCancerResearchEvidence>,
+}
+
+/// Read-only Cancer World research projection. It cannot schedule turns or
+/// mutate canonical history.
+#[async_trait]
+pub trait ObserverCancerResearchStore: Send + Sync {
+    async fn public_cancer_research(
+        &self,
+        world_id: WorldId,
+        limit: u16,
+    ) -> Result<Option<PublicCancerResearchView>, ObserverProjectionStoreError>;
 }
 
 /// One restrained observer-facing life record. This is an index over committed facts,

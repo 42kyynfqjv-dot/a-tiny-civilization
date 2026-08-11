@@ -2,7 +2,10 @@
 
 use std::{sync::Arc, time::Instant};
 
-use application::FoundationStore;
+use application::{
+    AgentMemory, FoundationStore, MemoryRecallOutcome, MemoryRecallRequest,
+    cancer_research_collective_id,
+};
 use axum::{
     Json, Router,
     body::Bytes,
@@ -17,13 +20,13 @@ use observer_auth::{
     ObserverSession, SessionSecrets,
 };
 use observer_projection::{
-    ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
+    ObserverArtifactStore, ObserverCancerResearchStore, ObserverFindingStore, ObserverHabitatStore,
     ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverMemoryStore,
     ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicArtifact,
-    PublicArtifactTrace, PublicFinding, PublicHabitatDetail, PublicHabitatQuery, PublicHabitatView,
-    PublicHistoryCommitmentPage, PublicLanguageArchive, PublicMemoryStream, PublicOrganism,
-    PublicTimelineItem, PublicWikiEntry, PublicWorld, PublicWorldTelemetry,
-    compose_public_wiki_entries,
+    PublicArtifactTrace, PublicCancerResearchView, PublicFinding, PublicHabitatDetail,
+    PublicHabitatQuery, PublicHabitatView, PublicHistoryCommitmentPage, PublicLanguageArchive,
+    PublicMemoryStream, PublicOrganism, PublicTimelineItem, PublicWikiEntry, PublicWorld,
+    PublicWorldTelemetry, compose_public_wiki_entries,
 };
 use oidc_adapter::{AppleOidcClient, GoogleOidcClient, OidcError};
 use serde::Deserialize;
@@ -56,6 +59,7 @@ pub trait ObserverReadStore:
     + ObserverHabitatStore
     + ObserverLanguageStore
     + ObserverMemoryStore
+    + ObserverCancerResearchStore
 {
 }
 
@@ -70,6 +74,7 @@ impl<T> ObserverReadStore for T where
         + ObserverHabitatStore
         + ObserverLanguageStore
         + ObserverMemoryStore
+        + ObserverCancerResearchStore
 {
 }
 
@@ -83,6 +88,7 @@ pub struct ApiState {
     supporter_checkout: Option<Arc<SupporterCheckoutService>>,
     supporter_cancellation: Option<Arc<SupporterCancellationService>>,
     newsletter: Option<Arc<NewsletterRuntime>>,
+    research_memory: Option<Arc<dyn AgentMemory>>,
 }
 
 impl ApiState {
@@ -97,6 +103,7 @@ impl ApiState {
             supporter_checkout: None,
             supporter_cancellation: None,
             newsletter: None,
+            research_memory: None,
         }
     }
 
@@ -142,6 +149,12 @@ impl ApiState {
     #[must_use]
     pub fn with_newsletter(mut self, weekly_signup_url: Url) -> Self {
         self.newsletter = Some(Arc::new(NewsletterRuntime { weekly_signup_url }));
+        self
+    }
+
+    #[must_use]
+    pub fn with_research_memory(mut self, memory: Arc<dyn AgentMemory>) -> Self {
+        self.research_memory = Some(memory);
         self
     }
 }
@@ -219,6 +232,14 @@ pub fn router(state: ApiState) -> Router {
         .route("/api/v1/worlds/{world_id}/habitat", get(public_habitat))
         .route("/api/v1/worlds/{world_id}/language", get(public_language))
         .route("/api/v1/worlds/{world_id}/memory", get(public_memory))
+        .route(
+            "/api/v1/worlds/{world_id}/research",
+            get(public_cancer_research),
+        )
+        .route(
+            "/api/v1/worlds/{world_id}/research/search",
+            get(search_cancer_research_memory),
+        )
         .route(
             "/api/v1/worlds/{world_id}/organisms/{organism_id}",
             get(public_organism),
@@ -1429,6 +1450,80 @@ async fn public_memory(
         .await
         .map_err(log_observer_error)?;
     Ok(Json(stream))
+}
+
+async fn public_cancer_research(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<TimelineQuery>,
+) -> Result<Json<PublicCancerResearchView>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let view = state
+        .store
+        .public_cancer_research(world_id, query.limit.unwrap_or(120))
+        .await
+        .map_err(log_observer_error)?
+        .ok_or(ApiError::NotFound)?;
+    Ok(Json(view))
+}
+
+#[derive(Debug, Deserialize)]
+struct ResearchSearchQuery {
+    q: String,
+    max_tokens: Option<u32>,
+}
+
+async fn search_cancer_research_memory(
+    State(state): State<ApiState>,
+    Path(world_id): Path<String>,
+    Query(query): Query<ResearchSearchQuery>,
+) -> Result<Json<MemoryRecallOutcome>, ApiError> {
+    let world_id = world_id
+        .parse::<WorldId>()
+        .map_err(|_| ApiError::NotFound)?;
+    let memory = state
+        .research_memory
+        .as_ref()
+        .ok_or(ApiError::Unavailable)?;
+    let normalized = query.q.trim();
+    if normalized.is_empty() || normalized.len() > 4_096 {
+        return Err(ApiError::BadRequest(
+            "invalid_research_query",
+            "research query must contain 1 to 4096 bytes",
+        ));
+    }
+    let telemetry = state
+        .store
+        .public_world_telemetry(world_id)
+        .await
+        .map_err(log_observer_error)?
+        .ok_or(ApiError::NotFound)?;
+    let digest = Digest::sha256(normalized.as_bytes());
+    let digest_bytes = digest.as_bytes();
+    let ordinal = u32::from_be_bytes([
+        digest_bytes[0],
+        digest_bytes[1],
+        digest_bytes[2],
+        digest_bytes[3],
+    ]);
+    let request = MemoryRecallRequest::new(
+        world_id,
+        cancer_research_collective_id(world_id),
+        telemetry.tick,
+        telemetry.tick,
+        ordinal,
+        normalized,
+        query.max_tokens.unwrap_or(800).clamp(1, 4_096),
+    )
+    .map_err(|_| {
+        ApiError::BadRequest(
+            "invalid_research_query",
+            "research query could not form a bounded memory lookup",
+        )
+    })?;
+    Ok(Json(memory.recall(&request).await))
 }
 
 async fn public_organism(

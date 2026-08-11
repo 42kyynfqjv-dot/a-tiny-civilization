@@ -21,6 +21,7 @@ mod observer_history_commitments;
 mod observer_language;
 mod observer_memory;
 mod observer_organisms;
+mod observer_research;
 mod observer_timeline;
 mod observer_worlds;
 mod stripe_checkout_sessions;

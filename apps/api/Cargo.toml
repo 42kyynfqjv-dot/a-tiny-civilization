@@ -12,6 +12,7 @@ axum.workspace = true
 chrono.workspace = true
 clap.workspace = true
 dotenvy.workspace = true
+hindsight-adapter = { path = "../../crates/hindsight-adapter" }
 observer-api = { path = "../../crates/observer-api" }
 observer-projection = { path = "../../crates/observer-projection" }
 oidc-adapter = { path = "../../crates/oidc-adapter" }
