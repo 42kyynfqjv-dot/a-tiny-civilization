@@ -35,18 +35,48 @@ impl MemoryOutboxStore for PostgresStore {
         let lease_seconds = i64::from(claim_lease_seconds.max(1));
         let row = sqlx::query_as::<_, MemoryOutboxRow>(
             r#"
-            WITH candidate AS (
+            WITH active_ordinary_world AS (
+                SELECT id
+                FROM worlds
+                WHERE status = 'running'
+                  AND manifest -> 'experiment' IS NULL
+                ORDER BY created_at DESC, id ASC
+                LIMIT 1
+            ),
+            preferred AS (
                 SELECT operation_id
-                FROM memory_outbox
-                WHERE completed_at IS NULL
-                  AND available_at <= NOW()
+                FROM memory_outbox AS delivery
+                WHERE delivery.world_id = (SELECT id FROM active_ordinary_world)
+                  AND delivery.completed_at IS NULL
+                  AND delivery.available_at <= NOW()
                   AND (
-                      claimed_at IS NULL
-                      OR claimed_at < NOW() - ($2::BIGINT * INTERVAL '1 second')
+                      delivery.claimed_at IS NULL
+                      OR delivery.claimed_at < NOW() - ($2::BIGINT * INTERVAL '1 second')
                   )
-                ORDER BY available_at ASC, created_at ASC, operation_id ASC
+                ORDER BY delivery.available_at ASC, delivery.created_at ASC,
+                         delivery.operation_id ASC
                 FOR UPDATE SKIP LOCKED
                 LIMIT 1
+            ),
+            fallback AS (
+                SELECT operation_id
+                FROM memory_outbox AS delivery
+                WHERE NOT EXISTS (SELECT 1 FROM preferred)
+                  AND delivery.completed_at IS NULL
+                  AND delivery.available_at <= NOW()
+                  AND (
+                      delivery.claimed_at IS NULL
+                      OR delivery.claimed_at < NOW() - ($2::BIGINT * INTERVAL '1 second')
+                  )
+                ORDER BY delivery.available_at ASC, delivery.created_at ASC,
+                         delivery.operation_id ASC
+                FOR UPDATE SKIP LOCKED
+                LIMIT 1
+            ),
+            candidate AS (
+                SELECT operation_id FROM preferred
+                UNION ALL
+                SELECT operation_id FROM fallback
             )
             UPDATE memory_outbox AS delivery
             SET

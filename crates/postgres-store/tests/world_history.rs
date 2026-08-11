@@ -1571,6 +1571,75 @@ async fn subjective_memory_delivery_is_atomic_leased_and_immutable(pool: PgPool)
 }
 
 #[sqlx::test(migrations = "../../db/migrations")]
+async fn active_ordinary_world_memory_is_not_starved_by_retired_backlog(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let old_manifest = manifest(182);
+    let old_person = initial_person(old_manifest.world_id);
+    let old_created = store.create_world(&old_manifest, None).await?;
+    let (_, old_batch, old_snapshot) = genesis(&old_manifest, vec![old_person.clone()])?;
+    let old_retain = MemoryRetain::new(
+        old_manifest.world_id,
+        old_person.organism_id,
+        old_batch.sequence,
+        old_batch.tick,
+        0,
+        r#"{"property_code":"older-backlog"}"#,
+        "canonical-direct-perception-v1",
+    )?;
+    store
+        .commit_transition(
+            old_created.cursor,
+            &old_batch,
+            &old_snapshot,
+            &TransitionEffects {
+                memory_retains: vec![old_retain.clone()],
+            },
+        )
+        .await?;
+
+    let successor_id = WorldId::from_uuid(Uuid::new_v4());
+    let old_running = resume_world(&store, old_manifest.world_id).await?;
+    retire_world_for_successor(&store, &old_running, successor_id).await?;
+
+    let successor_manifest = WorldManifest::new(successor_id, WorldSeed::new(183), RULESET_VERSION);
+    let successor_person = initial_person(successor_id);
+    let successor_created = store
+        .create_world(&successor_manifest, Some(old_manifest.world_id))
+        .await?;
+    let (_, successor_batch, successor_snapshot) =
+        genesis(&successor_manifest, vec![successor_person.clone()])?;
+    let successor_retain = MemoryRetain::new(
+        successor_id,
+        successor_person.organism_id,
+        successor_batch.sequence,
+        successor_batch.tick,
+        0,
+        r#"{"property_code":"active-world"}"#,
+        "canonical-direct-perception-v1",
+    )?;
+    store
+        .commit_transition(
+            successor_created.cursor,
+            &successor_batch,
+            &successor_snapshot,
+            &TransitionEffects {
+                memory_retains: vec![successor_retain.clone()],
+            },
+        )
+        .await?;
+
+    let first = store
+        .claim_next_memory("active-world-memory-worker", 60)
+        .await?
+        .expect("active-world memory is claimable");
+    assert_eq!(first.retain, successor_retain);
+    assert_ne!(first.retain, old_retain);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
 async fn rejects_stale_writer_and_event_mutation(pool: PgPool) -> Result<()> {
     let store = PostgresStore::from_pool(pool.clone());
     let manifest = manifest(202);
