@@ -184,6 +184,10 @@ pub const CANCER_RESEARCH_WORLD_RULESET_VERSION: u32 = 37;
 /// replayable progression transition per simulated day. Its provisional numeric
 /// parameters remain implementation assumptions pending scientific validation.
 pub const CANCER_BIOLOGY_RULESET_VERSION: u32 = 38;
+/// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
+/// than the older public-world partition envelope on a single local patch. This
+/// is a deterministic execution allowance, not a behavior or selection weight.
+pub const CANCER_RESEARCH_MINIMUM_PARTITION_EVENT_LIMIT: u32 = 50_000;
 /// The already-running public ruleset-33 world receives the stateless ruleset-34
 /// policy driver at this disclosed boundary. Earlier ruleset-33 transitions retain
 /// their exact candidate set and replay behavior.
@@ -288,6 +292,7 @@ const MAX_SIGNAL_MOTOR_ASSOCIATIONS: usize =
     world_domain::SIGNAL_FORM_VARIANT_COUNT as usize * (HERITABLE_ACTION_KINDS.len() + 3);
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
+const CANCER_RESEARCH_MAX_PERCEPTION_MEMORY_ENTRIES: usize = 2_048;
 
 /// A tiny deterministic motor cadence used only by the ruleset-four integration
 /// driver. It creates no cultural interpretation and does not claim a metabolic or
@@ -4314,9 +4319,16 @@ impl EngineState {
             .as_ref()
             .and_then(WorldConfiguration::partitioned_execution)
             .map(|execution| {
+                let maximum_events = if self.uses_cancer_biology_driver() {
+                    execution
+                        .max_events_per_partition_transition
+                        .max(CANCER_RESEARCH_MINIMUM_PARTITION_EVENT_LIMIT)
+                } else {
+                    execution.max_events_per_partition_transition
+                };
                 (
                     execution.partition_s2_level,
-                    execution.max_events_per_partition_transition,
+                    maximum_events,
                 )
             })
     }
@@ -5003,13 +5015,26 @@ impl EngineState {
         self.manifest.ruleset_version >= PERSON_COGNITION_RULESET_VERSION
     }
 
+    fn maximum_perception_memory_entries(&self) -> usize {
+        if self.uses_cancer_biology_driver() {
+            CANCER_RESEARCH_MAX_PERCEPTION_MEMORY_ENTRIES
+        } else {
+            MAX_PERCEPTION_MEMORY_ENTRIES
+        }
+    }
+
     fn validate_event_budget(
         &self,
         configuration: &WorldConfiguration,
         events: &[DomainEvent],
         resulting_state: &Self,
     ) -> Result<(), EngineError> {
-        let maximum = u64::from(configuration.transition_event_limit());
+        let configured_maximum = configuration.transition_event_limit();
+        let maximum = u64::from(if self.uses_cancer_biology_driver() {
+            configured_maximum.max(CANCER_RESEARCH_MINIMUM_PARTITION_EVENT_LIMIT)
+        } else {
+            configured_maximum
+        });
         match &configuration.execution {
             ExecutionScale::SingleTransition { .. } => {
                 let actual = u64::try_from(events.len()).map_err(|_| EngineError::TooManyEvents)?;
@@ -7081,6 +7106,8 @@ impl EngineState {
                     .validate()
                     .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
                 if self.uses_persistent_perception_driver() {
+                    let maximum_perception_memory_entries =
+                        self.maximum_perception_memory_entries();
                     let organism = self
                         .organisms
                         .get_mut(organism_id)
@@ -7099,7 +7126,8 @@ impl EngineState {
                         }) {
                             Ok(index) => organism.perception_memory[index] = entry,
                             Err(index) => {
-                                if organism.perception_memory.len() >= MAX_PERCEPTION_MEMORY_ENTRIES
+                                if organism.perception_memory.len()
+                                    >= maximum_perception_memory_entries
                                 {
                                     return Err(EngineError::PerceptionMemoryCapacity(
                                         *organism_id,
@@ -8212,7 +8240,7 @@ impl EngineState {
             {
                 return Err(EngineError::HeritableDispositionUnsupported);
             }
-            if organism.perception_memory.len() > MAX_PERCEPTION_MEMORY_ENTRIES
+            if organism.perception_memory.len() > self.maximum_perception_memory_entries()
                 || organism
                     .perception_memory
                     .windows(2)

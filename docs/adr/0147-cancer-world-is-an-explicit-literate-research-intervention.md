@@ -110,3 +110,10 @@ the NCI PDMR and HCMI resources:
 - Observer pages must label all Cancer World output as simulation-generated
   hypotheses, not medical guidance. No result becomes a cure claim without external
   reproducible biological and clinical validation.
+- Ruleset 38 gives the fixed 1,000-person single-patch cohort a 50,000-event
+  per-partition execution envelope. This changes no action, selection, or biology;
+  it prevents the older 10,000-event public-world safety envelope from rejecting a
+  valid deterministic Cancer World transition.
+- The same dense research cohort retains at most 2,048 current perception addresses
+  per resident instead of the public world's 256. Entries are still keyed and
+  replaced rather than appended, so the larger social neighborhood stays bounded.
