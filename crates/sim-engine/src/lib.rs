@@ -1583,6 +1583,12 @@ impl EngineState {
         self.cancer_burdens.get(&resident_id)
     }
 
+    pub fn cancer_burdens(&self) -> impl Iterator<Item = (EntityId, &CancerBurdenState)> + '_ {
+        self.cancer_burdens
+            .iter()
+            .map(|(resident_id, burden)| (*resident_id, burden))
+    }
+
     #[must_use]
     pub const fn world_id(&self) -> WorldId {
         self.manifest.world_id
