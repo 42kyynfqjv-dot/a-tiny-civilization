@@ -3,16 +3,22 @@
 use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use application::{
-    COGNITION_MODEL_CONTRACT_VERSION, CognitionBillingClass, CognitionModel, CognitionModelError,
-    CognitionModelRoute, CognitionProviderId, CognitionRouteAttempt, CognitionRouteAttemptStatus,
-    CognitionRoutePurpose, CognitionRouteRegistry, ModelCognitionLadderResult,
-    ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
+    CANCER_RESEARCH_MODEL_CONTRACT_VERSION, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchModel,
+    CancerResearchModelError, CancerResearchModelReceipt, CancerResearchModelRequest,
+    CognitionBillingClass, CognitionModel, CognitionModelError, CognitionModelRoute,
+    CognitionProviderId, CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
+    CognitionRouteRegistry, ModelCognitionLadderResult, ModelCognitionReceipt,
+    ModelCognitionRequest, ModelTokenUsage,
 };
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
-use world_domain::{Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT};
+use world_domain::{
+    CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContribution,
+    CancerResearchInferenceTier, CancerResearchStage, Digest, PrimitiveActionKind,
+    SIGNAL_FORM_VARIANT_COUNT,
+};
 
 pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v7";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
@@ -305,6 +311,294 @@ impl CognitionModel for OpenAiCompatibleCognition {
     }
 }
 
+#[async_trait]
+impl CancerResearchModel for OpenAiCompatibleCognition {
+    async fn infer_research(
+        &self,
+        route: &CognitionModelRoute,
+        request: &CancerResearchModelRequest,
+    ) -> Result<CancerResearchModelReceipt, CancerResearchModelError> {
+        route
+            .validate()
+            .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
+        request
+            .validate()
+            .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
+        if route.provider != self.provider {
+            return Err(CancerResearchModelError::Rejected(
+                "route provider differs from configured adapter".to_owned(),
+            ));
+        }
+        validate_research_route(route, request)?;
+
+        let payload = research_api_request(&self.provider, route, request)?;
+        let response = self
+            .client
+            .post(self.endpoint.clone())
+            .bearer_auth(&self.api_key)
+            .header("Content-Type", "application/json")
+            .json(&payload)
+            .send()
+            .await
+            .map_err(|error| CancerResearchModelError::Unavailable(error.to_string()))?;
+        if !response.status().is_success() {
+            return Err(research_http_error(response).await);
+        }
+        let raw = response
+            .json::<Value>()
+            .await
+            .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+        parse_research_response(&self.provider, route, request, raw)
+    }
+}
+
+fn validate_research_route(
+    route: &CognitionModelRoute,
+    request: &CancerResearchModelRequest,
+) -> Result<(), CancerResearchModelError> {
+    let expected = match request.selection.inference_tier {
+        CancerResearchInferenceTier::Exploration => {
+            route == &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()
+        }
+        CancerResearchInferenceTier::Escalation => {
+            route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
+                || route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_flash()
+        }
+    };
+    if !expected || request.route_purpose() == CognitionRoutePurpose::ProductionWorld {
+        return Err(CancerResearchModelError::Rejected(
+            "route is not approved for the selected cancer-research inference tier".to_owned(),
+        ));
+    }
+    Ok(())
+}
+
+fn research_api_request(
+    provider: &CognitionProviderId,
+    route: &CognitionModelRoute,
+    request: &CancerResearchModelRequest,
+) -> Result<Value, CancerResearchModelError> {
+    let request_json = serde_json::to_string(request)
+        .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
+    let evidence_rule = match request.selection.stage {
+        CancerResearchStage::BlindDiscovery => {
+            "This is a blinded discovery turn. Use only the supplied primitives, datasets, assay observations, and memories. Do not cite or imply outside literature. Every citation_hashes array must be empty."
+        }
+        CancerResearchStage::LiteratureAudit => {
+            "This is a literature-audit turn on a frozen candidate. Distinguish what the supplied sources establish from inference. Citation hashes must exactly match supplied evidence content hashes."
+        }
+        CancerResearchStage::IndependentReplication => {
+            "This is an independent-replication turn on a frozen candidate. Prefer discriminating tests and report contradictions. Citation hashes must exactly match supplied evidence content hashes."
+        }
+    };
+    let system_prompt = format!(
+        "You are one researcher in a simulated open-science cancer research world. Produce one bounded research artifact, not medical advice and not a claim of clinical efficacy. State uncertainty through concrete testable predictions and falsification tests. Never invent evidence, citations, completed experiments, measurements, or outcomes. {evidence_rule} Return only the required JSON object."
+    );
+    let mut payload = json!({
+        "model": route.requested_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": request_json}
+        ],
+        "max_tokens": request.selection.model_max_output_tokens,
+        "temperature": 0,
+        "seed": request_seed_from_bytes(request.request_id.as_bytes()),
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "bounded_cancer_research_contribution",
+                "strict": true,
+                "schema": research_contribution_schema(request.selection.stage)
+            }
+        }
+    });
+    apply_openrouter_provider_policy(&mut payload, provider, route);
+    Ok(payload)
+}
+
+fn research_contribution_schema(stage: CancerResearchStage) -> Value {
+    let artifact_kinds = match stage {
+        CancerResearchStage::BlindDiscovery => {
+            vec!["hypothesis", "experiment_proposal", "critique"]
+        }
+        CancerResearchStage::LiteratureAudit => {
+            vec!["literature_audit", "critique", "retraction"]
+        }
+        CancerResearchStage::IndependentReplication => {
+            vec!["replication_result", "critique", "retraction", "paper"]
+        }
+    };
+    let citation_items = json!({
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+    });
+    let citations = if stage == CancerResearchStage::BlindDiscovery {
+        json!({"type": "array", "items": citation_items, "maxItems": 0})
+    } else {
+        json!({
+            "type": "array",
+            "items": citation_items,
+            "maxItems": 32
+        })
+    };
+    json!({
+        "type": "object",
+        "properties": {
+            "artifact_kind": {"type": "string", "enum": artifact_kinds},
+            "title": {"type": "string", "minLength": 1, "maxLength": 256},
+            "abstract_text": {"type": "string", "minLength": 1, "maxLength": 8192},
+            "claims": {
+                "type": "array",
+                "minItems": 1,
+                "maxItems": 8,
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "statement": {"type": "string", "minLength": 1, "maxLength": 2048},
+                        "testable_prediction": {"type": "string", "minLength": 1, "maxLength": 4096},
+                        "falsification_test": {"type": "string", "minLength": 1, "maxLength": 4096},
+                        "citation_hashes": citations
+                    },
+                    "required": ["statement", "testable_prediction", "falsification_test", "citation_hashes"],
+                    "additionalProperties": false
+                }
+            }
+        },
+        "required": ["artifact_kind", "title", "abstract_text", "claims"],
+        "additionalProperties": false
+    })
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ResearchModelOutput {
+    artifact_kind: CancerResearchArtifactKind,
+    title: String,
+    abstract_text: String,
+    claims: Vec<CancerResearchClaim>,
+}
+
+fn parse_research_response(
+    provider: &CognitionProviderId,
+    route: &CognitionModelRoute,
+    request: &CancerResearchModelRequest,
+    raw: Value,
+) -> Result<CancerResearchModelReceipt, CancerResearchModelError> {
+    let response_hash = Digest::canonical(&raw)
+        .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+    let parsed: ChatCompletion = serde_json::from_value(raw)
+        .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+    if parsed.id.trim().is_empty() || parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
+        return Err(CancerResearchModelError::InvalidResponse(
+            "completion omitted a unique response, model, or choice".to_owned(),
+        ));
+    }
+    let content = parsed.choices[0]
+        .message
+        .content
+        .as_deref()
+        .ok_or_else(|| {
+            CancerResearchModelError::InvalidResponse(
+                "completion omitted message content".to_owned(),
+            )
+        })?;
+    let output: ResearchModelOutput = serde_json::from_str(content).map_err(|error| {
+        CancerResearchModelError::InvalidResponse(format!(
+            "completion was not a bounded research contribution: {error}"
+        ))
+    })?;
+    let allowed_citations = request
+        .selection
+        .evidence
+        .iter()
+        .map(|reference| reference.content_hash)
+        .collect::<std::collections::BTreeSet<_>>();
+    if output
+        .claims
+        .iter()
+        .flat_map(|claim| &claim.citation_hashes)
+        .any(|digest| !allowed_citations.contains(digest))
+    {
+        return Err(CancerResearchModelError::InvalidResponse(
+            "completion cited content that was not supplied to this turn".to_owned(),
+        ));
+    }
+    let contribution = CancerResearchContribution::new(
+        &request.selection,
+        output.artifact_kind,
+        output.title,
+        output.abstract_text,
+        output.claims,
+    )
+    .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+    let prompt_tokens = u32::try_from(parsed.usage.prompt_tokens).map_err(|_| {
+        CancerResearchModelError::InvalidResponse("prompt token count exceeds u32".to_owned())
+    })?;
+    let completion_tokens = u32::try_from(parsed.usage.completion_tokens).map_err(|_| {
+        CancerResearchModelError::InvalidResponse("completion token count exceeds u32".to_owned())
+    })?;
+    let billed_micro_usd = research_billed_micro_usd(route, parsed.usage.cost)?;
+    let receipt = CancerResearchModelReceipt {
+        contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+        request_id: request.request_id,
+        request_hash: request
+            .canonical_hash()
+            .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?,
+        provider: provider.clone(),
+        requested_model: route.requested_model.clone(),
+        resolved_model: parsed.model,
+        provider_response_id: parsed.id,
+        usage: ModelTokenUsage {
+            prompt_tokens,
+            completion_tokens,
+        },
+        billed_micro_usd,
+        contribution,
+        provider_response_hash: response_hash,
+        adapter_version: MODEL_ADAPTER_VERSION.to_owned(),
+    };
+    receipt
+        .validate_against(route, request)
+        .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+    Ok(receipt)
+}
+
+fn research_billed_micro_usd(
+    route: &CognitionModelRoute,
+    reported_cost: Option<serde_json::Number>,
+) -> Result<u64, CancerResearchModelError> {
+    let billed = match (route.billing_class, reported_cost) {
+        (CognitionBillingClass::PaidApproved, None) => {
+            return Err(CancerResearchModelError::InvalidResponse(
+                "paid completion omitted an explicit provider-reported cost".to_owned(),
+            ));
+        }
+        (_, Some(cost)) => decimal_dollars_to_micro_usd(&cost.to_string())
+            .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?,
+        (_, None) => 0,
+    };
+    if route.billing_class != CognitionBillingClass::PaidApproved && billed != 0 {
+        return Err(CancerResearchModelError::InvalidResponse(
+            "free research route reported a non-zero cost".to_owned(),
+        ));
+    }
+    Ok(billed)
+}
+
+async fn research_http_error(response: reqwest::Response) -> CancerResearchModelError {
+    let status = response.status();
+    let body = response
+        .text()
+        .await
+        .unwrap_or_else(|_| "response body unavailable".to_owned());
+    let body = body.chars().take(MAX_ERROR_BODY_BYTES).collect::<String>();
+    if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        CancerResearchModelError::Unavailable(format!("model endpoint returned {status}: {body}"))
+    } else {
+        CancerResearchModelError::Rejected(format!("model endpoint returned {status}: {body}"))
+    }
+}
+
 fn api_request(
     provider: &CognitionProviderId,
     route: &CognitionModelRoute,
@@ -348,38 +642,47 @@ fn api_request(
             }
         });
     }
-    if matches!(provider.as_str(), "openrouter" | "openrouter_cancer") {
-        let cancer_research = provider.as_str() == "openrouter_cancer";
-        let paid_escalation =
-            cancer_research && route.billing_class == CognitionBillingClass::PaidApproved;
-        payload["provider"] = if paid_escalation {
-            // Escalated Cancer World candidates may contain the complete details
-            // of an unpublished hypothesis. If OpenRouter has no endpoint that
-            // satisfies these policies, routing must fail before content leaves
-            // for a non-compliant provider.
-            json!({
-                "require_parameters": true,
-                "allow_fallbacks": true,
-                "data_collection": "deny",
-                "zdr": true
-            })
-        } else if cancer_research {
-            // The free Nemotron endpoint is an explicitly logged exploration
-            // surface. Keep it exact and never let OpenRouter substitute another
-            // provider when its free allocation is unavailable.
-            json!({
-                "require_parameters": true,
-                "allow_fallbacks": false
-            })
-        } else {
-            json!({
-                "require_parameters": true,
-                "allow_fallbacks": true
-            })
-        };
-        payload["include_reasoning"] = Value::Bool(false);
-    }
+    apply_openrouter_provider_policy(&mut payload, provider, route);
     Ok(payload)
+}
+
+fn apply_openrouter_provider_policy(
+    payload: &mut Value,
+    provider: &CognitionProviderId,
+    route: &CognitionModelRoute,
+) {
+    if !matches!(provider.as_str(), "openrouter" | "openrouter_cancer") {
+        return;
+    }
+    let cancer_research = provider.as_str() == "openrouter_cancer";
+    let paid_escalation =
+        cancer_research && route.billing_class == CognitionBillingClass::PaidApproved;
+    payload["provider"] = if paid_escalation {
+        // Escalated Cancer World candidates may contain the complete details
+        // of an unpublished hypothesis. If OpenRouter has no endpoint that
+        // satisfies these policies, routing must fail before content leaves
+        // for a non-compliant provider.
+        json!({
+            "require_parameters": true,
+            "allow_fallbacks": true,
+            "data_collection": "deny",
+            "zdr": true
+        })
+    } else if cancer_research {
+        // The free Nemotron endpoint is an explicitly logged exploration
+        // surface. Keep it exact and never let OpenRouter substitute another
+        // provider when its free allocation is unavailable.
+        json!({
+            "require_parameters": true,
+            "allow_fallbacks": false
+        })
+    } else {
+        json!({
+            "require_parameters": true,
+            "allow_fallbacks": true
+        })
+    };
+    payload["include_reasoning"] = Value::Bool(false);
 }
 
 fn bounded_action_schema() -> Value {
@@ -421,7 +724,10 @@ fn bounded_action_schema() -> Value {
 }
 
 fn request_seed(request: &ModelCognitionRequest) -> u32 {
-    let bytes = request.request_id.as_bytes();
+    request_seed_from_bytes(request.request_id.as_bytes())
+}
+
+fn request_seed_from_bytes(bytes: &[u8; 16]) -> u32 {
     let first: [u8; 4] = bytes[..4]
         .try_into()
         .expect("UUID always contains sixteen bytes");
@@ -665,7 +971,11 @@ mod tests {
     use serde_json::json;
     use tokio::net::TcpListener;
     use uuid::Uuid;
-    use world_domain::{BodilyNeedState, EntityId, SimTick, WorldId};
+    use world_domain::{
+        BodilyNeedState, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
+        CancerResearchProfile, CancerResearchTarget, CancerResearchTask, EntityId, SimTick,
+        WorldId, WorldSeed,
+    };
 
     use super::*;
 
@@ -765,6 +1075,62 @@ mod tests {
         }
     }
 
+    fn research_request(
+        stage: CancerResearchStage,
+        tier: CancerResearchInferenceTier,
+        evidence_content: Option<&str>,
+    ) -> CancerResearchModelRequest {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xcace));
+        let resident_id = EntityId::deterministic(world_id, b"research-adapter-test");
+        let evidence_documents = evidence_content
+            .map(|content| {
+                let reference = CancerResearchEvidenceReference {
+                    kind: if stage == CancerResearchStage::BlindDiscovery {
+                        CancerResearchEvidenceKind::RawDataset
+                    } else {
+                        CancerResearchEvidenceKind::Literature
+                    },
+                    source_id: "test:evidence-v1".to_owned(),
+                    content_hash: Digest::sha256(content.as_bytes()),
+                };
+                vec![application::CancerResearchEvidenceDocument {
+                    reference,
+                    content: content.to_owned(),
+                }]
+            })
+            .unwrap_or_default();
+        let selection = world_domain::CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(100),
+            SimTick::new(120),
+            0,
+            CancerResearchTarget::AdultGlioblastoma,
+            stage,
+            match stage {
+                CancerResearchStage::BlindDiscovery => {
+                    CancerResearchTask::GenerateMechanisticHypothesis
+                }
+                CancerResearchStage::LiteratureAudit => CancerResearchTask::AuditAgainstLiterature,
+                CancerResearchStage::IndependentReplication => {
+                    CancerResearchTask::DesignIndependentReplication
+                }
+            },
+            tier,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            evidence_documents
+                .iter()
+                .map(|document| document.reference.clone())
+                .collect(),
+            (stage != CancerResearchStage::BlindDiscovery)
+                .then_some(Digest::sha256(b"frozen-candidate")),
+            2_048,
+        )
+        .expect("research selection");
+        CancerResearchModelRequest::new(selection, evidence_documents, Vec::new())
+            .expect("research request")
+    }
+
     async fn adapter_for(
         provider: CognitionProviderId,
         response: Value,
@@ -826,6 +1192,150 @@ mod tests {
         assert_eq!(escalation["provider"]["allow_fallbacks"], true);
         assert_eq!(escalation["provider"]["zdr"], true);
         assert_eq!(escalation["provider"]["data_collection"], "deny");
+    }
+
+    #[tokio::test]
+    async fn research_adapter_returns_a_valid_blinded_artifact() {
+        let response = json!({
+            "id": "research-generation-1",
+            "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "choices": [{"message": {"content": serde_json::to_string(&json!({
+                "artifact_kind": "hypothesis",
+                "title": "A bounded test hypothesis",
+                "abstract_text": "A supplied assay pattern motivates a mechanism that remains unverified.",
+                "claims": [{
+                    "statement": "The observed pattern may depend on a reversible cell state.",
+                    "testable_prediction": "Perturbing the state should change the supplied assay readout.",
+                    "falsification_test": "The preregistered perturbation leaves the readout unchanged.",
+                    "citation_hashes": []
+                }]
+            })).expect("content JSON")}}],
+            "usage": {"prompt_tokens": 300, "completion_tokens": 120, "cost": 0}
+        });
+        let (adapter, seen) = adapter_for(CognitionProviderId::openrouter_cancer(), response).await;
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            Some("assay row 1: bounded values"),
+        );
+        let receipt = adapter
+            .infer_research(
+                &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free(),
+                &request,
+            )
+            .await
+            .expect("valid research completion");
+        assert_eq!(
+            receipt.contribution.artifact_kind,
+            CancerResearchArtifactKind::Hypothesis
+        );
+        assert_eq!(receipt.billed_micro_usd, 0);
+        let seen = seen.lock().expect("test lock").clone().expect("request");
+        assert_eq!(seen["provider"]["allow_fallbacks"], false);
+        assert_eq!(
+            seen["response_format"]["json_schema"]["schema"]["properties"]["claims"]["items"]["properties"]
+                ["citation_hashes"]["maxItems"],
+            0
+        );
+        assert!(
+            seen["messages"][0]["content"]
+                .as_str()
+                .expect("system prompt")
+                .contains("not medical advice")
+        );
+    }
+
+    #[tokio::test]
+    async fn research_adapter_rejects_wrong_tier_and_invented_citations() {
+        let blind = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let placeholder = json!({
+            "id": "unused",
+            "model": "deepseek/deepseek-v4-pro",
+            "choices": [{"message": {"content": "{}"}}],
+            "usage": {"prompt_tokens": 1, "completion_tokens": 1, "cost": 0.000001}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter_cancer(), placeholder).await;
+        assert!(matches!(
+            adapter
+                .infer_research(
+                    &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+                    &blind,
+                )
+                .await,
+            Err(CancerResearchModelError::Rejected(_))
+        ));
+
+        let invented = Digest::sha256(b"not supplied");
+        let response = json!({
+            "id": "research-generation-2",
+            "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "choices": [{"message": {"content": serde_json::to_string(&json!({
+                "artifact_kind": "literature_audit",
+                "title": "Audit",
+                "abstract_text": "A bounded audit.",
+                "claims": [{
+                    "statement": "A claim.",
+                    "testable_prediction": "A prediction.",
+                    "falsification_test": "A test.",
+                    "citation_hashes": [invented]
+                }]
+            })).expect("content JSON")}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 20, "cost": 0}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter_cancer(), response).await;
+        let audit = research_request(
+            CancerResearchStage::LiteratureAudit,
+            CancerResearchInferenceTier::Exploration,
+            Some("supplied literature evidence"),
+        );
+        assert!(matches!(
+            adapter
+                .infer_research(
+                    &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free(),
+                    &audit,
+                )
+                .await,
+            Err(CancerResearchModelError::InvalidResponse(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn research_adapter_rejects_a_charged_free_completion() {
+        let response = json!({
+            "id": "research-generation-charged",
+            "model": "nvidia/nemotron-3-ultra-550b-a55b:free",
+            "choices": [{"message": {"content": serde_json::to_string(&json!({
+                "artifact_kind": "hypothesis",
+                "title": "Hypothesis",
+                "abstract_text": "Bounded output.",
+                "claims": [{
+                    "statement": "A claim.",
+                    "testable_prediction": "A prediction.",
+                    "falsification_test": "A test.",
+                    "citation_hashes": []
+                }]
+            })).expect("content JSON")}}],
+            "usage": {"prompt_tokens": 30, "completion_tokens": 20, "cost": 0.000001}
+        });
+        let (adapter, _) = adapter_for(CognitionProviderId::openrouter_cancer(), response).await;
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        assert!(matches!(
+            adapter
+                .infer_research(
+                    &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free(),
+                    &request,
+                )
+                .await,
+            Err(CancerResearchModelError::InvalidResponse(_))
+        ));
     }
 
     #[tokio::test]

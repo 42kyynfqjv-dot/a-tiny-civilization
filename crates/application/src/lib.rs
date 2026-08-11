@@ -3,10 +3,12 @@
 mod cognition;
 mod cognition_worker;
 mod memory;
+mod research;
 
 pub use cognition::*;
 pub use cognition_worker::*;
 pub use memory::*;
+pub use research::*;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};

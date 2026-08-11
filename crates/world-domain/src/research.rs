@@ -116,6 +116,13 @@ pub enum CancerResearchStage {
     IndependentReplication,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchInferenceTier {
+    Exploration,
+    Escalation,
+}
+
 impl CancerResearchStage {
     const fn identity_code(self) -> &'static str {
         match self {
@@ -199,6 +206,7 @@ pub struct CancerResearchTurnSelection {
     pub target: CancerResearchTarget,
     pub stage: CancerResearchStage,
     pub task: CancerResearchTask,
+    pub inference_tier: CancerResearchInferenceTier,
     pub profile: CancerResearchProfile,
     pub evidence: Vec<CancerResearchEvidenceReference>,
     pub frozen_candidate_hash: Option<Digest>,
@@ -216,6 +224,7 @@ impl CancerResearchTurnSelection {
         target: CancerResearchTarget,
         stage: CancerResearchStage,
         task: CancerResearchTask,
+        inference_tier: CancerResearchInferenceTier,
         profile: CancerResearchProfile,
         evidence: Vec<CancerResearchEvidenceReference>,
         frozen_candidate_hash: Option<Digest>,
@@ -229,6 +238,7 @@ impl CancerResearchTurnSelection {
                 selected_at_tick,
                 ordinal,
                 stage,
+                inference_tier,
             ),
             world_id,
             resident_id,
@@ -238,6 +248,7 @@ impl CancerResearchTurnSelection {
             target,
             stage,
             task,
+            inference_tier,
             profile,
             evidence,
             frozen_candidate_hash,
@@ -260,6 +271,7 @@ impl CancerResearchTurnSelection {
                 self.selected_at_tick,
                 self.ordinal,
                 self.stage,
+                self.inference_tier,
             )
         {
             return Err(CancerResearchContractError::InvalidRequestIdentity);
@@ -287,7 +299,9 @@ impl CancerResearchTurnSelection {
             .any(|reference| reference.kind == CancerResearchEvidenceKind::Literature);
         match self.stage {
             CancerResearchStage::BlindDiscovery
-                if has_literature || self.frozen_candidate_hash.is_some() =>
+                if has_literature
+                    || self.frozen_candidate_hash.is_some()
+                    || self.inference_tier != CancerResearchInferenceTier::Exploration =>
             {
                 return Err(CancerResearchContractError::EvidenceFirewallViolation);
             }
@@ -299,6 +313,13 @@ impl CancerResearchTurnSelection {
                 return Err(CancerResearchContractError::EvidenceFirewallViolation);
             }
             _ => {}
+        }
+        if self.inference_tier == CancerResearchInferenceTier::Escalation
+            && self
+                .frozen_candidate_hash
+                .is_none_or(|digest| digest == Digest::ZERO)
+        {
+            return Err(CancerResearchContractError::EvidenceFirewallViolation);
         }
         Ok(())
     }
@@ -486,13 +507,18 @@ pub fn cancer_research_request_id(
     selected_at_tick: SimTick,
     ordinal: u32,
     stage: CancerResearchStage,
+    inference_tier: CancerResearchInferenceTier,
 ) -> Uuid {
     Uuid::new_v5(
         &world_id.as_uuid(),
         format!(
-            "cancer-research:{resident_id}:{}:{ordinal}:{}",
+            "cancer-research:{resident_id}:{}:{ordinal}:{}:{}",
             selected_at_tick.get(),
-            stage.identity_code()
+            stage.identity_code(),
+            match inference_tier {
+                CancerResearchInferenceTier::Exploration => "exploration",
+                CancerResearchInferenceTier::Escalation => "escalation",
+            }
         )
         .as_bytes(),
     )
@@ -564,6 +590,7 @@ mod tests {
             CancerResearchTarget::AdultGlioblastoma,
             CancerResearchStage::BlindDiscovery,
             CancerResearchTask::GenerateMechanisticHypothesis,
+            CancerResearchInferenceTier::Exploration,
             profile,
             vec![literature],
             None,
@@ -588,6 +615,7 @@ mod tests {
             CancerResearchTarget::AdultGlioblastoma,
             CancerResearchStage::LiteratureAudit,
             CancerResearchTask::AuditAgainstLiterature,
+            CancerResearchInferenceTier::Exploration,
             profile,
             vec![CancerResearchEvidenceReference {
                 kind: CancerResearchEvidenceKind::Literature,

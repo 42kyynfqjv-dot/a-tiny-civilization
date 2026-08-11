@@ -122,10 +122,10 @@ pub use research::{
     CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CANCER_RESEARCH_PROFILE_SCHEMA_VERSION,
     CANCER_RESEARCH_TURN_SCHEMA_VERSION, CancerResearchArtifactKind, CancerResearchClaim,
     CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
-    CancerResearchEvidenceReference, CancerResearchProfile, CancerResearchSpecialty,
-    CancerResearchStage, CancerResearchTask, CancerResearchTurnSelection, MAX_RESEARCH_CITATIONS,
-    MAX_RESEARCH_CLAIMS, MAX_RESEARCH_EVIDENCE_REFERENCES, MAX_RESEARCH_MODEL_OUTPUT_TOKENS,
-    cancer_research_request_id,
+    CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchProfile,
+    CancerResearchSpecialty, CancerResearchStage, CancerResearchTask, CancerResearchTurnSelection,
+    MAX_RESEARCH_CITATIONS, MAX_RESEARCH_CLAIMS, MAX_RESEARCH_EVIDENCE_REFERENCES,
+    MAX_RESEARCH_MODEL_OUTPUT_TOKENS, cancer_research_request_id,
 };
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,
