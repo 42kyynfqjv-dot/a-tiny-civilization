@@ -255,7 +255,10 @@ async fn project_worlds(store: &PostgresStore, world_ids: &[WorldId]) -> Result<
             .load_world(*world_id)
             .await
             .context("load durable world lifecycle for supporter expiration")?;
-        let expired_reservations = if world.status == world_domain::WorldStatus::Archived {
+        let expired_reservations = if matches!(
+            world.status,
+            world_domain::WorldStatus::Archived | world_domain::WorldStatus::Retired
+        ) {
             store
                 .expire_world_reservations(*world_id)
                 .await

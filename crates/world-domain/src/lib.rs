@@ -85,6 +85,7 @@ pub use event::{
     SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION, SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION,
     SOCIAL_LEARNING_EVENT_SCHEMA_VERSION, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
     TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION,
+    WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION,
 };
 pub use geographic::{
     GeographicCoordinateE7, GeographicCoordinateHalfArcsecond, GeographicRoutingError, S2FaceIj,
@@ -154,6 +155,9 @@ pub enum WorldStatus {
     Running,
     Extinct,
     Archived,
+    /// A populated historical world deliberately closed in favor of a disclosed
+    /// successor. This is distinct from both extinction and a natural archive.
+    Retired,
 }
 
 #[cfg(test)]

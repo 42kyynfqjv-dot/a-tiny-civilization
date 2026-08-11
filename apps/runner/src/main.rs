@@ -19,7 +19,8 @@ use application::{
     construct_configured_genesis_with_materials,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
     process_next_cancer_research_job, process_next_cognition_job, resume_world,
-    resume_world_from_snapshot, schedule_due_cancer_research_turn, schedule_world_cognition,
+    resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
+    schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -258,6 +259,18 @@ enum Command {
     VerifyWorld {
         #[arg(long)]
         world_id: WorldId,
+    },
+    /// Retire a populated legacy world for one disclosed successor without
+    /// fabricating extinction. The successor is initialized separately.
+    RetireForSuccessor {
+        #[arg(long)]
+        world_id: WorldId,
+
+        #[arg(long)]
+        successor_world_id: WorldId,
+
+        #[arg(long, default_value_t = false)]
+        confirm_operator_retirement: bool,
     },
     /// Advance exactly N simulation ticks for a non-production qualification world.
     AdvanceQualification {
@@ -666,6 +679,19 @@ async fn main() -> Result<()> {
             .await
         }
         Command::VerifyWorld { world_id } => verify_world(&store, world_id).await,
+        Command::RetireForSuccessor {
+            world_id,
+            successor_world_id,
+            confirm_operator_retirement,
+        } => {
+            retire_for_successor(
+                &store,
+                world_id,
+                successor_world_id,
+                confirm_operator_retirement,
+            )
+            .await
+        }
         Command::AdvanceQualification { world_id, ticks } => {
             advance_qualification_world(&store, world_id, ticks).await
         }
@@ -1071,6 +1097,50 @@ async fn verify_world(store: &PostgresStore, world_id: WorldId) -> Result<()> {
         }
     }
     unreachable!("bounded verification loop returns on success or final error")
+}
+
+async fn retire_for_successor(
+    store: &PostgresStore,
+    world_id: WorldId,
+    successor_world_id: WorldId,
+    confirmed: bool,
+) -> Result<()> {
+    if !confirmed {
+        anyhow::bail!(
+            "successor retirement requires the literal --confirm-operator-retirement flag"
+        );
+    }
+    if world_id == successor_world_id {
+        anyhow::bail!("a world cannot be its own successor");
+    }
+    let _writer_lock = store
+        .acquire_runner_writer_lock()
+        .await
+        .context("acquire the database canonical-writer lock")?;
+    if store
+        .list_world_ids()
+        .await
+        .context("list worlds before successor retirement")?
+        .contains(&successor_world_id)
+    {
+        anyhow::bail!(
+            "successor world {successor_world_id} already exists; retirement must bind an uninitialized successor ID"
+        );
+    }
+    let current = resume_world(store, world_id)
+        .await
+        .context("verify complete world history before successor retirement")?;
+    if current.world.manifest.experiment.is_some() {
+        anyhow::bail!("experimental worlds cannot use the public-world successor cutover");
+    }
+    let retired = retire_world_for_successor(store, &current, successor_world_id)
+        .await
+        .context("commit auditable world successor retirement")?;
+    print_verified_world(world_id, retired)?;
+    println!(
+        "retired world {world_id} for successor {successor_world_id}; no extinction was recorded"
+    );
+    Ok(())
 }
 
 async fn advance_qualification_world(

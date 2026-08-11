@@ -13,7 +13,7 @@ type Species = {
 
 type PublicWorld = {
   world_id: string;
-  status: "initializing" | "running" | "extinct" | "archived";
+  status: "initializing" | "running" | "extinct" | "archived" | "retired";
 };
 
 type PublicOrganism = { role: "person" | "fauna"; species: Species };

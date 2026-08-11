@@ -230,7 +230,7 @@ impl FoundationStore for PostgresStore {
                 NOW() AS database_time,
                 COUNT(*) FILTER (WHERE status = 'initializing') AS initializing_worlds,
                 COUNT(*) FILTER (WHERE status = 'running') AS running_worlds,
-                COUNT(*) FILTER (WHERE status = 'archived') AS archived_worlds,
+                COUNT(*) FILTER (WHERE status IN ('archived', 'retired')) AS archived_worlds,
                 (
                     SELECT MAX(last_seen_at)
                     FROM service_heartbeats

@@ -283,6 +283,7 @@ fn parse_row(row: PublicWorldRow) -> Result<PublicWorld, ObserverProjectionStore
         "running" => WorldStatus::Running,
         "extinct" => WorldStatus::Extinct,
         "archived" => WorldStatus::Archived,
+        "retired" => WorldStatus::Retired,
         _ => return Err(corrupt("world status")),
     };
     let sequence = u64::try_from(row.current_sequence).map_err(|_| corrupt("world sequence"))?;

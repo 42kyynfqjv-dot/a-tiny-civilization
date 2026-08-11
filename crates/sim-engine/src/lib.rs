@@ -53,9 +53,10 @@ use world_domain::{
     SIGNAL_PROPAGATION_EVENT_SCHEMA_VERSION, SOCIAL_LEARNING_EVENT_SCHEMA_VERSION,
     SequenceOverflow, SignalActionAssociationState, SimTick, SituatedPerception, SpeciesIdentity,
     SpeciesIdentityError, TERRAIN_MOVEMENT_EVENT_SCHEMA_VERSION,
-    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow, WorldConfiguration,
-    WorldConfigurationError, WorldExperimentCommitment, WorldId, WorldManifest, WorldManifestError,
-    WorldSeed, WorldStatus, decode_s2_face_ij, s2_edge_neighbors,
+    TOPSOIL_MOVEMENT_EVENT_SCHEMA_VERSION, TimeOverflow,
+    WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION, WorldConfiguration, WorldConfigurationError,
+    WorldExperimentCommitment, WorldId, WorldManifest, WorldManifestError, WorldSeed, WorldStatus,
+    decode_s2_face_ij, s2_edge_neighbors,
 };
 
 /// Ruleset one has the original empty full-Earth execution schedule.
@@ -231,6 +232,8 @@ pub const ADULT_BODY_MASS_SNAPSHOT_SCHEMA_VERSION: u16 = 32;
 pub const WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 33;
 pub const CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION: u16 = 34;
 pub const CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION: u16 = 35;
+/// A terminal cache for a populated world explicitly retired for a successor.
+pub const WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 36;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -284,6 +287,7 @@ const MASS_SCALED_METABOLISM_STATE_HASH_SCHEMA_VERSION: u16 = 31;
 const ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION: u16 = 32;
 const CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION: u16 = 34;
 const CANCER_BURDEN_STATE_HASH_SCHEMA_VERSION: u16 = 35;
+const WORLD_SUCCESSOR_RETIREMENT_STATE_HASH_SCHEMA_VERSION: u16 = 36;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = world_domain::SIGNAL_FORM_VARIANT_COUNT as u16;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize =
@@ -2152,6 +2156,41 @@ impl EngineState {
         if preview.living_people() == 0 {
             events.push(DomainEvent::WorldExtinct);
             events.push(DomainEvent::WorldArchived);
+        }
+        Ok(events)
+    }
+
+    /// Close a still-populated historical world for one explicitly identified
+    /// successor. This operator-only transition is deliberately distinct from
+    /// extinction: inhabitants are neither killed nor told that a successor exists.
+    /// Any outstanding cognition request is resolved in the same atomic batch so a
+    /// retired state never retains external work that could later enter history.
+    pub fn plan_successor_retirement(
+        &self,
+        successor_world_id: WorldId,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.expected_successor_retirement_events(successor_world_id)
+    }
+
+    fn expected_successor_retirement_events(
+        &self,
+        successor_world_id: WorldId,
+    ) -> Result<Vec<DomainEvent>, EngineError> {
+        self.require_status(WorldStatus::Running)?;
+        if successor_world_id == self.world_id() {
+            return Err(EngineError::InvalidWorldSuccessorRetirement);
+        }
+        let mut events = vec![DomainEvent::WorldRetiredForSuccessor { successor_world_id }];
+        for selection in self.pending_cognition_requests.values() {
+            let input = CognitionDeadlineInput::unavailable(
+                selection,
+                Digest::ZERO,
+                Digest::ZERO,
+                Digest::ZERO,
+                CognitionUnavailableReason::WorldRetired,
+            )
+            .map_err(|error| EngineError::InvalidCognitionInput(error.to_string()))?;
+            events.push(DomainEvent::CognitionInputRecorded { input });
         }
         Ok(events)
     }
@@ -5165,7 +5204,8 @@ impl EngineState {
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::WorldExtinct
-            | DomainEvent::WorldArchived => None,
+            | DomainEvent::WorldArchived
+            | DomainEvent::WorldRetiredForSuccessor { .. } => None,
         };
         patch
             .map(|patch| patch.ancestor(partition_level).map_err(EngineError::from))
@@ -5180,6 +5220,17 @@ impl EngineState {
     }
 
     fn validate_event_coupling(&self, events: &[DomainEvent]) -> Result<(), EngineError> {
+        if let Some(successor_world_id) = events.iter().find_map(|event| match event {
+            DomainEvent::WorldRetiredForSuccessor { successor_world_id } => {
+                Some(*successor_world_id)
+            }
+            _ => None,
+        }) {
+            if events != self.expected_successor_retirement_events(successor_world_id)? {
+                return Err(EngineError::InvalidWorldSuccessorRetirement);
+            }
+            return Ok(());
+        }
         let starts_world = events
             .iter()
             .any(|event| matches!(event, DomainEvent::WorldStarted { .. }));
@@ -6057,7 +6108,9 @@ impl EngineState {
     }
 
     fn event_schema_version(&self) -> u16 {
-        if self.uses_cancer_biology_driver() {
+        if self.status == WorldStatus::Retired {
+            WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_cancer_biology_driver() {
             CANCER_BURDEN_EVENT_SCHEMA_VERSION
         } else if self.uses_world_experiment_bootstrap() {
             CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
@@ -6156,7 +6209,9 @@ impl EngineState {
     }
 
     fn state_hash_schema_version(&self) -> u16 {
-        if self.uses_cancer_biology_driver() {
+        if self.status == WorldStatus::Retired {
+            WORLD_SUCCESSOR_RETIREMENT_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_cancer_biology_driver() {
             CANCER_BURDEN_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_world_experiment_bootstrap() {
             CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION
@@ -7558,6 +7613,9 @@ impl EngineState {
                         CognitionInputOutcome::Unavailable {
                             reason: CognitionUnavailableReason::WorldArchived,
                         } => self.living_people() == 0,
+                        CognitionInputOutcome::Unavailable {
+                            reason: CognitionUnavailableReason::WorldRetired,
+                        } => self.status == WorldStatus::Retired,
                         _ => false,
                     };
                     if !valid_early_resolution {
@@ -7604,6 +7662,13 @@ impl EngineState {
             DomainEvent::WorldArchived => {
                 self.require_status(WorldStatus::Extinct)?;
                 self.status = WorldStatus::Archived;
+            }
+            DomainEvent::WorldRetiredForSuccessor { successor_world_id } => {
+                self.require_status(WorldStatus::Running)?;
+                if *successor_world_id == self.world_id() {
+                    return Err(EngineError::InvalidWorldSuccessorRetirement);
+                }
+                self.status = WorldStatus::Retired;
             }
         }
         Ok(())
@@ -8695,7 +8760,9 @@ impl Snapshot {
     ) -> Result<Self, EngineError> {
         state.validate()?;
         let state_hash = state.state_hash()?;
-        let snapshot_schema_version = if state.uses_cancer_biology_driver() {
+        let snapshot_schema_version = if state.status == WorldStatus::Retired {
+            WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_cancer_biology_driver() {
             CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_world_experiment_bootstrap() {
             CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
@@ -8821,12 +8888,15 @@ impl Snapshot {
                 | WORLD_EXPERIMENT_SNAPSHOT_SCHEMA_VERSION
                 | CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
                 | CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
+                | WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
             ));
         }
-        let expected_schema_version = if self.state.uses_cancer_biology_driver() {
+        let expected_schema_version = if self.state.status == WorldStatus::Retired {
+            WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_cancer_biology_driver() {
             CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_world_experiment_bootstrap() {
             CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
@@ -9138,7 +9208,13 @@ fn replay_from_cursor(
         } else {
             LEGACY_EVENT_SCHEMA_VERSION
         };
-        let valid_schema = if expected_schema == EVENT_SCHEMA_VERSION {
+        let retires_for_successor = batch
+            .events
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldRetiredForSuccessor { .. }));
+        let valid_schema = if retires_for_successor {
+            batch.event_schema_version == WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+        } else if expected_schema == EVENT_SCHEMA_VERSION {
             matches!(
                 batch.event_schema_version,
                 CONFIGURED_EVENT_SCHEMA_VERSION | EVENT_SCHEMA_VERSION
@@ -9215,6 +9291,8 @@ pub enum EngineError {
     OrganismInitializationOutsideGenesis,
     #[error("world extinction and archival must be the exact terminal lifecycle suffix")]
     InvalidWorldLifecycleEventSet,
+    #[error("world successor retirement must be one exact operator lifecycle transition")]
+    InvalidWorldSuccessorRetirement,
     #[error("a ruleset-fourteen tick transition requires one TickAdvanced event at index zero")]
     InvalidTickAdvanceEventSet,
     #[error("a ruleset-fourteen world without living people must be archived")]
@@ -14171,6 +14249,45 @@ mod tests {
             assert_eq!(biased.weight, expected);
         }
 
+        let successor_world_id = WorldId::from_uuid(Uuid::from_u128(0xc061_7100));
+        let retirement_events = pending
+            .plan_successor_retirement(successor_world_id)
+            .expect("pending-cognition successor retirement");
+        assert!(matches!(
+            retirement_events.as_slice(),
+            [
+                DomainEvent::WorldRetiredForSuccessor {
+                    successor_world_id: recorded
+                },
+                DomainEvent::CognitionInputRecorded { input }
+            ] if *recorded == successor_world_id
+                && matches!(
+                    input.outcome,
+                    CognitionInputOutcome::Unavailable {
+                        reason: CognitionUnavailableReason::WorldRetired
+                    }
+                )
+        ));
+        let (retired_branch, retirement_batch) = pending
+            .commit(
+                EventSequence::new(3),
+                selection_batch.batch_hash,
+                retirement_events,
+            )
+            .expect("retirement resolves pending cognition atomically");
+        assert_eq!(retired_branch.status(), WorldStatus::Retired);
+        assert!(retired_branch.pending_cognition_requests.is_empty());
+        assert_eq!(retired_branch.living_people(), 1);
+        assert_eq!(
+            replay(
+                manifest.clone(),
+                &[genesis.clone(), selection_batch.clone(), retirement_batch]
+            )
+            .expect("retirement with cognition replay")
+            .state,
+            retired_branch
+        );
+
         let early = CognitionDeadlineInput::unavailable(
             &selection,
             Digest::ZERO,
@@ -14875,6 +14992,52 @@ mod tests {
         assert!(matches!(
             (from_snapshot_hash, complete_hash),
             (Ok(left), Ok(right)) if left == right
+        ));
+    }
+
+    #[test]
+    fn successor_retirement_is_replayable_and_is_not_extinction() {
+        let manifest = manifest();
+        let world_id = manifest.world_id;
+        let successor_world_id = WorldId::from_uuid(Uuid::from_u128(0x5acc_3550));
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_genesis(vec![initial_person(world_id)])
+            .expect("genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("genesis commit");
+        let retirement_events = running
+            .plan_successor_retirement(successor_world_id)
+            .expect("successor retirement plan");
+        assert_eq!(
+            retirement_events,
+            vec![DomainEvent::WorldRetiredForSuccessor { successor_world_id }]
+        );
+        let (retired, retirement) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, retirement_events)
+            .expect("successor retirement commit");
+        assert_eq!(retired.status(), WorldStatus::Retired);
+        assert_eq!(retired.living_people(), 1);
+        assert_eq!(
+            retirement.event_schema_version,
+            WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            Snapshot::new(retired.clone(), retirement.sequence, retirement.batch_hash)
+                .expect("retired snapshot")
+                .snapshot_schema_version,
+            WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            replay(manifest, &[genesis, retirement])
+                .expect("retirement replay")
+                .state,
+            retired
+        );
+        assert!(matches!(
+            running.plan_successor_retirement(world_id),
+            Err(EngineError::InvalidWorldSuccessorRetirement)
         ));
     }
 

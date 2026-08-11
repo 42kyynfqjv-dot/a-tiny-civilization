@@ -196,6 +196,18 @@ impl ObserverFindingStore for PostgresStore {
                     )
                     .await?
                 }
+                DomainEvent::WorldRetiredForSuccessor { .. } => {
+                    insert_finding(
+                        &mut tx,
+                        batch,
+                        record,
+                        PublicFindingKind::First,
+                        "world_retired_for_successor",
+                        "Observation moved to a successor",
+                        "This populated world became an immutable historical record without an extinction event.",
+                    )
+                    .await?
+                }
                 DomainEvent::WorldConfigured { .. }
                 | DomainEvent::OrganismAdultBodyMassCommitted { .. }
                 | DomainEvent::CancerResearchCohortCommitted { .. }
@@ -419,6 +431,18 @@ async fn apply_finding_events(
                     "world_archived",
                     "A world entered its archive",
                     "Its committed history remains available for observation.",
+                )
+                .await?
+            }
+            DomainEvent::WorldRetiredForSuccessor { .. } => {
+                insert_finding(
+                    tx,
+                    batch,
+                    record,
+                    PublicFindingKind::First,
+                    "world_retired_for_successor",
+                    "Observation moved to a successor",
+                    "This populated world became an immutable historical record without an extinction event.",
                 )
                 .await?
             }

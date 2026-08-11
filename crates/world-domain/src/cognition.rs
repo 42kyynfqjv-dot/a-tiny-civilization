@@ -164,6 +164,7 @@ pub enum CognitionUnavailableReason {
     BudgetDenied,
     SubjectUnavailable,
     WorldArchived,
+    WorldRetired,
 }
 
 /// Bounded provenance for one admitted model result. Provider prose and raw error

@@ -29,7 +29,7 @@ export type MemoryStream = {
   recalls: MemoryRecall[];
 };
 
-type World = { world_id: string; status: "initializing" | "running" | "extinct" | "archived" };
+type World = { world_id: string; status: "initializing" | "running" | "extinct" | "archived" | "retired" };
 type MemoryState =
   | { state: "loading" | "empty" | "error" }
   | { state: "ready"; world: World; stream: MemoryStream; organisms: LabelableOrganism[] };

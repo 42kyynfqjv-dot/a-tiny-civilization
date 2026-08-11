@@ -12,7 +12,7 @@ use application::{
     StoreError, StoredWorld, TransitionEffects, WorldStore, advance_world,
     initialize_or_resume_configured_world, initialize_or_resume_configured_world_with_materials,
     initialize_or_resume_world, process_next_cognition_job, resume_world,
-    resume_world_from_snapshot,
+    resume_world_from_snapshot, retire_world_for_successor,
 };
 use async_trait::async_trait;
 use chrono::{Duration, Utc};
@@ -96,6 +96,42 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
     ] {
         assert!(observed.is_some_and(|timestamp| timestamp >= heartbeat_floor));
     }
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn populated_world_retirement_frees_one_auditable_successor_slot(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let world_id = WorldId::from_uuid(Uuid::new_v4());
+    let successor_world_id = WorldId::from_uuid(Uuid::new_v4());
+    let manifest = WorldManifest::new(world_id, WorldSeed::new(71), RULESET_VERSION);
+    let running =
+        initialize_or_resume_world(&store, manifest, None, vec![initial_person(world_id)]).await?;
+    let retired = retire_world_for_successor(&store, &running, successor_world_id).await?;
+    assert_eq!(retired.world.status, WorldStatus::Retired);
+    assert_eq!(retired.state.living_people(), 1);
+    assert_eq!(resume_world(&store, world_id).await?, retired);
+
+    let successor_manifest =
+        WorldManifest::new(successor_world_id, WorldSeed::new(72), RULESET_VERSION);
+    let successor = initialize_or_resume_world(
+        &store,
+        successor_manifest,
+        Some(world_id),
+        vec![initial_person(successor_world_id)],
+    )
+    .await?;
+    assert_eq!(successor.world.status, WorldStatus::Running);
+    assert_eq!(successor.world.predecessor_world_id, Some(world_id));
+
+    let public = store.list_public_worlds().await?;
+    assert_eq!(public[0].world_id, successor_world_id);
+    assert_eq!(public[0].status, WorldStatus::Running);
+    assert!(
+        public
+            .iter()
+            .any(|world| { world.world_id == world_id && world.status == WorldStatus::Retired })
+    );
     Ok(())
 }
 

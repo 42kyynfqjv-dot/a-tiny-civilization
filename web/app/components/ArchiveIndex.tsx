@@ -5,7 +5,7 @@ import { WorldInputStatus, type WorldInputMetadata } from "./WorldInputStatus";
 
 type World = WorldInputMetadata & {
   world_id: string;
-  status: "initializing" | "running" | "extinct" | "archived";
+  status: "initializing" | "running" | "extinct" | "archived" | "retired";
   through_sequence: string | number;
   tick: string | number;
   state_hash: string;
@@ -29,7 +29,7 @@ export function ArchiveIndex() {
         const response = await fetch("/api/v1/worlds", { cache: "no-store" });
         if (!response.ok) throw new Error("world archive unavailable");
         const { worlds } = (await response.json()) as { worlds: World[] };
-        const archived = worlds.filter((world) => world.status === "archived" || world.status === "extinct");
+        const archived = worlds.filter((world) => world.status === "archived" || world.status === "extinct" || world.status === "retired");
         if (active) setArchive(archived.length === 0 ? { state: "empty" } : { state: "ready", worlds: archived });
       } catch {
         if (active) setArchive({ state: "error" });
@@ -53,7 +53,7 @@ export function ArchiveIndex() {
         <li key={world.world_id}>
           <div>
             <p>World {world.world_id.slice(0, 8)}</p>
-            <strong>{world.status === "archived" ? "Immutable archive" : "Extinction committed"}</strong>
+            <strong>{world.status === "retired" ? "Retired for a successor" : world.status === "archived" ? "Immutable archive" : "Extinction committed"}</strong>
             <WorldInputStatus world={world} />
           </div>
           <dl>

@@ -330,9 +330,12 @@ impl WorldStore for PostgresStore {
                 batch.world_id, batch.sequence
             )));
         }
-        if persisted.status == WorldStatus::Archived {
+        if matches!(
+            persisted.status,
+            WorldStatus::Archived | WorldStatus::Retired
+        ) {
             return Err(StoreError::Conflict(format!(
-                "world {} is already archived",
+                "world {} is already immutable",
                 batch.world_id
             )));
         }
@@ -448,6 +451,10 @@ impl WorldStore for PostgresStore {
             .events
             .iter()
             .any(|record| matches!(record.event, DomainEvent::WorldArchived));
+        let contains_retired = batch
+            .events
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldRetiredForSuccessor { .. }));
         let status = status_text(snapshot.state.status());
 
         let updated = sqlx::query(
@@ -461,11 +468,11 @@ impl WorldStore for PostgresStore {
                 current_state_checksum = $6,
                 started_at = CASE WHEN $7 THEN COALESCE(started_at, NOW()) ELSE started_at END,
                 extinct_at = CASE WHEN $8 THEN COALESCE(extinct_at, NOW()) ELSE extinct_at END,
-                archived_at = CASE WHEN $9 THEN COALESCE(archived_at, NOW()) ELSE archived_at END
+                archived_at = CASE WHEN $9 OR $12 THEN COALESCE(archived_at, NOW()) ELSE archived_at END
             WHERE id = $1
               AND current_sequence = $10
               AND last_event_checksum = $11
-              AND status <> 'archived'
+              AND status NOT IN ('archived', 'retired')
             "#,
         )
         .bind(batch.world_id.as_uuid())
@@ -479,6 +486,7 @@ impl WorldStore for PostgresStore {
         .bind(contains_archived)
         .bind(to_i64(expected.sequence.get(), "expected event sequence")?)
         .bind(expected.last_event_hash.as_bytes().as_slice())
+        .bind(contains_retired)
         .execute(&mut *transaction)
         .await
         .map_err(operation_error)?;
@@ -738,6 +746,11 @@ fn validate_early_cognition_resolution(
         } => batch.events[position + 1..]
             .iter()
             .any(|record| matches!(record.event, DomainEvent::WorldArchived)),
+        CognitionInputOutcome::Unavailable {
+            reason: CognitionUnavailableReason::WorldRetired,
+        } => batch.events[..position]
+            .iter()
+            .any(|record| matches!(record.event, DomainEvent::WorldRetiredForSuccessor { .. })),
         _ => false,
     };
     if mechanically_supported {
@@ -958,6 +971,7 @@ fn status_text(status: WorldStatus) -> &'static str {
         WorldStatus::Running => "running",
         WorldStatus::Extinct => "extinct",
         WorldStatus::Archived => "archived",
+        WorldStatus::Retired => "retired",
     }
 }
 
@@ -967,6 +981,7 @@ fn parse_status(status: &str) -> Result<WorldStatus, StoreError> {
         "running" => Ok(WorldStatus::Running),
         "extinct" => Ok(WorldStatus::Extinct),
         "archived" => Ok(WorldStatus::Archived),
+        "retired" => Ok(WorldStatus::Retired),
         other => Err(StoreError::Corrupt(format!("unknown world status {other}"))),
     }
 }

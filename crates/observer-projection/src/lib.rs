@@ -72,6 +72,7 @@ pub enum PublicTimelineKind {
     LifeEnded,
     PeopleExtinct,
     WorldArchived,
+    WorldRetired,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -148,6 +149,11 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                     PublicTimelineKind::WorldArchived,
                     "The world entered its archive",
                     "Its committed history remains available for observation.",
+                ),
+                DomainEvent::WorldRetiredForSuccessor { .. } => (
+                    PublicTimelineKind::WorldRetired,
+                    "This world became a historical record",
+                    "Observation moved to a disclosed successor; this population was not reported extinct.",
                 ),
                 DomainEvent::WorldConfigured { .. }
                 | DomainEvent::OrganismAdultBodyMassCommitted { .. }
@@ -984,7 +990,8 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::CelestialStateRecorded { .. }
             | DomainEvent::OrganismDied { .. }
             | DomainEvent::WorldExtinct
-            | DomainEvent::WorldArchived => None,
+            | DomainEvent::WorldArchived
+            | DomainEvent::WorldRetiredForSuccessor { .. } => None,
         })
         .collect()
 }

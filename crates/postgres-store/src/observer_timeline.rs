@@ -212,6 +212,7 @@ const fn kind_code(kind: PublicTimelineKind) -> &'static str {
         PublicTimelineKind::LifeEnded => "life_ended",
         PublicTimelineKind::PeopleExtinct => "people_extinct",
         PublicTimelineKind::WorldArchived => "world_archived",
+        PublicTimelineKind::WorldRetired => "world_retired",
     }
 }
 
@@ -236,6 +237,7 @@ fn parse_kind(value: &str) -> Result<PublicTimelineKind, ObserverProjectionStore
         "life_ended" => Ok(PublicTimelineKind::LifeEnded),
         "people_extinct" => Ok(PublicTimelineKind::PeopleExtinct),
         "world_archived" => Ok(PublicTimelineKind::WorldArchived),
+        "world_retired" => Ok(PublicTimelineKind::WorldRetired),
         _ => Err(corrupt("timeline kind")),
     }
 }

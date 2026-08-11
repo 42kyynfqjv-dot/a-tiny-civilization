@@ -8,7 +8,7 @@ import { commonSpeciesName } from "./speciesNames";
 
 type World = WorldInputMetadata & {
   world_id: string;
-  status: "initializing" | "running" | "extinct" | "archived";
+  status: "initializing" | "running" | "extinct" | "archived" | "retired";
   through_sequence: string | number;
   tick: string | number;
   manifest_hash: string;

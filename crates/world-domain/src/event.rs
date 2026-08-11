@@ -110,6 +110,10 @@ pub const CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION: u16 = 35;
 /// Schema thirty-six records deterministic daily cancer-burden transitions. The
 /// values are private experiment mechanics, not clinical claims or advice.
 pub const CANCER_BURDEN_EVENT_SCHEMA_VERSION: u16 = 36;
+/// Schema thirty-seven records an explicit operator-authorized successor cutover.
+/// It retires a still-populated legacy world without misrepresenting the closure as
+/// extinction and binds the immutable history to the successor's committed ID.
+pub const WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION: u16 = 37;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -418,6 +422,12 @@ pub enum DomainEvent {
     },
     WorldExtinct,
     WorldArchived,
+    /// An observer-side lifecycle boundary, never an event inhabitants can perceive.
+    /// The retired world remains replayable and its living population is not reported
+    /// as dead or extinct.
+    WorldRetiredForSuccessor {
+        successor_world_id: WorldId,
+    },
 }
 
 /// An event plus its deterministic identity within a committed batch.
@@ -586,6 +596,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | WORLD_EXPERIMENT_EVENT_SCHEMA_VERSION
             | CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
             | CANCER_BURDEN_EVENT_SCHEMA_VERSION
+            | WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -613,6 +624,11 @@ fn validate_event_for_schema(
     }
     if event_schema_version < CANCER_BURDEN_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::CancerBurdensAdvanced { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::WorldRetiredForSuccessor { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
@@ -2319,5 +2335,37 @@ mod tests {
             Digest::sha256(b"experiment schema"),
         )
         .expect("schema thirty-four accepts the explicit experiment bootstrap");
+    }
+
+    #[test]
+    fn populated_successor_retirement_requires_schema_thirty_seven() {
+        let manifest = manifest();
+        let event = DomainEvent::WorldRetiredForSuccessor {
+            successor_world_id: WorldId::from_uuid(Uuid::from_u128(0x5acc_3550)),
+        };
+        assert!(matches!(
+            EventBatch::new(
+                CANCER_BURDEN_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(2),
+                SimTick::new(1),
+                manifest.ruleset_version,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"pre-retirement schema"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(2),
+            SimTick::new(1),
+            manifest.ruleset_version,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"successor retirement schema"),
+        )
+        .expect("schema thirty-seven accepts a successor retirement");
     }
 }

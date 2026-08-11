@@ -7,7 +7,7 @@ import { commonSpeciesName } from "./speciesNames";
 
 type World = WorldInputMetadata & {
   world_id: string;
-  status: "initializing" | "running" | "extinct" | "archived";
+  status: "initializing" | "running" | "extinct" | "archived" | "retired";
 };
 
 type Finding = {

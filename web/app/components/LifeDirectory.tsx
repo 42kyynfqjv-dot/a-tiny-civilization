@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { createPublicLifeLabels } from "./lifeLabels";
 import { commonSpeciesName } from "./speciesNames";
 
-type World = { world_id: string; status: "initializing" | "running" | "extinct" | "archived" };
+type World = { world_id: string; status: "initializing" | "running" | "extinct" | "archived" | "retired" };
 type Organism = { organism_id: string; role: "person" | "fauna"; species: { scientific_name: string; source_url: string }; introduced_sequence: string | number; introduced_tick: string | number; ended_event_id: string | null };
 type DirectoryState = { state: "loading" | "empty" | "error" } | { state: "ready"; world: World; organisms: Organism[] };
 

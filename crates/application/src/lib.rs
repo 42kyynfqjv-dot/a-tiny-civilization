@@ -452,6 +452,28 @@ pub async fn advance_world<S: WorldStore + ?Sized>(
     advance_world_events(store, current, events).await
 }
 
+/// Atomically retire one still-populated world for a disclosed successor. This is
+/// an explicit operator lifecycle use case, never part of ordinary simulation
+/// planning and never presented as biological extinction.
+pub async fn retire_world_for_successor<S: WorldStore + ?Sized>(
+    store: &S,
+    current: &WorldSession,
+    successor_world_id: WorldId,
+) -> Result<WorldSession, WorldRuntimeError> {
+    if current.world.status != WorldStatus::Running
+        || current.state.status() != WorldStatus::Running
+    {
+        return Err(WorldRuntimeError::Integrity(format!(
+            "world {} is not running and cannot be retired",
+            current.world.manifest.world_id
+        )));
+    }
+    let events = current
+        .state
+        .plan_successor_retirement(successor_world_id)?;
+    advance_world_events(store, current, events).await
+}
+
 /// Commit the engine-selected world-total cognition request as a same-tick
 /// transition. Returns `None` while another request is pending.
 pub async fn schedule_world_cognition<S: WorldStore + ?Sized>(
