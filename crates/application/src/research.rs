@@ -1,4 +1,5 @@
 use async_trait::async_trait;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
@@ -20,6 +21,7 @@ pub const MAX_CANCER_RESEARCH_TOTAL_EVIDENCE_BYTES: usize = 512 * 1024;
 pub const MAX_CANCER_RESEARCH_MEMORY_INPUTS: usize = 16;
 pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
 pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 4;
+pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_ADAPTER_VERSION_BYTES: usize = 128;
@@ -305,6 +307,38 @@ pub struct CancerResearchRouteAttemptRecord {
     pub receipt: Option<CancerResearchModelReceipt>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchPaidAuthorization {
+    pub request_id: Uuid,
+    pub billing_month: NaiveDate,
+    pub reserved_micro_usd: u64,
+}
+
+impl CancerResearchPaidAuthorization {
+    pub fn validate_against(
+        &self,
+        entry: &CancerResearchJobEntry,
+    ) -> Result<(), CancerResearchModelContractError> {
+        entry.validate()?;
+        if self.request_id != entry.request.request_id
+            || self.billing_month.day() != 1
+            || self.reserved_micro_usd == 0
+            || self.reserved_micro_usd > MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+        {
+            return Err(CancerResearchModelContractError::InvalidPaidAuthorization);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchPaidReservationDecision {
+    Authorized(CancerResearchPaidAuthorization),
+    DeniedHardStop,
+}
+
 impl CancerResearchRouteAttemptRecord {
     pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
         self.route.validate()?;
@@ -446,6 +480,41 @@ pub trait CancerResearchJobStore: Send + Sync {
         &self,
         request_id: Uuid,
     ) -> Result<Option<CancerResearchLadderResult>, StoreError>;
+
+    async fn reserve_paid_cancer_research(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        route: &CognitionModelRoute,
+        reserved_micro_usd: u64,
+    ) -> Result<CancerResearchPaidReservationDecision, StoreError>;
+
+    async fn load_paid_cancer_research_authorization(
+        &self,
+        entry: &CancerResearchJobEntry,
+    ) -> Result<Option<CancerResearchPaidAuthorization>, StoreError>;
+
+    async fn settle_paid_cancer_research(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        authorization: &CancerResearchPaidAuthorization,
+        receipt: &CancerResearchModelReceipt,
+    ) -> Result<(), StoreError>;
+
+    async fn release_paid_cancer_research(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        authorization: &CancerResearchPaidAuthorization,
+    ) -> Result<(), StoreError>;
+
+    async fn mark_paid_cancer_research_indeterminate(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        authorization: &CancerResearchPaidAuthorization,
+    ) -> Result<(), StoreError>;
 }
 
 #[derive(Debug, Error)]
@@ -466,6 +535,8 @@ pub enum CancerResearchModelContractError {
     InvalidAttemptRecord,
     #[error("the model route is not approved for the selected cancer-research inference tier")]
     UnapprovedInferenceTierRoute,
+    #[error("the paid cancer-research authorization is invalid")]
+    InvalidPaidAuthorization,
     #[error("a free cancer-research route reported non-zero cost")]
     FreeRouteReportedCost,
     #[error("a paid cancer-research response used a different model")]

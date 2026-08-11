@@ -1,10 +1,13 @@
 use application::{
     CancerResearchAttemptPersistenceState, CancerResearchJobEntry, CancerResearchJobStore,
     CancerResearchLadderResult, CancerResearchModelReceipt, CancerResearchModelRequest,
-    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionModelRoute,
-    CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRouteRegistry, StoreError,
+    CancerResearchPaidAuthorization, CancerResearchPaidReservationDecision,
+    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
+    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
 };
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
@@ -43,6 +46,14 @@ struct ResearchAttemptRow {
 struct ResearchResultRow {
     result_payload: Value,
     result_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct ResearchCostReservationRow {
+    billing_month: NaiveDate,
+    reserved_micro_usd: i64,
+    status: String,
+    actual_micro_usd: Option<i64>,
 }
 
 #[async_trait]
@@ -442,6 +453,392 @@ impl CancerResearchJobStore for PostgresStore {
         }
         Ok(Some(result))
     }
+
+    async fn reserve_paid_cancer_research(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        route: &CognitionModelRoute,
+        reserved_micro_usd: u64,
+    ) -> Result<CancerResearchPaidReservationDecision, StoreError> {
+        validate_worker_id(worker_id)?;
+        entry.validate().map_err(corrupt)?;
+        entry.request.validate_route(route).map_err(corrupt)?;
+        if route.billing_class != CognitionBillingClass::PaidApproved
+            || reserved_micro_usd == 0
+            || reserved_micro_usd > MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+        {
+            return Err(StoreError::Conflict(
+                "paid research reservation is outside the approved route or per-call cap"
+                    .to_owned(),
+            ));
+        }
+        let reserved = to_i64(reserved_micro_usd, "paid research reservation")?;
+        let scope = CognitionBillingScope::CancerResearch;
+        let (target, hard_stop) = scope.monthly_limits_micro_usd();
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        let billing_month: NaiveDate =
+            sqlx::query_scalar("SELECT date_trunc('month', CURRENT_DATE)::DATE")
+                .fetch_one(&mut *transaction)
+                .await
+                .map_err(operation_error)?;
+        sqlx::query(
+            r#"
+            INSERT INTO cognition_cost_accounts (
+                billing_scope,billing_month,target_micro_usd,hard_stop_micro_usd
+            ) VALUES ($1,$2,$3,$4)
+            ON CONFLICT (billing_scope,billing_month) DO NOTHING
+            "#,
+        )
+        .bind(scope.as_str())
+        .bind(billing_month)
+        .bind(to_i64(target, "research monthly target")?)
+        .bind(to_i64(hard_stop, "research monthly hard stop")?)
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        if let Some(existing) =
+            fetch_research_reservation(&mut transaction, entry.request.request_id, false).await?
+        {
+            if existing.billing_month == billing_month
+                && existing.reserved_micro_usd == reserved
+                && existing.status == "reserved"
+                && existing.actual_micro_usd.is_none()
+            {
+                transaction.commit().await.map_err(operation_error)?;
+                return Ok(CancerResearchPaidReservationDecision::Authorized(
+                    CancerResearchPaidAuthorization {
+                        request_id: entry.request.request_id,
+                        billing_month,
+                        reserved_micro_usd,
+                    },
+                ));
+            }
+            return Err(StoreError::Conflict(
+                "research request already has a different paid reservation".to_owned(),
+            ));
+        }
+        let account = sqlx::query_as::<_, (i64, i64, i64)>(
+            r#"
+            SELECT reserved_micro_usd,spent_micro_usd,hard_stop_micro_usd
+            FROM cognition_cost_accounts
+            WHERE billing_scope=$1 AND billing_month=$2
+            FOR UPDATE
+            "#,
+        )
+        .bind(scope.as_str())
+        .bind(billing_month)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        let would_use = account
+            .0
+            .checked_add(account.1)
+            .and_then(|used| used.checked_add(reserved))
+            .ok_or_else(|| {
+                StoreError::Conflict("research cost arithmetic overflowed".to_owned())
+            })?;
+        if would_use > account.2 {
+            transaction.commit().await.map_err(operation_error)?;
+            return Ok(CancerResearchPaidReservationDecision::DeniedHardStop);
+        }
+        sqlx::query(
+            r#"
+            INSERT INTO cancer_research_cost_reservations (
+                request_id,billing_scope,billing_month,reserved_micro_usd,status
+            ) VALUES ($1,$2,$3,$4,'reserved')
+            "#,
+        )
+        .bind(entry.request.request_id)
+        .bind(scope.as_str())
+        .bind(billing_month)
+        .bind(reserved)
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        sqlx::query(
+            r#"
+            UPDATE cognition_cost_accounts
+            SET reserved_micro_usd=reserved_micro_usd+$3,updated_at=NOW()
+            WHERE billing_scope=$1 AND billing_month=$2
+            "#,
+        )
+        .bind(scope.as_str())
+        .bind(billing_month)
+        .bind(reserved)
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        transaction.commit().await.map_err(operation_error)?;
+        Ok(CancerResearchPaidReservationDecision::Authorized(
+            CancerResearchPaidAuthorization {
+                request_id: entry.request.request_id,
+                billing_month,
+                reserved_micro_usd,
+            },
+        ))
+    }
+
+    async fn load_paid_cancer_research_authorization(
+        &self,
+        entry: &CancerResearchJobEntry,
+    ) -> Result<Option<CancerResearchPaidAuthorization>, StoreError> {
+        entry.validate().map_err(corrupt)?;
+        let row = fetch_research_reservation_from_pool(self, entry.request.request_id).await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        if row.status != "reserved" {
+            return Ok(None);
+        }
+        if row.actual_micro_usd.is_some() {
+            return Err(StoreError::Corrupt(
+                "active research reservation unexpectedly has an actual cost".to_owned(),
+            ));
+        }
+        let authorization = CancerResearchPaidAuthorization {
+            request_id: entry.request.request_id,
+            billing_month: row.billing_month,
+            reserved_micro_usd: u64::try_from(row.reserved_micro_usd).map_err(|_| {
+                StoreError::Corrupt("negative research reservation amount".to_owned())
+            })?,
+        };
+        authorization.validate_against(entry).map_err(corrupt)?;
+        Ok(Some(authorization))
+    }
+
+    async fn settle_paid_cancer_research(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        authorization: &CancerResearchPaidAuthorization,
+        receipt: &CancerResearchModelReceipt,
+    ) -> Result<(), StoreError> {
+        validate_worker_id(worker_id)?;
+        authorization.validate_against(entry).map_err(corrupt)?;
+        if receipt.request_id != entry.request.request_id
+            || receipt.billed_micro_usd > authorization.reserved_micro_usd
+        {
+            return Err(StoreError::Conflict(
+                "paid research receipt exceeds or differs from its reservation".to_owned(),
+            ));
+        }
+        let receipt_payload = serde_json::to_value(receipt).map_err(corrupt)?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        let durable_receipt = sqlx::query_scalar::<_, Value>(
+            r#"
+            SELECT outcome.receipt_payload
+            FROM cancer_research_route_outcomes AS outcome
+            JOIN cancer_research_route_dispatches AS dispatch
+              ON dispatch.request_id=outcome.request_id AND dispatch.route_index=outcome.route_index
+            WHERE outcome.request_id=$1 AND outcome.normalized_status='succeeded'
+              AND dispatch.billing_class='paid_approved'
+            "#,
+        )
+        .bind(entry.request.request_id)
+        .fetch_optional(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        if durable_receipt.as_ref() != Some(&receipt_payload) {
+            return Err(StoreError::Conflict(
+                "paid research receipt is not the durable successful outcome".to_owned(),
+            ));
+        }
+        resolve_research_reservation(
+            &mut transaction,
+            authorization,
+            ResearchReservationResolution::Settled(receipt.billed_micro_usd),
+        )
+        .await?;
+        transaction.commit().await.map_err(operation_error)
+    }
+
+    async fn release_paid_cancer_research(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        authorization: &CancerResearchPaidAuthorization,
+    ) -> Result<(), StoreError> {
+        validate_worker_id(worker_id)?;
+        authorization.validate_against(entry).map_err(corrupt)?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        if paid_research_was_dispatched(&mut transaction, entry.request.request_id).await? {
+            return Err(StoreError::Conflict(
+                "a dispatched paid research call cannot release its reservation".to_owned(),
+            ));
+        }
+        resolve_research_reservation(
+            &mut transaction,
+            authorization,
+            ResearchReservationResolution::Released,
+        )
+        .await?;
+        transaction.commit().await.map_err(operation_error)
+    }
+
+    async fn mark_paid_cancer_research_indeterminate(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        authorization: &CancerResearchPaidAuthorization,
+    ) -> Result<(), StoreError> {
+        validate_worker_id(worker_id)?;
+        authorization.validate_against(entry).map_err(corrupt)?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        if !paid_research_was_dispatched(&mut transaction, entry.request.request_id).await? {
+            return Err(StoreError::Conflict(
+                "an undispatched paid research call cannot become billing-indeterminate".to_owned(),
+            ));
+        }
+        resolve_research_reservation(
+            &mut transaction,
+            authorization,
+            ResearchReservationResolution::Indeterminate,
+        )
+        .await?;
+        transaction.commit().await.map_err(operation_error)
+    }
+}
+
+async fn fetch_research_reservation_from_pool(
+    store: &PostgresStore,
+    request_id: Uuid,
+) -> Result<Option<ResearchCostReservationRow>, StoreError> {
+    sqlx::query_as::<_, ResearchCostReservationRow>(
+        r#"
+        SELECT billing_month,reserved_micro_usd,status,actual_micro_usd
+        FROM cancer_research_cost_reservations WHERE request_id=$1
+        "#,
+    )
+    .bind(request_id)
+    .fetch_optional(store.pool())
+    .await
+    .map_err(operation_error)
+}
+
+async fn fetch_research_reservation(
+    transaction: &mut Transaction<'_, Postgres>,
+    request_id: Uuid,
+    for_update: bool,
+) -> Result<Option<ResearchCostReservationRow>, StoreError> {
+    let query = if for_update {
+        r#"
+        SELECT billing_month,reserved_micro_usd,status,actual_micro_usd
+        FROM cancer_research_cost_reservations WHERE request_id=$1 FOR UPDATE
+        "#
+    } else {
+        r#"
+        SELECT billing_month,reserved_micro_usd,status,actual_micro_usd
+        FROM cancer_research_cost_reservations WHERE request_id=$1
+        "#
+    };
+    sqlx::query_as::<_, ResearchCostReservationRow>(query)
+        .bind(request_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(operation_error)
+}
+
+enum ResearchReservationResolution {
+    Settled(u64),
+    Released,
+    Indeterminate,
+}
+
+async fn resolve_research_reservation(
+    transaction: &mut Transaction<'_, Postgres>,
+    authorization: &CancerResearchPaidAuthorization,
+    resolution: ResearchReservationResolution,
+) -> Result<(), StoreError> {
+    let existing = fetch_research_reservation(transaction, authorization.request_id, true)
+        .await?
+        .ok_or_else(|| StoreError::Conflict("paid research reservation is missing".to_owned()))?;
+    let reserved = to_i64(
+        authorization.reserved_micro_usd,
+        "paid research reservation",
+    )?;
+    if existing.billing_month != authorization.billing_month
+        || existing.reserved_micro_usd != reserved
+        || existing.status != "reserved"
+        || existing.actual_micro_usd.is_some()
+    {
+        return Err(StoreError::Conflict(
+            "paid research reservation is not the active authorization".to_owned(),
+        ));
+    }
+    let (status, actual, release_reserved, add_spent) = match resolution {
+        ResearchReservationResolution::Settled(actual) => {
+            let actual = to_i64(actual, "paid research actual cost")?;
+            if actual > reserved {
+                return Err(StoreError::Conflict(
+                    "paid research cost exceeds its reservation".to_owned(),
+                ));
+            }
+            ("settled", Some(actual), reserved, actual)
+        }
+        ResearchReservationResolution::Released => ("released", None, reserved, 0),
+        ResearchReservationResolution::Indeterminate => ("indeterminate", None, 0, 0),
+    };
+    if release_reserved != 0 || add_spent != 0 {
+        let updated = sqlx::query(
+            r#"
+            UPDATE cognition_cost_accounts
+            SET reserved_micro_usd=reserved_micro_usd-$2,
+                spent_micro_usd=spent_micro_usd+$3,updated_at=NOW()
+            WHERE billing_scope='cancer_research' AND billing_month=$1
+              AND reserved_micro_usd >= $2 AND hard_stop_micro_usd >= spent_micro_usd+$3
+            "#,
+        )
+        .bind(authorization.billing_month)
+        .bind(release_reserved)
+        .bind(add_spent)
+        .execute(&mut **transaction)
+        .await
+        .map_err(operation_error)?;
+        require_one(
+            updated.rows_affected(),
+            "research cost account cannot resolve reservation",
+        )?;
+    }
+    let updated = sqlx::query(
+        r#"
+        UPDATE cancer_research_cost_reservations
+        SET status=$2,actual_micro_usd=$3,resolved_at=NOW()
+        WHERE request_id=$1 AND status='reserved'
+        "#,
+    )
+    .bind(authorization.request_id)
+    .bind(status)
+    .bind(actual)
+    .execute(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    require_one(
+        updated.rows_affected(),
+        "research reservation lost its resolution race",
+    )
+}
+
+async fn paid_research_was_dispatched(
+    transaction: &mut Transaction<'_, Postgres>,
+    request_id: Uuid,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT EXISTS (
+            SELECT 1 FROM cancer_research_route_dispatches
+            WHERE request_id=$1 AND billing_class='paid_approved'
+        )
+        "#,
+    )
+    .bind(request_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(operation_error)
 }
 
 fn parse_job(row: ResearchJobRow) -> Result<CancerResearchJobEntry, StoreError> {
@@ -839,5 +1236,128 @@ mod tests {
         .execute(store.pool())
         .await;
         assert!(mutation.is_err());
+
+        let paid_selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(30),
+            SimTick::new(40),
+            1,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::LiteratureAudit,
+            CancerResearchTask::ChallengeFrozenHypothesis,
+            CancerResearchInferenceTier::Escalation,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            Vec::new(),
+            Some(Digest::sha256(b"frozen candidate")),
+            2_048,
+        )
+        .expect("paid selection");
+        let paid_request = CancerResearchModelRequest::new(
+            paid_selection,
+            Vec::<CancerResearchEvidenceDocument>::new(),
+            Vec::new(),
+        )
+        .expect("paid request");
+        store
+            .enqueue_cancer_research_request(&paid_request)
+            .await
+            .expect("enqueue paid request");
+        let paid_entry = store
+            .claim_next_cancer_research_request("research-test-worker", 60)
+            .await
+            .expect("claim paid")
+            .expect("paid job");
+        let paid_registry = CognitionRouteRegistry::cancer_research_escalation();
+        let paid_route = paid_registry.routes[0].clone();
+        let authorization = match store
+            .reserve_paid_cancer_research(
+                "research-test-worker",
+                &paid_entry,
+                &paid_route,
+                MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+            )
+            .await
+            .expect("reserve")
+        {
+            CancerResearchPaidReservationDecision::Authorized(authorization) => authorization,
+            CancerResearchPaidReservationDecision::DeniedHardStop => {
+                panic!("fresh test treasury unexpectedly denied")
+            }
+        };
+        store
+            .begin_cancer_research_route_attempt(
+                "research-test-worker",
+                &paid_entry,
+                0,
+                &paid_route,
+            )
+            .await
+            .expect("paid dispatch");
+        let paid_contribution = CancerResearchContribution::new(
+            &paid_entry.request.selection,
+            CancerResearchArtifactKind::LiteratureAudit,
+            "A bounded candidate challenge",
+            "The frozen candidate remains unverified after a focused challenge.",
+            vec![CancerResearchClaim {
+                statement: "The candidate may fail under an alternative mechanism.".to_owned(),
+                testable_prediction: "The alternative predicts a different assay response."
+                    .to_owned(),
+                falsification_test:
+                    "Both mechanisms produce indistinguishable preregistered responses.".to_owned(),
+                citation_hashes: Vec::new(),
+            }],
+        )
+        .expect("paid contribution");
+        let paid_receipt = CancerResearchModelReceipt {
+            contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+            request_id: paid_request.request_id,
+            request_hash: paid_request.canonical_hash().expect("paid request hash"),
+            provider: paid_route.provider.clone(),
+            requested_model: paid_route.requested_model.clone(),
+            resolved_model: paid_route.requested_model.clone(),
+            provider_response_id: "paid-test-response".to_owned(),
+            usage: ModelTokenUsage {
+                prompt_tokens: 200,
+                completion_tokens: 150,
+            },
+            billed_micro_usd: 1_000,
+            contribution: paid_contribution,
+            provider_response_hash: Digest::sha256(b"paid provider response"),
+            adapter_version: "test-adapter-v1".to_owned(),
+        };
+        let paid_attempt = CognitionRouteAttempt {
+            route_index: 0,
+            provider: paid_route.provider.clone(),
+            requested_model: paid_route.requested_model.clone(),
+            billing_class: paid_route.billing_class,
+            status: CognitionRouteAttemptStatus::Succeeded,
+        };
+        store
+            .finish_cancer_research_route_attempt(
+                "research-test-worker",
+                &paid_entry,
+                &paid_attempt,
+                Some(&paid_receipt),
+            )
+            .await
+            .expect("paid outcome");
+        store
+            .settle_paid_cancer_research(
+                "research-test-worker",
+                &paid_entry,
+                &authorization,
+                &paid_receipt,
+            )
+            .await
+            .expect("settle paid receipt");
+        let account = sqlx::query_as::<_, (i64, i64)>(
+            "SELECT reserved_micro_usd,spent_micro_usd FROM cognition_cost_accounts WHERE billing_scope='cancer_research' AND billing_month=$1",
+        )
+        .bind(authorization.billing_month)
+        .fetch_one(store.pool())
+        .await
+        .expect("research account");
+        assert_eq!(account, (0, 1_000));
     }
 }
