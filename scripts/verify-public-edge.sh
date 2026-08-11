@@ -59,7 +59,7 @@ fi
 declare -A route_markers=(
   ["/lives"]="Choose someone to return to."
   ["/wiki"]="Evidence first. Interpretation stays visible."
-  ["/privacy"]="Observer data is not sold"
+  ["/privacy"]="does not sell personal information"
   ["/terms"]="not a promise that civilization"
   ["/supporter-policy"]="never creates, schedules, delays"
   ["/presentation-policy"]="never presents sexual activity"

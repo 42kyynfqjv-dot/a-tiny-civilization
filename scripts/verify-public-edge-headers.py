@@ -26,7 +26,7 @@ def verify(path: str, raw_headers: str) -> None:
         "cross-origin-opener-policy": "same-origin",
         "cross-origin-resource-policy": "same-origin",
         "origin-agent-cluster": "?1",
-        "referrer-policy": "strict-origin-when-cross-origin",
+        "referrer-policy": "no-referrer",
         "strict-transport-security": "max-age=31536000; includeSubDomains",
         "x-content-type-options": "nosniff",
         "x-frame-options": "DENY",
