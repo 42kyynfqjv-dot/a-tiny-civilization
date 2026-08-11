@@ -1127,9 +1127,9 @@ async fn retire_for_successor(
             "successor world {successor_world_id} already exists; retirement must bind an uninitialized successor ID"
         );
     }
-    let current = resume_world(store, world_id)
-        .await
-        .context("verify complete world history before successor retirement")?;
+    let current = resume_world_from_snapshot(store, world_id).await.context(
+        "verify anchored snapshot and bounded immutable tail before successor retirement",
+    )?;
     if current.world.manifest.experiment.is_some() {
         anyhow::bail!("experimental worlds cannot use the public-world successor cutover");
     }

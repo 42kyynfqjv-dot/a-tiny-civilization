@@ -26,8 +26,10 @@ A populated ordinary world may be closed only by the explicit canonical event
 - A retired world is immutable at the database trigger and store layers.
 - Only an uninitialized successor ID may be bound, and the successor must later cite the retired
   world as its predecessor.
-- The operator command requires a literal confirmation flag, verifies the entire source history,
-  holds the canonical-writer lock, and rejects experimental worlds.
+- The operator command requires a literal confirmation flag, verifies the newest cache snapshot
+  against its immutable event-batch anchor, replays the bounded tail to the committed cursor, holds
+  the canonical-writer lock, and rejects experimental worlds. Independent full-genesis verification
+  remains a separate operator check; it is not materialized inside the retirement transaction.
 - The observatory states plainly that observation moved to a successor and that the population was
   not reported extinct.
 
