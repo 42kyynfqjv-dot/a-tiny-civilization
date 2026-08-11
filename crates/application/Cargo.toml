@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 sim-engine = { path = "../sim-engine" }
 thiserror.workspace = true
+tracing.workspace = true
 uuid.workspace = true
 world-domain = { path = "../world-domain" }
 

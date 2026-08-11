@@ -9,7 +9,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use application::{
-    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchModel,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchEvidenceDocument,
+    CancerResearchJobStore, CancerResearchLiteratureSnapshot, CancerResearchModel,
     CancerResearchModelAdapters, CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
     CognitionModel, CognitionModelRoute, CognitionProviderId, CognitionWorkerConfiguration,
     CognitionWorkerStep, FoundationStore, MemoryOutboxStore, ModelCognitionRequest,
@@ -285,6 +286,33 @@ enum Command {
         #[arg(long, default_value_t = 64)]
         ticks: u32,
     },
+    /// Refresh immutable, permissively licensed GBM literature snapshots from
+    /// Europe PMC. This observer-side worker cannot mutate canonical history.
+    CancerEvidenceWorker {
+        #[arg(long, env = "CANCER_WORLD_ID")]
+        world_id: WorldId,
+
+        #[arg(
+            long,
+            env = "CANCER_EVIDENCE_REFRESH_SECONDS",
+            default_value_t = 21_600
+        )]
+        refresh_seconds: u64,
+
+        #[arg(long, env = "CANCER_EVIDENCE_PAGE_SIZE", default_value_t = 24)]
+        page_size: u16,
+
+        #[arg(
+            long,
+            env = "CANCER_EVIDENCE_ENDPOINT",
+            default_value = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
+        )]
+        endpoint: String,
+
+        /// Fetch once and exit (used by deployment checks and deterministic tests).
+        #[arg(long, default_value_t = false)]
+        once: bool,
+    },
     /// Deliver committed subjective-memory records without blocking simulation ticks.
     MemoryWorker {
         #[arg(long, env = "HINDSIGHT_BASE_URL")]
@@ -551,9 +579,18 @@ async fn main() -> Result<()> {
         )
         .await;
     }
-    let database_url = cli.database_url.as_deref().context(
-        "--database-url or DATABASE_URL is required except for explicitly database-free commands",
-    )?;
+    let derived_database_url = if cli.database_url.is_none() {
+        database_url_from_postgres_environment()?
+    } else {
+        None
+    };
+    let database_url = cli
+        .database_url
+        .as_deref()
+        .or(derived_database_url.as_deref())
+        .context(
+            "--database-url, DATABASE_URL, or POSTGRES_USER/POSTGRES_PASSWORD/POSTGRES_DB is required except for explicitly database-free commands",
+        )?;
     let store = PostgresStore::connect(database_url, cli.database_max_connections)
         .await
         .context("connect runner to PostgreSQL")?;
@@ -637,6 +674,23 @@ async fn main() -> Result<()> {
         }
         Command::CapacitySweep { .. } => {
             unreachable!("capacity sweep returns before database connection")
+        }
+        Command::CancerEvidenceWorker {
+            world_id,
+            refresh_seconds,
+            page_size,
+            endpoint,
+            once,
+        } => {
+            serve_cancer_evidence_worker(
+                &store,
+                world_id,
+                &endpoint,
+                page_size,
+                refresh_seconds,
+                once,
+            )
+            .await
         }
         Command::VerifyProvisionalGenesis { .. } => {
             unreachable!("genesis verification returns before database connection")
@@ -756,6 +810,190 @@ async fn main() -> Result<()> {
             .await
         }
     }
+}
+
+fn database_url_from_postgres_environment() -> Result<Option<String>> {
+    let Ok(user) = std::env::var("POSTGRES_USER") else {
+        return Ok(None);
+    };
+    let password = std::env::var("POSTGRES_PASSWORD")
+        .context("POSTGRES_PASSWORD is required when deriving DATABASE_URL")?;
+    let database = std::env::var("POSTGRES_DB")
+        .context("POSTGRES_DB is required when deriving DATABASE_URL")?;
+    let host = std::env::var("POSTGRES_HOST").unwrap_or_else(|_| "127.0.0.1".to_owned());
+    let port = std::env::var("POSTGRES_PORT").unwrap_or_else(|_| "5432".to_owned());
+    let mut url = Url::parse(&format!("postgres://{host}:{port}/"))
+        .context("construct PostgreSQL URL from environment")?;
+    url.set_username(&user)
+        .map_err(|_| anyhow::anyhow!("POSTGRES_USER cannot be encoded as a URL username"))?;
+    url.set_password(Some(&password))
+        .map_err(|_| anyhow::anyhow!("POSTGRES_PASSWORD cannot be encoded as a URL password"))?;
+    url.set_path(&database);
+    Ok(Some(url.into()))
+}
+
+const EUROPE_PMC_GBM_QUERY: &str = "(TITLE_ABS:\"glioblastoma\" OR TITLE_ABS:\"glioblastoma multiforme\") AND OPEN_ACCESS:Y AND (LICENSE:\"CC BY\" OR LICENSE:\"CC0\") sort_date:y";
+
+async fn serve_cancer_evidence_worker(
+    store: &PostgresStore,
+    world_id: WorldId,
+    endpoint: &str,
+    page_size: u16,
+    refresh_seconds: u64,
+    once: bool,
+) -> Result<()> {
+    let endpoint = Url::parse(endpoint).context("parse Cancer World evidence endpoint")?;
+    if endpoint.scheme() != "https" {
+        anyhow::bail!("Cancer World evidence endpoint must use HTTPS");
+    }
+    let page_size = page_size.clamp(1, 100);
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(60))
+        .user_agent(concat!("a-tiny-civilization/", env!("CARGO_PKG_VERSION")))
+        .build()
+        .context("build Cancer World evidence client")?;
+    loop {
+        match refresh_cancer_evidence(store, &client, world_id, endpoint.clone(), page_size).await {
+            Ok(count) => {
+                tracing::info!(world_id = %world_id, snapshot_count = count, "Cancer World evidence refresh completed")
+            }
+            Err(error) if !once => {
+                tracing::error!(world_id = %world_id, %error, "Cancer World evidence refresh failed; durable evidence remains available")
+            }
+            Err(error) => return Err(error),
+        }
+        if once {
+            return Ok(());
+        }
+        tokio::time::sleep(Duration::from_secs(refresh_seconds.max(300))).await;
+    }
+}
+
+async fn refresh_cancer_evidence(
+    store: &PostgresStore,
+    client: &reqwest::Client,
+    world_id: WorldId,
+    mut endpoint: Url,
+    page_size: u16,
+) -> Result<usize> {
+    endpoint
+        .query_pairs_mut()
+        .append_pair("query", EUROPE_PMC_GBM_QUERY)
+        .append_pair("format", "json")
+        .append_pair("resultType", "core")
+        .append_pair("pageSize", &page_size.to_string());
+    let payload: serde_json::Value = client
+        .get(endpoint)
+        .send()
+        .await
+        .context("request Europe PMC literature search")?
+        .error_for_status()
+        .context("Europe PMC literature search returned an error")?
+        .json()
+        .await
+        .context("decode Europe PMC literature search")?;
+    let results = payload
+        .pointer("/resultList/result")
+        .and_then(serde_json::Value::as_array)
+        .context("Europe PMC response is missing resultList.result")?;
+    let retrieved_at = chrono::Utc::now();
+    let mut stored = 0_usize;
+    for source_payload in results {
+        let Some(snapshot) = europe_pmc_snapshot(world_id, retrieved_at, source_payload.clone())?
+        else {
+            continue;
+        };
+        store
+            .store_cancer_research_literature(&snapshot)
+            .await
+            .context("store Cancer World literature snapshot")?;
+        stored += 1;
+    }
+    Ok(stored)
+}
+
+fn europe_pmc_snapshot(
+    world_id: WorldId,
+    retrieved_at: chrono::DateTime<chrono::Utc>,
+    source_payload: serde_json::Value,
+) -> Result<Option<CancerResearchLiteratureSnapshot>> {
+    let field = |name: &str| source_payload.get(name).and_then(serde_json::Value::as_str);
+    let Some(id) = field("id") else {
+        return Ok(None);
+    };
+    let Some(source) = field("source") else {
+        return Ok(None);
+    };
+    let Some(title) = field("title")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let license = field("license")
+        .unwrap_or_default()
+        .trim()
+        .to_ascii_lowercase();
+    if !matches!(license.as_str(), "cc by" | "cc0") {
+        return Ok(None);
+    }
+    let Some(abstract_text) = field("abstractText")
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+    else {
+        return Ok(None);
+    };
+    let source_id = format!("https://europepmc.org/article/{source}/{id}");
+    let published_at = field("firstPublicationDate")
+        .and_then(|date| chrono::NaiveDate::parse_from_str(date, "%Y-%m-%d").ok());
+    let content = serde_json::to_string(&json!({
+        "evidence_schema_version": 1,
+        "source": "Europe PMC",
+        "source_id": source_id,
+        "title": title,
+        "abstract": abstract_text,
+        "authors": field("authorString"),
+        "doi": field("doi"),
+        "pmid": field("pmid"),
+        "pmcid": field("pmcid"),
+        "publication_date": field("firstPublicationDate"),
+        "publication_types": source_payload.pointer("/pubTypeList/pubType"),
+        "license": license,
+        "open_access": field("isOpenAccess") == Some("Y"),
+        "cited_by_count": source_payload.get("citedByCount"),
+        "warning": "Source abstract only. Claims remain unverified until independently replicated."
+    }))
+    .context("encode bounded Europe PMC evidence")?;
+    if content.len() > application::MAX_CANCER_RESEARCH_EVIDENCE_DOCUMENT_BYTES {
+        return Ok(None);
+    }
+    let content_hash = Digest::sha256(content.as_bytes());
+    let evidence_id = Uuid::new_v5(
+        &world_id.as_uuid(),
+        format!("{source_id}:{content_hash}").as_bytes(),
+    );
+    let snapshot = CancerResearchLiteratureSnapshot {
+        evidence_id,
+        world_id,
+        source_id: source_id.clone(),
+        title: title.to_owned(),
+        license,
+        published_at,
+        document: CancerResearchEvidenceDocument {
+            reference: world_domain::CancerResearchEvidenceReference {
+                kind: world_domain::CancerResearchEvidenceKind::Literature,
+                source_id,
+                content_hash,
+            },
+            content,
+        },
+        source_payload,
+        retrieved_at,
+    };
+    snapshot
+        .validate()
+        .context("validate Europe PMC evidence snapshot")?;
+    Ok(Some(snapshot))
 }
 
 async fn probe_openrouter_free(api_key: &str, request_timeout_seconds: u64) -> Result<()> {
@@ -3945,6 +4183,52 @@ mod tests {
         assert_eq!(populations, [66, 660, 6600]);
         assert_eq!(active_percents, [10, 100]);
         assert_eq!(ticks, 32);
+    }
+
+    #[test]
+    fn europe_pmc_snapshot_is_provenanced_and_rejects_noncommercial_licenses() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(37));
+        let retrieved_at = chrono::DateTime::parse_from_rfc3339("2026-08-11T00:00:00Z")
+            .expect("timestamp")
+            .with_timezone(&chrono::Utc);
+        let payload = json!({
+            "id": "42347750",
+            "source": "MED",
+            "pmid": "42347750",
+            "pmcid": "PMC13296586",
+            "doi": "10.1000/example",
+            "title": "A bounded glioblastoma experiment",
+            "abstractText": "A testable result with controls and limitations.",
+            "authorString": "Researcher A, Researcher B",
+            "firstPublicationDate": "2026-07-01",
+            "license": "cc by",
+            "isOpenAccess": "Y",
+            "citedByCount": 0,
+            "pubTypeList": {"pubType": ["research-article"]}
+        });
+        let snapshot = europe_pmc_snapshot(world_id, retrieved_at, payload.clone())
+            .expect("parse evidence")
+            .expect("eligible evidence");
+        assert_eq!(snapshot.license, "cc by");
+        assert!(snapshot.source_id.ends_with("/MED/42347750"));
+        assert_eq!(
+            snapshot.document.reference.content_hash,
+            Digest::sha256(snapshot.document.content.as_bytes())
+        );
+        assert!(
+            snapshot
+                .document
+                .content
+                .contains("independently replicated")
+        );
+
+        let mut restricted = payload;
+        restricted["license"] = json!("cc by-nc");
+        assert!(
+            europe_pmc_snapshot(world_id, retrieved_at, restricted)
+                .expect("parse restricted record")
+                .is_none()
+        );
     }
 
     #[test]

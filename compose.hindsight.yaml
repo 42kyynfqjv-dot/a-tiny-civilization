@@ -139,6 +139,7 @@ services:
       - no-new-privileges:true
 
   cancer-research-worker:
+    profiles: ["container-research"]
     image: a-tiny-civilization-app:local
     command: ["/app/civilization-runner", "cancer-research-worker"]
     environment:
@@ -163,6 +164,34 @@ services:
     restart: unless-stopped
     logging: *local-logging
     stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  cancer-evidence-worker:
+    profiles: ["container-research"]
+    image: a-tiny-civilization-app:local
+    command: ["/app/civilization-runner", "cancer-evidence-worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
+      RUST_LOG: ${RUST_LOG:-info}
+      CANCER_WORLD_ID: ${CANCER_WORLD_ID:-}
+      CANCER_EVIDENCE_REFRESH_SECONDS: ${CANCER_EVIDENCE_REFRESH_SECONDS:-21600}
+      CANCER_EVIDENCE_PAGE_SIZE: ${CANCER_EVIDENCE_PAGE_SIZE:-24}
+      CANCER_EVIDENCE_ENDPOINT: ${CANCER_EVIDENCE_ENDPOINT:-https://www.ebi.ac.uk/europepmc/webservices/rest/search}
+    depends_on:
+      migrate:
+        condition: service_healthy
+    networks:
+      - backend
+    init: true
+    restart: unless-stopped
+    logging: *local-logging
+    stop_grace_period: 30s
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777

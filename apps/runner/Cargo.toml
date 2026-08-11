@@ -10,10 +10,12 @@ repository.workspace = true
 anyhow.workspace = true
 application = { path = "../../crates/application" }
 clap.workspace = true
+chrono.workspace = true
 dotenvy.workspace = true
 hindsight-adapter = { path = "../../crates/hindsight-adapter" }
 model-adapter = { path = "../../crates/model-adapter" }
 postgres-store = { path = "../../crates/postgres-store" }
+reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sim-engine = { path = "../../crates/sim-engine" }

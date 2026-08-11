@@ -99,6 +99,7 @@ dependencies = [
  "sim-engine",
  "thiserror",
  "tokio",
+ "tracing",
  "uuid",
  "world-domain",
 ]
@@ -423,11 +424,13 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "application",
+ "chrono",
  "clap",
  "dotenvy",
  "hindsight-adapter",
  "model-adapter",
  "postgres-store",
+ "reqwest",
  "serde",
  "serde_json",
  "sim-engine",

@@ -12,7 +12,7 @@ pub use world_domain::{CognitionReading as CognitionInputReading, cognition_requ
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 3;
+pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 6;
 pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
@@ -241,10 +241,10 @@ impl CognitionModelRoute {
     }
 
     #[must_use]
-    pub fn openrouter_cancer_nemotron_3_ultra_free() -> Self {
+    pub fn openrouter_cancer_gpt_oss_20b_free() -> Self {
         Self {
             provider: CognitionProviderId::openrouter_cancer(),
-            requested_model: "nvidia/nemotron-3-ultra-550b-a55b:free".to_owned(),
+            requested_model: "openai/gpt-oss-20b:free".to_owned(),
             billing_class: CognitionBillingClass::FreeAllocation,
         }
     }
@@ -350,7 +350,7 @@ impl CognitionModelRoute {
                 "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash"
             ),
             ("openrouter_cancer", CognitionBillingClass::FreeAllocation) => {
-                self.requested_model == "nvidia/nemotron-3-ultra-550b-a55b:free"
+                self.requested_model == "openai/gpt-oss-20b:free"
             }
             _ => false,
         };
@@ -405,7 +405,7 @@ impl CognitionRouteRegistry {
     pub fn cancer_research_exploration() -> Self {
         Self {
             policy_version: CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
-            routes: vec![CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()],
+            routes: vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()],
         }
     }
 
@@ -486,9 +486,7 @@ impl CognitionRouteRegistry {
                 }
             }
             CognitionRoutePurpose::CancerResearchExploration => {
-                if self.routes
-                    != vec![CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()]
-                {
+                if self.routes != vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()] {
                     return Err(CognitionContractError::InvalidRouteRegistry);
                 }
             }
@@ -1252,7 +1250,7 @@ mod tests {
             CognitionModelRoute::openrouter_free(),
             CognitionModelRoute::openrouter_gpt_oss_20b_free(),
             CognitionModelRoute::openrouter_gpt_oss_120b_free(),
-            CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free(),
+            CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
             CognitionModelRoute::cerebras_gpt_oss_120b(),
             CognitionModelRoute::cerebras_llama3_1_8b(),
             CognitionModelRoute::nvidia_nemotron_3_ultra_development(),
@@ -1323,7 +1321,7 @@ mod tests {
         );
         assert_eq!(
             exploration.routes,
-            vec![CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()]
+            vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()]
         );
         let registry = CognitionRouteRegistry::cancer_research_escalation();
         assert_eq!(

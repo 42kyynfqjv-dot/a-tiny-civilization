@@ -8,14 +8,15 @@ use world_domain::{
 };
 
 use crate::{
-    CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchModelRequest, StoreError,
+    CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchMemoryInput,
+    CancerResearchModelRequest, MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS, StoreError,
 };
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY: u32 = 1;
+pub const CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY: u32 = 12;
 pub const CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS: u32 = 7;
 const SECONDS_PER_DAY: u64 = 86_400;
-const BLIND_RESEARCH_MAX_OUTPUT_TOKENS: u16 = 2_048;
+const BLIND_RESEARCH_MAX_OUTPUT_TOKENS: u16 = 4_096;
 const EMBEDDED_PRIMITIVES: &str =
     include_str!("../../../data/cancer-research/biological-primitives-v1.json");
 
@@ -53,10 +54,17 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         return Err(CancerResearchSchedulerError::InvalidTickDuration);
     }
     let ticks_per_day = SECONDS_PER_DAY / tick_duration;
+    let turns_per_day = u64::from(CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY);
+    if !ticks_per_day.is_multiple_of(turns_per_day) {
+        return Err(CancerResearchSchedulerError::InvalidTickDuration);
+    }
+    let ticks_per_turn = ticks_per_day / turns_per_day;
     let tick = state.tick().get();
-    if !tick.is_multiple_of(ticks_per_day) {
+    if !tick.is_multiple_of(ticks_per_turn) {
         return Ok(None);
     }
+    let turn_ordinal = u32::try_from(tick / ticks_per_turn)
+        .map_err(|_| CancerResearchSchedulerError::OrdinalOverflow)?;
     let day_ordinal = u32::try_from(tick / ticks_per_day)
         .map_err(|_| CancerResearchSchedulerError::OrdinalOverflow)?;
     let affected_living_people = state
@@ -69,7 +77,7 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         .map(sim_engine::OrganismState::organism_id)
         .collect::<Vec<_>>();
     let Some(resident_id) =
-        select_researcher(state.manifest().seed, day_ordinal, &affected_living_people)?
+        select_researcher(state.manifest().seed, turn_ordinal, &affected_living_people)?
     else {
         return Ok(None);
     };
@@ -99,17 +107,33 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         )?);
         evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
     }
-    let promoted = if day_ordinal > 0
-        && day_ordinal.is_multiple_of(CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS)
-    {
+    let escalation_interval_turns = CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS
+        .checked_mul(CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY)
+        .ok_or(CancerResearchSchedulerError::OrdinalOverflow)?;
+    let latest_hypothesis = if turn_ordinal > 0 {
         store
-            .load_latest_cancer_research_hypothesis(state.world_id(), day_ordinal)
+            .load_latest_cancer_research_hypothesis(state.world_id(), turn_ordinal)
             .await?
     } else {
         None
     };
+    let promoted = if turn_ordinal.is_multiple_of(escalation_interval_turns) {
+        latest_hypothesis.clone()
+    } else {
+        None
+    };
+    let literature = if promoted.is_some() {
+        store
+            .load_cancer_research_literature(
+                state.world_id(),
+                MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS,
+            )
+            .await?
+    } else {
+        Vec::new()
+    };
     let (stage, task, inference_tier, frozen_candidate_hash, model_max_output_tokens) =
-        if let Some(prior) = &promoted {
+        if let Some(prior) = &promoted.filter(|_| !literature.is_empty()) {
             prior.validate()?;
             let content = serde_json::to_string(prior.contribution())?;
             let candidate_hash = Digest::canonical(prior.contribution())?;
@@ -125,6 +149,7 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
                 },
                 content,
             });
+            evidence_documents.extend(literature.into_iter().map(|snapshot| snapshot.document));
             (
                 CancerResearchStage::LiteratureAudit,
                 CancerResearchTask::ChallengeFrozenHypothesis,
@@ -135,7 +160,7 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         } else {
             (
                 CancerResearchStage::BlindDiscovery,
-                if day_ordinal.is_multiple_of(2) {
+                if turn_ordinal.is_multiple_of(2) {
                     CancerResearchTask::GenerateMechanisticHypothesis
                 } else {
                     CancerResearchTask::ProposeDiscriminatingExperiment
@@ -155,7 +180,7 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         resident_id,
         state.tick(),
         deadline_tick,
-        day_ordinal,
+        turn_ordinal,
         commitment.target,
         stage,
         task,
@@ -165,7 +190,25 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         frozen_candidate_hash,
         model_max_output_tokens,
     )?;
-    let request = CancerResearchModelRequest::new(selection, evidence_documents, Vec::new())?;
+    let recalled_memories = if stage == CancerResearchStage::BlindDiscovery {
+        latest_hypothesis
+            .as_ref()
+            .map(|prior| {
+                let contribution = prior.contribution();
+                Ok(CancerResearchMemoryInput {
+                    document_id: contribution.contribution_id,
+                    source_artifact_hash: contribution.canonical_hash()?,
+                    evidence_kind: CancerResearchEvidenceKind::FrozenHypothesis,
+                    text: serde_json::to_string(contribution)?,
+                })
+            })
+            .into_iter()
+            .collect::<Result<Vec<_>, CancerResearchSchedulerError>>()?
+    } else {
+        Vec::new()
+    };
+    let request =
+        CancerResearchModelRequest::new(selection, evidence_documents, recalled_memories)?;
     let request_id = request.request_id;
     store.enqueue_cancer_research_request(&request).await?;
     Ok(Some(request_id))

@@ -1,13 +1,14 @@
 use application::{
     CancerResearchAttemptPersistenceState, CancerResearchJobEntry, CancerResearchJobStore,
-    CancerResearchLadderResult, CancerResearchModelReceipt, CancerResearchModelRequest,
-    CancerResearchPaidAuthorization, CancerResearchPaidReservationDecision,
-    CancerResearchPriorResult, CancerResearchRouteAttemptRecord, CognitionBillingClass,
-    CognitionBillingScope, CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchLadderResult, CancerResearchLiteratureSnapshot, CancerResearchModelReceipt,
+    CancerResearchModelRequest, CancerResearchPaidAuthorization,
+    CancerResearchPaidReservationDecision, CancerResearchPriorResult,
+    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
+    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
 };
 use async_trait::async_trait;
-use chrono::NaiveDate;
+use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
@@ -64,8 +65,127 @@ struct ResearchCostReservationRow {
     actual_micro_usd: Option<i64>,
 }
 
+#[derive(FromRow)]
+struct ResearchLiteratureRow {
+    evidence_id: Uuid,
+    world_id: Uuid,
+    source_id: String,
+    title: String,
+    license: String,
+    published_at: Option<NaiveDate>,
+    content: String,
+    content_hash: Vec<u8>,
+    source_payload: Value,
+    retrieved_at: DateTime<Utc>,
+}
+
 #[async_trait]
 impl CancerResearchJobStore for PostgresStore {
+    async fn store_cancer_research_literature(
+        &self,
+        snapshot: &CancerResearchLiteratureSnapshot,
+    ) -> Result<(), StoreError> {
+        snapshot.validate().map_err(corrupt)?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO cancer_research_literature (
+                evidence_id, world_id, source_id, title, license, published_at,
+                content, content_hash, source_payload, retrieved_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            ON CONFLICT (world_id, source_id, content_hash) DO NOTHING
+            "#,
+        )
+        .bind(snapshot.evidence_id)
+        .bind(snapshot.world_id.as_uuid())
+        .bind(&snapshot.source_id)
+        .bind(&snapshot.title)
+        .bind(&snapshot.license)
+        .bind(snapshot.published_at)
+        .bind(&snapshot.document.content)
+        .bind(
+            snapshot
+                .document
+                .reference
+                .content_hash
+                .as_bytes()
+                .as_slice(),
+        )
+        .bind(&snapshot.source_payload)
+        .bind(snapshot.retrieved_at)
+        .execute(self.pool())
+        .await
+        .map_err(operation_error)?;
+        if inserted.rows_affected() == 1 {
+            return Ok(());
+        }
+        let existing: Option<Uuid> = sqlx::query_scalar(
+            "SELECT evidence_id FROM cancer_research_literature WHERE world_id=$1 AND source_id=$2 AND content_hash=$3",
+        )
+        .bind(snapshot.world_id.as_uuid())
+        .bind(&snapshot.source_id)
+        .bind(snapshot.document.reference.content_hash.as_bytes().as_slice())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        if existing == Some(snapshot.evidence_id) {
+            Ok(())
+        } else {
+            Err(StoreError::Corrupt(
+                "literature snapshot identity conflicts with durable evidence".to_owned(),
+            ))
+        }
+    }
+
+    async fn load_cancer_research_literature(
+        &self,
+        world_id: world_domain::WorldId,
+        limit: usize,
+    ) -> Result<Vec<CancerResearchLiteratureSnapshot>, StoreError> {
+        let limit =
+            i64::try_from(limit.clamp(1, application::MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS))
+                .map_err(corrupt)?;
+        let rows = sqlx::query_as::<_, ResearchLiteratureRow>(
+            r#"
+            SELECT evidence_id, world_id, source_id, title, license, published_at,
+                   content, content_hash, source_payload, retrieved_at
+            FROM cancer_research_literature
+            WHERE world_id=$1
+            ORDER BY published_at DESC NULLS LAST, evidence_id
+            LIMIT $2
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(limit)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        rows.into_iter()
+            .map(|row| {
+                let content_hash = digest_from_db(&row.content_hash, "literature content hash")?;
+                let snapshot = CancerResearchLiteratureSnapshot {
+                    evidence_id: row.evidence_id,
+                    world_id: world_domain::WorldId::from_uuid(row.world_id),
+                    source_id: row.source_id.clone(),
+                    title: row.title,
+                    license: row.license,
+                    published_at: row.published_at,
+                    document: application::CancerResearchEvidenceDocument {
+                        reference: world_domain::CancerResearchEvidenceReference {
+                            kind: world_domain::CancerResearchEvidenceKind::Literature,
+                            source_id: row.source_id,
+                            content_hash,
+                        },
+                        content: row.content,
+                    },
+                    source_payload: row.source_payload,
+                    retrieved_at: row.retrieved_at,
+                };
+                snapshot.validate().map_err(corrupt)?;
+                Ok(snapshot)
+            })
+            .collect()
+    }
+
     async fn enqueue_cancer_research_request(
         &self,
         request: &CancerResearchModelRequest,
@@ -476,6 +596,7 @@ impl CancerResearchJobStore for PostgresStore {
             WHERE request.world_id=$1
               AND request.ordinal < $2
               AND request.stage='blind_discovery'
+              AND result.route_policy_version=$3
               AND result.result_payload->'receipt' IS NOT NULL
               AND result.result_payload->'receipt'->'contribution'->>'artifact_kind'='hypothesis'
             ORDER BY request.ordinal DESC, request.request_id
@@ -484,6 +605,9 @@ impl CancerResearchJobStore for PostgresStore {
         )
         .bind(world_id.as_uuid())
         .bind(i64::from(before_ordinal))
+        .bind(i32::from(
+            application::CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
+        ))
         .fetch_optional(self.pool())
         .await
         .map_err(operation_error)?;

@@ -56,6 +56,7 @@ pub const MAX_CANCER_RESEARCH_TOTAL_EVIDENCE_BYTES: usize = 512 * 1024;
 pub const MAX_CANCER_RESEARCH_MEMORY_INPUTS: usize = 16;
 pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
 pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 4;
+pub const MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS: usize = 8;
 pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 256;
@@ -66,6 +67,41 @@ const MAX_ADAPTER_VERSION_BYTES: usize = 128;
 pub struct CancerResearchEvidenceDocument {
     pub reference: CancerResearchEvidenceReference,
     pub content: String,
+}
+
+/// One immutable, content-addressed snapshot obtained from an external research
+/// index. The source payload is stored separately by the adapter; only the
+/// bounded evidence document crosses the model boundary.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchLiteratureSnapshot {
+    pub evidence_id: Uuid,
+    pub world_id: world_domain::WorldId,
+    pub source_id: String,
+    pub title: String,
+    pub license: String,
+    pub published_at: Option<NaiveDate>,
+    pub document: CancerResearchEvidenceDocument,
+    pub source_payload: serde_json::Value,
+    pub retrieved_at: chrono::DateTime<chrono::Utc>,
+}
+
+impl CancerResearchLiteratureSnapshot {
+    pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
+        if self.evidence_id.is_nil()
+            || self.source_id.trim() != self.source_id
+            || self.source_id.is_empty()
+            || self.title.trim() != self.title
+            || self.title.is_empty()
+            || !matches!(self.license.as_str(), "cc by" | "cc0")
+            || self.document.reference.kind != CancerResearchEvidenceKind::Literature
+            || self.document.reference.source_id != self.source_id
+            || !self.source_payload.is_object()
+        {
+            return Err(CancerResearchModelContractError::InvalidEvidenceDocuments);
+        }
+        self.document.validate()
+    }
 }
 
 impl CancerResearchEvidenceDocument {
@@ -200,7 +236,7 @@ impl CancerResearchModelRequest {
         route.validate()?;
         let approved = match self.selection.inference_tier {
             CancerResearchInferenceTier::Exploration => {
-                route == &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()
+                route == &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()
             }
             CancerResearchInferenceTier::Escalation => {
                 route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
@@ -457,6 +493,24 @@ impl CancerResearchLadderResult {
 
 #[async_trait]
 pub trait CancerResearchJobStore: Send + Sync {
+    /// Persists an immutable source snapshot. Repeating the exact snapshot is
+    /// idempotent; source revisions remain independently auditable.
+    async fn store_cancer_research_literature(
+        &self,
+        _snapshot: &CancerResearchLiteratureSnapshot,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
+    /// Loads a stable, newest-first evidence set for literature-audit turns.
+    async fn load_cancer_research_literature(
+        &self,
+        _world_id: world_domain::WorldId,
+        _limit: usize,
+    ) -> Result<Vec<CancerResearchLiteratureSnapshot>, StoreError> {
+        Ok(Vec::new())
+    }
+
     /// Inserts one exact content-addressed request. Repeating the identical
     /// request is idempotent; the same ID with different bytes is corruption.
     async fn enqueue_cancer_research_request(

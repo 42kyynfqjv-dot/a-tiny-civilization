@@ -298,12 +298,22 @@ fn normalize_model_result(
 ) {
     match result {
         Ok(receipt) => (CognitionRouteAttemptStatus::Succeeded, Some(receipt)),
-        Err(CancerResearchModelError::Unavailable(_)) => {
-            (CognitionRouteAttemptStatus::Unavailable, None)
-        }
-        Err(CancerResearchModelError::Rejected(_)) => (CognitionRouteAttemptStatus::Rejected, None),
-        Err(CancerResearchModelError::InvalidResponse(_)) => {
-            (CognitionRouteAttemptStatus::InvalidResponse, None)
+        Err(error) => {
+            let status = match &error {
+                CancerResearchModelError::Unavailable(_) => {
+                    CognitionRouteAttemptStatus::Unavailable
+                }
+                CancerResearchModelError::Rejected(_) => CognitionRouteAttemptStatus::Rejected,
+                CancerResearchModelError::InvalidResponse(_) => {
+                    CognitionRouteAttemptStatus::InvalidResponse
+                }
+            };
+            tracing::warn!(
+                error = %error,
+                ?status,
+                "Cancer World research model attempt did not produce a valid receipt"
+            );
+            (status, None)
         }
     }
 }

@@ -43,6 +43,31 @@ and `sysctl net.bridge.bridge-nf-call-iptables`. This is a host-level networking
 choice: retain the loopback-only published ports and Compose network boundaries above;
 do not compensate by placing `cloudflared` or PostgreSQL on the web/API network.
 
+### Cancer World outbound research workers
+
+The production host keeps Docker forwarding closed, so the two processes that need
+outbound HTTPS run as hardened, unprivileged system services rather than weakening the
+container firewall. Install the checked-in units after building the release runner:
+
+```bash
+cargo build --locked --release -p civilization-runner
+sudo install -o root -g root -m 0644 \
+  ops/systemd/atiny-cancer-evidence.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 \
+  ops/systemd/atiny-cancer-research.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable --now \
+  atiny-cancer-evidence.service atiny-cancer-research.service
+```
+
+Both units load the root-protected production environment through systemd, run as the
+unprivileged project owner, expose no listener, and retain read-only host/filesystem
+hardening. The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
+records from Europe PMC every six hours. The model worker uses the dedicated Cancer
+World key and the independent durable $2.85 monthly circuit breaker. Their Compose
+equivalents are behind the `container-research` profile for development hosts whose
+Docker bridges already have outbound HTTPS; do not run both copies concurrently.
+
 ## Owner-controlled setup
 
 On the Ubuntu server, clone a tagged repository revision and create a root-readable

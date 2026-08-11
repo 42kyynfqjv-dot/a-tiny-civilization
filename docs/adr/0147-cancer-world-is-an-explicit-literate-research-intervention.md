@@ -1,6 +1,6 @@
 # ADR 0147: Cancer World is an explicit literate research intervention
 
-Status: accepted for a fresh ruleset-38 experimental world; not yet activated.
+Status: accepted and activated for the ruleset-38 experimental world.
 
 ## Decision
 
@@ -33,9 +33,18 @@ Cancer World begins with:
   primitives, raw datasets, and returned observations but no live paper retrieval
   before freezing a hypothesis, predictions, and falsification test. Separate
   literature-audit and replication teams then assess novelty and prior evidence;
-- a pinned `nvidia/nemotron-3-ultra-550b-a55b:free` exploration route using the
-  dedicated Cancer World key. Provider failure records an unavailable input and
-  never silently triggers paid work; and
+- a six-hour observer-side evidence refresh from the Europe PMC REST API, narrowed
+  to glioblastoma title/abstract records and restricted to CC BY or CC0 sources.
+  Each accepted source response, bounded model document, retrieval timestamp, and
+  SHA-256 content identity is stored immutably. The newest eight snapshots become
+  available only to a scheduled literature-audit turn; temporary source failure
+  leaves the last durable corpus in place and never stalls the simulation;
+- a pinned `openai/gpt-oss-20b:free` OpenRouter exploration route using the
+  dedicated Cancer World key and strict JSON-schema output. This replaced a pinned
+  Nemotron route after its sole Nvidia endpoint returned provider-level 404
+  responses; the dynamic free router is intentionally not used because its daily
+  allowance is too small for the research cadence. Nonzero reported cost is
+  rejected, and endpoint failure never silently triggers paid work; and
 - a distinct DeepSeek V4 Pro escalation route, with V4 Flash failure fallback,
   a $2.85 internal monthly stop, and the provider key's $3 monthly hard stop.
   Earth Genesis retains its unrelated free-first ladder.
@@ -45,6 +54,16 @@ treatment, or cure conclusion. Those must enter through a versioned evidence cor
 direct modeled observations, or recorded external assay results. Every model response,
 memory retrieval, and assay input is recorded before it can affect canonical history;
 replay never contacts those services.
+
+Blind exploration runs twelve times per simulation day. Each new blind turn may
+receive the newest successful hypothesis from the current exploration-route policy
+as a content-addressed recalled artifact. This creates deterministic research
+continuity without leaking literature through the blind-discovery firewall; route
+policy changes start a fresh memory lineage instead of silently reinterpreting old
+provider receipts. The pinned GPT-OSS endpoint currently returns null content when
+OpenRouter's `response_format` is supplied, so its exact compact schema is embedded
+in the instruction and enforced by the local closed parser. The output remains
+capped at 4,096 tokens and four claims.
 
 ## Why
 
@@ -102,11 +121,14 @@ the NCI PDMR and HCMI resources:
   events rather than unrecorded model prose.
 - The scheduler must allocate paid research turns across independent profiles in
   simulation time while the wall-cost circuit breaker enforces the hard ceiling.
-- The initial scheduler admits at most one research turn per simulated day. Normal
-  days remain blinded free exploration; every seventh day may promote the newest
+- The connected scheduler admits at most twelve research turns per simulated day.
+  Normal turns remain blinded free exploration; every seventh simulated day may promote the newest
   successful blinded hypothesis into a paid DeepSeek challenge. If no successful
   hypothesis exists, that day remains free exploration. Promotion never bypasses
   the separate $2.85 monthly hard stop or the worker's paid-default-off control.
+- A seventh-day promotion occurs only when both a successful frozen hypothesis and
+  durable external literature exist. Missing literature therefore degrades safely
+  to another blinded exploration turn instead of fabricating an audit.
 - Observer pages must label all Cancer World output as simulation-generated
   hypotheses, not medical guidance. No result becomes a cure claim without external
   reproducible biological and clinical validation.

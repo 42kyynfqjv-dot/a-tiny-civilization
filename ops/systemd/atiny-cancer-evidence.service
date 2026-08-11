@@ -1,0 +1,26 @@
+[Unit]
+Description=A Tiny Civilization Cancer World evidence intake
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=shmuel
+Group=shmuel
+WorkingDirectory=/home/shmuel/codex/emergent-civilization
+EnvironmentFile=/etc/a-tiny-civilization-production.env
+ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-evidence-worker
+Restart=on-failure
+RestartSec=15s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictSUIDSGID=true
+LockPersonality=true
+
+[Install]
+WantedBy=multi-user.target
