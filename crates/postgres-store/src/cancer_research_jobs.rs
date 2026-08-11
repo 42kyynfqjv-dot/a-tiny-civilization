@@ -1003,9 +1003,12 @@ async fn enqueue_cancer_research_memory(
         r#"
         INSERT INTO memory_outbox (
             operation_id, document_id, world_id, agent_id, source_sequence,
-            bank_id, payload_version, payload
+            bank_id, payload_version, payload, available_at
         )
-        VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+        -- Research is a tiny collective stream beside a very large perception
+        -- stream. The existing available-at index provides bounded priority
+        -- without a per-claim sort across the entire general-memory backlog.
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'epoch'::TIMESTAMPTZ)
         ON CONFLICT (operation_id) DO NOTHING
         "#,
     )
