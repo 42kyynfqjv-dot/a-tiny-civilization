@@ -16,8 +16,7 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{
     CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContribution,
-    CancerResearchInferenceTier, CancerResearchStage, Digest, PrimitiveActionKind,
-    SIGNAL_FORM_VARIANT_COUNT,
+    CancerResearchStage, Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
 pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v7";
@@ -356,21 +355,9 @@ fn validate_research_route(
     route: &CognitionModelRoute,
     request: &CancerResearchModelRequest,
 ) -> Result<(), CancerResearchModelError> {
-    let expected = match request.selection.inference_tier {
-        CancerResearchInferenceTier::Exploration => {
-            route == &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()
-        }
-        CancerResearchInferenceTier::Escalation => {
-            route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
-                || route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_flash()
-        }
-    };
-    if !expected || request.route_purpose() == CognitionRoutePurpose::ProductionWorld {
-        return Err(CancerResearchModelError::Rejected(
-            "route is not approved for the selected cancer-research inference tier".to_owned(),
-        ));
-    }
-    Ok(())
+    request
+        .validate_route(route)
+        .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))
 }
 
 fn research_api_request(
@@ -973,8 +960,8 @@ mod tests {
     use uuid::Uuid;
     use world_domain::{
         BodilyNeedState, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
-        CancerResearchProfile, CancerResearchTarget, CancerResearchTask, EntityId, SimTick,
-        WorldId, WorldSeed,
+        CancerResearchInferenceTier, CancerResearchProfile, CancerResearchTarget,
+        CancerResearchTask, EntityId, SimTick, WorldId, WorldSeed,
     };
 
     use super::*;

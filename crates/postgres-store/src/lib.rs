@@ -9,6 +9,7 @@ use observer_projection::ObserverProjectionStoreError;
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use world_domain::{EventBatch, WorldId};
 
+mod cancer_research_jobs;
 mod cognition_jobs;
 mod memory_outbox;
 mod oauth_attempts;

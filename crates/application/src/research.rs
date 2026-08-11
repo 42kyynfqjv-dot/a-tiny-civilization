@@ -10,7 +10,8 @@ use world_domain::{
 
 use crate::{
     CognitionBillingClass, CognitionContractError, CognitionModelRoute, CognitionProviderId,
-    CognitionRoutePurpose, ModelTokenUsage,
+    CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
+    CognitionRouteRegistry, ModelTokenUsage, StoreError,
 };
 
 pub const CANCER_RESEARCH_MODEL_CONTRACT_VERSION: u16 = 1;
@@ -18,6 +19,7 @@ pub const MAX_CANCER_RESEARCH_EVIDENCE_DOCUMENT_BYTES: usize = 128 * 1024;
 pub const MAX_CANCER_RESEARCH_TOTAL_EVIDENCE_BYTES: usize = 512 * 1024;
 pub const MAX_CANCER_RESEARCH_MEMORY_INPUTS: usize = 16;
 pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
+pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 4;
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_ADAPTER_VERSION_BYTES: usize = 128;
@@ -153,6 +155,28 @@ impl CancerResearchModelRequest {
         }
     }
 
+    pub fn validate_route(
+        &self,
+        route: &CognitionModelRoute,
+    ) -> Result<(), CancerResearchModelContractError> {
+        self.validate()?;
+        route.validate()?;
+        let approved = match self.selection.inference_tier {
+            CancerResearchInferenceTier::Exploration => {
+                route == &CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_free()
+            }
+            CancerResearchInferenceTier::Escalation => {
+                route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
+                    || route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_flash()
+            }
+        };
+        if approved {
+            Ok(())
+        } else {
+            Err(CancerResearchModelContractError::UnapprovedInferenceTierRoute)
+        }
+    }
+
     pub fn canonical_hash(&self) -> Result<Digest, CancerResearchModelContractError> {
         self.validate()?;
         Ok(Digest::canonical(self)?)
@@ -236,6 +260,194 @@ pub trait CancerResearchModel: Send + Sync {
     ) -> Result<CancerResearchModelReceipt, CancerResearchModelError>;
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchJobEntry {
+    pub request: CancerResearchModelRequest,
+    pub claim_count: u32,
+}
+
+impl CancerResearchJobEntry {
+    pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
+        self.request.validate()?;
+        if self.claim_count == 0 {
+            return Err(CancerResearchModelContractError::InvalidJob);
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchLadderResult {
+    pub contract_version: u16,
+    pub request_id: Uuid,
+    pub route_policy_version: u16,
+    pub route_registry_hash: Digest,
+    pub attempts: Vec<CognitionRouteAttempt>,
+    pub receipt: Option<CancerResearchModelReceipt>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchAttemptPersistenceState {
+    Dispatched,
+    Completed,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchRouteAttemptRecord {
+    pub route_index: u16,
+    pub route: CognitionModelRoute,
+    pub persistence_state: CancerResearchAttemptPersistenceState,
+    pub attempt: Option<CognitionRouteAttempt>,
+    pub receipt: Option<CancerResearchModelReceipt>,
+}
+
+impl CancerResearchRouteAttemptRecord {
+    pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
+        self.route.validate()?;
+        let valid = match self.persistence_state {
+            CancerResearchAttemptPersistenceState::Dispatched => {
+                self.attempt.is_none() && self.receipt.is_none()
+            }
+            CancerResearchAttemptPersistenceState::Completed => {
+                self.attempt.as_ref().is_some_and(|attempt| {
+                    attempt.route_index == self.route_index
+                        && attempt.provider == self.route.provider
+                        && attempt.requested_model == self.route.requested_model
+                        && attempt.billing_class == self.route.billing_class
+                        && matches!(
+                            attempt.status,
+                            CognitionRouteAttemptStatus::Succeeded
+                                | CognitionRouteAttemptStatus::Unavailable
+                                | CognitionRouteAttemptStatus::Rejected
+                                | CognitionRouteAttemptStatus::InvalidResponse
+                        )
+                        && ((attempt.status == CognitionRouteAttemptStatus::Succeeded)
+                            == self.receipt.is_some())
+                })
+            }
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err(CancerResearchModelContractError::InvalidAttemptRecord)
+        }
+    }
+}
+
+impl CancerResearchLadderResult {
+    pub fn validate_against(
+        &self,
+        registry: &CognitionRouteRegistry,
+        request: &CancerResearchModelRequest,
+    ) -> Result<(), CancerResearchModelContractError> {
+        let purpose = request.route_purpose();
+        registry.validate(purpose)?;
+        request.validate()?;
+        if self.contract_version != CANCER_RESEARCH_MODEL_CONTRACT_VERSION
+            || self.request_id != request.request_id
+            || self.route_policy_version != registry.policy_version
+            || self.route_registry_hash != registry.canonical_hash(purpose)?
+            || self.attempts.is_empty()
+            || self.attempts.len() > registry.routes.len()
+        {
+            return Err(CancerResearchModelContractError::InvalidLadderResult);
+        }
+        let mut succeeded_route = None;
+        for (position, attempt) in self.attempts.iter().enumerate() {
+            let route = &registry.routes[position];
+            if usize::from(attempt.route_index) != position
+                || attempt.provider != route.provider
+                || attempt.requested_model != route.requested_model
+                || attempt.billing_class != route.billing_class
+            {
+                return Err(CancerResearchModelContractError::InvalidLadderResult);
+            }
+            if matches!(
+                attempt.status,
+                CognitionRouteAttemptStatus::Succeeded
+                    | CognitionRouteAttemptStatus::StoppedAttemptLimit
+            ) && position + 1 != self.attempts.len()
+            {
+                return Err(CancerResearchModelContractError::InvalidLadderResult);
+            }
+            if attempt.status == CognitionRouteAttemptStatus::Succeeded {
+                succeeded_route = Some(route);
+            }
+        }
+        match (succeeded_route, &self.receipt) {
+            (Some(route), Some(receipt)) => receipt.validate_against(route, request),
+            (None, None) => Ok(()),
+            _ => Err(CancerResearchModelContractError::InvalidLadderResult),
+        }
+    }
+}
+
+#[async_trait]
+pub trait CancerResearchJobStore: Send + Sync {
+    /// Inserts one exact content-addressed request. Repeating the identical
+    /// request is idempotent; the same ID with different bytes is corruption.
+    async fn enqueue_cancer_research_request(
+        &self,
+        request: &CancerResearchModelRequest,
+    ) -> Result<(), StoreError>;
+
+    async fn claim_next_cancer_research_request(
+        &self,
+        worker_id: &str,
+        claim_lease_seconds: u32,
+    ) -> Result<Option<CancerResearchJobEntry>, StoreError>;
+
+    async fn reschedule_cancer_research_request(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        error: &str,
+        retry_after_seconds: u32,
+    ) -> Result<(), StoreError>;
+
+    /// Commits immutable evidence that a network call is about to occur before
+    /// any request leaves the process.
+    async fn begin_cancer_research_route_attempt(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        route_index: u16,
+        route: &CognitionModelRoute,
+    ) -> Result<(), StoreError>;
+
+    /// Appends the terminal outcome. A missing receipt is valid only for a
+    /// non-success terminal status.
+    async fn finish_cancer_research_route_attempt(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        attempt: &CognitionRouteAttempt,
+        receipt: Option<&CancerResearchModelReceipt>,
+    ) -> Result<(), StoreError>;
+
+    async fn list_cancer_research_route_attempts(
+        &self,
+        entry: &CancerResearchJobEntry,
+    ) -> Result<Vec<CancerResearchRouteAttemptRecord>, StoreError>;
+
+    async fn complete_cancer_research_request(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        registry: &CognitionRouteRegistry,
+        result: &CancerResearchLadderResult,
+    ) -> Result<(), StoreError>;
+
+    async fn load_cancer_research_result(
+        &self,
+        request_id: Uuid,
+    ) -> Result<Option<CancerResearchLadderResult>, StoreError>;
+}
+
 #[derive(Debug, Error)]
 pub enum CancerResearchModelContractError {
     #[error("unsupported cancer-research model contract {0}")]
@@ -246,6 +458,14 @@ pub enum CancerResearchModelContractError {
     InvalidMemoryInputs,
     #[error("cancer-research model receipt is incomplete or mismatched")]
     InvalidReceipt,
+    #[error("cancer-research job is invalid")]
+    InvalidJob,
+    #[error("cancer-research route-ladder result is invalid")]
+    InvalidLadderResult,
+    #[error("persisted cancer-research route attempt is invalid")]
+    InvalidAttemptRecord,
+    #[error("the model route is not approved for the selected cancer-research inference tier")]
+    UnapprovedInferenceTierRoute,
     #[error("a free cancer-research route reported non-zero cost")]
     FreeRouteReportedCost,
     #[error("a paid cancer-research response used a different model")]
