@@ -134,7 +134,7 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         evidence_documents.extend(cancer_burden_observations(
             state.world_id(),
             day_ordinal,
-            resident_id,
+            (!engineering_turn).then_some(resident_id),
             &living_burdens,
         )?);
         evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
@@ -370,15 +370,9 @@ struct CohortBurdenObservation {
 fn cancer_burden_observations(
     world_id: world_domain::WorldId,
     day_ordinal: u32,
-    selected_resident_id: EntityId,
+    selected_affected_resident_id: Option<EntityId>,
     burdens: &[(EntityId, CancerBurdenState)],
 ) -> Result<Vec<CancerResearchEvidenceDocument>, CancerResearchSchedulerError> {
-    let selected = burdens
-        .iter()
-        .find(|(resident_id, _)| *resident_id == selected_resident_id)
-        .ok_or(CancerResearchSchedulerError::MissingCancerBurden(
-            selected_resident_id,
-        ))?;
     if burdens.is_empty() {
         return Err(CancerResearchSchedulerError::EmptyCancerBurdenCohort);
     }
@@ -426,25 +420,32 @@ fn cancer_burden_observations(
         spreading_count: trajectory_count(burdens, CancerTrajectory::Spreading)?,
         recurring_count: trajectory_count(burdens, CancerTrajectory::Recurring)?,
     };
-    let resident_content = serde_json::to_string(&ResidentBurdenObservation {
-        observation_schema_version: 1,
-        day_ordinal,
-        resident_id: selected_resident_id,
-        burden: &selected.1,
-    })?;
     let cohort_content = serde_json::to_string(&cohort)?;
-    Ok(vec![
-        observation_document(
-            format!("cancer-world://{world_id}/day/{day_ordinal}/cohort/burden-summary"),
-            cohort_content,
-        ),
-        observation_document(
+    let mut documents = vec![observation_document(
+        format!("cancer-world://{world_id}/day/{day_ordinal}/cohort/burden-summary"),
+        cohort_content,
+    )];
+    if let Some(selected_resident_id) = selected_affected_resident_id {
+        let selected = burdens
+            .iter()
+            .find(|(resident_id, _)| *resident_id == selected_resident_id)
+            .ok_or(CancerResearchSchedulerError::MissingCancerBurden(
+                selected_resident_id,
+            ))?;
+        let resident_content = serde_json::to_string(&ResidentBurdenObservation {
+            observation_schema_version: 1,
+            day_ordinal,
+            resident_id: selected_resident_id,
+            burden: &selected.1,
+        })?;
+        documents.push(observation_document(
             format!(
                 "cancer-world://{world_id}/day/{day_ordinal}/resident/{selected_resident_id}/burden"
             ),
             resident_content,
-        ),
-    ])
+        ));
+    }
+    Ok(documents)
 }
 
 fn trajectory_count(
@@ -584,7 +585,7 @@ mod tests {
                 .expect("seeded burden")
             })
             .collect::<Vec<_>>();
-        let documents = cancer_burden_observations(world_id, 0, burdens[1].0, &burdens)
+        let documents = cancer_burden_observations(world_id, 0, Some(burdens[1].0), &burdens)
             .expect("burden observations");
         assert_eq!(documents.len(), 2);
         assert!(documents.iter().all(|document| {
@@ -599,5 +600,15 @@ mod tests {
         let value: serde_json::Value = serde_json::from_str(&cohort.content).expect("valid JSON");
         assert_eq!(value["living_affected_count"], 3);
         assert_eq!(value["growing_count"], 3);
+
+        let engineering_documents = cancer_burden_observations(world_id, 0, None, &burdens)
+            .expect("unaffected engineer receives cohort observations");
+        assert_eq!(engineering_documents.len(), 1);
+        assert!(
+            engineering_documents[0]
+                .reference
+                .source_id
+                .ends_with("burden-summary")
+        );
     }
 }
