@@ -665,9 +665,10 @@ impl CancerResearchJobStore for PostgresStore {
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
         ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
-        if paid_research_was_dispatched(&mut transaction, entry.request.request_id).await? {
+        if !paid_research_release_is_safe(&mut transaction, entry.request.request_id).await? {
             return Err(StoreError::Conflict(
-                "a dispatched paid research call cannot release its reservation".to_owned(),
+                "a paid research call without an explicit rejected outcome cannot release its reservation"
+                    .to_owned(),
             ));
         }
         resolve_research_reservation(
@@ -832,6 +833,32 @@ async fn paid_research_was_dispatched(
         SELECT EXISTS (
             SELECT 1 FROM cancer_research_route_dispatches
             WHERE request_id=$1 AND billing_class='paid_approved'
+        )
+        "#,
+    )
+    .bind(request_id)
+    .fetch_one(&mut **transaction)
+    .await
+    .map_err(operation_error)
+}
+
+async fn paid_research_release_is_safe(
+    transaction: &mut Transaction<'_, Postgres>,
+    request_id: Uuid,
+) -> Result<bool, StoreError> {
+    sqlx::query_scalar(
+        r#"
+        SELECT NOT EXISTS (
+            SELECT 1
+            FROM cancer_research_route_dispatches AS dispatch
+            LEFT JOIN cancer_research_route_outcomes AS outcome
+              ON outcome.request_id=dispatch.request_id AND outcome.route_index=dispatch.route_index
+            WHERE dispatch.request_id=$1
+              AND dispatch.billing_class='paid_approved'
+              AND (
+                  outcome.request_id IS NULL
+                  OR outcome.normalized_status <> 'rejected'
+              )
         )
         "#,
     )
@@ -1073,8 +1100,11 @@ fn operation_error(error: sqlx::Error) -> StoreError {
 mod tests {
     use application::{
         CANCER_RESEARCH_MODEL_CONTRACT_VERSION, CancerResearchEvidenceDocument,
-        CancerResearchModelRequest, ModelTokenUsage,
+        CancerResearchModel, CancerResearchModelAdapters, CancerResearchModelError,
+        CancerResearchModelRequest, CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
+        CognitionProviderId, ModelTokenUsage, process_next_cancer_research_job,
     };
+    use std::{collections::BTreeMap, sync::Arc};
     use uuid::Uuid;
     use world_domain::{
         CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContribution,
@@ -1083,6 +1113,50 @@ mod tests {
     };
 
     use super::*;
+
+    struct SuccessfulResearchModel;
+
+    #[async_trait::async_trait]
+    impl CancerResearchModel for SuccessfulResearchModel {
+        async fn infer_research(
+            &self,
+            route: &CognitionModelRoute,
+            request: &CancerResearchModelRequest,
+        ) -> Result<CancerResearchModelReceipt, CancerResearchModelError> {
+            let contribution = CancerResearchContribution::new(
+                &request.selection,
+                CancerResearchArtifactKind::Hypothesis,
+                "Worker-generated bounded hypothesis",
+                "A deterministic fake provider response used to exercise the worker boundary.",
+                vec![CancerResearchClaim {
+                    statement: "A reversible state may affect the bounded phenotype.".to_owned(),
+                    testable_prediction: "A perturbation changes the assay readout.".to_owned(),
+                    falsification_test: "The preregistered perturbation has no effect.".to_owned(),
+                    citation_hashes: Vec::new(),
+                }],
+            )
+            .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+            Ok(CancerResearchModelReceipt {
+                contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+                request_id: request.request_id,
+                request_hash: request
+                    .canonical_hash()
+                    .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?,
+                provider: route.provider.clone(),
+                requested_model: route.requested_model.clone(),
+                resolved_model: route.requested_model.clone(),
+                provider_response_id: "fake-worker-response".to_owned(),
+                usage: ModelTokenUsage {
+                    prompt_tokens: 100,
+                    completion_tokens: 100,
+                },
+                billed_micro_usd: 0,
+                contribution,
+                provider_response_hash: Digest::sha256(b"fake worker provider response"),
+                adapter_version: "fake-worker-v1".to_owned(),
+            })
+        }
+    }
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
@@ -1359,5 +1433,79 @@ mod tests {
         .await
         .expect("research account");
         assert_eq!(account, (0, 1_000));
+
+        let paid_result = CancerResearchLadderResult {
+            contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+            request_id: paid_request.request_id,
+            route_policy_version: paid_registry.policy_version,
+            route_registry_hash: paid_registry
+                .canonical_hash(paid_request.route_purpose())
+                .expect("paid registry hash"),
+            attempts: vec![paid_attempt],
+            receipt: Some(paid_receipt),
+        };
+        store
+            .complete_cancer_research_request(
+                "research-test-worker",
+                &paid_entry,
+                &paid_registry,
+                &paid_result,
+            )
+            .await
+            .expect("complete paid request");
+
+        let worker_selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(50),
+            SimTick::new(60),
+            2,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::GenerateMechanisticHypothesis,
+            CancerResearchInferenceTier::Exploration,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            Vec::new(),
+            None,
+            2_048,
+        )
+        .expect("worker selection");
+        let worker_request = CancerResearchModelRequest::new(
+            worker_selection,
+            Vec::<CancerResearchEvidenceDocument>::new(),
+            Vec::new(),
+        )
+        .expect("worker request");
+        store
+            .enqueue_cancer_research_request(&worker_request)
+            .await
+            .expect("enqueue worker request");
+        let mut adapters: CancerResearchModelAdapters = BTreeMap::new();
+        adapters.insert(
+            CognitionProviderId::openrouter_cancer(),
+            Arc::new(SuccessfulResearchModel),
+        );
+        let outcome = process_next_cancer_research_job(
+            &store,
+            &adapters,
+            "worker-integration-test",
+            &CancerResearchWorkerConfiguration::default(),
+        )
+        .await
+        .expect("process worker request");
+        assert_eq!(
+            outcome,
+            CancerResearchWorkerOutcome::Completed {
+                request_id: worker_request.request_id,
+                succeeded: true,
+            }
+        );
+        assert!(
+            store
+                .load_cancer_research_result(worker_request.request_id)
+                .await
+                .expect("load worker result")
+                .is_some()
+        );
     }
 }

@@ -4,11 +4,13 @@ mod cognition;
 mod cognition_worker;
 mod memory;
 mod research;
+mod research_worker;
 
 pub use cognition::*;
 pub use cognition_worker::*;
 pub use memory::*;
 pub use research::*;
+pub use research_worker::*;
 
 use async_trait::async_trait;
 use chrono::{DateTime, Utc};
