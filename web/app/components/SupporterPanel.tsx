@@ -248,7 +248,7 @@ async function loadPanel(signal?: AbortSignal): Promise<PanelState> {
     const worldsResponse = await fetch("/api/v1/worlds", { cache: "no-store", signal });
     if (!worldsResponse.ok) return { kind: "unavailable" };
     const { worlds } = (await worldsResponse.json()) as { worlds: PublicWorld[] };
-    const world = worlds.find((candidate) => candidate.status === "running");
+    const world = worlds[0]?.status === "running" ? worlds[0] : undefined;
     if (!world) return { kind: "unavailable" };
     const [organismsResponse, reservationsResponse] = await Promise.all([
       fetch(`/api/v1/worlds/${encodeURIComponent(world.world_id)}/organisms?limit=200`, { cache: "no-store", signal }),

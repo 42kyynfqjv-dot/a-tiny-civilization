@@ -83,7 +83,9 @@ export function WikiIndex() {
         const worldsResponse = await fetch("/api/v1/worlds", { cache: "no-store" });
         if (!worldsResponse.ok) throw new Error("world list unavailable");
         const { worlds } = (await worldsResponse.json()) as { worlds: World[] };
-        const world = worlds.find((item) => item.status === "running") ?? worlds[0];
+        // The API orders the ordinary observer world before hidden experiments.
+        // Preserve that boundary during a brief successor handoff as well.
+        const world = worlds[0];
         if (!world) {
           if (active) setWiki({ state: "empty" });
           return;

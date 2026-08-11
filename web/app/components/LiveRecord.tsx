@@ -38,7 +38,7 @@ export function LiveRecord() {
         const worldsResponse = await fetch("/api/v1/worlds", { cache: "no-store" });
         if (!worldsResponse.ok) throw new Error("world list unavailable");
         const { worlds } = (await worldsResponse.json()) as { worlds: World[] };
-        const world = worlds.find((item) => item.status === "running") ?? worlds[0];
+        const world = worlds[0];
         if (!world) { if (active) setRecord({ state: "empty" }); return; }
         const encoded = encodeURIComponent(world.world_id);
         const [timelineResponse, organismsResponse, findingsResponse, artifactsResponse] = await Promise.all([

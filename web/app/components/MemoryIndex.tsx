@@ -45,7 +45,7 @@ export function MemoryIndex() {
         const worldsResponse = await fetch("/api/v1/worlds", { cache: "no-store" });
         if (!worldsResponse.ok) throw new Error();
         const { worlds } = (await worldsResponse.json()) as { worlds: World[] };
-        const world = worlds.find((candidate) => candidate.status === "running") ?? worlds[0];
+        const world = worlds[0];
         if (!world) { if (active) setRecord({ state: "empty" }); return; }
         const id = encodeURIComponent(world.world_id);
         const [memoryResponse, organismsResponse] = await Promise.all([

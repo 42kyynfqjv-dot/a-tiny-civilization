@@ -23,7 +23,7 @@ export function LifeDirectory() {
         if (!worldsResponse.ok) throw new Error();
         const { worlds } = (await worldsResponse.json()) as { worlds: World[] };
         const requested = new URLSearchParams(window.location.search).get("world");
-        const world = worlds.find((item) => item.world_id === requested) ?? worlds.find((item) => item.status === "running") ?? worlds[0];
+        const world = worlds.find((item) => item.world_id === requested) ?? worlds[0];
         if (!world) { if (active) setDirectory({ state: "empty" }); return; }
         const response = await fetch(`/api/v1/worlds/${encodeURIComponent(world.world_id)}/organisms?limit=200`, { cache: "no-store" });
         if (!response.ok) throw new Error();
