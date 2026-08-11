@@ -380,6 +380,9 @@ fn research_api_request(
         }
     };
     let task_rule = match request.selection.task {
+        CancerResearchTask::ProposeDiscriminatingExperiment => {
+            "Propose a controlled discriminating experiment with a concrete falsification route. Supply the closed virtual_experiment_plan that the deterministic model can execute. Do not invent an outcome or claim the experiment has already run."
+        }
         CancerResearchTask::DesignDiagnosticInstrument => {
             "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection. Do not claim that it has been built or measured."
         }
@@ -552,7 +555,8 @@ fn virtual_experiment_plan_schema(stage: CancerResearchStage, task: CancerResear
         "additionalProperties": false
     });
     match task {
-        CancerResearchTask::DesignDiagnosticInstrument
+        CancerResearchTask::ProposeDiscriminatingExperiment
+        | CancerResearchTask::DesignDiagnosticInstrument
         | CancerResearchTask::DesignTreatmentMachine => plan,
         _ => json!({"anyOf": [plan, {"type": "null"}]}),
     }

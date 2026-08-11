@@ -40,19 +40,22 @@ impl MemoryRetain {
         content: impl Into<String>,
         context: impl Into<String>,
     ) -> Result<Self, MemoryContractError> {
+        let content = content.into();
+        let context = context.into();
+        let identity_scope = memory_identity_scope(&context);
         let operation_id = memory_identity(
             world_id,
             agent_id,
             source_sequence,
             ordinal,
-            "memory-operation",
+            identity_scope.0,
         );
         let document_id = memory_identity(
             world_id,
             agent_id,
             source_sequence,
             ordinal,
-            "memory-document",
+            identity_scope.1,
         );
         let item = Self {
             payload_version: MEMORY_PAYLOAD_VERSION,
@@ -64,8 +67,8 @@ impl MemoryRetain {
             sim_tick,
             ordinal,
             bank_id: memory_bank_id(world_id, agent_id),
-            content: content.into(),
-            context: context.into(),
+            content,
+            context,
         };
         item.validate()?;
         Ok(item)
@@ -80,19 +83,20 @@ impl MemoryRetain {
         if self.source_sequence == EventSequence::ZERO {
             return Err(MemoryContractError::ZeroSourceSequence);
         }
+        let identity_scope = memory_identity_scope(&self.context);
         let expected_operation = memory_identity(
             self.world_id,
             self.agent_id,
             self.source_sequence,
             self.ordinal,
-            "memory-operation",
+            identity_scope.0,
         );
         let expected_document = memory_identity(
             self.world_id,
             self.agent_id,
             self.source_sequence,
             self.ordinal,
-            "memory-document",
+            identity_scope.1,
         );
         if self.operation_id != expected_operation || self.document_id != expected_document {
             return Err(MemoryContractError::InvalidDeterministicIdentity);
@@ -107,6 +111,17 @@ impl MemoryRetain {
             return Err(MemoryContractError::InvalidContext);
         }
         Ok(())
+    }
+}
+
+fn memory_identity_scope(context: &str) -> (&'static str, &'static str) {
+    if context == "Cancer World virtual experiment result" {
+        (
+            "virtual-experiment-memory-operation",
+            "virtual-experiment-memory-document",
+        )
+    } else {
+        ("memory-operation", "memory-document")
     }
 }
 
@@ -644,6 +659,34 @@ mod tests {
         assert_ne!(first_bank, second_bank);
         assert!(first_bank.starts_with(&format!("atc-{first_world}-")));
         assert!(second_bank.starts_with(&format!("atc-{second_world}-")));
+    }
+
+    #[test]
+    fn virtual_experiment_memory_has_a_distinct_id_at_the_same_world_position() {
+        let (world_id, agent_id) = identities();
+        let artifact = MemoryRetain::new(
+            world_id,
+            agent_id,
+            EventSequence::new(7),
+            SimTick::new(5),
+            3,
+            "research artifact",
+            "Cancer World research artifact",
+        )
+        .expect("artifact memory");
+        let experiment = MemoryRetain::new(
+            world_id,
+            agent_id,
+            EventSequence::new(7),
+            SimTick::new(5),
+            3,
+            "virtual experiment result",
+            "Cancer World virtual experiment result",
+        )
+        .expect("experiment memory");
+        assert_ne!(artifact.operation_id, experiment.operation_id);
+        assert_ne!(artifact.document_id, experiment.document_id);
+        assert!(experiment.validate().is_ok());
     }
 
     #[tokio::test]

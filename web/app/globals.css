@@ -1182,6 +1182,7 @@ select {
 .cancer-artifact-meta .novelty.no_close_match_found { color: #79b8e8; }
 .cancer-artifact-meta .novelty.possible_error { color: #ed8a72; }
 .cancer-artifact-meta .novelty.pending { color: #6f817a; }
+.cancer-artifact-meta .virtual-run { color: #c49cff; }
 .cancer-artifact-card h3 { font-family: var(--font-geist-sans), sans-serif; font-size: clamp(27px, 4.3vw, 68px); font-weight: 380; letter-spacing: -.04em; line-height: 1; margin: clamp(30px, 5vw, 70px) 0 24px; max-width: 1100px; }
 .cancer-artifact-card > p { color: #a1b5ad; font-family: var(--font-geist-sans), sans-serif; font-size: clamp(14px, 1.35vw, 20px); line-height: 1.7; margin: 0; max-width: 980px; }
 .cancer-artifact-chain { border-bottom: 1px solid var(--cancer-line); border-top: 1px solid var(--cancer-line); display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 38px 0 0; padding: 15px 0; }
@@ -1209,6 +1210,15 @@ select {
 .cancer-novelty-matches span, .cancer-novelty-body small { color: #66877b; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .07em; }
 .cancer-novelty-matches strong { color: #acc3ba; font-size: 12px; font-weight: 450; }
 .cancer-novelty-pending { color: #71877e !important; font-size: 12px !important; margin: 16px 0 2px 28px !important; }
+.cancer-artifact-card .cancer-virtual-experiment { border: 1px solid rgba(196, 156, 255, .24); margin-top: 12px; padding: 17px 19px; }
+.cancer-artifact-card .cancer-virtual-experiment summary { color: #c49cff; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .11em; }
+.cancer-virtual-body { color: #9fa9b6; font-family: var(--font-geist-sans), sans-serif; font-size: 12px; line-height: 1.6; margin: 18px 0 3px 28px; }
+.cancer-model-only { border-left: 2px solid #c49cff; color: #cbb1ec; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .09em; padding: 9px 13px; }
+.cancer-virtual-plan, .cancer-virtual-values { display: grid; gap: 1px; grid-template-columns: repeat(4, minmax(0, 1fr)); margin: 18px 0; }
+.cancer-virtual-plan span, .cancer-virtual-values span { background: rgba(196, 156, 255, .04); color: #746b80; font-family: var(--font-geist-mono), monospace; font-size: 8px; padding: 14px; }
+.cancer-virtual-plan strong, .cancer-virtual-values strong { color: #d9cee7; display: block; font-family: var(--font-geist-sans), sans-serif; font-size: 13px; font-weight: 450; margin-top: 7px; }
+.cancer-virtual-values strong { font-size: clamp(15px, 2vw, 24px); }
+.cancer-virtual-values small, .cancer-virtual-body > small { color: #746b80; font-family: var(--font-geist-mono), monospace; font-size: 8px; }
 .cancer-artifact-card .cancer-duplicate-ledger { border: 1px solid rgba(233, 195, 110, .22); margin-top: 22px; padding: 17px 19px; }
 .cancer-artifact-card .cancer-duplicate-ledger summary { color: #e9c36e; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .11em; }
 .cancer-duplicate-ledger > div { display: grid; gap: 1px; margin-top: 14px; }
@@ -1271,6 +1281,8 @@ select {
   .cancer-artifact-card dl { grid-template-columns: 1fr; }
   .cancer-novelty-body { margin-left: 0; }
   .cancer-novelty-scores { grid-template-columns: 1fr; }
+  .cancer-virtual-body { margin-left: 0; }
+  .cancer-virtual-plan, .cancer-virtual-values { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .cancer-artifact-card footer { align-items: flex-start; flex-direction: column; gap: 10px; }
   .cancer-search-form { grid-template-columns: 1fr; }
   .cancer-search-form button { min-height: 48px; }

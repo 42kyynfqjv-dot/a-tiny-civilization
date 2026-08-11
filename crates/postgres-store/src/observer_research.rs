@@ -8,13 +8,14 @@ use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerResearchArtifact,
     PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
-    PublicCancerResearchView, PublicResearchMemoryState,
+    PublicCancerResearchView, PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
 use world_domain::{
-    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CancerResearchNoveltyAudit, Digest, WorldId,
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
+    CancerResearchNoveltyAudit, CancerVirtualExperimentResult, Digest, WorldId,
 };
 
 use crate::PostgresStore;
@@ -30,6 +31,10 @@ struct ResearchProjectionRow {
     novelty_payload: Option<Value>,
     novelty_checksum: Option<Vec<u8>>,
     novelty_created_at: Option<DateTime<Utc>>,
+    experiment_payload: Option<Value>,
+    experiment_checksum: Option<Vec<u8>>,
+    experiment_created_at: Option<DateTime<Utc>>,
+    experiment_memory_completed_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -127,7 +132,11 @@ impl ObserverCancerResearchStore for PostgresStore {
                    memory.completed_at AS memory_completed_at,
                    novelty.audit_payload AS novelty_payload,
                    novelty.audit_checksum AS novelty_checksum,
-                   novelty.created_at AS novelty_created_at
+                   novelty.created_at AS novelty_created_at,
+                   experiment.result_payload AS experiment_payload,
+                   experiment.result_checksum AS experiment_checksum,
+                   experiment.created_at AS experiment_created_at,
+                   experiment_memory.completed_at AS experiment_memory_completed_at
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
             LEFT JOIN memory_outbox AS memory
@@ -138,6 +147,14 @@ impl ObserverCancerResearchStore for PostgresStore {
             LEFT JOIN cancer_research_novelty_audits AS novelty
               ON novelty.request_id=request.request_id
              AND novelty.method_version=$3
+            LEFT JOIN cancer_virtual_experiment_results AS experiment
+              ON experiment.request_id=request.request_id
+             AND experiment.method_version=$4
+            LEFT JOIN memory_outbox AS experiment_memory
+              ON experiment_memory.world_id=request.world_id
+             AND experiment_memory.agent_id=$2
+             AND (experiment_memory.payload->>'ordinal')::BIGINT=request.ordinal
+             AND experiment_memory.payload->>'context'='Cancer World virtual experiment result'
             WHERE request.world_id=$1
               AND result.result_payload->'receipt' <> 'null'::JSONB
             ORDER BY request.ordinal, request.request_id
@@ -146,6 +163,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(world_id.as_uuid())
         .bind(collective_id.as_uuid())
         .bind(i32::from(CANCER_RESEARCH_NOVELTY_METHOD_VERSION))
+        .bind(i32::from(CANCER_VIRTUAL_LAB_METHOD_VERSION))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -214,6 +232,51 @@ impl ObserverCancerResearchStore for PostgresStore {
                     ));
                 }
             };
+            let virtual_experiment = match (
+                row.experiment_payload,
+                row.experiment_checksum,
+                row.experiment_created_at,
+            ) {
+                (None, None, None) => None,
+                (Some(payload), Some(checksum), Some(created_at)) => {
+                    let result: CancerVirtualExperimentResult = serde_json::from_value(payload)
+                        .map_err(|error| {
+                            corrupt(format!("invalid virtual experiment result: {error}"))
+                        })?;
+                    result
+                        .validate_against(&receipt.contribution)
+                        .map_err(contract_error)?;
+                    let result_hash =
+                        digest_from_db(&checksum, "virtual experiment result checksum")?;
+                    if result.world_id != world_id
+                        || result.request_id != request.request_id
+                        || result.artifact_hash != artifact_hash
+                        || result
+                            .canonical_hash(&receipt.contribution)
+                            .map_err(contract_error)?
+                            != result_hash
+                    {
+                        return Err(corrupt(
+                            "Cancer World virtual experiment crossed its immutable artifact provenance",
+                        ));
+                    }
+                    Some(PublicCancerVirtualExperimentResult {
+                        result,
+                        result_hash,
+                        memory_state: if row.experiment_memory_completed_at.is_some() {
+                            PublicResearchMemoryState::Accepted
+                        } else {
+                            PublicResearchMemoryState::Queued
+                        },
+                        created_at,
+                    })
+                }
+                _ => {
+                    return Err(corrupt(
+                        "Cancer World virtual experiment is only partially persisted",
+                    ));
+                }
+            };
             artifacts.push(PublicCancerResearchArtifact {
                 request_id: request.request_id,
                 selected_at_tick: request.selection.selected_at_tick,
@@ -241,6 +304,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                     PublicResearchMemoryState::Queued
                 },
                 novelty_audit,
+                virtual_experiment,
                 created_at: row.created_at,
                 duplicates: Vec::new(),
             });

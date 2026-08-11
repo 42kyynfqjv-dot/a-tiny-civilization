@@ -12,9 +12,9 @@ use uuid::Uuid;
 use world_domain::{
     BirthCategory, CancerResearchContribution, CancerResearchEvidenceReference,
     CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchTarget,
-    CancerResearchTask, Digest, DomainEvent, EntityId, EventBatch, EventId, EventSequence,
-    MaterialIdentity, OrganismRole, PerceptionChannel, PrimitiveActionKind, S2CellId, SimTick,
-    SpeciesIdentity, WorldId, WorldStatus,
+    CancerResearchTask, CancerVirtualExperimentResult, Digest, DomainEvent, EntityId, EventBatch,
+    EventId, EventSequence, MaterialIdentity, OrganismRole, PerceptionChannel, PrimitiveActionKind,
+    S2CellId, SimTick, SpeciesIdentity, WorldId, WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -44,7 +44,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 3;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 4;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -853,11 +853,21 @@ pub struct PublicCancerResearchArtifact {
     /// Reproducible observer-side literature overlap triage. Absence means the
     /// asynchronous evidence worker has not audited this artifact yet.
     pub novelty_audit: Option<PublicCancerResearchNoveltyAudit>,
+    pub virtual_experiment: Option<PublicCancerVirtualExperimentResult>,
     pub created_at: DateTime<Utc>,
     /// Later artifacts deterministically classified as the same line of work.
     /// They remain immutable and auditable but are collapsed into this original
     /// entry for observers.
     pub duplicates: Vec<PublicCancerResearchDuplicate>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerVirtualExperimentResult {
+    #[serde(flatten)]
+    pub result: CancerVirtualExperimentResult,
+    pub result_hash: Digest,
+    pub memory_state: PublicResearchMemoryState,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

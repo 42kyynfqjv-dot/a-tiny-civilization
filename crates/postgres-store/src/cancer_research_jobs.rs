@@ -4,8 +4,9 @@ use application::{
     CancerResearchLadderResult, CancerResearchLiteratureSnapshot, CancerResearchMemoryInput,
     CancerResearchModelReceipt, CancerResearchModelRequest, CancerResearchNoveltyCandidate,
     CancerResearchPaidAuthorization, CancerResearchPaidReservationDecision,
-    CancerResearchPriorResult, CancerResearchRouteAttemptRecord, CognitionBillingClass,
-    CognitionBillingScope, CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchPriorResult, CancerResearchRouteAttemptRecord, CancerVirtualExperimentCandidate,
+    CancerVirtualExperimentCatalogSummary, CognitionBillingClass, CognitionBillingScope,
+    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
     StoreError, cancer_research_collective_id, cancer_research_contributions_duplicate,
 };
@@ -16,7 +17,7 @@ use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 use world_domain::{
     CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchNoveltyStatus,
-    CancerResearchStage, Digest, EventSequence,
+    CancerResearchStage, CancerVirtualExperimentResult, Digest, EventSequence,
 };
 
 use crate::PostgresStore;
@@ -329,6 +330,189 @@ impl CancerResearchJobStore for PostgresStore {
                 "novelty audit disappeared during idempotency check".to_owned(),
             )),
         }
+    }
+
+    async fn load_unexecuted_cancer_virtual_experiments(
+        &self,
+        world_id: world_domain::WorldId,
+        method_version: u16,
+        limit: usize,
+    ) -> Result<Vec<CancerVirtualExperimentCandidate>, StoreError> {
+        if method_version == 0 {
+            return Err(StoreError::Conflict(
+                "virtual lab method version must be nonzero".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            LEFT JOIN cancer_virtual_experiment_results AS experiment
+              ON experiment.request_id=request.request_id
+             AND experiment.method_version=$2
+            WHERE request.world_id=$1
+              AND result.result_payload->'receipt' <> 'null'::JSONB
+              AND result.result_payload->'receipt'->'contribution'->'virtual_experiment_plan' IS NOT NULL
+              AND experiment.experiment_id IS NULL
+            ORDER BY request.ordinal DESC, request.request_id
+            LIMIT $3
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(method_version))
+        .bind(i64::try_from(limit.clamp(1, 64)).map_err(corrupt)?)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let mut candidates = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (request, result) = parse_historical_research_result(row, world_id)?;
+            let contribution = result
+                .receipt
+                .ok_or_else(|| corrupt("planned virtual experiment omitted its receipt"))?
+                .contribution;
+            let artifact_hash = contribution.canonical_hash().map_err(corrupt)?;
+            candidates.push(CancerVirtualExperimentCandidate {
+                world_id,
+                request_id: request.request_id,
+                ordinal: request.selection.ordinal,
+                artifact_hash,
+                contribution,
+            });
+        }
+        Ok(candidates)
+    }
+
+    async fn store_cancer_virtual_experiment_result(
+        &self,
+        result: &CancerVirtualExperimentResult,
+        contribution: &world_domain::CancerResearchContribution,
+        ordinal: u32,
+    ) -> Result<(), StoreError> {
+        result.validate_against(contribution).map_err(corrupt)?;
+        let payload = serde_json::to_value(result).map_err(corrupt)?;
+        let checksum = result.canonical_hash(contribution).map_err(corrupt)?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        let stored_result_payload: Value = sqlx::query_scalar(
+            "SELECT result_payload FROM cancer_research_results WHERE request_id=$1",
+        )
+        .bind(result.request_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        let stored_result: CancerResearchLadderResult =
+            serde_json::from_value(stored_result_payload).map_err(corrupt)?;
+        let stored_contribution = &stored_result
+            .receipt
+            .ok_or_else(|| corrupt("virtual experiment source omitted its receipt"))?
+            .contribution;
+        if stored_contribution != contribution {
+            return Err(StoreError::Corrupt(
+                "virtual experiment contribution differs from immutable research result".to_owned(),
+            ));
+        }
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO cancer_virtual_experiment_results (
+                experiment_id,world_id,request_id,method_version,artifact_hash,
+                plan_hash,result_payload,result_checksum
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            ON CONFLICT (request_id,method_version) DO NOTHING
+            "#,
+        )
+        .bind(result.experiment_id)
+        .bind(result.world_id.as_uuid())
+        .bind(result.request_id)
+        .bind(i32::from(result.method_version))
+        .bind(result.artifact_hash.as_bytes().as_slice())
+        .bind(result.plan_hash.as_bytes().as_slice())
+        .bind(&payload)
+        .bind(checksum.as_bytes().as_slice())
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        if inserted.rows_affected() == 0 {
+            let existing = sqlx::query_as::<_, (Uuid, Value, Vec<u8>)>(
+                "SELECT experiment_id,result_payload,result_checksum FROM cancer_virtual_experiment_results WHERE request_id=$1 AND method_version=$2",
+            )
+            .bind(result.request_id)
+            .bind(i32::from(result.method_version))
+            .fetch_optional(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+            match existing {
+                Some((experiment_id, stored_payload, stored_checksum))
+                    if experiment_id == result.experiment_id
+                        && stored_payload == payload
+                        && digest_from_db(&stored_checksum, "virtual experiment checksum")?
+                            == checksum => {}
+                Some(_) => {
+                    return Err(StoreError::Corrupt(format!(
+                        "virtual experiment {} conflicts with its durable result",
+                        result.experiment_id
+                    )));
+                }
+                None => {
+                    return Err(StoreError::Conflict(
+                        "virtual experiment disappeared during idempotency check".to_owned(),
+                    ));
+                }
+            }
+        }
+
+        let (selected_tick, source_sequence): (i64, i64) = sqlx::query_as(
+            r#"
+            SELECT request.selected_tick,
+                   (SELECT sequence FROM event_batches
+                    WHERE world_id=request.world_id AND tick <= request.selected_tick
+                    ORDER BY tick DESC,sequence DESC LIMIT 1) AS source_sequence
+            FROM cancer_research_requests AS request
+            WHERE request.request_id=$1
+            "#,
+        )
+        .bind(result.request_id)
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        let retain = MemoryRetain::new(
+            result.world_id,
+            cancer_research_collective_id(result.world_id),
+            EventSequence::new(
+                u64::try_from(source_sequence)
+                    .map_err(|_| corrupt("virtual experiment source sequence is negative"))?,
+            ),
+            world_domain::SimTick::new(
+                u64::try_from(selected_tick)
+                    .map_err(|_| corrupt("virtual experiment selected tick is negative"))?,
+            ),
+            ordinal,
+            serde_json::to_string(result).map_err(corrupt)?,
+            "Cancer World virtual experiment result",
+        )
+        .map_err(corrupt)?;
+        sqlx::query(
+            r#"
+            INSERT INTO memory_outbox (
+                operation_id,document_id,world_id,agent_id,source_sequence,
+                bank_id,payload_version,payload,available_at
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'epoch'::TIMESTAMPTZ)
+            ON CONFLICT (operation_id) DO NOTHING
+            "#,
+        )
+        .bind(retain.operation_id)
+        .bind(retain.document_id)
+        .bind(retain.world_id.as_uuid())
+        .bind(retain.agent_id.as_uuid())
+        .bind(source_sequence)
+        .bind(&retain.bank_id)
+        .bind(i32::from(retain.payload_version))
+        .bind(serde_json::to_value(&retain).map_err(corrupt)?)
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        transaction.commit().await.map_err(operation_error)
     }
 
     async fn enqueue_cancer_research_request(
@@ -834,12 +1018,42 @@ impl CancerResearchJobStore for PostgresStore {
             {
                 continue;
             }
+            let virtual_experiment = sqlx::query_as::<_, (Value, Vec<u8>)>(
+                r#"
+                SELECT result_payload,result_checksum
+                FROM cancer_virtual_experiment_results
+                WHERE request_id=$1 AND method_version=$2
+                "#,
+            )
+            .bind(request.request_id)
+            .bind(i32::from(world_domain::CANCER_VIRTUAL_LAB_METHOD_VERSION))
+            .fetch_optional(self.pool())
+            .await
+            .map_err(operation_error)?
+            .map(|(payload, checksum)| {
+                let experiment: CancerVirtualExperimentResult =
+                    serde_json::from_value(payload).map_err(corrupt)?;
+                experiment
+                    .validate_against(&contribution)
+                    .map_err(corrupt)?;
+                if experiment.canonical_hash(&contribution).map_err(corrupt)?
+                    != digest_from_db(&checksum, "catalog virtual experiment checksum")?
+                {
+                    return Err(corrupt(
+                        "catalog virtual experiment failed its durable checksum",
+                    ));
+                }
+                CancerVirtualExperimentCatalogSummary::from_result(&experiment, &contribution)
+                    .map_err(corrupt)
+            })
+            .transpose()?;
             entries.push(CancerResearchCatalogItem {
                 ordinal: request.selection.ordinal,
                 contribution_id: contribution.contribution_id,
                 artifact_hash: contribution.canonical_hash().map_err(corrupt)?,
                 artifact_kind: contribution.artifact_kind,
                 title: contribution.title.clone(),
+                virtual_experiment,
             });
             distinct_contributions.push(contribution);
             if entries.len() == limit {

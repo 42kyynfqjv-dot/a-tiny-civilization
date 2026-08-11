@@ -8,7 +8,8 @@ use uuid::Uuid;
 use world_domain::{
     CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
     CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchStage,
-    CancerResearchTurnSelection, Digest, EntityId,
+    CancerResearchTurnSelection, CancerVirtualEndpoint, CancerVirtualExperimentInterpretation,
+    CancerVirtualExperimentResult, Digest, EntityId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -151,6 +152,39 @@ pub struct CancerResearchCatalogItem {
     pub artifact_hash: Digest,
     pub artifact_kind: world_domain::CancerResearchArtifactKind,
     pub title: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_experiment: Option<CancerVirtualExperimentCatalogSummary>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerVirtualExperimentCatalogSummary {
+    pub experiment_id: Uuid,
+    pub result_hash: Digest,
+    pub primary_endpoint: CancerVirtualEndpoint,
+    pub estimated_change_parts_per_million: i32,
+    pub uncertainty_low_parts_per_million: i32,
+    pub uncertainty_high_parts_per_million: i32,
+    pub interpretation: CancerVirtualExperimentInterpretation,
+    pub evidence_class: String,
+}
+
+impl CancerVirtualExperimentCatalogSummary {
+    pub fn from_result(
+        result: &CancerVirtualExperimentResult,
+        contribution: &CancerResearchContribution,
+    ) -> Result<Self, CancerResearchContractError> {
+        Ok(Self {
+            experiment_id: result.experiment_id,
+            result_hash: result.canonical_hash(contribution)?,
+            primary_endpoint: result.primary_endpoint,
+            estimated_change_parts_per_million: result.estimated_change_parts_per_million,
+            uncertainty_low_parts_per_million: result.uncertainty_low_parts_per_million,
+            uncertainty_high_parts_per_million: result.uncertainty_high_parts_per_million,
+            interpretation: result.interpretation,
+            evidence_class: "uncalibrated_virtual_model_projection".to_owned(),
+        })
+    }
 }
 
 impl CancerResearchMemoryInput {
@@ -278,6 +312,13 @@ pub fn cancer_research_contributions_duplicate(
     right: &CancerResearchContribution,
 ) -> bool {
     if left.artifact_kind != right.artifact_kind || left.stage != right.stage {
+        return false;
+    }
+    // Similar prose must not collapse materially different executable plans.
+    // A repeated plan may be represented as one catalog entry, but changing its
+    // subject, intervention, endpoint, dose, exposure, or cohort makes it a new
+    // experiment even when the model reuses nearly identical language.
+    if left.virtual_experiment_plan != right.virtual_experiment_plan {
         return false;
     }
     if cancer_research_titles_duplicate(&left.title, &right.title) {
@@ -819,6 +860,24 @@ pub trait CancerResearchJobStore: Send + Sync {
         Ok(())
     }
 
+    async fn load_unexecuted_cancer_virtual_experiments(
+        &self,
+        _world_id: world_domain::WorldId,
+        _method_version: u16,
+        _limit: usize,
+    ) -> Result<Vec<crate::CancerVirtualExperimentCandidate>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    async fn store_cancer_virtual_experiment_result(
+        &self,
+        _result: &CancerVirtualExperimentResult,
+        _contribution: &CancerResearchContribution,
+        _ordinal: u32,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// Inserts one exact content-addressed request. Repeating the identical
     /// request is idempotent; the same ID with different bytes is corruption.
     async fn enqueue_cancer_research_request(
@@ -976,9 +1035,12 @@ pub enum CancerResearchModelContractError {
 mod tests {
     use super::*;
     use world_domain::{
-        CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CancerResearchArtifactKind,
-        CancerResearchClaim, CancerResearchProfile, CancerResearchTarget, CancerResearchTask,
-        EntityId, SimTick, WorldId, WorldSeed,
+        CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+        CancerResearchArtifactKind, CancerResearchClaim, CancerResearchProfile,
+        CancerResearchTarget, CancerResearchTask, CancerVirtualEndpoint,
+        CancerVirtualExperimentPlan, CancerVirtualInterventionModality,
+        CancerVirtualMechanismTarget, CancerVirtualSubjectModel, EntityId, SimTick, WorldId,
+        WorldSeed,
     };
 
     fn selection(evidence: Vec<CancerResearchEvidenceReference>) -> CancerResearchTurnSelection {
@@ -1138,6 +1200,30 @@ mod tests {
         assert!(!cancer_research_contributions_duplicate(
             &original,
             &opposing_mechanism
+        ));
+
+        let plan = CancerVirtualExperimentPlan {
+            schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+            subject_model: CancerVirtualSubjectModel::TumorOrganoid,
+            intervention_modality: CancerVirtualInterventionModality::MolecularInhibition,
+            primary_target: CancerVirtualMechanismTarget::CellDivision,
+            secondary_target: None,
+            primary_endpoint: CancerVirtualEndpoint::ViableTumorFraction,
+            intensity_parts_per_million: 500_000,
+            exposure_hours: 168,
+            cohort_size: 128,
+        };
+        let mut repeated_plan = original.clone();
+        repeated_plan.artifact_kind = CancerResearchArtifactKind::ExperimentProposal;
+        repeated_plan.virtual_experiment_plan = Some(plan.clone());
+        let mut different_plan = repeated_plan.clone();
+        different_plan.virtual_experiment_plan = Some(CancerVirtualExperimentPlan {
+            intensity_parts_per_million: 700_000,
+            ..plan
+        });
+        assert!(!cancer_research_contributions_duplicate(
+            &repeated_plan,
+            &different_plan
         ));
     }
 }

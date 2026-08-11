@@ -6,6 +6,7 @@ mod memory;
 mod research;
 mod research_novelty;
 mod research_scheduler;
+mod research_virtual_lab;
 mod research_worker;
 
 pub use cognition::*;
@@ -14,6 +15,7 @@ pub use memory::*;
 pub use research::*;
 pub use research_novelty::*;
 pub use research_scheduler::*;
+pub use research_virtual_lab::*;
 pub use research_worker::*;
 
 use async_trait::async_trait;

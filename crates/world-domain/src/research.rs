@@ -9,8 +9,16 @@ use crate::{
 pub const CANCER_RESEARCH_PROFILE_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_TURN_SCHEMA_VERSION: u16 = 1;
 pub const LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 2;
+/// Schema v2 introduced optional executable plans and required them for machine
+/// designs. It remains readable because artifacts written before virtual-lab
+/// execution became mandatory may be experiment proposals without a plan.
+pub const VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 2;
+/// Schema v3 requires every newly proposed experiment or machine design to carry
+/// a closed plan that the deterministic observer-side virtual lab can execute.
+pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 3;
 pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_VIRTUAL_LAB_METHOD_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 1;
 pub const MAX_CANCER_RESEARCH_NOVELTY_MATCHES: usize = 5;
@@ -445,6 +453,92 @@ pub struct CancerVirtualExperimentPlan {
     pub cohort_size: u16,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualExperimentInterpretation {
+    ModelSupportsPrediction,
+    ModelShowsNoMaterialEffect,
+    ModelShowsConcerningTradeoff,
+    ModelInconclusive,
+}
+
+/// A deterministic result from the deliberately simplified observer-side
+/// virtual lab. It is a model projection—not wet-lab evidence, an animal study,
+/// a clinical result, or a causal fact inside Cancer World.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerVirtualExperimentResult {
+    pub schema_version: u16,
+    pub method_version: u16,
+    pub experiment_id: Uuid,
+    pub world_id: WorldId,
+    pub request_id: Uuid,
+    pub artifact_hash: Digest,
+    pub plan_hash: Digest,
+    pub subject_model: CancerVirtualSubjectModel,
+    pub primary_endpoint: CancerVirtualEndpoint,
+    pub cohort_size: u16,
+    pub control_value_parts_per_million: u32,
+    pub intervention_value_parts_per_million: u32,
+    pub estimated_change_parts_per_million: i32,
+    pub uncertainty_low_parts_per_million: i32,
+    pub uncertainty_high_parts_per_million: i32,
+    pub interpretation: CancerVirtualExperimentInterpretation,
+    pub model_calibration: String,
+    pub caveats: Vec<String>,
+}
+
+impl CancerVirtualExperimentResult {
+    #[must_use]
+    pub fn deterministic_id(request_id: Uuid, method_version: u16) -> Uuid {
+        Uuid::new_v5(
+            &request_id,
+            format!("observer-virtual-lab:v{method_version}").as_bytes(),
+        )
+    }
+
+    pub fn validate_against(
+        &self,
+        contribution: &CancerResearchContribution,
+    ) -> Result<(), CancerResearchContractError> {
+        let Some(plan) = contribution.virtual_experiment_plan.as_ref() else {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        };
+        plan.validate()?;
+        if self.schema_version != CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION
+            || self.method_version == 0
+            || self.experiment_id != Self::deterministic_id(self.request_id, self.method_version)
+            || self.request_id != contribution.request_id
+            || self.artifact_hash != contribution.canonical_hash()?
+            || self.plan_hash != Digest::canonical(plan)?
+            || self.subject_model != plan.subject_model
+            || self.primary_endpoint != plan.primary_endpoint
+            || self.cohort_size != plan.cohort_size
+            || self.control_value_parts_per_million > 1_000_000
+            || self.intervention_value_parts_per_million > 1_000_000
+            || self.estimated_change_parts_per_million
+                != i32::try_from(self.intervention_value_parts_per_million).unwrap_or(i32::MAX)
+                    - i32::try_from(self.control_value_parts_per_million).unwrap_or(i32::MAX)
+            || self.uncertainty_low_parts_per_million > self.estimated_change_parts_per_million
+            || self.uncertainty_high_parts_per_million < self.estimated_change_parts_per_million
+            || self.model_calibration != "uncalibrated_mechanistic_projection_v1"
+            || self.caveats.len() != 2
+            || self.caveats.iter().any(|caveat| !bounded_text(caveat, 512))
+        {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_hash(
+        &self,
+        contribution: &CancerResearchContribution,
+    ) -> Result<Digest, CancerResearchContractError> {
+        self.validate_against(contribution)?;
+        Ok(Digest::canonical(self)?)
+    }
+}
+
 impl CancerVirtualExperimentPlan {
     pub fn validate(&self) -> Result<(), CancerResearchContractError> {
         if self.schema_version != CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION
@@ -573,6 +667,7 @@ impl CancerResearchContribution {
         if !matches!(
             self.schema_version,
             LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                | VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
         ) {
             return Err(CancerResearchContractError::UnsupportedContributionSchema(
@@ -611,7 +706,13 @@ impl CancerResearchContribution {
                 self.artifact_kind,
                 CancerResearchArtifactKind::DiagnosticInstrumentDesign
                     | CancerResearchArtifactKind::TreatmentMachineDesign
-            ) && self.schema_version == CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+            ) && matches!(
+                self.schema_version,
+                VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                    | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+            ) && self.virtual_experiment_plan.is_none())
+            || (self.artifact_kind == CancerResearchArtifactKind::ExperimentProposal
+                && self.schema_version == CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 && self.virtual_experiment_plan.is_none())
         {
             return Err(CancerResearchContractError::InvalidContribution);
@@ -803,6 +904,8 @@ pub enum CancerResearchContractError {
     InvalidContribution,
     #[error("cancer virtual experiment plan is invalid or incompatible with its artifact")]
     InvalidVirtualExperimentPlan,
+    #[error("cancer virtual experiment result is invalid or mismatched")]
+    InvalidVirtualExperimentResult,
     #[error("cancer-research novelty audit is invalid or overstates its evidence")]
     InvalidNoveltyAudit,
     #[error("cancer-research canonical hashing failed: {0}")]
@@ -904,5 +1007,67 @@ mod tests {
         .expect("bounded contribution");
         assert!(contribution.validate_against(&selection).is_ok());
         assert_ne!(contribution.canonical_hash().expect("hash"), Digest::ZERO);
+    }
+
+    #[test]
+    fn new_experiment_proposals_require_a_plan_without_invalidating_schema_two_history() {
+        let (world_id, resident_id, profile) = fixture();
+        let selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(30),
+            SimTick::new(50),
+            2,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::ProposeDiscriminatingExperiment,
+            CancerResearchInferenceTier::Exploration,
+            profile,
+            Vec::new(),
+            None,
+            2_048,
+        )
+        .expect("experiment selection");
+        let claims = vec![CancerResearchClaim {
+            statement: "The intervention changes the selected endpoint.".to_owned(),
+            testable_prediction: "The intervention cohort differs from control.".to_owned(),
+            falsification_test: "The bounded interval crosses zero.".to_owned(),
+            citation_hashes: Vec::new(),
+        }];
+        let planned = CancerResearchContribution::new_with_virtual_experiment(
+            &selection,
+            CancerResearchArtifactKind::ExperimentProposal,
+            "A closed experiment proposal",
+            "A computational plan compares one bounded intervention with its control.",
+            claims,
+            Some(CancerVirtualExperimentPlan {
+                schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+                subject_model: CancerVirtualSubjectModel::TumorOrganoid,
+                intervention_modality: CancerVirtualInterventionModality::MolecularInhibition,
+                primary_target: CancerVirtualMechanismTarget::CellDivision,
+                secondary_target: None,
+                primary_endpoint: CancerVirtualEndpoint::ViableTumorFraction,
+                intensity_parts_per_million: 500_000,
+                exposure_hours: 168,
+                cohort_size: 128,
+            }),
+        )
+        .expect("planned current contribution");
+        assert_eq!(
+            planned.schema_version,
+            CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+        );
+
+        let mut current_without_plan = planned.clone();
+        current_without_plan.virtual_experiment_plan = None;
+        assert!(matches!(
+            current_without_plan.validate_against(&selection),
+            Err(CancerResearchContractError::InvalidContribution)
+        ));
+
+        let mut historical_schema_two = current_without_plan;
+        historical_schema_two.schema_version =
+            VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION;
+        assert!(historical_schema_two.validate_against(&selection).is_ok());
     }
 }

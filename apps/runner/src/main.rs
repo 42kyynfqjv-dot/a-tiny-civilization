@@ -17,10 +17,10 @@ use application::{
     ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore,
     advance_world, advance_world_with_celestial, advance_world_with_celestial_and_cognition,
     calculate_cancer_research_novelty, construct_configured_genesis_with_materials,
-    initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
-    process_next_cancer_research_job, process_next_cognition_job, resume_world,
-    resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
-    schedule_world_cognition,
+    execute_cancer_virtual_experiment, initialize_or_resume_configured_world_with_materials,
+    initialize_or_resume_world, process_next_cancer_research_job, process_next_cognition_job,
+    resume_world, resume_world_from_snapshot, retire_world_for_successor,
+    schedule_due_cancer_research_turn, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -53,12 +53,12 @@ use world_data_filesystem::{
 };
 use world_domain::{
     BirthCategory, BodilyNeedState, CANCER_RESEARCH_INITIAL_RESIDENTS,
-    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CancerResearchBootstrap, CapacityExhaustionPolicy,
-    CelestialState, Digest, EntityId, OrganismRole, PartitionedExecution, PersonRepresentation,
-    ProvisionalLocalEnvironmentBaseline, ProvisionalLocalSurfaceBaseline,
-    ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind, SimTick, SpeciesIdentity,
-    TdbSecondsSinceJ2000, WorldConfiguration, WorldExperimentCommitment, WorldId, WorldManifest,
-    WorldSeed, WorldStatus,
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
+    CancerResearchBootstrap, CapacityExhaustionPolicy, CelestialState, Digest, EntityId,
+    OrganismRole, PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline,
+    ProvisionalLocalSurfaceBaseline, ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind,
+    SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldExperimentCommitment,
+    WorldId, WorldManifest, WorldSeed, WorldStatus,
 };
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
@@ -914,11 +914,46 @@ async fn serve_cancer_evidence_worker(
             }
             Err(error) => return Err(error),
         }
+        match execute_pending_cancer_virtual_experiments(store, world_id).await {
+            Ok(count) if count > 0 => {
+                tracing::info!(world_id = %world_id, experiment_count = count, "Cancer World virtual experiment batch completed")
+            }
+            Ok(_) => {}
+            Err(error) if !once => {
+                tracing::error!(world_id = %world_id, %error, "Cancer World virtual experiment batch failed; planned experiments remain queued")
+            }
+            Err(error) => return Err(error),
+        }
         if once {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
+}
+
+async fn execute_pending_cancer_virtual_experiments(
+    store: &PostgresStore,
+    world_id: WorldId,
+) -> Result<usize> {
+    let candidates = store
+        .load_unexecuted_cancer_virtual_experiments(world_id, CANCER_VIRTUAL_LAB_METHOD_VERSION, 32)
+        .await
+        .context("load planned Cancer World virtual experiments")?;
+    let mut stored = 0_usize;
+    for candidate in candidates {
+        let result = execute_cancer_virtual_experiment(&candidate)
+            .context("execute deterministic Cancer World virtual experiment")?;
+        store
+            .store_cancer_virtual_experiment_result(
+                &result,
+                &candidate.contribution,
+                candidate.ordinal,
+            )
+            .await
+            .context("store Cancer World virtual experiment result")?;
+        stored += 1;
+    }
+    Ok(stored)
 }
 
 async fn refresh_cancer_novelty_audits(
@@ -3224,6 +3259,17 @@ async fn serve_cancer_research_worker(
     interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Keep shutdown listening independently from the research request. A model
+    // call may be in flight when SIGTERM arrives; the watch value remembers the
+    // signal so the worker finishes that durable turn and exits before claiming
+    // another instead of losing the signal while this loop branch is awaited.
+    let (shutdown_sender, mut shutdown_receiver) = tokio::sync::watch::channel(false);
+    let shutdown_listener = (!drain).then(|| {
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = shutdown_sender.send(true);
+        })
+    });
     tracing::info!(
         worker_id,
         configured_providers = adapters.len(),
@@ -3232,6 +3278,10 @@ async fn serve_cancer_research_worker(
         "Cancer World research worker started"
     );
     loop {
+        if !drain && *shutdown_receiver.borrow() {
+            tracing::info!(worker_id, "Cancer World research worker stopping");
+            break;
+        }
         tokio::select! {
             _ = heartbeat_interval.tick(), if !drain => {
                 if let Err(error) = store.record_heartbeat(&heartbeat).await {
@@ -3256,11 +3306,17 @@ async fn serve_cancer_research_worker(
                     }
                 }
             }
-            _ = shutdown_signal(), if !drain => {
+            changed = shutdown_receiver.changed(), if !drain => {
+                if changed.is_err() {
+                    tracing::warn!(worker_id, "Cancer World research shutdown listener ended unexpectedly");
+                }
                 tracing::info!(worker_id, "Cancer World research worker stopping");
                 break;
             }
         }
+    }
+    if let Some(listener) = shutdown_listener {
+        listener.abort();
     }
     Ok(())
 }

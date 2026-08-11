@@ -30,6 +30,16 @@ type Contribution = {
   title: string;
   abstract_text: string;
   claims: Claim[];
+  virtual_experiment_plan?: {
+    subject_model: string;
+    intervention_modality: string;
+    primary_target: string;
+    secondary_target: string | null;
+    primary_endpoint: string;
+    intensity_parts_per_million: number;
+    exposure_hours: number;
+    cohort_size: number;
+  } | null;
 };
 
 type ResearchDuplicate = {
@@ -63,6 +73,30 @@ type NoveltyAudit = {
   created_at: string;
 };
 
+type VirtualExperiment = {
+  schema_version: number;
+  method_version: number;
+  experiment_id: string;
+  world_id: string;
+  request_id: string;
+  artifact_hash: string;
+  plan_hash: string;
+  subject_model: string;
+  primary_endpoint: string;
+  cohort_size: number;
+  control_value_parts_per_million: number;
+  intervention_value_parts_per_million: number;
+  estimated_change_parts_per_million: number;
+  uncertainty_low_parts_per_million: number;
+  uncertainty_high_parts_per_million: number;
+  interpretation: string;
+  model_calibration: string;
+  caveats: string[];
+  result_hash: string;
+  memory_state: "queued" | "accepted";
+  created_at: string;
+};
+
 type ResearchArtifact = {
   request_id: string;
   selected_at_tick: string | number;
@@ -82,6 +116,7 @@ type ResearchArtifact = {
   result_hash: string;
   memory_state: "queued" | "accepted";
   novelty_audit: NoveltyAudit | null;
+  virtual_experiment: VirtualExperiment | null;
   created_at: string;
   duplicates: ResearchDuplicate[];
 };
@@ -277,6 +312,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       <span>{humanize(contribution.stage)}</span>
       {artifact.duplicates.length > 0 && <span className="duplicate">{artifact.duplicates.length} DUPLICATE{artifact.duplicates.length === 1 ? "" : "S"} COLLAPSED</span>}
       <span className={`novelty ${novelty?.status ?? "pending"}`}>{noveltyLabel(novelty?.status)}</span>
+      {artifact.virtual_experiment && <span className="virtual-run">MODEL TEST RUN</span>}
       <span className={artifact.memory_state === "accepted" ? "accepted" : "queued"}>{artifact.memory_state === "accepted" ? "MEMORY CONNECTED" : "MEMORY QUEUED"}</span>
     </div>
     <h3>{contribution.title}</h3>
@@ -304,6 +340,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
         <small>METHOD V{novelty.method_version} · AUDIT {shortHash(novelty.audit_hash)}</small>
       </div> : <p className="cancer-novelty-pending">This new artifact is queued for the next literature scan.</p>}
     </details>
+    {contribution.virtual_experiment_plan && <VirtualExperimentPanel artifact={artifact} />}
     {contribution.claims.map((claim, index) => <details key={`${artifact.request_id}-${index}`}>
       <summary>CLAIM {index + 1} · {claim.statement}</summary>
       <dl>
@@ -323,6 +360,32 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
     </details>}
     <footer><code>ARTIFACT {shortHash(artifact.artifact_hash)}</code><time>{formatTime(artifact.created_at)}</time></footer>
   </article>;
+}
+
+function VirtualExperimentPanel({ artifact }: { artifact: ResearchArtifact }) {
+  const plan = artifact.contribution.virtual_experiment_plan;
+  const result = artifact.virtual_experiment;
+  if (!plan) return null;
+  return <details className="cancer-virtual-experiment" open={Boolean(result)}>
+    <summary>VIRTUAL LAB · {result ? humanize(result.interpretation) : "QUEUED"}</summary>
+    {result ? <div className="cancer-virtual-body">
+      <p className="cancer-model-only">MODEL PROJECTION ONLY · NOT WET-LAB, ANIMAL, OR CLINICAL EVIDENCE</p>
+      <div className="cancer-virtual-plan">
+        <span>MODEL<strong>{humanize(result.subject_model)}</strong></span>
+        <span>ENDPOINT<strong>{humanize(result.primary_endpoint)}</strong></span>
+        <span>COHORT<strong>{result.cohort_size}</strong></span>
+        <span>MEMORY<strong>{humanize(result.memory_state)}</strong></span>
+      </div>
+      <div className="cancer-virtual-values">
+        <span><small>CONTROL</small><strong>{formatParts(result.control_value_parts_per_million)}</strong></span>
+        <span><small>INTERVENTION</small><strong>{formatParts(result.intervention_value_parts_per_million)}</strong></span>
+        <span><small>ESTIMATED CHANGE</small><strong>{formatSignedParts(result.estimated_change_parts_per_million)}</strong></span>
+        <span><small>MODEL INTERVAL</small><strong>{formatSignedParts(result.uncertainty_low_parts_per_million)} to {formatSignedParts(result.uncertainty_high_parts_per_million)}</strong></span>
+      </div>
+      {result.caveats.map((caveat) => <p key={caveat}>{caveat}</p>)}
+      <small>LAB V{result.method_version} · RESULT {shortHash(result.result_hash)}</small>
+    </div> : <p className="cancer-novelty-pending">The closed experiment plan is waiting for the deterministic virtual lab worker.</p>}
+  </details>;
 }
 
 function SearchResults({ outcome }: { outcome: SearchOutcome }) {
@@ -424,4 +487,13 @@ function noveltyLabel(status: NoveltyAudit["status"] | undefined) {
 
 function formatScore(perMille: number) {
   return `${Math.round(perMille / 10)}%`;
+}
+
+function formatParts(partsPerMillion: number) {
+  return `${(partsPerMillion / 10_000).toFixed(1)}%`;
+}
+
+function formatSignedParts(partsPerMillion: number) {
+  const value = partsPerMillion / 10_000;
+  return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
 }
