@@ -14,6 +14,7 @@ mod illumination;
 mod manifest;
 mod material;
 mod reproduction;
+mod research;
 mod solar;
 mod spatial;
 mod tide;
@@ -116,6 +117,15 @@ pub use reproduction::{
     REPRODUCTIVE_PHYSIOLOGY_COMMITMENT_SCHEMA_VERSION, REPRODUCTIVE_PROBABILITY_SCALE,
     ReproductionError, ReproductiveCategoryMaturityCommitment, ReproductiveCategoryPair,
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment,
+};
+pub use research::{
+    CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CANCER_RESEARCH_PROFILE_SCHEMA_VERSION,
+    CANCER_RESEARCH_TURN_SCHEMA_VERSION, CancerResearchArtifactKind, CancerResearchClaim,
+    CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
+    CancerResearchEvidenceReference, CancerResearchProfile, CancerResearchSpecialty,
+    CancerResearchStage, CancerResearchTask, CancerResearchTurnSelection, MAX_RESEARCH_CITATIONS,
+    MAX_RESEARCH_CLAIMS, MAX_RESEARCH_EVIDENCE_REFERENCES, MAX_RESEARCH_MODEL_OUTPUT_TOKENS,
+    cancer_research_request_id,
 };
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,
