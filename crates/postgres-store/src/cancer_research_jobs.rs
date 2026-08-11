@@ -2,10 +2,10 @@ use application::{
     CANCER_RESEARCH_CATALOG_PAGE_SIZE, CancerResearchAttemptPersistenceState,
     CancerResearchCatalogItem, CancerResearchJobEntry, CancerResearchJobStore,
     CancerResearchLadderResult, CancerResearchLiteratureSnapshot, CancerResearchMemoryInput,
-    CancerResearchModelReceipt, CancerResearchModelRequest, CancerResearchPaidAuthorization,
-    CancerResearchPaidReservationDecision, CancerResearchPriorResult,
-    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
-    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchModelReceipt, CancerResearchModelRequest, CancerResearchNoveltyCandidate,
+    CancerResearchPaidAuthorization, CancerResearchPaidReservationDecision,
+    CancerResearchPriorResult, CancerResearchRouteAttemptRecord, CognitionBillingClass,
+    CognitionBillingScope, CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
     StoreError, cancer_research_collective_id, cancer_research_contributions_duplicate,
 };
@@ -14,7 +14,10 @@ use chrono::{DateTime, NaiveDate, Utc};
 use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
-use world_domain::{CancerResearchInferenceTier, CancerResearchStage, Digest, EventSequence};
+use world_domain::{
+    CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchNoveltyStatus,
+    CancerResearchStage, Digest, EventSequence,
+};
 
 use crate::PostgresStore;
 
@@ -186,6 +189,146 @@ impl CancerResearchJobStore for PostgresStore {
                 Ok(snapshot)
             })
             .collect()
+    }
+
+    async fn load_unaudited_cancer_research(
+        &self,
+        world_id: world_domain::WorldId,
+        method_version: u16,
+        limit: usize,
+    ) -> Result<Vec<CancerResearchNoveltyCandidate>, StoreError> {
+        if method_version == 0 {
+            return Err(StoreError::Conflict(
+                "novelty method version must be nonzero".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            LEFT JOIN cancer_research_novelty_audits AS audit
+              ON audit.request_id=request.request_id
+             AND audit.method_version=$2
+            WHERE request.world_id=$1
+              AND result.result_payload->'receipt' <> 'null'::JSONB
+              AND audit.audit_id IS NULL
+            ORDER BY request.ordinal DESC, request.request_id
+            LIMIT $3
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(method_version))
+        .bind(i64::try_from(limit.clamp(1, 32)).map_err(corrupt)?)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let mut candidates = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (request, result) = parse_historical_research_result(row, world_id)?;
+            let contribution = result
+                .receipt
+                .as_ref()
+                .ok_or_else(|| corrupt("successful novelty candidate omitted its receipt"))?
+                .contribution
+                .clone();
+            let prior_rows = sqlx::query_as::<_, PriorResearchResultRow>(
+                r#"
+                SELECT prior.request_payload, prior.request_checksum,
+                       result.result_payload, result.result_checksum
+                FROM cancer_research_requests AS prior
+                JOIN cancer_research_results AS result USING (request_id)
+                WHERE prior.world_id=$1
+                  AND prior.ordinal < $2
+                  AND result.result_payload->'receipt' <> 'null'::JSONB
+                ORDER BY prior.ordinal DESC, prior.request_id
+                LIMIT 128
+                "#,
+            )
+            .bind(world_id.as_uuid())
+            .bind(i64::from(request.selection.ordinal))
+            .fetch_all(self.pool())
+            .await
+            .map_err(operation_error)?;
+            let mut prior_contributions = Vec::with_capacity(prior_rows.len());
+            for prior_row in prior_rows {
+                let (_, prior_result) = parse_historical_research_result(prior_row, world_id)?;
+                prior_contributions.push(
+                    prior_result
+                        .receipt
+                        .ok_or_else(|| {
+                            corrupt("successful prior novelty artifact omitted its receipt")
+                        })?
+                        .contribution,
+                );
+            }
+            candidates.push(CancerResearchNoveltyCandidate {
+                world_id,
+                request_id: request.request_id,
+                ordinal: request.selection.ordinal,
+                artifact_hash: contribution.canonical_hash().map_err(corrupt)?,
+                contribution,
+                prior_contributions,
+            });
+        }
+        Ok(candidates)
+    }
+
+    async fn store_cancer_research_novelty_audit(
+        &self,
+        audit: &CancerResearchNoveltyAudit,
+    ) -> Result<(), StoreError> {
+        audit.validate().map_err(corrupt)?;
+        let payload = serde_json::to_value(audit).map_err(corrupt)?;
+        let checksum = audit.canonical_hash().map_err(corrupt)?;
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO cancer_research_novelty_audits (
+                audit_id,world_id,request_id,method_version,artifact_hash,
+                normalized_status,audit_payload,audit_checksum
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            ON CONFLICT (request_id,method_version) DO NOTHING
+            "#,
+        )
+        .bind(audit.audit_id)
+        .bind(audit.world_id.as_uuid())
+        .bind(audit.request_id)
+        .bind(i32::from(audit.method_version))
+        .bind(audit.artifact_hash.as_bytes().as_slice())
+        .bind(novelty_status_text(audit.status))
+        .bind(&payload)
+        .bind(checksum.as_bytes().as_slice())
+        .execute(self.pool())
+        .await
+        .map_err(operation_error)?;
+        if inserted.rows_affected() == 1 {
+            return Ok(());
+        }
+        let existing = sqlx::query_as::<_, (Uuid, Value, Vec<u8>)>(
+            "SELECT audit_id,audit_payload,audit_checksum FROM cancer_research_novelty_audits WHERE request_id=$1 AND method_version=$2",
+        )
+        .bind(audit.request_id)
+        .bind(i32::from(audit.method_version))
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        match existing {
+            Some((audit_id, stored_payload, stored_checksum))
+                if audit_id == audit.audit_id
+                    && stored_payload == payload
+                    && digest_from_db(&stored_checksum, "novelty audit checksum")? == checksum =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(StoreError::Corrupt(format!(
+                "novelty audit {} conflicts with its durable assessment",
+                audit.audit_id
+            ))),
+            None => Err(StoreError::Conflict(
+                "novelty audit disappeared during idempotency check".to_owned(),
+            )),
+        }
     }
 
     async fn enqueue_cancer_research_request(
@@ -1465,6 +1608,15 @@ const fn tier_text(tier: CancerResearchInferenceTier) -> &'static str {
     match tier {
         CancerResearchInferenceTier::Exploration => "exploration",
         CancerResearchInferenceTier::Escalation => "escalation",
+    }
+}
+
+const fn novelty_status_text(status: CancerResearchNoveltyStatus) -> &'static str {
+    match status {
+        CancerResearchNoveltyStatus::KnownOverlap => "known_overlap",
+        CancerResearchNoveltyStatus::NewCombination => "new_combination",
+        CancerResearchNoveltyStatus::NoCloseMatchFound => "no_close_match_found",
+        CancerResearchNoveltyStatus::PossibleError => "possible_error",
     }
 }
 

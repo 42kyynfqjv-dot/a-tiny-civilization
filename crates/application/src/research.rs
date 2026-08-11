@@ -799,6 +799,26 @@ pub trait CancerResearchJobStore: Send + Sync {
         Ok(Vec::new())
     }
 
+    /// Loads successful artifacts that do not yet have an audit for the current
+    /// observer-side novelty method. This never changes world state or model input.
+    async fn load_unaudited_cancer_research(
+        &self,
+        _world_id: world_domain::WorldId,
+        _method_version: u16,
+        _limit: usize,
+    ) -> Result<Vec<crate::CancerResearchNoveltyCandidate>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Appends one immutable observer-side overlap assessment. Repeating the
+    /// exact audit is idempotent; a conflicting audit is corruption.
+    async fn store_cancer_research_novelty_audit(
+        &self,
+        _audit: &world_domain::CancerResearchNoveltyAudit,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// Inserts one exact content-addressed request. Repeating the identical
     /// request is idempotent; the same ID with different bytes is corruption.
     async fn enqueue_cancer_research_request(
@@ -1088,6 +1108,7 @@ mod tests {
                             .to_owned(),
                     citation_hashes: Vec::new(),
                 }],
+                virtual_experiment_plan: None,
             }
         }
 

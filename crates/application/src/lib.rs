@@ -4,6 +4,7 @@ mod cognition;
 mod cognition_worker;
 mod memory;
 mod research;
+mod research_novelty;
 mod research_scheduler;
 mod research_worker;
 
@@ -11,6 +12,7 @@ pub use cognition::*;
 pub use cognition_worker::*;
 pub use memory::*;
 pub use research::*;
+pub use research_novelty::*;
 pub use research_scheduler::*;
 pub use research_worker::*;
 

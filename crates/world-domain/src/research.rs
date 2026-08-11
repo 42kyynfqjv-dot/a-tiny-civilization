@@ -8,7 +8,14 @@ use crate::{
 
 pub const CANCER_RESEARCH_PROFILE_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_TURN_SCHEMA_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 2;
+pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 1;
+pub const MAX_CANCER_RESEARCH_NOVELTY_MATCHES: usize = 5;
+pub const MAX_CANCER_RESEARCH_NOVELTY_QUERY_TERMS: usize = 8;
+pub const MAX_CANCER_RESEARCH_NOVELTY_WARNINGS: usize = 4;
 pub const MAX_RESEARCH_EVIDENCE_REFERENCES: usize = 64;
 pub const MAX_RESEARCH_CLAIMS: usize = 8;
 pub const MAX_RESEARCH_CITATIONS: usize = 32;
@@ -375,6 +382,105 @@ pub struct CancerResearchClaim {
     pub citation_hashes: Vec<Digest>,
 }
 
+/// Closed subject models that a research contribution may ask the observer-side
+/// virtual lab to execute. These are explicitly computational abstractions, not
+/// exact replicas of a person, organoid, or animal.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualSubjectModel {
+    CellCulture,
+    TumorOrganoid,
+    OrthotopicMouse,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualInterventionModality {
+    MolecularInhibition,
+    Radiation,
+    Thermal,
+    ElectricField,
+    TargetedDelivery,
+    SurgicalResection,
+    DiagnosticSensing,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualMechanismTarget {
+    CellDivision,
+    DnaRepair,
+    ApoptosisResistance,
+    HypoxiaAdaptation,
+    Angiogenesis,
+    ImmuneEvasion,
+    Invasion,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualEndpoint {
+    RelativeTumorBurden,
+    ViableTumorFraction,
+    InvasiveCellFraction,
+    HypoxicCellFraction,
+    OffTargetHealthyCellLoss,
+    DetectionSensitivity,
+}
+
+/// Machine-readable projection of a proposed experiment. The closed vocabulary
+/// keeps execution deterministic and prevents prose from being mistaken for a
+/// completed assay. Intensities and model outputs use millionths, never floats.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerVirtualExperimentPlan {
+    pub schema_version: u16,
+    pub subject_model: CancerVirtualSubjectModel,
+    pub intervention_modality: CancerVirtualInterventionModality,
+    pub primary_target: CancerVirtualMechanismTarget,
+    pub secondary_target: Option<CancerVirtualMechanismTarget>,
+    pub primary_endpoint: CancerVirtualEndpoint,
+    pub intensity_parts_per_million: u32,
+    pub exposure_hours: u16,
+    pub cohort_size: u16,
+}
+
+impl CancerVirtualExperimentPlan {
+    pub fn validate(&self) -> Result<(), CancerResearchContractError> {
+        if self.schema_version != CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION
+            || self.intensity_parts_per_million == 0
+            || self.intensity_parts_per_million > 1_000_000
+            || self.exposure_hours == 0
+            || self.exposure_hours > 2_160
+            || !(8..=4_096).contains(&self.cohort_size)
+            || self.secondary_target == Some(self.primary_target)
+        {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentPlan);
+        }
+        Ok(())
+    }
+
+    fn validate_for_artifact(
+        &self,
+        artifact_kind: CancerResearchArtifactKind,
+    ) -> Result<(), CancerResearchContractError> {
+        self.validate()?;
+        let diagnostic =
+            self.intervention_modality == CancerVirtualInterventionModality::DiagnosticSensing;
+        let diagnostic_endpoint =
+            self.primary_endpoint == CancerVirtualEndpoint::DetectionSensitivity;
+        match artifact_kind {
+            CancerResearchArtifactKind::DiagnosticInstrumentDesign
+                if diagnostic && diagnostic_endpoint => {}
+            CancerResearchArtifactKind::TreatmentMachineDesign
+                if !diagnostic && !diagnostic_endpoint => {}
+            CancerResearchArtifactKind::ExperimentProposal => {}
+            _ => return Err(CancerResearchContractError::InvalidVirtualExperimentPlan),
+        }
+        Ok(())
+    }
+}
+
 impl CancerResearchClaim {
     fn validate(&self, stage: CancerResearchStage) -> Result<(), CancerResearchContractError> {
         if !bounded_text(&self.statement, MAX_RESEARCH_CLAIM_BYTES)
@@ -407,6 +513,8 @@ pub struct CancerResearchContribution {
     pub title: String,
     pub abstract_text: String,
     pub claims: Vec<CancerResearchClaim>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
 }
 
 impl CancerResearchContribution {
@@ -417,6 +525,25 @@ impl CancerResearchContribution {
         title: impl Into<String>,
         abstract_text: impl Into<String>,
         claims: Vec<CancerResearchClaim>,
+    ) -> Result<Self, CancerResearchContractError> {
+        Self::new_with_virtual_experiment(
+            selection,
+            artifact_kind,
+            title,
+            abstract_text,
+            claims,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_virtual_experiment(
+        selection: &CancerResearchTurnSelection,
+        artifact_kind: CancerResearchArtifactKind,
+        title: impl Into<String>,
+        abstract_text: impl Into<String>,
+        claims: Vec<CancerResearchClaim>,
+        virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
     ) -> Result<Self, CancerResearchContractError> {
         let contribution = Self {
             schema_version: CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION,
@@ -432,6 +559,7 @@ impl CancerResearchContribution {
             title: title.into(),
             abstract_text: abstract_text.into(),
             claims,
+            virtual_experiment_plan,
         };
         contribution.validate_against(selection)?;
         Ok(contribution)
@@ -442,7 +570,11 @@ impl CancerResearchContribution {
         selection: &CancerResearchTurnSelection,
     ) -> Result<(), CancerResearchContractError> {
         selection.validate()?;
-        if self.schema_version != CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION {
+        if !matches!(
+            self.schema_version,
+            LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+        ) {
             return Err(CancerResearchContractError::UnsupportedContributionSchema(
                 self.schema_version,
             ));
@@ -469,6 +601,18 @@ impl CancerResearchContribution {
                 .iter()
                 .any(|claim| claim.validate(self.stage).is_err())
             || !artifact_kind_valid_for_stage(self.artifact_kind, self.stage)
+            || (self.schema_version == LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                && self.virtual_experiment_plan.is_some())
+            || self
+                .virtual_experiment_plan
+                .as_ref()
+                .is_some_and(|plan| plan.validate_for_artifact(self.artifact_kind).is_err())
+            || (matches!(
+                self.artifact_kind,
+                CancerResearchArtifactKind::DiagnosticInstrumentDesign
+                    | CancerResearchArtifactKind::TreatmentMachineDesign
+            ) && self.schema_version == CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                && self.virtual_experiment_plan.is_none())
         {
             return Err(CancerResearchContractError::InvalidContribution);
         }
@@ -476,6 +620,107 @@ impl CancerResearchContribution {
     }
 
     pub fn canonical_hash(&self) -> Result<Digest, CancerResearchContractError> {
+        Ok(Digest::canonical(self)?)
+    }
+}
+
+/// Observer-side assessment of how closely a newly produced artifact resembles
+/// earlier work. This is deliberately not called a novelty proof: literature
+/// indexes are incomplete and lexical overlap is only a triage signal.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchNoveltyStatus {
+    KnownOverlap,
+    NewCombination,
+    NoCloseMatchFound,
+    PossibleError,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchNoveltyMatch {
+    pub source_id: String,
+    pub title: String,
+    /// YYYY-MM-DD when supplied by the external index.
+    pub published_on: Option<String>,
+    pub overlap_per_mille: u16,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchNoveltyAudit {
+    pub schema_version: u16,
+    pub method_version: u16,
+    pub audit_id: Uuid,
+    pub world_id: WorldId,
+    pub request_id: Uuid,
+    pub artifact_hash: Digest,
+    pub query_terms: Vec<String>,
+    pub status: CancerResearchNoveltyStatus,
+    pub literature_overlap_per_mille: u16,
+    pub prior_world_overlap_per_mille: u16,
+    pub matches: Vec<CancerResearchNoveltyMatch>,
+    pub warnings: Vec<String>,
+}
+
+impl CancerResearchNoveltyAudit {
+    #[must_use]
+    pub fn deterministic_id(request_id: Uuid, method_version: u16) -> Uuid {
+        Uuid::new_v5(
+            &request_id,
+            format!("observer-novelty-audit:v{method_version}").as_bytes(),
+        )
+    }
+
+    pub fn validate(&self) -> Result<(), CancerResearchContractError> {
+        if self.schema_version != CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION
+            || self.method_version == 0
+            || self.audit_id != Self::deterministic_id(self.request_id, self.method_version)
+            || self.request_id.is_nil()
+            || self.artifact_hash == Digest::ZERO
+            || self.query_terms.is_empty()
+            || self.query_terms.len() > MAX_CANCER_RESEARCH_NOVELTY_QUERY_TERMS
+            || self
+                .query_terms
+                .iter()
+                .any(|term| term.trim() != term || term.is_empty() || term.len() > 64)
+            || self.query_terms.windows(2).any(|pair| pair[0] >= pair[1])
+            || self.literature_overlap_per_mille > 1_000
+            || self.prior_world_overlap_per_mille > 1_000
+            || self.matches.len() > MAX_CANCER_RESEARCH_NOVELTY_MATCHES
+            || self.matches.iter().any(|source| {
+                !bounded_text(&source.source_id, MAX_RESEARCH_SOURCE_ID_BYTES)
+                    || !bounded_text(&source.title, MAX_RESEARCH_TITLE_BYTES)
+                    || source.overlap_per_mille > 1_000
+                    || source
+                        .published_on
+                        .as_ref()
+                        .is_some_and(|date| date.trim() != date || date.len() != 10)
+            })
+            || self
+                .matches
+                .windows(2)
+                .any(|pair| pair[0].overlap_per_mille < pair[1].overlap_per_mille)
+            || self
+                .matches
+                .iter()
+                .map(|source| source.source_id.as_str())
+                .collect::<std::collections::BTreeSet<_>>()
+                .len()
+                != self.matches.len()
+            || self.warnings.len() > MAX_CANCER_RESEARCH_NOVELTY_WARNINGS
+            || self
+                .warnings
+                .iter()
+                .any(|warning| !bounded_text(warning, 512))
+        {
+            return Err(CancerResearchContractError::InvalidNoveltyAudit);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_hash(&self) -> Result<Digest, CancerResearchContractError> {
+        self.validate()?;
         Ok(Digest::canonical(self)?)
     }
 }
@@ -556,6 +801,10 @@ pub enum CancerResearchContractError {
     EvidenceFirewallViolation,
     #[error("cancer-research contribution is invalid or mismatched")]
     InvalidContribution,
+    #[error("cancer virtual experiment plan is invalid or incompatible with its artifact")]
+    InvalidVirtualExperimentPlan,
+    #[error("cancer-research novelty audit is invalid or overstates its evidence")]
+    InvalidNoveltyAudit,
     #[error("cancer-research canonical hashing failed: {0}")]
     Hash(#[from] CanonicalHashError),
 }

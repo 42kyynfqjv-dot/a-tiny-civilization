@@ -126,13 +126,19 @@ pub use reproduction::{
     ReproductiveDevelopmentEnd, ReproductivePhysiologyCommitment,
 };
 pub use research::{
-    CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CANCER_RESEARCH_PROFILE_SCHEMA_VERSION,
-    CANCER_RESEARCH_TURN_SCHEMA_VERSION, CancerResearchArtifactKind, CancerResearchClaim,
-    CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
-    CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchProfile,
-    CancerResearchSpecialty, CancerResearchStage, CancerResearchTask, CancerResearchTurnSelection,
-    MAX_RESEARCH_CITATIONS, MAX_RESEARCH_CLAIMS, MAX_RESEARCH_EVIDENCE_REFERENCES,
-    MAX_RESEARCH_MODEL_OUTPUT_TOKENS, cancer_research_request_id,
+    CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION,
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_RESEARCH_PROFILE_SCHEMA_VERSION,
+    CANCER_RESEARCH_TURN_SCHEMA_VERSION, CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+    CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContractError,
+    CancerResearchContribution, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
+    CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchNoveltyMatch,
+    CancerResearchNoveltyStatus, CancerResearchProfile, CancerResearchSpecialty,
+    CancerResearchStage, CancerResearchTask, CancerResearchTurnSelection, CancerVirtualEndpoint,
+    CancerVirtualExperimentPlan, CancerVirtualInterventionModality, CancerVirtualMechanismTarget,
+    CancerVirtualSubjectModel, LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION,
+    MAX_CANCER_RESEARCH_NOVELTY_MATCHES, MAX_CANCER_RESEARCH_NOVELTY_QUERY_TERMS,
+    MAX_CANCER_RESEARCH_NOVELTY_WARNINGS, MAX_RESEARCH_CITATIONS, MAX_RESEARCH_CLAIMS,
+    MAX_RESEARCH_EVIDENCE_REFERENCES, MAX_RESEARCH_MODEL_OUTPUT_TOKENS, cancer_research_request_id,
 };
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,

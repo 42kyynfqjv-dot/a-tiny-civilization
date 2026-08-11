@@ -7,13 +7,15 @@ use chrono::{DateTime, NaiveDate, Utc};
 use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerResearchArtifact,
-    PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchView,
-    PublicResearchMemoryState,
+    PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
+    PublicCancerResearchView, PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
 use uuid::Uuid;
-use world_domain::{Digest, WorldId};
+use world_domain::{
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CancerResearchNoveltyAudit, Digest, WorldId,
+};
 
 use crate::PostgresStore;
 
@@ -25,6 +27,9 @@ struct ResearchProjectionRow {
     result_checksum: Vec<u8>,
     created_at: DateTime<Utc>,
     memory_completed_at: Option<DateTime<Utc>>,
+    novelty_payload: Option<Value>,
+    novelty_checksum: Option<Vec<u8>>,
+    novelty_created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -119,7 +124,10 @@ impl ObserverCancerResearchStore for PostgresStore {
             r#"
             SELECT request.request_payload, request.request_checksum,
                    result.result_payload, result.result_checksum, result.created_at,
-                   memory.completed_at AS memory_completed_at
+                   memory.completed_at AS memory_completed_at,
+                   novelty.audit_payload AS novelty_payload,
+                   novelty.audit_checksum AS novelty_checksum,
+                   novelty.created_at AS novelty_created_at
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
             LEFT JOIN memory_outbox AS memory
@@ -127,6 +135,9 @@ impl ObserverCancerResearchStore for PostgresStore {
              AND memory.agent_id=$2
              AND (memory.payload->>'ordinal')::BIGINT=request.ordinal
              AND memory.payload->>'context'='Cancer World research artifact'
+            LEFT JOIN cancer_research_novelty_audits AS novelty
+              ON novelty.request_id=request.request_id
+             AND novelty.method_version=$3
             WHERE request.world_id=$1
               AND result.result_payload->'receipt' <> 'null'::JSONB
             ORDER BY request.ordinal, request.request_id
@@ -134,6 +145,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         )
         .bind(world_id.as_uuid())
         .bind(collective_id.as_uuid())
+        .bind(i32::from(CANCER_RESEARCH_NOVELTY_METHOD_VERSION))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -170,6 +182,38 @@ impl ObserverCancerResearchStore for PostgresStore {
                 .validate_against(&request.selection)
                 .map_err(contract_error)?;
             let artifact_hash = Digest::canonical(&receipt.contribution).map_err(contract_error)?;
+            let novelty_audit = match (
+                row.novelty_payload,
+                row.novelty_checksum,
+                row.novelty_created_at,
+            ) {
+                (None, None, None) => None,
+                (Some(payload), Some(checksum), Some(created_at)) => {
+                    let audit: CancerResearchNoveltyAudit = serde_json::from_value(payload)
+                        .map_err(|error| corrupt(format!("invalid novelty audit: {error}")))?;
+                    audit.validate().map_err(contract_error)?;
+                    let audit_hash = digest_from_db(&checksum, "research novelty audit checksum")?;
+                    if audit.world_id != world_id
+                        || audit.request_id != request.request_id
+                        || audit.artifact_hash != artifact_hash
+                        || audit.canonical_hash().map_err(contract_error)? != audit_hash
+                    {
+                        return Err(corrupt(
+                            "Cancer World novelty audit crossed its immutable artifact provenance",
+                        ));
+                    }
+                    Some(PublicCancerResearchNoveltyAudit {
+                        audit,
+                        audit_hash,
+                        created_at,
+                    })
+                }
+                _ => {
+                    return Err(corrupt(
+                        "Cancer World novelty audit is only partially persisted",
+                    ));
+                }
+            };
             artifacts.push(PublicCancerResearchArtifact {
                 request_id: request.request_id,
                 selected_at_tick: request.selection.selected_at_tick,
@@ -196,6 +240,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 } else {
                     PublicResearchMemoryState::Queued
                 },
+                novelty_audit,
                 created_at: row.created_at,
                 duplicates: Vec::new(),
             });

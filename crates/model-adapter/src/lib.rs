@@ -16,8 +16,8 @@ use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{
     CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContribution,
-    CancerResearchStage, CancerResearchTask, Digest, PrimitiveActionKind,
-    SIGNAL_FORM_VARIANT_COUNT,
+    CancerResearchStage, CancerResearchTask, CancerVirtualExperimentPlan, Digest,
+    PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
 pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v8";
@@ -381,10 +381,10 @@ fn research_api_request(
     };
     let task_rule = match request.selection.task {
         CancerResearchTask::DesignDiagnosticInstrument => {
-            "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Do not claim that it has been built or measured."
+            "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection. Do not claim that it has been built or measured."
         }
         CancerResearchTask::DesignTreatmentMachine => {
-            "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Do not claim efficacy or that it has been built."
+            "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection. Do not claim efficacy or that it has been built."
         }
         _ => "Follow the selected research task exactly.",
     };
@@ -458,6 +458,7 @@ fn research_contribution_schema(stage: CancerResearchStage, task: CancerResearch
             "maxItems": 32
         })
     };
+    let virtual_experiment = virtual_experiment_plan_schema(stage, task);
     json!({
         "type": "object",
         "properties": {
@@ -479,11 +480,82 @@ fn research_contribution_schema(stage: CancerResearchStage, task: CancerResearch
                     "required": ["statement", "testable_prediction", "falsification_test", "citation_hashes"],
                     "additionalProperties": false
                 }
-            }
+            },
+            "virtual_experiment_plan": virtual_experiment
         },
-        "required": ["artifact_kind", "title", "abstract_text", "claims"],
+        "required": ["artifact_kind", "title", "abstract_text", "claims", "virtual_experiment_plan"],
         "additionalProperties": false
     })
+}
+
+fn virtual_experiment_plan_schema(stage: CancerResearchStage, task: CancerResearchTask) -> Value {
+    if stage != CancerResearchStage::BlindDiscovery {
+        return json!({"type": "null"});
+    }
+    let modalities = match task {
+        CancerResearchTask::DesignDiagnosticInstrument => vec!["diagnostic_sensing"],
+        CancerResearchTask::DesignTreatmentMachine => vec![
+            "molecular_inhibition",
+            "radiation",
+            "thermal",
+            "electric_field",
+            "targeted_delivery",
+            "surgical_resection",
+        ],
+        _ => vec![
+            "molecular_inhibition",
+            "radiation",
+            "thermal",
+            "electric_field",
+            "targeted_delivery",
+            "surgical_resection",
+            "diagnostic_sensing",
+        ],
+    };
+    let endpoints = match task {
+        CancerResearchTask::DesignDiagnosticInstrument => vec!["detection_sensitivity"],
+        CancerResearchTask::DesignTreatmentMachine => vec![
+            "relative_tumor_burden",
+            "viable_tumor_fraction",
+            "invasive_cell_fraction",
+            "hypoxic_cell_fraction",
+            "off_target_healthy_cell_loss",
+        ],
+        _ => vec![
+            "relative_tumor_burden",
+            "viable_tumor_fraction",
+            "invasive_cell_fraction",
+            "hypoxic_cell_fraction",
+            "off_target_healthy_cell_loss",
+            "detection_sensitivity",
+        ],
+    };
+    let plan = json!({
+        "type": "object",
+        "properties": {
+            "schema_version": {"type": "integer", "const": 1},
+            "subject_model": {"type": "string", "enum": ["cell_culture", "tumor_organoid", "orthotopic_mouse"]},
+            "intervention_modality": {"type": "string", "enum": modalities},
+            "primary_target": {"type": "string", "enum": ["cell_division", "dna_repair", "apoptosis_resistance", "hypoxia_adaptation", "angiogenesis", "immune_evasion", "invasion"]},
+            "secondary_target": {
+                "anyOf": [
+                    {"type": "string", "enum": ["cell_division", "dna_repair", "apoptosis_resistance", "hypoxia_adaptation", "angiogenesis", "immune_evasion", "invasion"]},
+                    {"type": "null"}
+                ]
+            },
+            "primary_endpoint": {"type": "string", "enum": endpoints},
+            "intensity_parts_per_million": {"type": "integer", "minimum": 1, "maximum": 1000000},
+            "exposure_hours": {"type": "integer", "minimum": 1, "maximum": 2160},
+            "cohort_size": {"type": "integer", "minimum": 8, "maximum": 4096}
+        },
+        "required": ["schema_version", "subject_model", "intervention_modality", "primary_target", "secondary_target", "primary_endpoint", "intensity_parts_per_million", "exposure_hours", "cohort_size"],
+        "additionalProperties": false
+    });
+    match task {
+        CancerResearchTask::DesignDiagnosticInstrument
+        | CancerResearchTask::DesignTreatmentMachine => plan,
+        _ => json!({"anyOf": [plan, {"type": "null"}]}),
+    }
 }
 
 #[derive(Deserialize)]
@@ -493,6 +565,7 @@ struct ResearchModelOutput {
     title: String,
     abstract_text: String,
     claims: Vec<CancerResearchClaim>,
+    virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
 }
 
 fn parse_research_response(
@@ -550,12 +623,13 @@ fn parse_research_response(
             "completion cited content that was not supplied to this turn".to_owned(),
         ));
     }
-    let contribution = CancerResearchContribution::new(
+    let contribution = CancerResearchContribution::new_with_virtual_experiment(
         &request.selection,
         output.artifact_kind,
         output.title,
         output.abstract_text,
         output.claims,
+        output.virtual_experiment_plan,
     )
     .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
     let prompt_tokens = u32::try_from(parsed.usage.prompt_tokens).map_err(|_| {
@@ -1243,6 +1317,11 @@ mod tests {
             diagnostic["properties"]["artifact_kind"]["enum"],
             json!(["diagnostic_instrument_design"])
         );
+        assert_eq!(
+            diagnostic["properties"]["virtual_experiment_plan"]["properties"]["intervention_modality"]
+                ["enum"],
+            json!(["diagnostic_sensing"])
+        );
         let treatment = research_contribution_schema(
             CancerResearchStage::BlindDiscovery,
             CancerResearchTask::DesignTreatmentMachine,
@@ -1250,6 +1329,12 @@ mod tests {
         assert_eq!(
             treatment["properties"]["artifact_kind"]["enum"],
             json!(["treatment_machine_design"])
+        );
+        assert!(
+            treatment["properties"]["virtual_experiment_plan"]["properties"]
+                ["intervention_modality"]["enum"]
+                .as_array()
+                .is_some_and(|modalities| !modalities.contains(&json!("diagnostic_sensing")))
         );
     }
 
@@ -1267,7 +1352,8 @@ mod tests {
                     "testable_prediction": "Perturbing the state should change the supplied assay readout.",
                     "falsification_test": "The preregistered perturbation leaves the readout unchanged.",
                     "citation_hashes": []
-                }]
+                }],
+                "virtual_experiment_plan": null
             })).expect("content JSON")}}],
             "usage": {"prompt_tokens": 300, "completion_tokens": 120, "cost": 0}
         });
@@ -1345,7 +1431,8 @@ mod tests {
                     "testable_prediction": "A prediction.",
                     "falsification_test": "A test.",
                     "citation_hashes": [invented]
-                }]
+                }],
+                "virtual_experiment_plan": null
             })).expect("content JSON")}}],
             "usage": {"prompt_tokens": 30, "completion_tokens": 20, "cost": 0}
         });
@@ -1380,7 +1467,8 @@ mod tests {
                     "testable_prediction": "A prediction.",
                     "falsification_test": "A test.",
                     "citation_hashes": []
-                }]
+                }],
+                "virtual_experiment_plan": null
             })).expect("content JSON")}}],
             "usage": {"prompt_tokens": 30, "completion_tokens": 20, "cost": 0.000001}
         });

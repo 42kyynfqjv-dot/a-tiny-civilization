@@ -11,12 +11,12 @@ use anyhow::{Context, Result};
 use application::{
     AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchEvidenceDocument,
     CancerResearchJobStore, CancerResearchLiteratureSnapshot, CancerResearchModel,
-    CancerResearchModelAdapters, CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
-    CognitionModel, CognitionModelRoute, CognitionProviderId, CognitionWorkerConfiguration,
-    CognitionWorkerStep, FoundationStore, MemoryOutboxStore, ModelCognitionRequest,
-    ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore, advance_world,
-    advance_world_with_celestial, advance_world_with_celestial_and_cognition,
-    construct_configured_genesis_with_materials,
+    CancerResearchModelAdapters, CancerResearchNoveltySource, CancerResearchWorkerConfiguration,
+    CancerResearchWorkerOutcome, CognitionModel, CognitionModelRoute, CognitionProviderId,
+    CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore, MemoryOutboxStore,
+    ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore,
+    advance_world, advance_world_with_celestial, advance_world_with_celestial_and_cognition,
+    calculate_cancer_research_novelty, construct_configured_genesis_with_materials,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
     process_next_cancer_research_job, process_next_cognition_job, resume_world,
     resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
@@ -52,9 +52,10 @@ use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
 use world_domain::{
-    BirthCategory, BodilyNeedState, CANCER_RESEARCH_INITIAL_RESIDENTS, CancerResearchBootstrap,
-    CapacityExhaustionPolicy, CelestialState, Digest, EntityId, OrganismRole, PartitionedExecution,
-    PersonRepresentation, ProvisionalLocalEnvironmentBaseline, ProvisionalLocalSurfaceBaseline,
+    BirthCategory, BodilyNeedState, CANCER_RESEARCH_INITIAL_RESIDENTS,
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CancerResearchBootstrap, CapacityExhaustionPolicy,
+    CelestialState, Digest, EntityId, OrganismRole, PartitionedExecution, PersonRepresentation,
+    ProvisionalLocalEnvironmentBaseline, ProvisionalLocalSurfaceBaseline,
     ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind, SimTick, SpeciesIdentity,
     TdbSecondsSinceJ2000, WorldConfiguration, WorldExperimentCommitment, WorldId, WorldManifest,
     WorldSeed, WorldStatus,
@@ -886,21 +887,113 @@ async fn serve_cancer_evidence_worker(
         .user_agent(concat!("a-tiny-civilization/", env!("CARGO_PKG_VERSION")))
         .build()
         .context("build Cancer World evidence client")?;
+    let refresh_interval = Duration::from_secs(refresh_seconds.max(300));
+    let mut next_evidence_refresh = Instant::now();
     loop {
-        match refresh_cancer_evidence(store, &client, world_id, endpoint.clone(), page_size).await {
-            Ok(count) => {
-                tracing::info!(world_id = %world_id, snapshot_count = count, "Cancer World evidence refresh completed")
+        if Instant::now() >= next_evidence_refresh {
+            match refresh_cancer_evidence(store, &client, world_id, endpoint.clone(), page_size)
+                .await
+            {
+                Ok(count) => {
+                    tracing::info!(world_id = %world_id, snapshot_count = count, "Cancer World evidence refresh completed")
+                }
+                Err(error) if !once => {
+                    tracing::error!(world_id = %world_id, %error, "Cancer World evidence refresh failed; durable evidence remains available")
+                }
+                Err(error) => return Err(error),
             }
+            next_evidence_refresh = Instant::now() + refresh_interval;
+        }
+        match refresh_cancer_novelty_audits(store, &client, world_id, endpoint.clone()).await {
+            Ok(count) if count > 0 => {
+                tracing::info!(world_id = %world_id, audit_count = count, "Cancer World novelty audit batch completed")
+            }
+            Ok(_) => {}
             Err(error) if !once => {
-                tracing::error!(world_id = %world_id, %error, "Cancer World evidence refresh failed; durable evidence remains available")
+                tracing::error!(world_id = %world_id, %error, "Cancer World novelty audit failed; unaudited artifacts remain queued")
             }
             Err(error) => return Err(error),
         }
         if once {
             return Ok(());
         }
-        tokio::time::sleep(Duration::from_secs(refresh_seconds.max(300))).await;
+        tokio::time::sleep(Duration::from_secs(60)).await;
     }
+}
+
+async fn refresh_cancer_novelty_audits(
+    store: &PostgresStore,
+    client: &reqwest::Client,
+    world_id: WorldId,
+    endpoint: Url,
+) -> Result<usize> {
+    let candidates = store
+        .load_unaudited_cancer_research(world_id, CANCER_RESEARCH_NOVELTY_METHOD_VERSION, 12)
+        .await
+        .context("load unaudited Cancer World research")?;
+    let mut stored = 0_usize;
+    for candidate in candidates {
+        let query_terms = application::cancer_research_novelty_query_terms(&candidate.contribution);
+        let mut search_endpoint = endpoint.clone();
+        let mechanism_query = query_terms
+            .iter()
+            .map(|term| format!("TITLE_ABS:\"{term}\""))
+            .collect::<Vec<_>>()
+            .join(" OR ");
+        let query = format!(
+            "(TITLE_ABS:\"glioblastoma\" OR TITLE_ABS:\"glioblastoma multiforme\") AND ({mechanism_query})"
+        );
+        search_endpoint
+            .query_pairs_mut()
+            .append_pair("query", &query)
+            .append_pair("format", "json")
+            .append_pair("resultType", "core")
+            .append_pair("pageSize", "12");
+        let payload: serde_json::Value = client
+            .get(search_endpoint)
+            .send()
+            .await
+            .context("request Europe PMC novelty search")?
+            .error_for_status()
+            .context("Europe PMC novelty search returned an error")?
+            .json()
+            .await
+            .context("decode Europe PMC novelty search")?;
+        let results = payload
+            .pointer("/resultList/result")
+            .and_then(serde_json::Value::as_array)
+            .context("Europe PMC novelty response is missing resultList.result")?;
+        let sources = results
+            .iter()
+            .filter_map(europe_pmc_novelty_source)
+            .collect::<Vec<_>>();
+        let audit = calculate_cancer_research_novelty(&candidate, &sources)
+            .context("calculate Cancer World novelty audit")?;
+        store
+            .store_cancer_research_novelty_audit(&audit)
+            .await
+            .context("store Cancer World novelty audit")?;
+        stored += 1;
+    }
+    Ok(stored)
+}
+
+fn europe_pmc_novelty_source(
+    source_payload: &serde_json::Value,
+) -> Option<CancerResearchNoveltySource> {
+    let field = |name: &str| source_payload.get(name).and_then(serde_json::Value::as_str);
+    let id = field("id")?.trim();
+    let source = field("source")?.trim();
+    let title = field("title")?.trim();
+    if id.is_empty() || source.is_empty() || title.is_empty() {
+        return None;
+    }
+    Some(CancerResearchNoveltySource {
+        source_id: format!("https://europepmc.org/article/{source}/{id}"),
+        title: title.to_owned(),
+        published_on: field("firstPublicationDate").map(str::to_owned),
+        abstract_text: field("abstractText").unwrap_or_default().trim().to_owned(),
+    })
 }
 
 async fn refresh_cancer_evidence(

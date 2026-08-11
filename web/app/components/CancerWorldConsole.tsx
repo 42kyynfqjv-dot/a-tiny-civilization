@@ -41,6 +41,28 @@ type ResearchDuplicate = {
   created_at: string;
 };
 
+type NoveltyAudit = {
+  schema_version: number;
+  method_version: number;
+  audit_id: string;
+  world_id: string;
+  request_id: string;
+  artifact_hash: string;
+  query_terms: string[];
+  status: "known_overlap" | "new_combination" | "no_close_match_found" | "possible_error";
+  literature_overlap_per_mille: number;
+  prior_world_overlap_per_mille: number;
+  matches: {
+    source_id: string;
+    title: string;
+    published_on: string | null;
+    overlap_per_mille: number;
+  }[];
+  warnings: string[];
+  audit_hash: string;
+  created_at: string;
+};
+
 type ResearchArtifact = {
   request_id: string;
   selected_at_tick: string | number;
@@ -59,6 +81,7 @@ type ResearchArtifact = {
   billed_micro_usd: number;
   result_hash: string;
   memory_state: "queued" | "accepted";
+  novelty_audit: NoveltyAudit | null;
   created_at: string;
   duplicates: ResearchDuplicate[];
 };
@@ -246,12 +269,14 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
 
 function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
   const contribution = artifact.contribution;
+  const novelty = artifact.novelty_audit;
   return <article className="cancer-artifact-card">
     <div className="cancer-artifact-meta">
       <span>TURN {artifact.ordinal}</span>
       <span>{humanize(contribution.artifact_kind)}</span>
       <span>{humanize(contribution.stage)}</span>
       {artifact.duplicates.length > 0 && <span className="duplicate">{artifact.duplicates.length} DUPLICATE{artifact.duplicates.length === 1 ? "" : "S"} COLLAPSED</span>}
+      <span className={`novelty ${novelty?.status ?? "pending"}`}>{noveltyLabel(novelty?.status)}</span>
       <span className={artifact.memory_state === "accepted" ? "accepted" : "queued"}>{artifact.memory_state === "accepted" ? "MEMORY CONNECTED" : "MEMORY QUEUED"}</span>
     </div>
     <h3>{contribution.title}</h3>
@@ -261,6 +286,24 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       <span>{artifact.evidence.length} evidence reference{artifact.evidence.length === 1 ? "" : "s"}</span>
       <span>{artifact.resolved_model}</span>
     </div>
+    <details className="cancer-novelty-audit">
+      <summary>{novelty ? `OVERLAP CHECK · ${noveltyLabel(novelty.status)}` : "OVERLAP CHECK · SCANNING"}</summary>
+      {novelty ? <div className="cancer-novelty-body">
+        <p>This is a literature-overlap finding aid, not proof of novelty or validity. It compares this artifact&apos;s mechanism terms with indexed papers and earlier Cancer World work.</p>
+        <div className="cancer-novelty-scores">
+          <span><strong>{formatScore(novelty.literature_overlap_per_mille)}</strong> closest literature overlap</span>
+          <span><strong>{formatScore(novelty.prior_world_overlap_per_mille)}</strong> closest prior-world overlap</span>
+        </div>
+        {novelty.warnings.map((warning) => <p className="cancer-novelty-warning" key={warning}>{warning}</p>)}
+        {novelty.matches.length > 0 ? <div className="cancer-novelty-matches">
+          {novelty.matches.map((match) => <a href={match.source_id} key={match.source_id} rel="noreferrer" target="_blank">
+            <span>{formatScore(match.overlap_per_mille)} · {match.published_on ?? "DATE UNAVAILABLE"}</span>
+            <strong>{match.title}</strong>
+          </a>)}
+        </div> : <p>No sufficiently close result was returned by the bounded search. That does not establish scientific novelty.</p>}
+        <small>METHOD V{novelty.method_version} · AUDIT {shortHash(novelty.audit_hash)}</small>
+      </div> : <p className="cancer-novelty-pending">This new artifact is queued for the next literature scan.</p>}
+    </details>
     {contribution.claims.map((claim, index) => <details key={`${artifact.request_id}-${index}`}>
       <summary>CLAIM {index + 1} · {claim.statement}</summary>
       <dl>
@@ -367,4 +410,18 @@ function shortHash(value: string) {
 function formatTime(value: string) {
   try { return new Intl.DateTimeFormat("en", { dateStyle: "medium", timeStyle: "short" }).format(new Date(value)); }
   catch { return value; }
+}
+
+function noveltyLabel(status: NoveltyAudit["status"] | undefined) {
+  switch (status) {
+    case "known_overlap": return "KNOWN OVERLAP";
+    case "new_combination": return "NEW COMBINATION";
+    case "no_close_match_found": return "NO CLOSE MATCH FOUND";
+    case "possible_error": return "CHECK NEEDED";
+    default: return "NOT YET AUDITED";
+  }
+}
+
+function formatScore(perMille: number) {
+  return `${Math.round(perMille / 10)}%`;
 }
