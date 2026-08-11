@@ -14,7 +14,9 @@ memory-poor even though both worlds used correctly isolated banks.
 
 The delivery worker first claims the oldest eligible row belonging to the newest running world whose
 manifest has no experiment commitment. If that world has no eligible row, it falls back to the
-global oldest-first queue. A partial world-scoped index keeps that lookup bounded.
+global oldest-first queue. A partial world-scoped index keeps that lookup bounded. The container
+cadence defaults to ten milliseconds; each delivery remains sequential and acknowledgement-gated,
+so this raises allowed throughput without creating an unbounded concurrency fan-out into Hindsight.
 
 This is delivery scheduling, not simulation input. No retained memory is deleted, rewritten, or
 made visible across worlds. Hindsight bank IDs remain world-and-organism scoped, and every recall
