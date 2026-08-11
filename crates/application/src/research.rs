@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use std::collections::BTreeSet;
+
 use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -58,6 +60,8 @@ pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
 pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 4;
 pub const MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS: usize = 8;
 pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
+pub const MAX_CANCER_RESEARCH_CATALOG_ENTRIES: usize = 256;
+pub const CANCER_RESEARCH_CATALOG_PAGE_SIZE: usize = 24;
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_ADAPTER_VERSION_BYTES: usize = 128;
@@ -139,6 +143,16 @@ pub struct CancerResearchMemoryInput {
     pub text: String,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchCatalogItem {
+    pub ordinal: u32,
+    pub contribution_id: Uuid,
+    pub artifact_hash: Digest,
+    pub artifact_kind: world_domain::CancerResearchArtifactKind,
+    pub title: String,
+}
+
 impl CancerResearchMemoryInput {
     fn validate(&self, stage: CancerResearchStage) -> Result<(), CancerResearchModelContractError> {
         if self.document_id.is_nil()
@@ -153,6 +167,152 @@ impl CancerResearchMemoryInput {
         }
         Ok(())
     }
+
+    pub fn from_internal_catalog(
+        contribution: &CancerResearchContribution,
+    ) -> Result<Self, CancerResearchModelContractError> {
+        #[derive(Serialize)]
+        struct CatalogEntry<'a> {
+            catalog_schema_version: u16,
+            artifact_kind: world_domain::CancerResearchArtifactKind,
+            title: &'a str,
+            abstract_text: &'a str,
+            claim_statements: Vec<&'a str>,
+        }
+
+        let text = serde_json::to_string(&CatalogEntry {
+            catalog_schema_version: 1,
+            artifact_kind: contribution.artifact_kind,
+            title: &contribution.title,
+            abstract_text: &contribution.abstract_text,
+            claim_statements: contribution
+                .claims
+                .iter()
+                .map(|claim| claim.statement.as_str())
+                .collect(),
+        })
+        .map_err(|_| CancerResearchModelContractError::InvalidMemoryInputs)?;
+        let memory = Self {
+            document_id: contribution.contribution_id,
+            source_artifact_hash: contribution.canonical_hash()?,
+            evidence_kind: CancerResearchEvidenceKind::PriorResearchArtifact,
+            text,
+        };
+        memory.validate(CancerResearchStage::BlindDiscovery)?;
+        Ok(memory)
+    }
+
+    pub fn from_internal_catalog_page(
+        world_id: world_domain::WorldId,
+        before_ordinal: u32,
+        page_index: u16,
+        entries: &[CancerResearchCatalogItem],
+    ) -> Result<Self, CancerResearchModelContractError> {
+        #[derive(Serialize)]
+        struct CatalogPage<'a> {
+            catalog_schema_version: u16,
+            before_ordinal: u32,
+            page_index: u16,
+            entries: &'a [CancerResearchCatalogItem],
+        }
+
+        if entries.is_empty() || entries.len() > CANCER_RESEARCH_CATALOG_PAGE_SIZE {
+            return Err(CancerResearchModelContractError::InvalidMemoryInputs);
+        }
+        let text = serde_json::to_string(&CatalogPage {
+            catalog_schema_version: 1,
+            before_ordinal,
+            page_index,
+            entries,
+        })
+        .map_err(|_| CancerResearchModelContractError::InvalidMemoryInputs)?;
+        let source_artifact_hash = Digest::sha256(text.as_bytes());
+        let document_id = Uuid::new_v5(
+            &world_id.as_uuid(),
+            format!(
+                "cancer-research-catalog:v1:{before_ordinal}:{page_index}:{source_artifact_hash}"
+            )
+            .as_bytes(),
+        );
+        let memory = Self {
+            document_id,
+            source_artifact_hash,
+            evidence_kind: CancerResearchEvidenceKind::PriorResearchArtifact,
+            text,
+        };
+        memory.validate(CancerResearchStage::BlindDiscovery)?;
+        Ok(memory)
+    }
+}
+
+/// Deterministic observer/research-catalog duplicate detector. It deliberately
+/// favors false negatives over merging scientifically distinct qualifiers.
+#[must_use]
+pub fn cancer_research_titles_duplicate(left: &str, right: &str) -> bool {
+    let left = cancer_research_title_terms(left);
+    let right = cancer_research_title_terms(right);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    if left == right {
+        return true;
+    }
+    let intersection = left.intersection(&right).count();
+    let union = left.union(&right).count();
+    intersection >= 4 && intersection.saturating_mul(100) >= union.saturating_mul(82)
+}
+
+fn cancer_research_title_terms(title: &str) -> BTreeSet<String> {
+    title
+        .chars()
+        .flat_map(char::to_lowercase)
+        .map(|character| {
+            if character.is_alphanumeric() {
+                character
+            } else {
+                ' '
+            }
+        })
+        .collect::<String>()
+        .split_whitespace()
+        .filter_map(|term| {
+            if matches!(
+                term,
+                "a" | "adult"
+                    | "an"
+                    | "and"
+                    | "as"
+                    | "at"
+                    | "by"
+                    | "for"
+                    | "from"
+                    | "glioblastoma"
+                    | "in"
+                    | "into"
+                    | "its"
+                    | "of"
+                    | "on"
+                    | "role"
+                    | "test"
+                    | "the"
+                    | "their"
+                    | "to"
+            ) {
+                return None;
+            }
+            let normalized = match term {
+                "clonal" | "clones" => "clone",
+                "driven" | "driver" | "drivers" | "drives" | "driving" => "drive",
+                "modulated" | "modulates" | "modulation" => "modulate",
+                "promotes" | "promoting" => "promote",
+                "proliferation" | "proliferative" => "proliferate",
+                "reprogrammed" | "reprogramming" => "reprogram",
+                "trajectories" => "trajectory",
+                other => other,
+            };
+            Some(normalized.to_owned())
+        })
+        .collect()
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -594,6 +754,19 @@ pub trait CancerResearchJobStore: Send + Sync {
         Ok(None)
     }
 
+    /// Loads a bounded, distinct internal catalogue of earlier research. This
+    /// is the collective's working wiki: it is derived from immutable results,
+    /// never from observer edits, and is supplied to new blinded turns solely
+    /// to prevent accidental repetition and support cumulative work.
+    async fn load_cancer_research_catalog(
+        &self,
+        _world_id: world_domain::WorldId,
+        _before_ordinal: u32,
+        _limit: usize,
+    ) -> Result<Vec<CancerResearchMemoryInput>, StoreError> {
+        Ok(Vec::new())
+    }
+
     async fn reserve_paid_cancer_research(
         &self,
         worker_id: &str,
@@ -737,6 +910,26 @@ mod tests {
         assert!(matches!(
             request,
             Err(CancerResearchModelContractError::InvalidMemoryInputs)
+        ));
+    }
+
+    #[test]
+    fn research_title_deduplication_collapses_rewording_without_erasing_qualifiers() {
+        assert!(cancer_research_titles_duplicate(
+            "Clone Diversity Drives Glioblastoma Growth Trajectory",
+            "Clone Diversity as a Driver of Local Growth Trajectory in Adult Glioblastoma",
+        ));
+        assert!(cancer_research_titles_duplicate(
+            "Immune-Cell Density Modulates Clonal Growth Trajectories in Adult Glioblastoma",
+            "Spatial Immune-Cell Density Modulates Clonal Growth Trajectories in Adult Glioblastoma",
+        ));
+        assert!(!cancer_research_titles_duplicate(
+            "Immune Engagement Modulates Clone Diversity in Adult Glioblastoma",
+            "Immune Engagement Drives Clonal Expansion in Adult Glioblastoma",
+        ));
+        assert!(!cancer_research_titles_duplicate(
+            "Hypoxia-Independent Immune Modulation of Glioblastoma Proliferation",
+            "Hypoxia-Driven Immune Modulation of Glioblastoma Proliferation",
         ));
     }
 }

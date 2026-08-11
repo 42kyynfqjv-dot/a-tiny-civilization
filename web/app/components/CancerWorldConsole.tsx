@@ -32,6 +32,15 @@ type Contribution = {
   claims: Claim[];
 };
 
+type ResearchDuplicate = {
+  request_id: string;
+  ordinal: number;
+  title: string;
+  artifact_hash: string;
+  result_hash: string;
+  created_at: string;
+};
+
 type ResearchArtifact = {
   request_id: string;
   selected_at_tick: string | number;
@@ -51,6 +60,7 @@ type ResearchArtifact = {
   result_hash: string;
   memory_state: "queued" | "accepted";
   created_at: string;
+  duplicates: ResearchDuplicate[];
 };
 
 type ResearchEvidence = {
@@ -71,6 +81,8 @@ type ResearchView = {
   pending_requests: number;
   successful_requests: number;
   unsuccessful_requests: number;
+  distinct_artifacts: number;
+  duplicate_artifacts: number;
   memory_queued: number;
   memory_accepted: number;
   artifacts: ResearchArtifact[];
@@ -169,29 +181,29 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       </div>
       <div className="cancer-console-state">
         <span>{telemetry ? "RUNNING" : "AWAITING GENESIS"}</span>
-        <strong>{research?.successful_requests ?? 0}</strong>
-        <small>validated contributions</small>
+        <strong>{research?.distinct_artifacts ?? 0}</strong>
+        <small>distinct research entries</small>
       </div>
     </section>
 
     <section className="cancer-console-grid" aria-label="Live experiment metrics">
       <Metric label="WORLD TICK" value={telemetry?.tick ?? "—"} />
       <Metric label="RESEARCH TURNS" value={research?.total_requests ?? 0} />
-      <Metric label="ARTIFACTS" value={research?.artifacts.length ?? 0} />
+      <Metric label="DISTINCT WORK" value={research?.distinct_artifacts ?? 0} />
+      <Metric label="DUPLICATES FLAGGED" value={research?.duplicate_artifacts ?? 0} />
       <Metric label="HINDSIGHT ACCEPTED" value={research?.memory_accepted ?? 0} />
       <Metric label="PEOPLE" value={telemetry?.living_people ?? "—"} />
-      <Metric label="PENDING" value={research?.pending_requests ?? 0} />
     </section>
 
     <section className="cancer-console-section">
-      <SectionHeading eyebrow="OUTPUT" title="Latest research artifacts" detail="Newest first · claims remain hypotheses until independently validated" />
+      <SectionHeading eyebrow="OUTPUT" title="Latest distinct research" detail="Newest activity first · repeated work is flagged and collapsed under its original" />
       <div className="cancer-artifact-list">
         {research?.artifacts.length ? research.artifacts.map((artifact) => <ArtifactCard key={artifact.request_id} artifact={artifact} />) : <EmptyState text="The first research contribution has not landed yet." />}
       </div>
     </section>
 
     <section className="cancer-console-section cancer-memory-lab">
-      <SectionHeading eyebrow="HINDSIGHT" title="Search the research memory" detail="Semantic recall from Cancer World's separate collective bank" />
+      <SectionHeading eyebrow="HINDSIGHT" title="Search the internal research library" detail="The same isolated catalogue is supplied to new research turns to support cumulative work" />
       <form onSubmit={searchMemory} className="cancer-search-form">
         <input
           aria-label="Search research memory"
@@ -239,6 +251,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       <span>TURN {artifact.ordinal}</span>
       <span>{humanize(contribution.artifact_kind)}</span>
       <span>{humanize(contribution.stage)}</span>
+      {artifact.duplicates.length > 0 && <span className="duplicate">{artifact.duplicates.length} DUPLICATE{artifact.duplicates.length === 1 ? "" : "S"} COLLAPSED</span>}
       <span className={artifact.memory_state === "accepted" ? "accepted" : "queued"}>{artifact.memory_state === "accepted" ? "MEMORY CONNECTED" : "MEMORY QUEUED"}</span>
     </div>
     <h3>{contribution.title}</h3>
@@ -255,6 +268,16 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
         <div><dt>FALSIFIED IF</dt><dd>{claim.falsification_test}</dd></div>
       </dl>
     </details>)}
+    {artifact.duplicates.length > 0 && <details className="cancer-duplicate-ledger">
+      <summary>DUPLICATE LEDGER · {artifact.duplicates.length} REPEATED TURN{artifact.duplicates.length === 1 ? "" : "S"}</summary>
+      <div>
+        {artifact.duplicates.map((duplicate) => <p key={duplicate.request_id}>
+          <span>DUPLICATE · TURN {duplicate.ordinal}</span>
+          <strong>{duplicate.title}</strong>
+          <code>{shortHash(duplicate.artifact_hash)}</code>
+        </p>)}
+      </div>
+    </details>}
     <footer><code>ARTIFACT {shortHash(artifact.artifact_hash)}</code><time>{formatTime(artifact.created_at)}</time></footer>
   </article>;
 }
@@ -262,16 +285,50 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
 function SearchResults({ outcome }: { outcome: SearchOutcome }) {
   if (outcome.status === "unavailable") return <p className="cancer-search-status">Memory search is temporarily unavailable: {humanize(outcome.reason)}</p>;
   if (!outcome.results.length) return <p className="cancer-search-status">No matching research memory was found.</p>;
+  const results = collapseSearchResults(outcome.results);
   return <div className="cancer-search-results">
-    {outcome.results.map((result) => {
+    {results.map(({ result, duplicateCount }) => {
       const parsed = parseContribution(result.text);
       return <article key={result.document_id}>
-        <span>TURN {result.ordinal} · TICK {String(result.sim_tick)}</span>
+        <span>TURN {result.ordinal} · TICK {String(result.sim_tick)}{duplicateCount ? ` · ${duplicateCount} DUPLICATE${duplicateCount === 1 ? "" : "S"} HIDDEN` : ""}</span>
         <strong>{parsed?.title ?? "Recalled research artifact"}</strong>
         <p>{parsed?.abstract_text ?? result.text}</p>
       </article>;
     })}
   </div>;
+}
+
+function collapseSearchResults(results: SearchResult[]) {
+  const distinct: { result: SearchResult; duplicateCount: number; title: string; kind: string }[] = [];
+  for (const result of results) {
+    const parsed = parseContribution(result.text);
+    const title = parsed?.title ?? result.text;
+    const kind = parsed?.artifact_kind ?? "unknown";
+    const prior = distinct.find((candidate) => candidate.kind === kind && titlesDuplicate(candidate.title, title));
+    if (prior) prior.duplicateCount += 1;
+    else distinct.push({ result, duplicateCount: 0, title, kind });
+  }
+  return distinct;
+}
+
+function titlesDuplicate(left: string, right: string) {
+  const leftTerms = titleTerms(left);
+  const rightTerms = titleTerms(right);
+  if (!leftTerms.size || !rightTerms.size) return false;
+  if (leftTerms.size === rightTerms.size && [...leftTerms].every((term) => rightTerms.has(term))) return true;
+  const intersection = [...leftTerms].filter((term) => rightTerms.has(term)).length;
+  const union = new Set([...leftTerms, ...rightTerms]).size;
+  return intersection >= 4 && intersection * 100 >= union * 82;
+}
+
+function titleTerms(title: string) {
+  const ignored = new Set(["a", "adult", "an", "and", "as", "at", "by", "for", "from", "glioblastoma", "in", "into", "its", "of", "on", "role", "test", "the", "their", "to"]);
+  const stems: Record<string, string> = {
+    clonal: "clone", clones: "clone", driven: "drive", driver: "drive", drivers: "drive", drives: "drive", driving: "drive",
+    modulated: "modulate", modulates: "modulate", modulation: "modulate", promotes: "promote", promoting: "promote",
+    proliferation: "proliferate", proliferative: "proliferate", reprogrammed: "reprogram", reprogramming: "reprogram", trajectories: "trajectory",
+  };
+  return new Set(title.toLocaleLowerCase().replaceAll(/[^\p{L}\p{N}]+/gu, " ").trim().split(/\s+/).filter((term) => term && !ignored.has(term)).map((term) => stems[term] ?? term));
 }
 
 function parseContribution(text: string): Contribution | null {

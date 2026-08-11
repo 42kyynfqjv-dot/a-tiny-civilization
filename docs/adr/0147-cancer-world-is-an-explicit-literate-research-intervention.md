@@ -55,12 +55,12 @@ direct modeled observations, or recorded external assay results. Every model res
 memory retrieval, and assay input is recorded before it can affect canonical history;
 replay never contacts those services.
 
-Blind exploration runs twelve times per simulation day. Each new blind turn may
-receive the newest successful hypothesis from the current exploration-route policy
-as a content-addressed recalled artifact. This creates deterministic research
-continuity without leaking literature through the blind-discovery firewall; route
-policy changes start a fresh memory lineage instead of silently reinterpreting old
-provider receipts. The pinned GPT-OSS endpoint currently returns null content when
+Blind exploration runs twelve times per simulation day. Each new blind turn receives
+bounded, content-addressed pages from the successful blind-artifact catalogue plus
+the newest successful hypothesis in full. This creates deterministic cumulative
+research without leaking literature through the blind-discovery firewall; duplicate
+catalogue entries collapse without deleting their immutable receipts. The pinned
+GPT-OSS endpoint currently returns null content when
 OpenRouter's `response_format` is supplied, so its exact compact schema is embedded
 in the instruction and enforced by the local closed parser. The output remains
 capped at 4,096 tokens and four claims.

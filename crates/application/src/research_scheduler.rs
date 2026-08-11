@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeSet;
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
@@ -9,7 +10,8 @@ use world_domain::{
 
 use crate::{
     CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchMemoryInput,
-    CancerResearchModelRequest, MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS, StoreError,
+    CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES,
+    MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS, StoreError,
 };
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
@@ -76,8 +78,38 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         })
         .map(sim_engine::OrganismState::organism_id)
         .collect::<Vec<_>>();
-    let Some(resident_id) =
-        select_researcher(state.manifest().seed, turn_ordinal, &affected_living_people)?
+    let unaffected_founders = state
+        .organisms()
+        .filter(|organism| {
+            organism.role() == OrganismRole::Person
+                && organism.is_founder()
+                && !state.is_initial_cancer_research_resident(organism.organism_id())
+        })
+        .map(sim_engine::OrganismState::organism_id)
+        .collect::<Vec<_>>();
+    let living_unaffected = state
+        .organisms()
+        .filter(|organism| {
+            organism.role() == OrganismRole::Person
+                && organism.is_founder()
+                && organism.is_alive()
+                && !state.is_initial_cancer_research_resident(organism.organism_id())
+        })
+        .map(sim_engine::OrganismState::organism_id)
+        .collect::<BTreeSet<_>>();
+    let mut living_engineers =
+        select_support_engineering_cohort(state.manifest().seed, &unaffected_founders)?
+            .into_iter()
+            .filter(|resident_id| living_unaffected.contains(resident_id))
+            .collect::<Vec<_>>();
+    living_engineers.sort_unstable();
+    let engineering_turn = turn_ordinal % 3 == 2 && !living_engineers.is_empty();
+    let candidates = if engineering_turn {
+        &living_engineers
+    } else {
+        &affected_living_people
+    };
+    let Some(resident_id) = select_researcher(state.manifest().seed, turn_ordinal, candidates)?
     else {
         return Ok(None);
     };
@@ -160,7 +192,11 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         } else {
             (
                 CancerResearchStage::BlindDiscovery,
-                if turn_ordinal.is_multiple_of(2) {
+                if engineering_turn && turn_ordinal.is_multiple_of(2) {
+                    CancerResearchTask::DesignDiagnosticInstrument
+                } else if engineering_turn {
+                    CancerResearchTask::DesignTreatmentMachine
+                } else if turn_ordinal.is_multiple_of(2) {
                     CancerResearchTask::GenerateMechanisticHypothesis
                 } else {
                     CancerResearchTask::ProposeDiscriminatingExperiment
@@ -191,19 +227,20 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         model_max_output_tokens,
     )?;
     let recalled_memories = if stage == CancerResearchStage::BlindDiscovery {
-        latest_hypothesis
-            .as_ref()
-            .map(|prior| {
-                let contribution = prior.contribution();
-                Ok(CancerResearchMemoryInput {
-                    document_id: contribution.contribution_id,
-                    source_artifact_hash: contribution.canonical_hash()?,
-                    evidence_kind: CancerResearchEvidenceKind::FrozenHypothesis,
-                    text: serde_json::to_string(contribution)?,
-                })
-            })
-            .into_iter()
-            .collect::<Result<Vec<_>, CancerResearchSchedulerError>>()?
+        let mut catalog = store
+            .load_cancer_research_catalog(
+                state.world_id(),
+                turn_ordinal,
+                MAX_CANCER_RESEARCH_CATALOG_ENTRIES,
+            )
+            .await?;
+        if let Some(prior) = &latest_hypothesis {
+            catalog.push(CancerResearchMemoryInput::from_internal_catalog(
+                prior.contribution(),
+            )?);
+        }
+        catalog.sort_by_key(|memory| memory.document_id);
+        catalog
     } else {
         Vec::new()
     };
@@ -212,6 +249,37 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
     let request_id = request.request_id;
     store.enqueue_cancer_research_request(&request).await?;
     Ok(Some(request_id))
+}
+
+/// Selects exactly one third of the unaffected founder cohort, rounding up, by
+/// a seed-bound rank. Membership does not drift when residents die or children
+/// are born, so the current live world can adopt this projection safely.
+fn select_support_engineering_cohort(
+    seed: world_domain::WorldSeed,
+    candidates: &[EntityId],
+) -> Result<Vec<EntityId>, CancerResearchSchedulerError> {
+    if candidates.windows(2).any(|pair| pair[0] >= pair[1]) {
+        return Err(CancerResearchSchedulerError::NonCanonicalCandidates);
+    }
+    let mut ranked = candidates
+        .iter()
+        .copied()
+        .map(|resident_id| {
+            Digest::canonical(&(
+                "a-tiny-civilization:cancer-support-engineering-cohort:v1",
+                seed,
+                resident_id,
+            ))
+            .map(|rank| (rank, resident_id))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    ranked.sort_unstable();
+    let cohort_size = candidates.len().div_ceil(3);
+    Ok(ranked
+        .into_iter()
+        .take(cohort_size)
+        .map(|(_, resident_id)| resident_id)
+        .collect())
 }
 
 fn select_researcher(
@@ -480,6 +548,25 @@ mod tests {
             select_researcher(WorldSeed::new(37), 4, &reversed),
             Err(CancerResearchSchedulerError::NonCanonicalCandidates)
         ));
+    }
+
+    #[test]
+    fn support_engineering_cohort_is_stable_and_exactly_one_third_rounded_up() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x500));
+        let candidates = (0..500)
+            .map(|ordinal| {
+                EntityId::deterministic(world_id, format!("unaffected-{ordinal:03}").as_bytes())
+            })
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>();
+        let first = select_support_engineering_cohort(WorldSeed::new(37), &candidates)
+            .expect("engineering cohort");
+        let repeated = select_support_engineering_cohort(WorldSeed::new(37), &candidates)
+            .expect("repeated engineering cohort");
+        assert_eq!(first.len(), 167);
+        assert_eq!(first, repeated);
+        assert_eq!(first.iter().copied().collect::<BTreeSet<_>>().len(), 167);
     }
 
     #[test]

@@ -44,7 +44,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 1;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 2;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -845,6 +845,20 @@ pub struct PublicCancerResearchArtifact {
     pub result_hash: Digest,
     pub memory_state: PublicResearchMemoryState,
     pub created_at: DateTime<Utc>,
+    /// Later artifacts deterministically classified as the same line of work.
+    /// They remain immutable and auditable but are collapsed into this original
+    /// entry for observers.
+    pub duplicates: Vec<PublicCancerResearchDuplicate>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerResearchDuplicate {
+    pub request_id: Uuid,
+    pub ordinal: u32,
+    pub title: String,
+    pub artifact_hash: Digest,
+    pub result_hash: Digest,
+    pub created_at: DateTime<Utc>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -868,6 +882,10 @@ pub struct PublicCancerResearchView {
     pub pending_requests: u64,
     pub successful_requests: u64,
     pub unsuccessful_requests: u64,
+    /// Canonical entries after deterministic title/concept grouping.
+    pub distinct_artifacts: u64,
+    /// Successful immutable artifacts classified under an earlier entry.
+    pub duplicate_artifacts: u64,
     pub memory_queued: u64,
     pub memory_accepted: u64,
     pub artifacts: Vec<PublicCancerResearchArtifact>,

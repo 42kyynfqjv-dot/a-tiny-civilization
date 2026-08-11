@@ -995,6 +995,13 @@ impl OrganismState {
         self.death.is_none()
     }
 
+    /// Founder status is durable world history: initialized organisms have no
+    /// birth tick, while every later organism is bound to one canonical birth.
+    #[must_use]
+    pub const fn is_founder(&self) -> bool {
+        self.born_at.is_none()
+    }
+
     #[must_use]
     pub fn perception_memory_len(&self) -> usize {
         self.perception_memory.len()
@@ -5890,6 +5897,12 @@ impl EngineState {
                             development_id: Some(_),
                             ..
                         }
+                        // A newborn's adult-body-mass commitment is planned in
+                        // the same atomic reproductive suffix as its birth. If it
+                        // remains in the core transition, validation tries to
+                        // apply it before the newborn exists and also sees a gap
+                        // between adjacent birth events.
+                        | DomainEvent::OrganismAdultBodyMassCommitted { .. }
                 )
             };
             if !tick_advanced {
@@ -15147,7 +15160,18 @@ mod tests {
             Some(reproductive_fixture_profile(founder.species.clone()));
         founder.heritable_disposition_profile =
             Some(heritable_fixture_profile(founder.species.clone()));
+        founder.birth_category = BirthCategory::new("female").expect("category");
+        let regulation = founder
+            .physiological_regulation
+            .as_mut()
+            .expect("regulated founder");
+        regulation.fatigue_failure_seconds = 10_000_000;
+        regulation.thermoneutral_min_millicelsius = -50_000;
+        regulation.thermoneutral_max_millicelsius = 50_000;
         let founder_id = founder.organism_id;
+        let mut other_parent = founder.clone();
+        other_parent.organism_id = EntityId::from_uuid(Uuid::from_u128(0x3202));
+        other_parent.birth_category = BirthCategory::new("male").expect("category");
         let patch = founder.embodied_patch.expect("founder patch");
         let water = MaterialIdentity::new(
             "pubchem",
@@ -15189,7 +15213,7 @@ mod tests {
         let genesis_events = initial
             .plan_configured_genesis_with_materials(
                 surface_provisional_full_earth_configuration(),
-                vec![founder],
+                vec![founder, other_parent],
                 vec![reservoir],
             )
             .expect("ruleset-32 genesis plan");
@@ -15219,6 +15243,42 @@ mod tests {
                 .state,
             running
         );
+        let mut reproductive = running.clone();
+        let mut prior = genesis.clone();
+        for tick in 1..=3 {
+            let planned = reproductive
+                .plan_next_tick_with_celestial(CelestialState::new(
+                    TdbSecondsSinceJ2000::new(i128::from(tick) * 300),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ))
+                .expect("adult-mass reproductive tick plans");
+            if tick == 3 {
+                assert!(planned.iter().any(|event| matches!(
+                    event,
+                    DomainEvent::OrganismBorn {
+                        development_id: Some(_),
+                        ..
+                    }
+                )));
+                assert!(planned.iter().any(|event| matches!(
+                    event,
+                    DomainEvent::OrganismAdultBodyMassCommitted { organism_id, .. }
+                        if *organism_id != founder_id
+                            && *organism_id != EntityId::from_uuid(Uuid::from_u128(0x3202))
+                )));
+            }
+            let (next, batch) = reproductive
+                .commit(
+                    prior.sequence.checked_next().expect("sequence"),
+                    prior.batch_hash,
+                    planned,
+                )
+                .expect("adult-mass reproductive tick commits");
+            reproductive = next;
+            prior = batch;
+        }
+        assert_eq!(reproductive.organisms().count(), 3);
         let snapshot = Snapshot::new(running, genesis.sequence, genesis.batch_hash)
             .expect("ruleset-32 snapshot");
         assert_eq!(

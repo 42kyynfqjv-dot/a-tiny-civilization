@@ -1,13 +1,14 @@
 use application::{
     CancerResearchLadderResult, CancerResearchModelRequest, cancer_research_collective_id,
-    cancer_research_memory_bank_id,
+    cancer_research_memory_bank_id, cancer_research_titles_duplicate,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerResearchArtifact,
-    PublicCancerResearchEvidence, PublicCancerResearchView, PublicResearchMemoryState,
+    PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchView,
+    PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
@@ -128,13 +129,11 @@ impl ObserverCancerResearchStore for PostgresStore {
              AND memory.payload->>'context'='Cancer World research artifact'
             WHERE request.world_id=$1
               AND result.result_payload->'receipt' <> 'null'::JSONB
-            ORDER BY request.ordinal DESC, request.request_id
-            LIMIT $3
+            ORDER BY request.ordinal, request.request_id
             "#,
         )
         .bind(world_id.as_uuid())
         .bind(collective_id.as_uuid())
-        .bind(i64::from(limit.clamp(1, 500)))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -198,8 +197,13 @@ impl ObserverCancerResearchStore for PostgresStore {
                     PublicResearchMemoryState::Queued
                 },
                 created_at: row.created_at,
+                duplicates: Vec::new(),
             });
         }
+        let (mut artifacts, duplicate_artifacts) = collapse_duplicate_research(artifacts);
+        let distinct_artifacts = u64::try_from(artifacts.len())
+            .map_err(|_| corrupt("distinct artifact count overflow"))?;
+        artifacts.truncate(usize::from(limit.clamp(1, 500)));
 
         let evidence_rows = sqlx::query_as::<_, ResearchEvidenceRow>(
             r#"
@@ -242,12 +246,57 @@ impl ObserverCancerResearchStore for PostgresStore {
                 stats.unsuccessful_requests,
                 "unsuccessful request count",
             )?,
+            distinct_artifacts,
+            duplicate_artifacts,
             memory_queued: to_u64(stats.memory_queued, "queued memory count")?,
             memory_accepted: to_u64(stats.memory_accepted, "accepted memory count")?,
             artifacts,
             evidence,
         }))
     }
+}
+
+fn collapse_duplicate_research(
+    artifacts: Vec<PublicCancerResearchArtifact>,
+) -> (Vec<PublicCancerResearchArtifact>, u64) {
+    let mut canonical: Vec<PublicCancerResearchArtifact> = Vec::new();
+    let mut duplicate_count = 0_u64;
+    for artifact in artifacts {
+        let duplicate_of = canonical.iter_mut().find(|existing| {
+            existing.contribution.artifact_kind == artifact.contribution.artifact_kind
+                && cancer_research_titles_duplicate(
+                    &existing.contribution.title,
+                    &artifact.contribution.title,
+                )
+        });
+        if let Some(original) = duplicate_of {
+            original.duplicates.push(PublicCancerResearchDuplicate {
+                request_id: artifact.request_id,
+                ordinal: artifact.ordinal,
+                title: artifact.contribution.title,
+                artifact_hash: artifact.artifact_hash,
+                result_hash: artifact.result_hash,
+                created_at: artifact.created_at,
+            });
+            duplicate_count = duplicate_count.saturating_add(1);
+        } else {
+            canonical.push(artifact);
+        }
+    }
+    canonical.sort_by(|left, right| {
+        let left_activity = left
+            .duplicates
+            .last()
+            .map_or(left.created_at, |duplicate| duplicate.created_at);
+        let right_activity = right
+            .duplicates
+            .last()
+            .map_or(right.created_at, |duplicate| duplicate.created_at);
+        right_activity
+            .cmp(&left_activity)
+            .then_with(|| right.ordinal.cmp(&left.ordinal))
+    });
+    (canonical, duplicate_count)
 }
 
 fn digest_from_db(bytes: &[u8], field: &str) -> Result<Digest, ObserverProjectionStoreError> {

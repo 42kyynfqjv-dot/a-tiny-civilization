@@ -1175,6 +1175,7 @@ select {
 .cancer-artifact-meta span { color: var(--cancer-dim); font-size: 8px; letter-spacing: .13em; text-transform: uppercase; }
 .cancer-artifact-meta .accepted { color: var(--cancer-mint); margin-left: auto; }
 .cancer-artifact-meta .queued { color: #e9c36e; margin-left: auto; }
+.cancer-artifact-meta .duplicate { color: #e9c36e; }
 .cancer-artifact-card h3 { font-family: var(--font-geist-sans), sans-serif; font-size: clamp(27px, 4.3vw, 68px); font-weight: 380; letter-spacing: -.04em; line-height: 1; margin: clamp(30px, 5vw, 70px) 0 24px; max-width: 1100px; }
 .cancer-artifact-card > p { color: #a1b5ad; font-family: var(--font-geist-sans), sans-serif; font-size: clamp(14px, 1.35vw, 20px); line-height: 1.7; margin: 0; max-width: 980px; }
 .cancer-artifact-chain { border-bottom: 1px solid var(--cancer-line); border-top: 1px solid var(--cancer-line); display: flex; flex-wrap: wrap; gap: 12px 28px; margin: 38px 0 0; padding: 15px 0; }
@@ -1188,6 +1189,12 @@ select {
 .cancer-artifact-card dl div { border-left: 1px solid var(--cancer-line); padding-left: 16px; }
 .cancer-artifact-card dt { color: var(--cancer-mint); font-size: 8px; letter-spacing: .12em; }
 .cancer-artifact-card dd { color: #91a79e; font-family: var(--font-geist-sans), sans-serif; font-size: 13px; line-height: 1.6; margin: 8px 0 0; }
+.cancer-artifact-card .cancer-duplicate-ledger { border: 1px solid rgba(233, 195, 110, .22); margin-top: 22px; padding: 17px 19px; }
+.cancer-artifact-card .cancer-duplicate-ledger summary { color: #e9c36e; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .11em; }
+.cancer-duplicate-ledger > div { display: grid; gap: 1px; margin-top: 14px; }
+.cancer-duplicate-ledger p { align-items: start; background: rgba(233, 195, 110, .035); display: grid; gap: 7px; grid-template-columns: minmax(100px, .16fr) 1fr auto; margin: 0; padding: 12px; }
+.cancer-duplicate-ledger p span, .cancer-duplicate-ledger p code { color: #9d8960; font-family: var(--font-geist-mono), monospace; font-size: 8px; }
+.cancer-duplicate-ledger p strong { color: #9cafaa; font-family: var(--font-geist-sans), sans-serif; font-size: 11px; font-weight: 450; }
 .cancer-artifact-card footer { color: var(--cancer-dim); display: flex; font-size: 8px; justify-content: space-between; letter-spacing: .08em; padding-top: 24px; }
 
 .cancer-memory-lab { background: rgba(7, 16, 13, .8); border: 1px solid var(--cancer-line); padding: clamp(24px, 4vw, 58px); }

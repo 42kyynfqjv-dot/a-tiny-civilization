@@ -1,12 +1,13 @@
 use application::{
-    CancerResearchAttemptPersistenceState, CancerResearchJobEntry, CancerResearchJobStore,
-    CancerResearchLadderResult, CancerResearchLiteratureSnapshot, CancerResearchModelReceipt,
-    CancerResearchModelRequest, CancerResearchPaidAuthorization,
+    CANCER_RESEARCH_CATALOG_PAGE_SIZE, CancerResearchAttemptPersistenceState,
+    CancerResearchCatalogItem, CancerResearchJobEntry, CancerResearchJobStore,
+    CancerResearchLadderResult, CancerResearchLiteratureSnapshot, CancerResearchMemoryInput,
+    CancerResearchModelReceipt, CancerResearchModelRequest, CancerResearchPaidAuthorization,
     CancerResearchPaidReservationDecision, CancerResearchPriorResult,
     CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
     CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
-    StoreError, cancer_research_collective_id,
+    StoreError, cancer_research_collective_id, cancer_research_titles_duplicate,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -646,6 +647,76 @@ impl CancerResearchJobStore for PostgresStore {
         Ok(Some(prior))
     }
 
+    async fn load_cancer_research_catalog(
+        &self,
+        world_id: world_domain::WorldId,
+        before_ordinal: u32,
+        limit: usize,
+    ) -> Result<Vec<CancerResearchMemoryInput>, StoreError> {
+        let limit = limit.clamp(1, application::MAX_CANCER_RESEARCH_CATALOG_ENTRIES);
+        let scan_limit = limit.saturating_mul(16).clamp(limit, 4_096);
+        let rows = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            WHERE request.world_id=$1
+              AND request.ordinal < $2
+              AND request.stage='blind_discovery'
+              AND result.result_payload->'receipt' <> 'null'::JSONB
+            ORDER BY request.ordinal DESC, request.request_id
+            LIMIT $3
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i64::from(before_ordinal))
+        .bind(i64::try_from(scan_limit).map_err(|_| corrupt("catalog scan limit overflow"))?)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+
+        let mut entries: Vec<CancerResearchCatalogItem> = Vec::with_capacity(limit);
+        for row in rows {
+            let (request, result) = parse_historical_research_result(row, world_id)?;
+            let receipt = result
+                .receipt
+                .ok_or_else(|| corrupt("successful catalog research result omitted its receipt"))?;
+            let contribution = receipt.contribution;
+            if entries.iter().any(|existing| {
+                existing.artifact_kind == contribution.artifact_kind
+                    && cancer_research_titles_duplicate(&existing.title, &contribution.title)
+            }) {
+                continue;
+            }
+            entries.push(CancerResearchCatalogItem {
+                ordinal: request.selection.ordinal,
+                contribution_id: contribution.contribution_id,
+                artifact_hash: contribution.canonical_hash().map_err(corrupt)?,
+                artifact_kind: contribution.artifact_kind,
+                title: contribution.title,
+            });
+            if entries.len() == limit {
+                break;
+            }
+        }
+        entries.sort_by_key(|entry| entry.ordinal);
+        entries
+            .chunks(CANCER_RESEARCH_CATALOG_PAGE_SIZE)
+            .enumerate()
+            .map(|(page_index, page)| {
+                CancerResearchMemoryInput::from_internal_catalog_page(
+                    world_id,
+                    before_ordinal,
+                    u16::try_from(page_index)
+                        .map_err(|_| corrupt("catalog page index overflow"))?,
+                    page,
+                )
+                .map_err(corrupt)
+            })
+            .collect()
+    }
+
     async fn reserve_paid_cancer_research(
         &self,
         worker_id: &str,
@@ -895,6 +966,44 @@ impl CancerResearchJobStore for PostgresStore {
         .await?;
         transaction.commit().await.map_err(operation_error)
     }
+}
+
+fn parse_historical_research_result(
+    row: PriorResearchResultRow,
+    world_id: world_domain::WorldId,
+) -> Result<(CancerResearchModelRequest, CancerResearchLadderResult), StoreError> {
+    let request: CancerResearchModelRequest =
+        serde_json::from_value(row.request_payload).map_err(corrupt)?;
+    let result: CancerResearchLadderResult =
+        serde_json::from_value(row.result_payload).map_err(corrupt)?;
+    request.validate().map_err(corrupt)?;
+    if request.selection.world_id != world_id
+        || request.canonical_hash().map_err(corrupt)?
+            != digest_from_db(&row.request_checksum, "catalog request checksum")?
+        || Digest::canonical(&result).map_err(corrupt)?
+            != digest_from_db(&row.result_checksum, "catalog result checksum")?
+        || result.request_id != request.request_id
+    {
+        return Err(StoreError::Corrupt(
+            "catalog research result failed its durable provenance".to_owned(),
+        ));
+    }
+    let receipt = result
+        .receipt
+        .as_ref()
+        .ok_or_else(|| corrupt("successful catalog result omitted its receipt"))?;
+    if receipt.request_id != request.request_id
+        || receipt.request_hash != request.canonical_hash().map_err(corrupt)?
+    {
+        return Err(StoreError::Corrupt(
+            "catalog research result crossed its immutable request provenance".to_owned(),
+        ));
+    }
+    receipt
+        .contribution
+        .validate_against(&request.selection)
+        .map_err(corrupt)?;
+    Ok((request, result))
 }
 
 impl PostgresStore {

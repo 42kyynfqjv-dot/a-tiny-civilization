@@ -138,6 +138,8 @@ impl CancerResearchStage {
 pub enum CancerResearchTask {
     GenerateMechanisticHypothesis,
     ProposeDiscriminatingExperiment,
+    DesignDiagnosticInstrument,
+    DesignTreatmentMachine,
     ChallengeFrozenHypothesis,
     AuditAgainstLiterature,
     DesignIndependentReplication,
@@ -150,7 +152,10 @@ impl CancerResearchTask {
             (stage, self),
             (
                 CancerResearchStage::BlindDiscovery,
-                Self::GenerateMechanisticHypothesis | Self::ProposeDiscriminatingExperiment
+                Self::GenerateMechanisticHypothesis
+                    | Self::ProposeDiscriminatingExperiment
+                    | Self::DesignDiagnosticInstrument
+                    | Self::DesignTreatmentMachine
             ) | (
                 CancerResearchStage::LiteratureAudit,
                 Self::ChallengeFrozenHypothesis | Self::AuditAgainstLiterature
@@ -169,6 +174,7 @@ pub enum CancerResearchEvidenceKind {
     RawDataset,
     AssayObservation,
     FrozenHypothesis,
+    PriorResearchArtifact,
     Literature,
 }
 
@@ -335,6 +341,8 @@ impl CancerResearchTurnSelection {
 pub enum CancerResearchArtifactKind {
     Hypothesis,
     ExperimentProposal,
+    DiagnosticInstrumentDesign,
+    TreatmentMachineDesign,
     LiteratureAudit,
     ReplicationResult,
     Critique,
@@ -347,6 +355,8 @@ impl CancerResearchArtifactKind {
         match self {
             Self::Hypothesis => "hypothesis",
             Self::ExperimentProposal => "experiment_proposal",
+            Self::DiagnosticInstrumentDesign => "diagnostic_instrument_design",
+            Self::TreatmentMachineDesign => "treatment_machine_design",
             Self::LiteratureAudit => "literature_audit",
             Self::ReplicationResult => "replication_result",
             Self::Critique => "critique",
@@ -480,6 +490,8 @@ fn artifact_kind_valid_for_stage(
             CancerResearchStage::BlindDiscovery,
             CancerResearchArtifactKind::Hypothesis
                 | CancerResearchArtifactKind::ExperimentProposal
+                | CancerResearchArtifactKind::DiagnosticInstrumentDesign
+                | CancerResearchArtifactKind::TreatmentMachineDesign
                 | CancerResearchArtifactKind::Critique
         ) | (
             CancerResearchStage::LiteratureAudit,
