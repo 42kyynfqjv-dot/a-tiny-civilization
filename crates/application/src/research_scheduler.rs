@@ -13,6 +13,7 @@ use crate::{
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_BLIND_TURNS_PER_SIM_DAY: u32 = 1;
+pub const CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS: u32 = 7;
 const SECONDS_PER_DAY: u64 = 86_400;
 const BLIND_RESEARCH_MAX_OUTPUT_TOKENS: u16 = 2_048;
 const EMBEDDED_PRIMITIVES: &str =
@@ -98,15 +99,57 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         )?);
         evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
     }
+    let promoted = if day_ordinal > 0
+        && day_ordinal.is_multiple_of(CANCER_RESEARCH_ESCALATION_INTERVAL_DAYS)
+    {
+        store
+            .load_latest_cancer_research_hypothesis(state.world_id(), day_ordinal)
+            .await?
+    } else {
+        None
+    };
+    let (stage, task, inference_tier, frozen_candidate_hash, model_max_output_tokens) =
+        if let Some(prior) = &promoted {
+            prior.validate()?;
+            let content = serde_json::to_string(prior.contribution())?;
+            let candidate_hash = Digest::canonical(prior.contribution())?;
+            evidence_documents.push(CancerResearchEvidenceDocument {
+                reference: CancerResearchEvidenceReference {
+                    kind: CancerResearchEvidenceKind::FrozenHypothesis,
+                    source_id: format!(
+                        "cancer-world://{}/artifact/{}",
+                        state.world_id(),
+                        prior.contribution().contribution_id
+                    ),
+                    content_hash: Digest::sha256(content.as_bytes()),
+                },
+                content,
+            });
+            (
+                CancerResearchStage::LiteratureAudit,
+                CancerResearchTask::ChallengeFrozenHypothesis,
+                CancerResearchInferenceTier::Escalation,
+                Some(candidate_hash),
+                4_096,
+            )
+        } else {
+            (
+                CancerResearchStage::BlindDiscovery,
+                if day_ordinal.is_multiple_of(2) {
+                    CancerResearchTask::GenerateMechanisticHypothesis
+                } else {
+                    CancerResearchTask::ProposeDiscriminatingExperiment
+                },
+                CancerResearchInferenceTier::Exploration,
+                None,
+                BLIND_RESEARCH_MAX_OUTPUT_TOKENS,
+            )
+        };
+    evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
     let evidence = evidence_documents
         .iter()
         .map(|document| document.reference.clone())
         .collect();
-    let task = if day_ordinal.is_multiple_of(2) {
-        CancerResearchTask::GenerateMechanisticHypothesis
-    } else {
-        CancerResearchTask::ProposeDiscriminatingExperiment
-    };
     let selection = world_domain::CancerResearchTurnSelection::new(
         state.world_id(),
         resident_id,
@@ -114,13 +157,13 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
         deadline_tick,
         day_ordinal,
         commitment.target,
-        CancerResearchStage::BlindDiscovery,
+        stage,
         task,
-        CancerResearchInferenceTier::Exploration,
+        inference_tier,
         CancerResearchProfile::seeded(state.manifest().seed, resident_id)?,
         evidence,
-        None,
-        BLIND_RESEARCH_MAX_OUTPUT_TOKENS,
+        frozen_candidate_hash,
+        model_max_output_tokens,
     )?;
     let request = CancerResearchModelRequest::new(selection, evidence_documents, Vec::new())?;
     let request_id = request.request_id;

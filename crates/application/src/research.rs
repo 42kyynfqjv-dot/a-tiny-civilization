@@ -9,6 +9,41 @@ use world_domain::{
     CancerResearchTurnSelection, Digest,
 };
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerResearchPriorResult {
+    pub request: CancerResearchModelRequest,
+    pub result: CancerResearchLadderResult,
+}
+
+impl CancerResearchPriorResult {
+    pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
+        self.request.validate()?;
+        let registry = match self.request.selection.inference_tier {
+            CancerResearchInferenceTier::Exploration => {
+                CognitionRouteRegistry::cancer_research_exploration()
+            }
+            CancerResearchInferenceTier::Escalation => {
+                CognitionRouteRegistry::cancer_research_escalation()
+            }
+        };
+        self.result.validate_against(&registry, &self.request)?;
+        if self.result.receipt.is_none() {
+            return Err(CancerResearchModelContractError::InvalidPriorResult);
+        }
+        Ok(())
+    }
+
+    pub fn contribution(&self) -> &CancerResearchContribution {
+        &self
+            .result
+            .receipt
+            .as_ref()
+            .expect("validated prior result has a receipt")
+            .contribution
+    }
+}
+
 use crate::{
     CognitionBillingClass, CognitionContractError, CognitionModelRoute, CognitionProviderId,
     CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
@@ -481,6 +516,17 @@ pub trait CancerResearchJobStore: Send + Sync {
         request_id: Uuid,
     ) -> Result<Option<CancerResearchLadderResult>, StoreError>;
 
+    /// Returns the newest successful blind-discovery hypothesis before the given
+    /// simulation ordinal. Stores that do not support promotion may safely return
+    /// none; they must never fabricate a prior result.
+    async fn load_latest_cancer_research_hypothesis(
+        &self,
+        _world_id: world_domain::WorldId,
+        _before_ordinal: u32,
+    ) -> Result<Option<CancerResearchPriorResult>, StoreError> {
+        Ok(None)
+    }
+
     async fn reserve_paid_cancer_research(
         &self,
         worker_id: &str,
@@ -541,6 +587,8 @@ pub enum CancerResearchModelContractError {
     FreeRouteReportedCost,
     #[error("a paid cancer-research response used a different model")]
     PaidModelMismatch,
+    #[error("a prior cancer-research result is incomplete or invalid")]
+    InvalidPriorResult,
     #[error(transparent)]
     Research(#[from] CancerResearchContractError),
     #[error(transparent)]

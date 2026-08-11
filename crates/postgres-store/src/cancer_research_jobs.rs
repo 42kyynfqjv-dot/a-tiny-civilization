@@ -2,8 +2,8 @@ use application::{
     CancerResearchAttemptPersistenceState, CancerResearchJobEntry, CancerResearchJobStore,
     CancerResearchLadderResult, CancerResearchModelReceipt, CancerResearchModelRequest,
     CancerResearchPaidAuthorization, CancerResearchPaidReservationDecision,
-    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionBillingScope,
-    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchPriorResult, CancerResearchRouteAttemptRecord, CognitionBillingClass,
+    CognitionBillingScope, CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
 };
 use async_trait::async_trait;
@@ -44,6 +44,14 @@ struct ResearchAttemptRow {
 
 #[derive(FromRow)]
 struct ResearchResultRow {
+    result_payload: Value,
+    result_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct PriorResearchResultRow {
+    request_payload: Value,
+    request_checksum: Vec<u8>,
     result_payload: Value,
     result_checksum: Vec<u8>,
 }
@@ -452,6 +460,62 @@ impl CancerResearchJobStore for PostgresStore {
             ));
         }
         Ok(Some(result))
+    }
+
+    async fn load_latest_cancer_research_hypothesis(
+        &self,
+        world_id: world_domain::WorldId,
+        before_ordinal: u32,
+    ) -> Result<Option<CancerResearchPriorResult>, StoreError> {
+        let row = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            WHERE request.world_id=$1
+              AND request.ordinal < $2
+              AND request.stage='blind_discovery'
+              AND result.result_payload->'receipt' IS NOT NULL
+              AND result.result_payload->'receipt'->'contribution'->>'artifact_kind'='hypothesis'
+            ORDER BY request.ordinal DESC, request.request_id
+            LIMIT 1
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i64::from(before_ordinal))
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let request: CancerResearchModelRequest =
+            serde_json::from_value(row.request_payload).map_err(corrupt)?;
+        let result: CancerResearchLadderResult =
+            serde_json::from_value(row.result_payload).map_err(corrupt)?;
+        if request.selection.world_id != world_id
+            || request.selection.ordinal >= before_ordinal
+            || request.canonical_hash().map_err(corrupt)?
+                != digest_from_db(&row.request_checksum, "prior research request checksum")?
+            || Digest::canonical(&result).map_err(corrupt)?
+                != digest_from_db(&row.result_checksum, "prior research result checksum")?
+        {
+            return Err(StoreError::Corrupt(
+                "promoted cancer research hypothesis failed its durable checksum".to_owned(),
+            ));
+        }
+        let prior = CancerResearchPriorResult { request, result };
+        prior.validate().map_err(corrupt)?;
+        if prior.request.selection.stage != CancerResearchStage::BlindDiscovery
+            || prior.contribution().artifact_kind
+                != world_domain::CancerResearchArtifactKind::Hypothesis
+        {
+            return Err(StoreError::Corrupt(
+                "promoted cancer research result is not a blind hypothesis".to_owned(),
+            ));
+        }
+        Ok(Some(prior))
     }
 
     async fn reserve_paid_cancer_research(
@@ -1301,8 +1365,23 @@ mod tests {
                 .load_cancer_research_result(request.request_id)
                 .await
                 .expect("load"),
-            Some(result)
+            Some(result.clone())
         );
+        assert_eq!(
+            store
+                .load_latest_cancer_research_hypothesis(world_id, 0)
+                .await
+                .expect("no prior hypothesis at ordinal zero"),
+            None
+        );
+        let promoted = store
+            .load_latest_cancer_research_hypothesis(world_id, 1)
+            .await
+            .expect("load prior hypothesis")
+            .expect("successful hypothesis exists");
+        promoted.validate().expect("promoted result validates");
+        assert_eq!(promoted.request, request);
+        assert_eq!(promoted.result, result);
         let mutation = sqlx::query(
             "UPDATE cancer_research_results SET route_policy_version=99 WHERE request_id=$1",
         )

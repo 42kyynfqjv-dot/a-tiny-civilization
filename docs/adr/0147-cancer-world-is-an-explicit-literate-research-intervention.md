@@ -101,6 +101,11 @@ the NCI PDMR and HCMI resources:
   events rather than unrecorded model prose.
 - The scheduler must allocate paid research turns across independent profiles in
   simulation time while the wall-cost circuit breaker enforces the hard ceiling.
+- The initial scheduler admits at most one research turn per simulated day. Normal
+  days remain blinded free exploration; every seventh day may promote the newest
+  successful blinded hypothesis into a paid DeepSeek challenge. If no successful
+  hypothesis exists, that day remains free exploration. Promotion never bypasses
+  the separate $2.85 monthly hard stop or the worker's paid-default-off control.
 - Observer pages must label all Cancer World output as simulation-generated
   hypotheses, not medical guidance. No result becomes a cure claim without external
   reproducible biological and clinical validation.
