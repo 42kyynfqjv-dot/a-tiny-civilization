@@ -14,9 +14,10 @@ use crate::{
     CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION, CANCER_RESEARCH_CAMPAIGN_MAX_TESTS,
     CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS, CancerResearchCampaignCandidate,
     CancerResearchCampaignDirective, CancerResearchCampaignOutcome,
-    CancerResearchCampaignVariation, CancerResearchEvidenceDocument, CancerResearchJobStore,
-    CancerResearchMemoryInput, CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES,
-    StoreError,
+    CancerResearchCampaignTestAssessment, CancerResearchCampaignVariation,
+    CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchMemoryInput,
+    CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES, StoreError,
+    cancer_research_campaign_test_assessment,
 };
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
@@ -342,15 +343,14 @@ fn prepare_campaign_turn(
                     .as_ref()
                     .ok_or(CancerResearchSchedulerError::InvalidCampaign)?;
                 prior_plan_hashes.push(Digest::canonical(plan)?);
-                match experiment.interpretation {
-                    world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction => {
+                match cancer_research_campaign_test_assessment(experiment) {
+                    CancerResearchCampaignTestAssessment::Supports => {
                         supporting_tests = supporting_tests.saturating_add(1);
                     }
-                    world_domain::CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
-                    | world_domain::CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff => {
+                    CancerResearchCampaignTestAssessment::Falsifies => {
                         falsifying_tests = falsifying_tests.saturating_add(1);
                     }
-                    world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive => {
+                    CancerResearchCampaignTestAssessment::Inconclusive => {
                         inconclusive_tests = inconclusive_tests.saturating_add(1);
                     }
                 }

@@ -1,5 +1,6 @@
 use application::{
-    CancerResearchLadderResult, CancerResearchModelRequest, cancer_research_collective_id,
+    CancerResearchCampaignTestAssessment, CancerResearchLadderResult, CancerResearchModelRequest,
+    cancer_research_campaign_test_assessment, cancer_research_collective_id,
     cancer_research_contributions_duplicate, cancer_research_memory_bank_id,
 };
 use async_trait::async_trait;
@@ -419,15 +420,14 @@ fn reconstruct_campaigns(
                     let Some(experiment) = entry.virtual_experiment.as_ref() else {
                         continue;
                     };
-                    match experiment.result.interpretation {
-                        CancerVirtualExperimentInterpretation::ModelSupportsPrediction => {
+                    match cancer_research_campaign_test_assessment(&experiment.result) {
+                        CancerResearchCampaignTestAssessment::Supports => {
                             supporting_tests = supporting_tests.saturating_add(1);
                         }
-                        CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
-                        | CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff => {
+                        CancerResearchCampaignTestAssessment::Falsifies => {
                             falsifying_tests = falsifying_tests.saturating_add(1);
                         }
-                        CancerVirtualExperimentInterpretation::ModelInconclusive => {
+                        CancerResearchCampaignTestAssessment::Inconclusive => {
                             inconclusive_tests = inconclusive_tests.saturating_add(1);
                         }
                     }

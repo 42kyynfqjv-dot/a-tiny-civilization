@@ -213,6 +213,49 @@ pub enum CancerResearchCampaignVariation {
     ModalityOrTarget,
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum CancerResearchCampaignTestAssessment {
+    Supports,
+    Falsifies,
+    Inconclusive,
+}
+
+/// Interprets one virtual-lab result for campaign stopping rules. A favorable
+/// off-target safety screen is useful but cannot substantiate efficacy, and it
+/// must not kill an otherwise viable campaign merely because healthy-cell loss
+/// was small.
+#[must_use]
+pub const fn cancer_research_campaign_test_assessment(
+    result: &CancerVirtualExperimentResult,
+) -> CancerResearchCampaignTestAssessment {
+    cancer_research_campaign_test_assessment_for(result.primary_endpoint, result.interpretation)
+}
+
+const fn cancer_research_campaign_test_assessment_for(
+    endpoint: CancerVirtualEndpoint,
+    interpretation: CancerVirtualExperimentInterpretation,
+) -> CancerResearchCampaignTestAssessment {
+    match interpretation {
+        CancerVirtualExperimentInterpretation::ModelSupportsPrediction => {
+            CancerResearchCampaignTestAssessment::Supports
+        }
+        CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff => {
+            CancerResearchCampaignTestAssessment::Falsifies
+        }
+        CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
+            if matches!(endpoint, CancerVirtualEndpoint::OffTargetHealthyCellLoss) =>
+        {
+            CancerResearchCampaignTestAssessment::Inconclusive
+        }
+        CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect => {
+            CancerResearchCampaignTestAssessment::Falsifies
+        }
+        CancerVirtualExperimentInterpretation::ModelInconclusive => {
+            CancerResearchCampaignTestAssessment::Inconclusive
+        }
+    }
+}
+
 /// Machine-readable protocol supplied to one campaign turn. A design turn is
 /// locked to an exact, distinct plan. A synthesis turn receives the immutable
 /// deterministic outcome and may explain it, but cannot change it.
@@ -1324,6 +1367,31 @@ mod tests {
             request,
             Err(CancerResearchModelContractError::InvalidMemoryInputs)
         ));
+    }
+
+    #[test]
+    fn campaign_assessment_does_not_confuse_low_toxicity_with_failed_efficacy() {
+        assert_eq!(
+            cancer_research_campaign_test_assessment_for(
+                CancerVirtualEndpoint::OffTargetHealthyCellLoss,
+                CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect,
+            ),
+            CancerResearchCampaignTestAssessment::Inconclusive
+        );
+        assert_eq!(
+            cancer_research_campaign_test_assessment_for(
+                CancerVirtualEndpoint::RelativeTumorBurden,
+                CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect,
+            ),
+            CancerResearchCampaignTestAssessment::Falsifies
+        );
+        assert_eq!(
+            cancer_research_campaign_test_assessment_for(
+                CancerVirtualEndpoint::OffTargetHealthyCellLoss,
+                CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff,
+            ),
+            CancerResearchCampaignTestAssessment::Falsifies
+        );
     }
 
     #[test]
