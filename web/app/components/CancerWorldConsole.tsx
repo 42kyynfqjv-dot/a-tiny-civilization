@@ -176,6 +176,25 @@ type Nci60Qualification = {
   created_at: string;
 };
 
+type Nci60BenchmarkPartition = {
+  qualifications_opened: number;
+  informative_qualifications: number;
+  comparable_pairs: number;
+  concordant_pairs: number;
+  pooled_pairwise_concordance_per_mille: number | null;
+  most_responsive_line_evaluated: number;
+  most_responsive_line_correct: number;
+  least_responsive_line_evaluated: number;
+  least_responsive_line_correct: number;
+};
+
+type Nci60BenchmarkSummary = {
+  overall: Nci60BenchmarkPartition;
+  single_agent: Nci60BenchmarkPartition;
+  combination: Nci60BenchmarkPartition;
+  caveats: string[];
+};
+
 type ResearchCampaign = {
   campaign_id: string;
   program: ResearchProgram;
@@ -232,6 +251,7 @@ type ResearchView = {
   programs: ResearchProgramSummary[];
   campaigns?: ResearchCampaign[];
   lab_capabilities?: LabCapability[];
+  nci60_benchmark?: Nci60BenchmarkSummary;
   artifacts: ResearchArtifact[];
   evidence: ResearchEvidence[];
 };
@@ -348,6 +368,8 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       <Metric label="PEOPLE" value={telemetry?.living_people ?? "—"} />
     </section>
 
+    {research?.nci60_benchmark && <Nci60BenchmarkSummaryPanel summary={research.nci60_benchmark} />}
+
     <nav className="cancer-program-switcher" aria-label="Research programs">
       {(["devices", "treatments"] as ResearchProgram[]).map((item) => {
         const itemSummary = research?.programs?.find((candidate) => candidate.program === item);
@@ -445,6 +467,36 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       </dl>
     </details>
   </main>;
+}
+
+function Nci60BenchmarkSummaryPanel({ summary }: { summary: Nci60BenchmarkSummary }) {
+  const partitions: { label: string; detail: string; value: Nci60BenchmarkPartition }[] = [
+    { label: "ALL CHECKS", detail: "POOLED PAIR AGREEMENT", value: summary.overall },
+    { label: "SINGLE AGENTS", detail: "NCI-60 ACTIVITY / SENSITIVITY", value: summary.single_agent },
+    { label: "COMBINATIONS", detail: "ALMANAC GREATER-THAN-ADDITIVE", value: summary.combination },
+  ];
+  return <section className="cancer-nci-summary" aria-label="NCI response benchmark summary">
+    <header>
+      <div><span>PUBLIC IN-VITRO RESPONSE BENCHMARK</span><strong>How preregistered rankings compare with opened assay ranks</strong></div>
+      <p>Finding aid only. This benchmark never changes an artifact&apos;s status or enters research memory.</p>
+    </header>
+    <div className="cancer-nci-summary-grid">
+      {partitions.map(({ label, detail, value }) => <article key={label}>
+        <span>{label}</span>
+        <strong>{value.pooled_pairwise_concordance_per_mille === null ? "—" : formatScore(value.pooled_pairwise_concordance_per_mille)}</strong>
+        <small>{detail}</small>
+        <dl>
+          <div><dt>OPENED</dt><dd>{value.qualifications_opened}</dd></div>
+          <div><dt>INFORMATIVE</dt><dd>{value.informative_qualifications} / {value.qualifications_opened}</dd></div>
+          <div><dt>CONCORDANT / TOTAL PAIRS</dt><dd>{value.concordant_pairs} / {value.comparable_pairs}</dd></div>
+          <div><dt>TOP GROUP</dt><dd>{value.most_responsive_line_correct} / {value.most_responsive_line_evaluated}</dd></div>
+          <div><dt>BOTTOM GROUP</dt><dd>{value.least_responsive_line_correct} / {value.least_responsive_line_evaluated}</dd></div>
+        </dl>
+      </article>)}
+    </div>
+    {summary.overall.qualifications_opened === 0 && <p className="cancer-nci-summary-empty">No preregistered response challenge has been opened yet.</p>}
+    <footer>{summary.caveats.map((caveat) => <p key={caveat}>{caveat}</p>)}</footer>
+  </section>;
 }
 
 function CampaignCard({ campaign }: { campaign: ResearchCampaign }) {

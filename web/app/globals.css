@@ -1157,10 +1157,28 @@ select {
 .cancer-console-state span::before { background: var(--cancer-mint); border-radius: 50%; content: ""; display: inline-block; height: 5px; margin-right: 8px; vertical-align: 1px; width: 5px; }
 .cancer-console-state strong { display: block; font-size: clamp(50px, 7vw, 96px); font-weight: 300; letter-spacing: -.07em; line-height: 1; margin: 32px 0 10px; }
 
-.cancer-console-grid { border: 1px solid var(--cancer-line); display: grid; gap: 1px; grid-template-columns: repeat(6, 1fr); margin-bottom: clamp(75px, 10vw, 150px); }
+.cancer-console-grid { border: 1px solid var(--cancer-line); display: grid; gap: 1px; grid-template-columns: repeat(6, 1fr); margin-bottom: 16px; }
 .cancer-console-grid article { background: rgba(7, 16, 13, .86); min-height: 136px; padding: 22px; }
 .cancer-console-grid span { color: var(--cancer-dim); display: block; font-size: 8px; letter-spacing: .13em; }
 .cancer-console-grid strong { display: block; font-size: clamp(20px, 2.4vw, 38px); font-weight: 400; margin-top: 36px; overflow-wrap: anywhere; }
+
+.cancer-nci-summary { background: linear-gradient(135deg, rgba(12, 20, 28, .88), rgba(5, 12, 10, .96)); border: 1px solid #27343f; margin-bottom: clamp(75px, 10vw, 150px); }
+.cancer-nci-summary > header { align-items: end; border-bottom: 1px solid #27343f; display: flex; gap: 32px; justify-content: space-between; padding: 20px 22px; }
+.cancer-nci-summary > header span { color: #a98be0; display: block; font-size: 8px; letter-spacing: .13em; margin-bottom: 8px; }
+.cancer-nci-summary > header strong { color: #d9e4e0; font-family: var(--font-geist-sans), sans-serif; font-size: clamp(15px, 1.8vw, 24px); font-weight: 430; }
+.cancer-nci-summary > header p { color: #71857e; font-size: 8px; line-height: 1.5; margin: 0; max-width: 480px; text-align: right; text-transform: uppercase; }
+.cancer-nci-summary-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); }
+.cancer-nci-summary-grid > article { border-right: 1px solid #27343f; padding: 20px 22px; }
+.cancer-nci-summary-grid > article:last-child { border-right: 0; }
+.cancer-nci-summary-grid > article > span, .cancer-nci-summary-grid > article > small { color: #71857e; display: block; font-size: 8px; letter-spacing: .11em; }
+.cancer-nci-summary-grid > article > strong { color: #c49cff; display: block; font-family: var(--font-geist-sans), sans-serif; font-size: clamp(30px, 4vw, 54px); font-weight: 350; letter-spacing: -.04em; margin: 18px 0 4px; }
+.cancer-nci-summary-grid dl { display: grid; gap: 8px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 22px 0 0; }
+.cancer-nci-summary-grid dl div { border-left: 1px solid #27343f; padding-left: 9px; }
+.cancer-nci-summary-grid dt { color: #63756f; font-size: 7px; letter-spacing: .08em; }
+.cancer-nci-summary-grid dd { color: #b8c9c2; font-size: 12px; margin: 5px 0 0; }
+.cancer-nci-summary > footer { border-top: 1px solid #27343f; padding: 12px 22px; }
+.cancer-nci-summary > footer p, .cancer-nci-summary-empty { color: #7d8f89; font-size: 8px; letter-spacing: .05em; line-height: 1.6; margin: 2px 0; text-transform: uppercase; }
+.cancer-nci-summary-empty { border-top: 1px solid #27343f; color: #c49cff; padding: 12px 22px; }
 
 .cancer-console[data-program="devices"] { --program-accent: #79b8e8; --program-glow: rgba(72, 151, 215, .16); }
 .cancer-console[data-program="treatments"] { --program-accent: #ff8e7a; --program-glow: rgba(255, 112, 91, .14); }
@@ -1346,6 +1364,9 @@ select {
   .cancer-console-intro { grid-template-columns: 1fr; }
   .cancer-console-state { max-width: 320px; }
   .cancer-console-grid { grid-template-columns: repeat(3, 1fr); }
+  .cancer-nci-summary-grid { grid-template-columns: 1fr; }
+  .cancer-nci-summary-grid > article { border-bottom: 1px solid #27343f; border-right: 0; }
+  .cancer-nci-summary-grid > article:last-child { border-bottom: 0; }
   .cancer-evidence-list { grid-template-columns: repeat(2, 1fr); }
   .cancer-artifact-list { grid-template-columns: 1fr; }
 }
@@ -1358,6 +1379,8 @@ select {
   .cancer-console-intro h1 { font-size: clamp(46px, 16vw, 76px); }
   .cancer-console-grid { grid-template-columns: repeat(2, 1fr); }
   .cancer-console-grid article { min-height: 112px; }
+  .cancer-nci-summary > header { align-items: flex-start; flex-direction: column; }
+  .cancer-nci-summary > header p { text-align: left; }
   .cancer-program-switcher { grid-template-columns: 1fr; }
   .cancer-program-switcher button { min-height: 220px; }
   .cancer-program-scoreboard { grid-template-columns: repeat(2, minmax(0, 1fr)); }

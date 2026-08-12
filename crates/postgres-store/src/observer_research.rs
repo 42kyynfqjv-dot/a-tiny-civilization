@@ -8,7 +8,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerLabCapability,
-    PublicCancerLabCapabilityStatus, PublicCancerNci60ResponseQualification,
+    PublicCancerLabCapabilityStatus, PublicCancerNci60BenchmarkPartition,
+    PublicCancerNci60BenchmarkSummary, PublicCancerNci60ResponseQualification,
     PublicCancerResearchArtifact, PublicCancerResearchCampaign,
     PublicCancerResearchCampaignOutcome, PublicCancerResearchDuplicate,
     PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
@@ -68,6 +69,19 @@ struct ResearchStatsRow {
     memory_queued: i64,
     memory_accepted: i64,
     first_request_payload: Option<Value>,
+}
+
+#[derive(FromRow)]
+struct Nci60BenchmarkStatsRow {
+    intervention_kind: String,
+    qualifications_opened: i64,
+    informative_qualifications: i64,
+    comparable_pairs: i64,
+    concordant_pairs: i64,
+    most_responsive_line_evaluated: i64,
+    most_responsive_line_correct: i64,
+    least_responsive_line_evaluated: i64,
+    least_responsive_line_correct: i64,
 }
 
 #[async_trait]
@@ -135,6 +149,47 @@ impl ObserverCancerResearchStore for PostgresStore {
         if first_request.selection.world_id != world_id {
             return Err(corrupt("first research request crossed its world boundary"));
         }
+
+        let nci60_benchmark_rows = sqlx::query_as::<_, Nci60BenchmarkStatsRow>(
+            r#"
+            SELECT
+                result_payload->'intervention'->>'kind' AS intervention_kind,
+                COUNT(*) AS qualifications_opened,
+                COUNT(*) FILTER (
+                    WHERE (result_payload->>'pairwise_comparison_count')::BIGINT > 0
+                ) AS informative_qualifications,
+                COALESCE(SUM(
+                    (result_payload->>'pairwise_comparison_count')::BIGINT
+                ), 0)::BIGINT AS comparable_pairs,
+                COALESCE(SUM(
+                    (result_payload->>'concordant_pair_count')::BIGINT
+                ), 0)::BIGINT AS concordant_pairs,
+                COUNT(*) FILTER (
+                    WHERE result_payload->>'most_responsive_line_correct' IS NOT NULL
+                ) AS most_responsive_line_evaluated,
+                COUNT(*) FILTER (
+                    WHERE result_payload->>'most_responsive_line_correct' = 'true'
+                ) AS most_responsive_line_correct,
+                COUNT(*) FILTER (
+                    WHERE result_payload->>'least_responsive_line_correct' IS NOT NULL
+                ) AS least_responsive_line_evaluated,
+                COUNT(*) FILTER (
+                    WHERE result_payload->>'least_responsive_line_correct' = 'true'
+                ) AS least_responsive_line_correct
+            FROM cancer_nci60_response_qualifications
+            WHERE world_id=$1 AND method_version=$2
+            GROUP BY result_payload->'intervention'->>'kind'
+            ORDER BY intervention_kind
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(
+            CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+        ))
+        .fetch_all(self.pool())
+        .await
+        .map_err(unavailable)?;
+        let nci60_benchmark = summarize_nci60_benchmark(&nci60_benchmark_rows)?;
 
         let rows = sqlx::query_as::<_, ResearchProjectionRow>(
             r#"
@@ -433,6 +488,7 @@ impl ObserverCancerResearchStore for PostgresStore {
             programs,
             campaigns,
             lab_capabilities: cancer_lab_capabilities(),
+            nci60_benchmark,
             artifacts,
             evidence,
         }))
@@ -709,6 +765,130 @@ fn summarize_program(
     })
 }
 
+fn summarize_nci60_benchmark(
+    rows: &[Nci60BenchmarkStatsRow],
+) -> Result<PublicCancerNci60BenchmarkSummary, ObserverProjectionStoreError> {
+    let mut single_agent = None;
+    let mut combination = None;
+    for row in rows {
+        let partition = nci60_benchmark_partition(row)?;
+        let destination = match row.intervention_kind.as_str() {
+            "single_agent" => &mut single_agent,
+            "combination" => &mut combination,
+            _ => return Err(corrupt("unknown NCI-60 benchmark intervention kind")),
+        };
+        if destination.replace(partition).is_some() {
+            return Err(corrupt("duplicate NCI-60 benchmark intervention partition"));
+        }
+    }
+    let single_agent = single_agent.unwrap_or_default();
+    let combination = combination.unwrap_or_default();
+    let overall = combine_nci60_benchmark_partitions(&single_agent, &combination)?;
+    Ok(PublicCancerNci60BenchmarkSummary {
+        overall,
+        single_agent,
+        combination,
+        caveats: vec![
+            "Public NCI-60 and ALMANAC in-vitro rank benchmarking only; this is not a treatment verdict, patient-efficacy result, or clinical evidence.".to_owned(),
+            "These public datasets may have appeared in model training; runtime answer-key isolation does not make this a clean out-of-sample test.".to_owned(),
+        ],
+    })
+}
+
+fn nci60_benchmark_partition(
+    row: &Nci60BenchmarkStatsRow,
+) -> Result<PublicCancerNci60BenchmarkPartition, ObserverProjectionStoreError> {
+    let partition = PublicCancerNci60BenchmarkPartition {
+        qualifications_opened: to_u64(row.qualifications_opened, "NCI-60 qualification count")?,
+        informative_qualifications: to_u64(
+            row.informative_qualifications,
+            "informative NCI-60 qualification count",
+        )?,
+        comparable_pairs: to_u64(row.comparable_pairs, "NCI-60 comparable pair count")?,
+        concordant_pairs: to_u64(row.concordant_pairs, "NCI-60 concordant pair count")?,
+        pooled_pairwise_concordance_per_mille: None,
+        most_responsive_line_evaluated: to_u64(
+            row.most_responsive_line_evaluated,
+            "NCI-60 top-rank evaluation count",
+        )?,
+        most_responsive_line_correct: to_u64(
+            row.most_responsive_line_correct,
+            "NCI-60 correct top-rank count",
+        )?,
+        least_responsive_line_evaluated: to_u64(
+            row.least_responsive_line_evaluated,
+            "NCI-60 bottom-rank evaluation count",
+        )?,
+        least_responsive_line_correct: to_u64(
+            row.least_responsive_line_correct,
+            "NCI-60 correct bottom-rank count",
+        )?,
+    };
+    finish_nci60_benchmark_partition(partition)
+}
+
+fn combine_nci60_benchmark_partitions(
+    left: &PublicCancerNci60BenchmarkPartition,
+    right: &PublicCancerNci60BenchmarkPartition,
+) -> Result<PublicCancerNci60BenchmarkPartition, ObserverProjectionStoreError> {
+    let add = |left: u64, right: u64| {
+        left.checked_add(right)
+            .ok_or_else(|| corrupt("NCI-60 benchmark aggregate overflow"))
+    };
+    finish_nci60_benchmark_partition(PublicCancerNci60BenchmarkPartition {
+        qualifications_opened: add(left.qualifications_opened, right.qualifications_opened)?,
+        informative_qualifications: add(
+            left.informative_qualifications,
+            right.informative_qualifications,
+        )?,
+        comparable_pairs: add(left.comparable_pairs, right.comparable_pairs)?,
+        concordant_pairs: add(left.concordant_pairs, right.concordant_pairs)?,
+        pooled_pairwise_concordance_per_mille: None,
+        most_responsive_line_evaluated: add(
+            left.most_responsive_line_evaluated,
+            right.most_responsive_line_evaluated,
+        )?,
+        most_responsive_line_correct: add(
+            left.most_responsive_line_correct,
+            right.most_responsive_line_correct,
+        )?,
+        least_responsive_line_evaluated: add(
+            left.least_responsive_line_evaluated,
+            right.least_responsive_line_evaluated,
+        )?,
+        least_responsive_line_correct: add(
+            left.least_responsive_line_correct,
+            right.least_responsive_line_correct,
+        )?,
+    })
+}
+
+fn finish_nci60_benchmark_partition(
+    mut partition: PublicCancerNci60BenchmarkPartition,
+) -> Result<PublicCancerNci60BenchmarkPartition, ObserverProjectionStoreError> {
+    if partition.informative_qualifications > partition.qualifications_opened
+        || partition.concordant_pairs > partition.comparable_pairs
+        || partition.most_responsive_line_evaluated > partition.qualifications_opened
+        || partition.most_responsive_line_correct > partition.most_responsive_line_evaluated
+        || partition.least_responsive_line_evaluated > partition.qualifications_opened
+        || partition.least_responsive_line_correct > partition.least_responsive_line_evaluated
+        || (partition.comparable_pairs == 0 && partition.concordant_pairs != 0)
+    {
+        return Err(corrupt("invalid NCI-60 benchmark aggregate"));
+    }
+    partition.pooled_pairwise_concordance_per_mille = if partition.comparable_pairs == 0 {
+        None
+    } else {
+        let score = (u128::from(partition.concordant_pairs) * 1_000)
+            / u128::from(partition.comparable_pairs);
+        Some(
+            u16::try_from(score)
+                .map_err(|_| corrupt("NCI-60 benchmark score exceeds per-mille range"))?,
+        )
+    };
+    Ok(partition)
+}
+
 fn digest_from_db(bytes: &[u8], field: &str) -> Result<Digest, ObserverProjectionStoreError> {
     let bytes: [u8; 32] = bytes
         .try_into()
@@ -754,5 +934,72 @@ mod tests {
             campaign_outcome(2, 0, 3),
             PublicCancerResearchCampaignOutcome::Inconclusive
         );
+    }
+
+    fn benchmark_row(
+        intervention_kind: &str,
+        qualifications_opened: i64,
+        comparable_pairs: i64,
+        concordant_pairs: i64,
+        top_correct: i64,
+        bottom_correct: i64,
+    ) -> Nci60BenchmarkStatsRow {
+        Nci60BenchmarkStatsRow {
+            intervention_kind: intervention_kind.to_owned(),
+            qualifications_opened,
+            informative_qualifications: qualifications_opened,
+            comparable_pairs,
+            concordant_pairs,
+            most_responsive_line_evaluated: qualifications_opened,
+            most_responsive_line_correct: top_correct,
+            least_responsive_line_evaluated: qualifications_opened,
+            least_responsive_line_correct: bottom_correct,
+        }
+    }
+
+    #[test]
+    fn nci60_benchmark_pools_pair_counts_instead_of_averaging_scores() {
+        let summary = summarize_nci60_benchmark(&[
+            benchmark_row("single_agent", 2, 10, 10, 2, 1),
+            benchmark_row("combination", 1, 2, 0, 0, 1),
+        ])
+        .expect("benchmark summary");
+
+        assert_eq!(
+            summary.single_agent.pooled_pairwise_concordance_per_mille,
+            Some(1_000)
+        );
+        assert_eq!(
+            summary.combination.pooled_pairwise_concordance_per_mille,
+            Some(0)
+        );
+        assert_eq!(summary.overall.qualifications_opened, 3);
+        assert_eq!(summary.overall.comparable_pairs, 12);
+        assert_eq!(summary.overall.concordant_pairs, 10);
+        assert_eq!(
+            summary.overall.pooled_pairwise_concordance_per_mille,
+            Some(833)
+        );
+        assert_eq!(summary.overall.most_responsive_line_correct, 2);
+        assert_eq!(summary.overall.least_responsive_line_correct, 2);
+    }
+
+    #[test]
+    fn nci60_benchmark_is_well_formed_before_any_challenge_is_opened() {
+        let summary = summarize_nci60_benchmark(&[]).expect("empty benchmark summary");
+
+        assert_eq!(
+            summary.overall,
+            PublicCancerNci60BenchmarkPartition::default()
+        );
+        assert_eq!(
+            summary.single_agent,
+            PublicCancerNci60BenchmarkPartition::default()
+        );
+        assert_eq!(
+            summary.combination,
+            PublicCancerNci60BenchmarkPartition::default()
+        );
+        assert_eq!(summary.caveats.len(), 2);
     }
 }

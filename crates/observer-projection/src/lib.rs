@@ -45,7 +45,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 8;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 9;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -942,6 +942,33 @@ pub struct PublicCancerNci60ResponseQualification {
     pub created_at: DateTime<Utc>,
 }
 
+/// Pooled observer-side statistics for one NCI response-benchmark partition.
+/// Pairwise concordance is computed from the pooled pair counts, never by
+/// averaging per-challenge percentages with unequal denominators.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerNci60BenchmarkPartition {
+    pub qualifications_opened: u64,
+    pub informative_qualifications: u64,
+    pub comparable_pairs: u64,
+    pub concordant_pairs: u64,
+    pub pooled_pairwise_concordance_per_mille: Option<u16>,
+    pub most_responsive_line_evaluated: u64,
+    pub most_responsive_line_correct: u64,
+    pub least_responsive_line_evaluated: u64,
+    pub least_responsive_line_correct: u64,
+}
+
+/// Read-only rollup over immutable response qualifications. It is deliberately
+/// absent from research memory and has no authority over artifact or campaign
+/// status.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerNci60BenchmarkSummary {
+    pub overall: PublicCancerNci60BenchmarkPartition,
+    pub single_agent: PublicCancerNci60BenchmarkPartition,
+    pub combination: PublicCancerNci60BenchmarkPartition,
+    pub caveats: Vec<String>,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublicCancerResearchNoveltyAudit {
     #[serde(flatten)]
@@ -990,6 +1017,7 @@ pub struct PublicCancerResearchView {
     pub programs: Vec<PublicCancerResearchProgramSummary>,
     pub campaigns: Vec<PublicCancerResearchCampaign>,
     pub lab_capabilities: Vec<PublicCancerLabCapability>,
+    pub nci60_benchmark: PublicCancerNci60BenchmarkSummary,
     pub artifacts: Vec<PublicCancerResearchArtifact>,
     pub evidence: Vec<PublicCancerResearchEvidence>,
 }
