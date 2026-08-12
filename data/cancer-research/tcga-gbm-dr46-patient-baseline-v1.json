@@ -1,0 +1,694 @@
+{
+  "schema_version": 1,
+  "baseline_id": "tcga-gbm-dr46-patient-baseline-v1",
+  "evidence_class": "retrospective_observational_aggregate",
+  "intended_use": "Population and somatic-variant baseline checks for Cancer World; not intervention-response calibration.",
+  "source_registry_hash": "31037b3fc2f2b26a28663ec992dae5d5ee33ae9db175b110a0439fea257ec7f1",
+  "source": {
+    "source_id": "tcga-gbm-2013",
+    "data_release": "Data Release 46.0 - August 10, 2026",
+    "data_release_date": "2026-08-10",
+    "api_commit": "8f7c2a51ab0084b216ad1b62a3fae8b945439c53",
+    "api_version": "8.5.0",
+    "case_response_hash": "b282605991da822d3161b236cb05ba4670148f0781857650a8cb29923f3003b1",
+    "mutation_catalog_hash": "ef1382f97a5952b76fe1213be61b5ec8b641db5e7e046de29ba0b42d056187b4",
+    "mutation_file_set_hash": "abdb7e37268e77bc39255d26b0a3bc38945120a600b70b0248f58acf7b975499",
+    "mutation_file_count": 464
+  },
+  "split": {
+    "derivation_domain": "a-tiny-civilization/tcga-gbm/patient-split/v1",
+    "rule": "sha256(domain || 0x00 || GDC case UUID), first eight bytes modulo 5; zero is held out",
+    "calibration_patient_count": 492,
+    "held_out_validation_patient_count": 125,
+    "calibration_patient_set_commitment": "83dcbd7f0c661029cf44721d78c1f0a071ae7f68ba3c66d91c2f341bfc61a3bc",
+    "held_out_validation_patient_set_commitment": "b6ffb3b7af6edf03b0920f2d113a286894af1b1c35c2fc6a49d47ac688964158"
+  },
+  "complete_cohort": {
+    "patient_count": 617,
+    "dead_patient_count": 492,
+    "alive_patient_count": 102,
+    "unknown_vital_status_count": 23,
+    "known_age_at_diagnosis_count": 596,
+    "median_age_at_diagnosis_days": 21706,
+    "known_days_to_death_count": 491,
+    "median_days_to_death_among_observed_deaths": 382,
+    "known_alive_follow_up_count": 3,
+    "median_alive_follow_up_days": 4,
+    "molecularly_profiled_patient_count": 374,
+    "protein_altering_variant_count": 35885,
+    "median_unique_protein_altering_variants_per_profiled_patient": 43,
+    "top_protein_altering_gene_prevalence": [
+      {
+        "gene": "PTEN",
+        "patients_with_variant": 119,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 318181
+      },
+      {
+        "gene": "TP53",
+        "patients_with_variant": 112,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 299465
+      },
+      {
+        "gene": "TTN",
+        "patients_with_variant": 81,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 216577
+      },
+      {
+        "gene": "EGFR",
+        "patients_with_variant": 73,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 195187
+      },
+      {
+        "gene": "MUC16",
+        "patients_with_variant": 50,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 133689
+      },
+      {
+        "gene": "FLG",
+        "patients_with_variant": 38,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 101604
+      },
+      {
+        "gene": "NF1",
+        "patients_with_variant": 38,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 101604
+      },
+      {
+        "gene": "RYR2",
+        "patients_with_variant": 37,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 98930
+      },
+      {
+        "gene": "PIK3CA",
+        "patients_with_variant": 36,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 96256
+      },
+      {
+        "gene": "ATRX",
+        "patients_with_variant": 34,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 90909
+      },
+      {
+        "gene": "PIK3R1",
+        "patients_with_variant": 33,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 88235
+      },
+      {
+        "gene": "LRP2",
+        "patients_with_variant": 32,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 85561
+      },
+      {
+        "gene": "RB1",
+        "patients_with_variant": 29,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 77540
+      },
+      {
+        "gene": "SPTA1",
+        "patients_with_variant": 28,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 74866
+      },
+      {
+        "gene": "LRP1",
+        "patients_with_variant": 27,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 72192
+      },
+      {
+        "gene": "PCLO",
+        "patients_with_variant": 26,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 69518
+      },
+      {
+        "gene": "MUC17",
+        "patients_with_variant": 25,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 66844
+      },
+      {
+        "gene": "IDH1",
+        "patients_with_variant": 23,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 61497
+      },
+      {
+        "gene": "HMCN1",
+        "patients_with_variant": 22,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 58823
+      },
+      {
+        "gene": "AHNAK2",
+        "patients_with_variant": 21,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 56149
+      },
+      {
+        "gene": "DNAH5",
+        "patients_with_variant": 21,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 56149
+      },
+      {
+        "gene": "PKHD1",
+        "patients_with_variant": 21,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 56149
+      },
+      {
+        "gene": "PIK3C2B",
+        "patients_with_variant": 20,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 53475
+      },
+      {
+        "gene": "USH2A",
+        "patients_with_variant": 20,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 53475
+      },
+      {
+        "gene": "COL6A3",
+        "patients_with_variant": 19,
+        "profiled_patients": 374,
+        "prevalence_parts_per_million": 50802
+      }
+    ]
+  },
+  "calibration_cohort": {
+    "patient_count": 492,
+    "dead_patient_count": 402,
+    "alive_patient_count": 75,
+    "unknown_vital_status_count": 15,
+    "known_age_at_diagnosis_count": 479,
+    "median_age_at_diagnosis_days": 21421,
+    "known_days_to_death_count": 401,
+    "median_days_to_death_among_observed_deaths": 385,
+    "known_alive_follow_up_count": 2,
+    "median_alive_follow_up_days": 4,
+    "molecularly_profiled_patient_count": 303,
+    "protein_altering_variant_count": 32811,
+    "median_unique_protein_altering_variants_per_profiled_patient": 43,
+    "top_protein_altering_gene_prevalence": [
+      {
+        "gene": "PTEN",
+        "patients_with_variant": 97,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 320132
+      },
+      {
+        "gene": "TP53",
+        "patients_with_variant": 92,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 303630
+      },
+      {
+        "gene": "TTN",
+        "patients_with_variant": 64,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 211221
+      },
+      {
+        "gene": "EGFR",
+        "patients_with_variant": 59,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 194719
+      },
+      {
+        "gene": "MUC16",
+        "patients_with_variant": 38,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 125412
+      },
+      {
+        "gene": "FLG",
+        "patients_with_variant": 35,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 115511
+      },
+      {
+        "gene": "NF1",
+        "patients_with_variant": 32,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 105610
+      },
+      {
+        "gene": "LRP2",
+        "patients_with_variant": 29,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 95709
+      },
+      {
+        "gene": "PIK3R1",
+        "patients_with_variant": 28,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 92409
+      },
+      {
+        "gene": "PIK3CA",
+        "patients_with_variant": 27,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 89108
+      },
+      {
+        "gene": "RYR2",
+        "patients_with_variant": 27,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 89108
+      },
+      {
+        "gene": "ATRX",
+        "patients_with_variant": 26,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 85808
+      },
+      {
+        "gene": "LRP1",
+        "patients_with_variant": 25,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 82508
+      },
+      {
+        "gene": "RB1",
+        "patients_with_variant": 23,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 75907
+      },
+      {
+        "gene": "PCLO",
+        "patients_with_variant": 22,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 72607
+      },
+      {
+        "gene": "SPTA1",
+        "patients_with_variant": 22,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 72607
+      },
+      {
+        "gene": "MUC17",
+        "patients_with_variant": 21,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 69306
+      },
+      {
+        "gene": "PKHD1",
+        "patients_with_variant": 20,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 66006
+      },
+      {
+        "gene": "HMCN1",
+        "patients_with_variant": 19,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 62706
+      },
+      {
+        "gene": "SYNE1",
+        "patients_with_variant": 19,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 62706
+      },
+      {
+        "gene": "AHNAK2",
+        "patients_with_variant": 18,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 59405
+      },
+      {
+        "gene": "DNAH5",
+        "patients_with_variant": 18,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 59405
+      },
+      {
+        "gene": "IDH1",
+        "patients_with_variant": 18,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 59405
+      },
+      {
+        "gene": "PIK3C2B",
+        "patients_with_variant": 17,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 56105
+      },
+      {
+        "gene": "USH2A",
+        "patients_with_variant": 17,
+        "profiled_patients": 303,
+        "prevalence_parts_per_million": 56105
+      }
+    ]
+  },
+  "held_out_validation_cohort": {
+    "patient_count": 125,
+    "dead_patient_count": 90,
+    "alive_patient_count": 27,
+    "unknown_vital_status_count": 8,
+    "known_age_at_diagnosis_count": 117,
+    "median_age_at_diagnosis_days": 22457,
+    "known_days_to_death_count": 90,
+    "median_days_to_death_among_observed_deaths": 372,
+    "known_alive_follow_up_count": 1,
+    "median_alive_follow_up_days": 13,
+    "molecularly_profiled_patient_count": 71,
+    "protein_altering_variant_count": 3074,
+    "median_unique_protein_altering_variants_per_profiled_patient": 43,
+    "top_protein_altering_gene_prevalence": [
+      {
+        "gene": "PTEN",
+        "patients_with_variant": 22,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 309859
+      },
+      {
+        "gene": "TP53",
+        "patients_with_variant": 20,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 281690
+      },
+      {
+        "gene": "TTN",
+        "patients_with_variant": 17,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 239436
+      },
+      {
+        "gene": "EGFR",
+        "patients_with_variant": 14,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 197183
+      },
+      {
+        "gene": "MUC16",
+        "patients_with_variant": 12,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 169014
+      },
+      {
+        "gene": "RYR2",
+        "patients_with_variant": 10,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 140845
+      },
+      {
+        "gene": "PIK3CA",
+        "patients_with_variant": 9,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 126760
+      },
+      {
+        "gene": "ATRX",
+        "patients_with_variant": 8,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 112676
+      },
+      {
+        "gene": "NF1",
+        "patients_with_variant": 6,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 84507
+      },
+      {
+        "gene": "RB1",
+        "patients_with_variant": 6,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 84507
+      },
+      {
+        "gene": "SPTA1",
+        "patients_with_variant": 6,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 84507
+      },
+      {
+        "gene": "FRMD7",
+        "patients_with_variant": 5,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 70422
+      },
+      {
+        "gene": "IDH1",
+        "patients_with_variant": 5,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 70422
+      },
+      {
+        "gene": "LZTR1",
+        "patients_with_variant": 5,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 70422
+      },
+      {
+        "gene": "NOS1",
+        "patients_with_variant": 5,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 70422
+      },
+      {
+        "gene": "PIK3R1",
+        "patients_with_variant": 5,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 70422
+      },
+      {
+        "gene": "SEMA3C",
+        "patients_with_variant": 5,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 70422
+      },
+      {
+        "gene": "ADAMTS16",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "APOB",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "CFAP47",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "CIITA",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "COL6A3",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "DNAH8",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "FLG2",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      },
+      {
+        "gene": "MUC17",
+        "patients_with_variant": 4,
+        "profiled_patients": 71,
+        "prevalence_parts_per_million": 56338
+      }
+    ]
+  },
+  "held_out_assessment": {
+    "predictor": "calibration_cohort_empirical_gene_prevalence",
+    "feature_selection": "top 25 protein-altering genes selected using calibration patients only",
+    "evaluated_gene_count": 25,
+    "mean_absolute_prevalence_error_parts_per_million": 28189,
+    "mean_brier_score_parts_per_million": 82063,
+    "predictions": [
+      {
+        "gene": "PTEN",
+        "calibration_prevalence_parts_per_million": 320132,
+        "held_out_prevalence_parts_per_million": 309859,
+        "absolute_error_parts_per_million": 10273
+      },
+      {
+        "gene": "TP53",
+        "calibration_prevalence_parts_per_million": 303630,
+        "held_out_prevalence_parts_per_million": 281690,
+        "absolute_error_parts_per_million": 21940
+      },
+      {
+        "gene": "TTN",
+        "calibration_prevalence_parts_per_million": 211221,
+        "held_out_prevalence_parts_per_million": 239436,
+        "absolute_error_parts_per_million": 28215
+      },
+      {
+        "gene": "EGFR",
+        "calibration_prevalence_parts_per_million": 194719,
+        "held_out_prevalence_parts_per_million": 197183,
+        "absolute_error_parts_per_million": 2464
+      },
+      {
+        "gene": "MUC16",
+        "calibration_prevalence_parts_per_million": 125412,
+        "held_out_prevalence_parts_per_million": 169014,
+        "absolute_error_parts_per_million": 43602
+      },
+      {
+        "gene": "FLG",
+        "calibration_prevalence_parts_per_million": 115511,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 73258
+      },
+      {
+        "gene": "NF1",
+        "calibration_prevalence_parts_per_million": 105610,
+        "held_out_prevalence_parts_per_million": 84507,
+        "absolute_error_parts_per_million": 21103
+      },
+      {
+        "gene": "LRP2",
+        "calibration_prevalence_parts_per_million": 95709,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 53456
+      },
+      {
+        "gene": "PIK3R1",
+        "calibration_prevalence_parts_per_million": 92409,
+        "held_out_prevalence_parts_per_million": 70422,
+        "absolute_error_parts_per_million": 21987
+      },
+      {
+        "gene": "PIK3CA",
+        "calibration_prevalence_parts_per_million": 89108,
+        "held_out_prevalence_parts_per_million": 126760,
+        "absolute_error_parts_per_million": 37652
+      },
+      {
+        "gene": "RYR2",
+        "calibration_prevalence_parts_per_million": 89108,
+        "held_out_prevalence_parts_per_million": 140845,
+        "absolute_error_parts_per_million": 51737
+      },
+      {
+        "gene": "ATRX",
+        "calibration_prevalence_parts_per_million": 85808,
+        "held_out_prevalence_parts_per_million": 112676,
+        "absolute_error_parts_per_million": 26868
+      },
+      {
+        "gene": "LRP1",
+        "calibration_prevalence_parts_per_million": 82508,
+        "held_out_prevalence_parts_per_million": 28169,
+        "absolute_error_parts_per_million": 54339
+      },
+      {
+        "gene": "RB1",
+        "calibration_prevalence_parts_per_million": 75907,
+        "held_out_prevalence_parts_per_million": 84507,
+        "absolute_error_parts_per_million": 8600
+      },
+      {
+        "gene": "PCLO",
+        "calibration_prevalence_parts_per_million": 72607,
+        "held_out_prevalence_parts_per_million": 56338,
+        "absolute_error_parts_per_million": 16269
+      },
+      {
+        "gene": "SPTA1",
+        "calibration_prevalence_parts_per_million": 72607,
+        "held_out_prevalence_parts_per_million": 84507,
+        "absolute_error_parts_per_million": 11900
+      },
+      {
+        "gene": "MUC17",
+        "calibration_prevalence_parts_per_million": 69306,
+        "held_out_prevalence_parts_per_million": 56338,
+        "absolute_error_parts_per_million": 12968
+      },
+      {
+        "gene": "PKHD1",
+        "calibration_prevalence_parts_per_million": 66006,
+        "held_out_prevalence_parts_per_million": 14084,
+        "absolute_error_parts_per_million": 51922
+      },
+      {
+        "gene": "HMCN1",
+        "calibration_prevalence_parts_per_million": 62706,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 20453
+      },
+      {
+        "gene": "SYNE1",
+        "calibration_prevalence_parts_per_million": 62706,
+        "held_out_prevalence_parts_per_million": 0,
+        "absolute_error_parts_per_million": 62706
+      },
+      {
+        "gene": "AHNAK2",
+        "calibration_prevalence_parts_per_million": 59405,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 17152
+      },
+      {
+        "gene": "DNAH5",
+        "calibration_prevalence_parts_per_million": 59405,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 17152
+      },
+      {
+        "gene": "IDH1",
+        "calibration_prevalence_parts_per_million": 59405,
+        "held_out_prevalence_parts_per_million": 70422,
+        "absolute_error_parts_per_million": 11017
+      },
+      {
+        "gene": "PIK3C2B",
+        "calibration_prevalence_parts_per_million": 56105,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 13852
+      },
+      {
+        "gene": "USH2A",
+        "calibration_prevalence_parts_per_million": 56105,
+        "held_out_prevalence_parts_per_million": 42253,
+        "absolute_error_parts_per_million": 13852
+      }
+    ],
+    "interpretation": "This is the simple out-of-sample molecular baseline a future Cancer World genomic model must beat; it is not treatment-response validation."
+  },
+  "limitations": [
+    "The split is a retrospective validation scaffold, not a prospective clinical trial.",
+    "Days-to-death is summarized only among observed deaths; censoring is not treated as an event.",
+    "Multiple open masked-MAF specimens for one patient are unioned before patient-level prevalence is calculated.",
+    "Masked somatic variants do not capture expression, epigenetics, spatial state, treatment exposure, pharmacology, or causal response.",
+    "No patient identifier or patient-level row is emitted by this aggregate artifact."
+  ]
+}

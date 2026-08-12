@@ -9,6 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod cancer_tcga;
+
 use anyhow::{Context, Result, bail};
 use clap::{Parser, Subcommand};
 use drand_verify::{G2PubkeyRfc, Pubkey, derive_randomness};
@@ -157,6 +159,12 @@ enum SourceCommand {
         manifest: PathBuf,
         #[arg(long)]
         artifact_root: PathBuf,
+    },
+    /// Acquire the open TCGA-GBM clinical and masked-mutation slice.
+    CancerTcgaGbm {
+        /// New directory beneath the ignored source cache. Existing paths fail closed.
+        #[arg(long)]
+        output_directory: PathBuf,
     },
 }
 
@@ -533,6 +541,16 @@ enum InspectCommand {
 
 #[derive(Debug, Subcommand)]
 enum DeriveCommand {
+    /// Derive patient-disjoint aggregate baselines from the open TCGA-GBM slice.
+    CancerTcgaGbmBaseline {
+        #[arg(long)]
+        source_directory: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+        /// New aggregate-only artifact; no patient identifiers are emitted.
+        #[arg(long)]
+        output: PathBuf,
+    },
     /// Select one source-confirmed land patch from the public world seed.
     ///
     /// This makes no habitat, population, or survivability assertion.
@@ -1288,6 +1306,9 @@ async fn main() -> Result<()> {
                 manifest,
                 artifact_root,
             } => fetch_source(&manifest, &artifact_root).await,
+            SourceCommand::CancerTcgaGbm { output_directory } => {
+                cancer_tcga::acquire(&output_directory).await
+            }
         },
         Command::Inspect { command } => match command {
             InspectCommand::CancerDatasetRegistry { input } => {
@@ -1545,6 +1566,11 @@ async fn main() -> Result<()> {
             } => inspect_jpl_de441_epoch(&input_directory, tdb_seconds_from_j2000),
         },
         Command::Derive { command } => match command {
+            DeriveCommand::CancerTcgaGbmBaseline {
+                source_directory,
+                registry,
+                output,
+            } => cancer_tcga::derive_baseline(&source_directory, &registry, &output),
             DeriveCommand::ProvisionalLandOriginSelection {
                 land_reference_root_index,
                 artifact_root,

@@ -65,6 +65,11 @@ The axes remain separate until a documented join proves compatible patient,
 specimen, diagnosis, assay, unit, and time semantics. The normalizer cannot create a
 fictional “complete patient” by combining measurements from unrelated donors.
 
+The first real-data vertical slice is recorded in
+[`docs/science/CANCER_WORLD_TCGA_GBM_BASELINE.md`](../science/CANCER_WORLD_TCGA_GBM_BASELINE.md).
+It establishes an aggregate patient-disjoint TCGA-GBM molecular baseline. It does
+not advance the virtual lab to intervention-response qualification.
+
 ## Verification
 
 - The committed registry parses and has a stable content digest.
@@ -88,4 +93,3 @@ fictional “complete patient” by combining measurements from unrelated donors
 - Spatial GBM atlas data availability: <https://pmc.ncbi.nlm.nih.gov/articles/PMC13031279/>
 - GDC open and controlled access policy:
   <https://gdc.cancer.gov/access-data/data-access-processes-and-tools>
-
