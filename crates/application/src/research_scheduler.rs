@@ -72,6 +72,15 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
     let Some(turn_ordinal) = research_ordinal_due_at_tick(tick)? else {
         return Ok(None);
     };
+    if let Some(existing) = store
+        .load_existing_cancer_research_request(state.world_id(), turn_ordinal)
+        .await?
+    {
+        if existing.selection.selected_at_tick != state.tick() {
+            return Err(CancerResearchSchedulerError::InvalidExistingRequest);
+        }
+        return Ok(Some(existing.request_id));
+    }
     let program = CancerResearchProgram::for_ordinal(turn_ordinal);
     let program_turn_ordinal = turn_ordinal / 2;
     let day_ordinal = u32::try_from(tick / ticks_per_day)
@@ -487,10 +496,24 @@ fn varied_campaign_plan(
             };
         }
         CancerResearchCampaignVariation::EndpointOrTarget => {
-            plan.primary_endpoint = rotate_endpoint(root.primary_endpoint);
+            if root.intervention_modality == CancerVirtualInterventionModality::DiagnosticSensing {
+                plan.primary_target = rotate_target(root.primary_target);
+                if plan.secondary_target == Some(plan.primary_target) {
+                    plan.secondary_target = None;
+                }
+            } else {
+                plan.primary_endpoint = rotate_treatment_endpoint(root.primary_endpoint);
+            }
         }
         CancerResearchCampaignVariation::ModalityOrTarget => {
-            plan.intervention_modality = rotate_modality(root.intervention_modality);
+            if root.intervention_modality == CancerVirtualInterventionModality::DiagnosticSensing {
+                let next = root
+                    .secondary_target
+                    .map_or_else(|| rotate_target(root.primary_target), rotate_target);
+                plan.secondary_target = (next != root.primary_target).then_some(next);
+            } else {
+                plan.intervention_modality = rotate_treatment_modality(root.intervention_modality);
+            }
         }
     }
     plan.validate()?;
@@ -521,7 +544,7 @@ const fn rotate_subject_model(model: CancerVirtualSubjectModel) -> CancerVirtual
     }
 }
 
-const fn rotate_endpoint(endpoint: CancerVirtualEndpoint) -> CancerVirtualEndpoint {
+const fn rotate_treatment_endpoint(endpoint: CancerVirtualEndpoint) -> CancerVirtualEndpoint {
     match endpoint {
         CancerVirtualEndpoint::RelativeTumorBurden => CancerVirtualEndpoint::ViableTumorFraction,
         CancerVirtualEndpoint::ViableTumorFraction => CancerVirtualEndpoint::InvasiveCellFraction,
@@ -529,14 +552,12 @@ const fn rotate_endpoint(endpoint: CancerVirtualEndpoint) -> CancerVirtualEndpoi
         CancerVirtualEndpoint::HypoxicCellFraction => {
             CancerVirtualEndpoint::OffTargetHealthyCellLoss
         }
-        CancerVirtualEndpoint::OffTargetHealthyCellLoss => {
-            CancerVirtualEndpoint::DetectionSensitivity
-        }
-        CancerVirtualEndpoint::DetectionSensitivity => CancerVirtualEndpoint::RelativeTumorBurden,
+        CancerVirtualEndpoint::OffTargetHealthyCellLoss
+        | CancerVirtualEndpoint::DetectionSensitivity => CancerVirtualEndpoint::RelativeTumorBurden,
     }
 }
 
-const fn rotate_modality(
+const fn rotate_treatment_modality(
     modality: CancerVirtualInterventionModality,
 ) -> CancerVirtualInterventionModality {
     match modality {
@@ -553,12 +574,25 @@ const fn rotate_modality(
         CancerVirtualInterventionModality::TargetedDelivery => {
             CancerVirtualInterventionModality::SurgicalResection
         }
-        CancerVirtualInterventionModality::SurgicalResection => {
-            CancerVirtualInterventionModality::DiagnosticSensing
-        }
-        CancerVirtualInterventionModality::DiagnosticSensing => {
+        CancerVirtualInterventionModality::SurgicalResection
+        | CancerVirtualInterventionModality::DiagnosticSensing => {
             CancerVirtualInterventionModality::MolecularInhibition
         }
+    }
+}
+
+const fn rotate_target(
+    target: world_domain::CancerVirtualMechanismTarget,
+) -> world_domain::CancerVirtualMechanismTarget {
+    use world_domain::CancerVirtualMechanismTarget as Target;
+    match target {
+        Target::CellDivision => Target::DnaRepair,
+        Target::DnaRepair => Target::ApoptosisResistance,
+        Target::ApoptosisResistance => Target::HypoxiaAdaptation,
+        Target::HypoxiaAdaptation => Target::Angiogenesis,
+        Target::Angiogenesis => Target::ImmuneEvasion,
+        Target::ImmuneEvasion => Target::Invasion,
+        Target::Invasion => Target::CellDivision,
     }
 }
 
@@ -829,6 +863,8 @@ pub enum CancerResearchSchedulerError {
     InvalidPrimitiveBundle,
     #[error("Cancer World research campaign lineage is invalid")]
     InvalidCampaign,
+    #[error("existing Cancer World research request does not match its deterministic tick")]
+    InvalidExistingRequest,
     #[error("embedded Cancer World biological primitives could not be decoded: {0}")]
     Decode(#[from] serde_json::Error),
     #[error("Cancer World research scheduler hashing failed: {0}")]
@@ -959,6 +995,27 @@ mod tests {
             variations.push(variation);
         }
         assert_eq!(variations.len(), CANCER_RESEARCH_CAMPAIGN_MAX_TESTS);
+
+        let diagnostic = CancerVirtualExperimentPlan {
+            intervention_modality: CancerVirtualInterventionModality::DiagnosticSensing,
+            primary_endpoint: CancerVirtualEndpoint::DetectionSensitivity,
+            ..root
+        };
+        let mut diagnostic_hashes = vec![Digest::canonical(&diagnostic).expect("diagnostic hash")];
+        for test_index in 0..u8::try_from(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS).expect("test count") {
+            diagnostic_hashes.sort_unstable();
+            let (_, plan) = varied_campaign_plan(&diagnostic, test_index, &diagnostic_hashes)
+                .expect("diagnostic varied plan");
+            assert_eq!(
+                plan.intervention_modality,
+                CancerVirtualInterventionModality::DiagnosticSensing
+            );
+            assert_eq!(
+                plan.primary_endpoint,
+                CancerVirtualEndpoint::DetectionSensitivity
+            );
+            diagnostic_hashes.push(Digest::canonical(&plan).expect("diagnostic plan hash"));
+        }
     }
 
     #[test]

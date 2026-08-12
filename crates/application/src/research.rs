@@ -1075,6 +1075,18 @@ pub trait CancerResearchJobStore: Send + Sync {
         request: &CancerResearchModelRequest,
     ) -> Result<(), StoreError>;
 
+    /// Returns the already-frozen request for one deterministic world ordinal.
+    /// This check happens before rebuilding read-side evidence because later
+    /// virtual-lab or memory projections must never change a request that was
+    /// durably selected at an earlier tick.
+    async fn load_existing_cancer_research_request(
+        &self,
+        _world_id: world_domain::WorldId,
+        _ordinal: u32,
+    ) -> Result<Option<CancerResearchModelRequest>, StoreError> {
+        Ok(None)
+    }
+
     async fn claim_next_cancer_research_request(
         &self,
         worker_id: &str,

@@ -600,6 +600,48 @@ impl CancerResearchJobStore for PostgresStore {
         }
     }
 
+    async fn load_existing_cancer_research_request(
+        &self,
+        world_id: world_domain::WorldId,
+        ordinal: u32,
+    ) -> Result<Option<CancerResearchModelRequest>, StoreError> {
+        let rows = sqlx::query_as::<_, (Value, Vec<u8>)>(
+            r#"
+            SELECT request_payload,request_checksum
+            FROM cancer_research_requests
+            WHERE world_id=$1 AND ordinal=$2
+            ORDER BY request_id
+            LIMIT 2
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i64::from(ordinal))
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        match rows.as_slice() {
+            [] => Ok(None),
+            [(payload, checksum)] => {
+                let request: CancerResearchModelRequest =
+                    serde_json::from_value(payload.clone()).map_err(corrupt)?;
+                request.validate().map_err(corrupt)?;
+                if request.selection.world_id != world_id
+                    || request.selection.ordinal != ordinal
+                    || request.canonical_hash().map_err(corrupt)?
+                        != digest_from_db(checksum, "existing research request checksum")?
+                {
+                    return Err(corrupt(
+                        "existing cancer research request failed its durable provenance",
+                    ));
+                }
+                Ok(Some(request))
+            }
+            _ => Err(corrupt(
+                "multiple cancer research requests share one deterministic world ordinal",
+            )),
+        }
+    }
+
     async fn claim_next_cancer_research_request(
         &self,
         worker_id: &str,
