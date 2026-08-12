@@ -462,6 +462,16 @@ enum Command {
         )]
         request_timeout_seconds: u64,
 
+        /// Bound the opportunistic free route separately so an overloaded
+        /// shared pool cannot consume the entire research-turn cadence before
+        /// the budget-capped Fireworks route is attempted.
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS",
+            default_value_t = 30
+        )]
+        free_request_timeout_seconds: u64,
+
         #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
         cancer_openrouter_api_key: String,
 
@@ -832,6 +842,7 @@ async fn main() -> Result<()> {
             poll_milliseconds,
             claim_lease_seconds,
             request_timeout_seconds,
+            free_request_timeout_seconds,
             cancer_openrouter_api_key,
             cancer_fireworks_api_key,
             external_export_approved,
@@ -849,7 +860,11 @@ async fn main() -> Result<()> {
                 provider.clone(),
                 "https://openrouter.ai/api/v1",
                 cancer_openrouter_api_key,
-                Duration::from_secs(request_timeout_seconds.max(1)),
+                Duration::from_secs(
+                    free_request_timeout_seconds
+                        .max(1)
+                        .min(request_timeout_seconds.max(1)),
+                ),
             )
             .context("configure dedicated Cancer World OpenRouter adapter")?;
             let mut adapters: CancerResearchModelAdapters = BTreeMap::new();

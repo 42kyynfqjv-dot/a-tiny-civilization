@@ -10,6 +10,7 @@ Group=shmuel
 WorkingDirectory=/home/shmuel/codex/emergent-civilization
 EnvironmentFile=/etc/a-tiny-civilization-production.env
 Environment=CANCER_RESEARCH_WORKER_ID=host-cancer-research-worker-1
+Environment=CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS=30
 ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-research-worker
 Restart=on-failure
 RestartSec=15s

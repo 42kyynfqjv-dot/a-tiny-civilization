@@ -472,11 +472,17 @@ impl CancerNciInterventionIdentity {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CancerNci60CnsLine {
+    #[serde(alias = "sf-268", alias = "SF-268", alias = "CNS:SF-268")]
     Sf268,
+    #[serde(alias = "sf-295", alias = "SF-295", alias = "CNS:SF-295")]
     Sf295,
+    #[serde(alias = "sf-539", alias = "SF-539", alias = "CNS:SF-539")]
     Sf539,
+    #[serde(alias = "snb-19", alias = "SNB-19", alias = "CNS:SNB-19")]
     Snb19,
+    #[serde(alias = "snb-75", alias = "SNB-75", alias = "CNS:SNB-75")]
     Snb75,
+    #[serde(alias = "u-251", alias = "U-251", alias = "CNS:U251")]
     U251,
 }
 
@@ -1695,6 +1701,28 @@ mod tests {
             mismatched.validate_against(&selection),
             Err(CancerResearchContractError::InvalidContribution)
         ));
+    }
+
+    #[test]
+    fn nci60_line_labels_accept_exact_source_punctuation_but_serialize_canonically() {
+        let cases = [
+            ("sf-268", CancerNci60CnsLine::Sf268, "sf268"),
+            ("SF-295", CancerNci60CnsLine::Sf295, "sf295"),
+            ("CNS:SF-539", CancerNci60CnsLine::Sf539, "sf539"),
+            ("snb-19", CancerNci60CnsLine::Snb19, "snb19"),
+            ("SNB-75", CancerNci60CnsLine::Snb75, "snb75"),
+            ("CNS:U251", CancerNci60CnsLine::U251, "u251"),
+        ];
+        for (source_label, expected, canonical) in cases {
+            let decoded: CancerNci60CnsLine = serde_json::from_str(&format!("\"{source_label}\""))
+                .expect("known NCI-60 source label");
+            assert_eq!(decoded, expected);
+            assert_eq!(
+                serde_json::to_string(&decoded).expect("canonical line label"),
+                format!("\"{canonical}\"")
+            );
+        }
+        assert!(serde_json::from_str::<CancerNci60CnsLine>("\"unknown-line\"").is_err());
     }
 
     #[test]
