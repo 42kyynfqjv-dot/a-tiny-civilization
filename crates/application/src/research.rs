@@ -524,6 +524,61 @@ impl CancerResearchMemoryInput {
         memory.validate(CancerResearchStage::BlindDiscovery)?;
         Ok(memory)
     }
+
+    /// Packs catalogue entries into individually valid recall documents.
+    ///
+    /// A fixed entry count is only an upper bound: bounded titles plus virtual
+    /// experiment summaries can still make a 24-entry page exceed the memory
+    /// byte limit. Build each page against the actual serialized size and keep
+    /// the newest pages when the request-wide input cap is reached.
+    pub fn from_internal_catalog_pages(
+        world_id: world_domain::WorldId,
+        before_ordinal: u32,
+        entries: &[CancerResearchCatalogItem],
+        max_pages: usize,
+    ) -> Result<Vec<Self>, CancerResearchModelContractError> {
+        if max_pages == 0 {
+            return Err(CancerResearchModelContractError::InvalidMemoryInputs);
+        }
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let mut pages = Vec::new();
+        let mut start = 0_usize;
+        while start < entries.len() {
+            let mut end = start
+                .saturating_add(CANCER_RESEARCH_CATALOG_PAGE_SIZE)
+                .min(entries.len());
+            let page_index = u16::try_from(pages.len())
+                .map_err(|_| CancerResearchModelContractError::InvalidMemoryInputs)?;
+            loop {
+                match Self::from_internal_catalog_page(
+                    world_id,
+                    before_ordinal,
+                    page_index,
+                    &entries[start..end],
+                ) {
+                    Ok(page) => {
+                        pages.push(page);
+                        start = end;
+                        break;
+                    }
+                    Err(CancerResearchModelContractError::InvalidMemoryInputs)
+                        if end > start + 1 =>
+                    {
+                        end -= 1;
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
+        }
+
+        if pages.len() > max_pages {
+            pages.drain(..pages.len() - max_pages);
+        }
+        Ok(pages)
+    }
 }
 
 /// Deterministic title-level duplicate detector retained for compact catalogue
@@ -1425,6 +1480,89 @@ mod tests {
                 Err(CancerResearchModelContractError::InvalidMemoryInputs)
             ));
         }
+    }
+
+    #[test]
+    fn internal_catalog_pages_pack_by_serialized_bytes_and_keep_newest_pages() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(71));
+        let entries = (0_u32..256)
+            .map(|ordinal| CancerResearchCatalogItem {
+                ordinal,
+                contribution_id: Uuid::from_u128(u128::from(ordinal) + 1),
+                artifact_hash: Digest::sha256(format!("artifact-{ordinal}").as_bytes()),
+                artifact_kind: CancerResearchArtifactKind::TreatmentMachineDesign,
+                // This is within the contribution title byte bound, but JSON
+                // escaping makes its serialized representation substantially
+                // larger. Entry count alone therefore cannot bound a page.
+                title: "\\\"".repeat(128),
+                virtual_experiment: Some(CancerVirtualExperimentCatalogSummary {
+                    experiment_id: Uuid::from_u128(u128::from(ordinal) + 10_000),
+                    result_hash: Digest::sha256(format!("result-{ordinal}").as_bytes()),
+                    primary_endpoint: CancerVirtualEndpoint::RelativeTumorBurden,
+                    estimated_change_parts_per_million: -120_000,
+                    uncertainty_low_parts_per_million: -180_000,
+                    uncertainty_high_parts_per_million: -60_000,
+                    interpretation: CancerVirtualExperimentInterpretation::ModelSupportsPrediction,
+                    evidence_class: "uncalibrated_virtual_model_projection".to_owned(),
+                }),
+            })
+            .collect::<Vec<_>>();
+
+        assert!(matches!(
+            CancerResearchMemoryInput::from_internal_catalog_page(
+                world_id,
+                900,
+                0,
+                &entries[..CANCER_RESEARCH_CATALOG_PAGE_SIZE],
+            ),
+            Err(CancerResearchModelContractError::InvalidMemoryInputs)
+        ));
+
+        let pages = CancerResearchMemoryInput::from_internal_catalog_pages(
+            world_id,
+            900,
+            &entries,
+            MAX_CANCER_RESEARCH_MEMORY_INPUTS - 1,
+        )
+        .expect("byte-bounded catalogue pages");
+        assert!(pages.len() < MAX_CANCER_RESEARCH_MEMORY_INPUTS);
+        assert!(pages.iter().all(|page| {
+            page.text.len() <= MAX_CANCER_RESEARCH_MEMORY_BYTES
+                && page.validate(CancerResearchStage::BlindDiscovery).is_ok()
+        }));
+
+        let retained_ordinals = pages
+            .iter()
+            .flat_map(|page| {
+                serde_json::from_str::<serde_json::Value>(&page.text)
+                    .expect("catalogue page JSON")
+                    .get("entries")
+                    .and_then(serde_json::Value::as_array)
+                    .expect("catalogue entries")
+                    .iter()
+                    .map(|entry| {
+                        entry
+                            .get("ordinal")
+                            .and_then(serde_json::Value::as_u64)
+                            .expect("catalogue ordinal")
+                    })
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(retained_ordinals.last(), Some(&255));
+        assert!(!retained_ordinals.contains(&0));
+    }
+
+    #[test]
+    fn empty_internal_catalog_has_no_recalled_pages() {
+        let pages = CancerResearchMemoryInput::from_internal_catalog_pages(
+            WorldId::from_uuid(Uuid::from_u128(71)),
+            0,
+            &[],
+            MAX_CANCER_RESEARCH_MEMORY_INPUTS - 1,
+        )
+        .expect("an empty new-world catalogue is valid");
+        assert!(pages.is_empty());
     }
 
     #[test]

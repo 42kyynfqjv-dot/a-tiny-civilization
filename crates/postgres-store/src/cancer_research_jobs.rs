@@ -1,16 +1,16 @@
 use application::{
-    CANCER_RESEARCH_CATALOG_PAGE_SIZE, CancerNci60QualificationCandidate,
-    CancerResearchAttemptPersistenceState, CancerResearchCampaignCandidate,
-    CancerResearchCampaignFollowup, CancerResearchCatalogItem, CancerResearchJobEntry,
-    CancerResearchJobStore, CancerResearchLadderResult, CancerResearchLiteratureSnapshot,
-    CancerResearchMemoryInput, CancerResearchModelReceipt, CancerResearchModelRequest,
-    CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
+    CancerNci60QualificationCandidate, CancerResearchAttemptPersistenceState,
+    CancerResearchCampaignCandidate, CancerResearchCampaignFollowup, CancerResearchCatalogItem,
+    CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
+    CancerResearchLiteratureSnapshot, CancerResearchMemoryInput, CancerResearchModelReceipt,
+    CancerResearchModelRequest, CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
     CancerResearchPaidReservationDecision, CancerResearchPriorResult,
     CancerResearchRouteAttemptRecord, CancerVirtualExperimentCandidate,
     CancerVirtualExperimentCatalogSummary, CognitionBillingClass, CognitionBillingScope,
     CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
-    CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
-    StoreError, cancer_research_collective_id, cancer_research_contributions_duplicate,
+    CognitionRouteRegistry, MAX_CANCER_RESEARCH_MEMORY_INPUTS,
+    MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain, StoreError,
+    cancer_research_collective_id, cancer_research_contributions_duplicate,
 };
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
@@ -1516,20 +1516,15 @@ impl CancerResearchJobStore for PostgresStore {
             }
         }
         entries.sort_by_key(|entry| entry.ordinal);
-        entries
-            .chunks(CANCER_RESEARCH_CATALOG_PAGE_SIZE)
-            .enumerate()
-            .map(|(page_index, page)| {
-                CancerResearchMemoryInput::from_internal_catalog_page(
-                    world_id,
-                    before_ordinal,
-                    u16::try_from(page_index)
-                        .map_err(|_| corrupt("catalog page index overflow"))?,
-                    page,
-                )
-                .map_err(corrupt)
-            })
-            .collect()
+        // Reserve one request-level slot for the program's latest hypothesis,
+        // which the scheduler appends after loading this cross-program wiki.
+        CancerResearchMemoryInput::from_internal_catalog_pages(
+            world_id,
+            before_ordinal,
+            &entries,
+            MAX_CANCER_RESEARCH_MEMORY_INPUTS.saturating_sub(1),
+        )
+        .map_err(corrupt)
     }
 
     async fn reserve_paid_cancer_research(
