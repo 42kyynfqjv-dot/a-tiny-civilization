@@ -6,10 +6,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
-    CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchStage,
-    CancerResearchTurnSelection, CancerVirtualEndpoint, CancerVirtualExperimentInterpretation,
-    CancerVirtualExperimentPlan, CancerVirtualExperimentResult, Digest, EntityId,
+    CancerNci60ResponseQualification, CancerResearchContractError, CancerResearchContribution,
+    CancerResearchEvidenceKind, CancerResearchEvidenceReference, CancerResearchInferenceTier,
+    CancerResearchStage, CancerResearchTurnSelection, CancerVirtualEndpoint,
+    CancerVirtualExperimentInterpretation, CancerVirtualExperimentPlan,
+    CancerVirtualExperimentResult, Digest, EntityId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -172,6 +173,19 @@ pub struct CancerVirtualExperimentCatalogSummary {
     pub uncertainty_high_parts_per_million: i32,
     pub interpretation: CancerVirtualExperimentInterpretation,
     pub evidence_class: String,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancerNci60QualificationCandidate {
+    pub world_id: world_domain::WorldId,
+    pub request_id: Uuid,
+    pub ordinal: u32,
+    pub artifact_hash: Digest,
+    pub contribution: CancerResearchContribution,
+    /// Exact prompt-safe document persisted with the model request. The
+    /// qualification worker rebinds it to the pinned catalogue before opening
+    /// any answer, preventing source-ID/content mismatches from being scored.
+    pub challenge_document: CancerResearchEvidenceDocument,
 }
 
 /// One immutable follow-up in a campaign rooted in a model-supported artifact.
@@ -426,6 +440,7 @@ impl CancerResearchMemoryInput {
             || self.text.trim() != self.text
             || self.text.is_empty()
             || self.text.len() > MAX_CANCER_RESEARCH_MEMORY_BYTES
+            || self.evidence_kind == CancerResearchEvidenceKind::ResponseChallenge
             || (stage == CancerResearchStage::BlindDiscovery
                 && self.evidence_kind == CancerResearchEvidenceKind::Literature)
         {
@@ -550,7 +565,9 @@ pub fn cancer_research_contributions_duplicate(
     // A repeated plan may be represented as one catalog entry, but changing its
     // subject, intervention, endpoint, dose, exposure, or cohort makes it a new
     // experiment even when the model reuses nearly identical language.
-    if left.virtual_experiment_plan != right.virtual_experiment_plan {
+    if left.virtual_experiment_plan != right.virtual_experiment_plan
+        || left.nci60_response_prediction != right.nci60_response_prediction
+    {
         return false;
     }
     if cancer_research_titles_duplicate(&left.title, &right.title) {
@@ -1111,6 +1128,27 @@ pub trait CancerResearchJobStore: Send + Sync {
         Ok(())
     }
 
+    /// Loads successful preregistered NCI-60 predictions that have not yet been
+    /// opened by the current deterministic qualification method.
+    async fn load_unqualified_cancer_nci60_predictions(
+        &self,
+        _world_id: world_domain::WorldId,
+        _method_version: u16,
+        _limit: usize,
+    ) -> Result<Vec<crate::CancerNci60QualificationCandidate>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Appends one immutable answer-key qualification. A conflicting retry is
+    /// corruption; the answer key itself never enters model memory or prompts.
+    async fn store_cancer_nci60_qualification(
+        &self,
+        _qualification: &CancerNci60ResponseQualification,
+        _contribution: &CancerResearchContribution,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// Inserts one exact content-addressed request. Repeating the identical
     /// request is idempotent; the same ID with different bytes is corruption.
     async fn enqueue_cancer_research_request(
@@ -1370,6 +1408,26 @@ mod tests {
     }
 
     #[test]
+    fn recalled_memory_never_accepts_response_challenges() {
+        let memory = CancerResearchMemoryInput {
+            document_id: Uuid::from_u128(2),
+            source_artifact_hash: Digest::sha256(b"runtime-isolated challenge"),
+            evidence_kind: CancerResearchEvidenceKind::ResponseChallenge,
+            text: "Prompt-safe candidate metadata".to_owned(),
+        };
+        for stage in [
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchStage::LiteratureAudit,
+            CancerResearchStage::IndependentReplication,
+        ] {
+            assert!(matches!(
+                memory.validate(stage),
+                Err(CancerResearchModelContractError::InvalidMemoryInputs)
+            ));
+        }
+    }
+
+    #[test]
     fn campaign_assessment_does_not_confuse_low_toxicity_with_failed_efficacy() {
         assert_eq!(
             cancer_research_campaign_test_assessment_for(
@@ -1454,6 +1512,7 @@ mod tests {
                     citation_hashes: Vec::new(),
                 }],
                 virtual_experiment_plan: None,
+                nci60_response_prediction: None,
             }
         }
 
@@ -1507,6 +1566,32 @@ mod tests {
         assert!(!cancer_research_contributions_duplicate(
             &repeated_plan,
             &different_plan
+        ));
+
+        let mut first_challenge = original.clone();
+        first_challenge.nci60_response_prediction =
+            Some(world_domain::CancerNci60ResponsePrediction {
+                schema_version: world_domain::CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION,
+                challenge_id: Uuid::from_u128(0xa1),
+                intervention: world_domain::CancerNciInterventionIdentity::SingleAgent { nsc: 101 },
+                predicted_response_order: vec![
+                    world_domain::CancerNci60CnsLine::Sf268,
+                    world_domain::CancerNci60CnsLine::Sf295,
+                    world_domain::CancerNci60CnsLine::Sf539,
+                    world_domain::CancerNci60CnsLine::Snb19,
+                    world_domain::CancerNci60CnsLine::Snb75,
+                    world_domain::CancerNci60CnsLine::U251,
+                ],
+            });
+        let mut second_challenge = first_challenge.clone();
+        second_challenge
+            .nci60_response_prediction
+            .as_mut()
+            .expect("prediction")
+            .intervention = world_domain::CancerNciInterventionIdentity::SingleAgent { nsc: 202 };
+        assert!(!cancer_research_contributions_duplicate(
+            &first_challenge,
+            &second_challenge
         ));
     }
 }

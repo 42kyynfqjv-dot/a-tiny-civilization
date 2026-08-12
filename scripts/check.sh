@@ -64,6 +64,8 @@ bash -n ./scripts/advance-qualification-world.sh ./scripts/advance-cognition-qua
   ./scripts/verify-launch-operations.sh \
   ./scripts/verify-staged-runtime-artifacts.sh ./scripts/public-genesis-preflight.sh \
   ./scripts/verify-live-genesis.sh ./scripts/smoke-runtime-images.sh \
+  ./scripts/stage-cancer-nci60-qualification-key.sh \
+  ./scripts/smoke-cancer-nci60-qualification-key.sh \
   ./scripts/verify-public-edge.sh
 ./scripts/verify-observer-candidate-smoke.sh
 ./scripts/verify-create-qualification-evidence.sh

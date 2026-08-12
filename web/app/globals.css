@@ -1202,6 +1202,11 @@ select {
 .cancer-research-filters { display: flex; flex-wrap: wrap; gap: 8px; padding: 20px 0 2px; }
 .cancer-research-filters button { background: transparent; border: 1px solid var(--cancer-line); border-radius: 999px; color: #789087; cursor: pointer; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .08em; min-height: 34px; padding: 0 14px; text-transform: uppercase; }
 .cancer-research-filters button[aria-pressed="true"] { background: var(--program-accent); border-color: var(--program-accent); color: #06100d; }
+.cancer-nci-rank-grid { display: grid; gap: 10px; grid-template-columns: repeat(2, minmax(0, 1fr)); margin: 14px 0; }
+.cancer-nci-rank-grid span { background: rgba(5, 18, 14, .7); border: 1px solid var(--cancer-line); display: grid; gap: 7px; padding: 12px; }
+.cancer-nci-rank-grid small { color: #789087; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .09em; }
+.cancer-nci-rank-grid strong { color: #c6ddd3; font-size: 11px; font-weight: 500; line-height: 1.6; }
+@media (max-width: 700px) { .cancer-nci-rank-grid { grid-template-columns: 1fr; } }
 
 .cancer-console-section { margin: 0 auto clamp(90px, 11vw, 170px); max-width: 1600px; }
 .cancer-section-heading { align-items: end; border-bottom: 1px solid var(--cancer-line); display: flex; gap: 30px; justify-content: space-between; padding-bottom: 22px; }

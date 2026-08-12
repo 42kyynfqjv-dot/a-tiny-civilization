@@ -18,7 +18,11 @@ pub const VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 2;
 pub const REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 3;
 /// Schema v4 permits independent-replication protocols to remain proposals until
 /// the observer-side lab has executed their required, frozen plan.
-pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 4;
+pub const CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 4;
+/// Schema v5 adds an optional structured prediction for a held-out NCI-60 CNS
+/// response challenge. New contributions must answer exactly one supplied
+/// challenge and may never manufacture a prediction without that evidence.
+pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 5;
 pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
 pub const LEGACY_CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
 /// Schema v2 adds a compact multiscale readout. Historical v1 results remain
@@ -28,6 +32,9 @@ pub const CANCER_VIRTUAL_MECHANISTIC_READOUT_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_VIRTUAL_LAB_METHOD_VERSION: u16 = 2;
 pub const CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 1;
+pub const CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_NCI60_RESPONSE_QUALIFICATION_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION: u16 = 1;
 pub const MAX_CANCER_RESEARCH_NOVELTY_MATCHES: usize = 5;
 pub const MAX_CANCER_RESEARCH_NOVELTY_QUERY_TERMS: usize = 8;
 pub const MAX_CANCER_RESEARCH_NOVELTY_WARNINGS: usize = 4;
@@ -224,6 +231,7 @@ pub enum CancerResearchEvidenceKind {
     BiologicalPrimitive,
     RawDataset,
     AssayObservation,
+    ResponseChallenge,
     FrozenHypothesis,
     PriorResearchArtifact,
     Literature,
@@ -354,6 +362,19 @@ impl CancerResearchTurnSelection {
             .evidence
             .iter()
             .any(|reference| reference.kind == CancerResearchEvidenceKind::Literature);
+        let response_challenge_count = self
+            .evidence
+            .iter()
+            .filter(|reference| reference.kind == CancerResearchEvidenceKind::ResponseChallenge)
+            .count();
+        if response_challenge_count > 1
+            || (response_challenge_count == 1
+                && (self.stage != CancerResearchStage::BlindDiscovery
+                    || CancerResearchProgram::for_ordinal(self.ordinal)
+                        != CancerResearchProgram::Treatments))
+        {
+            return Err(CancerResearchContractError::EvidenceFirewallViolation);
+        }
         match self.stage {
             CancerResearchStage::BlindDiscovery
                 if has_literature
@@ -424,6 +445,275 @@ pub struct CancerResearchClaim {
     pub testable_prediction: String,
     pub falsification_test: String,
     pub citation_hashes: Vec<Digest>,
+}
+
+/// A concrete intervention identity from the public NCI compound catalogues.
+/// NSC identifiers are opaque references, not treatment recommendations or a
+/// claim that a compound is safe or effective in people.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum CancerNciInterventionIdentity {
+    SingleAgent { nsc: u64 },
+    Combination { nsc_1: u64, nsc_2: u64 },
+}
+
+impl CancerNciInterventionIdentity {
+    fn validate(&self) -> Result<(), CancerResearchContractError> {
+        match self {
+            Self::SingleAgent { nsc } if *nsc > 0 => Ok(()),
+            Self::Combination { nsc_1, nsc_2 } if *nsc_1 > 0 && nsc_1 < nsc_2 => Ok(()),
+            _ => Err(CancerResearchContractError::InvalidResponsePrediction),
+        }
+    }
+}
+
+/// The six CNS lines in the pinned NCI-60 response export. These names describe
+/// immortalized in-vitro models and must never be presented as patient cohorts.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum CancerNci60CnsLine {
+    Sf268,
+    Sf295,
+    Sf539,
+    Snb19,
+    Snb75,
+    U251,
+}
+
+/// A falsifiable, label-free ordering submitted before the runtime-isolated
+/// labels are opened. Single-agent predictions order activity/sensitivity;
+/// combination predictions order greater-than-additive interaction strength.
+/// The distinction matters: ALMANAC ComboScore is not total treatment response.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerNci60ResponsePrediction {
+    pub schema_version: u16,
+    pub challenge_id: Uuid,
+    pub intervention: CancerNciInterventionIdentity,
+    pub predicted_response_order: Vec<CancerNci60CnsLine>,
+}
+
+/// One line's observed competition rank. Equal ranks are biological ties and
+/// must not be converted into arbitrary alphabetic wins during scoring.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerNci60ObservedRank {
+    pub cell_line: CancerNci60CnsLine,
+    pub rank: u8,
+}
+
+impl CancerNci60ResponsePrediction {
+    pub fn validate(&self) -> Result<(), CancerResearchContractError> {
+        self.intervention.validate()?;
+        let unique = self
+            .predicted_response_order
+            .iter()
+            .copied()
+            .collect::<std::collections::BTreeSet<_>>();
+        if self.schema_version != CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION
+            || self.challenge_id.is_nil()
+            || self.predicted_response_order.len() != 6
+            || unique.len() != 6
+        {
+            return Err(CancerResearchContractError::InvalidResponsePrediction);
+        }
+        Ok(())
+    }
+
+    #[must_use]
+    pub fn challenge_source_id(&self) -> String {
+        match self.intervention {
+            CancerNciInterventionIdentity::SingleAgent { nsc } => format!(
+                "cancer-world://nci60-response-challenge/{}/single-agent/{nsc}",
+                self.challenge_id
+            ),
+            CancerNciInterventionIdentity::Combination { nsc_1, nsc_2 } => format!(
+                "cancer-world://nci60-response-challenge/{}/combination/{nsc_1}-{nsc_2}",
+                self.challenge_id
+            ),
+        }
+    }
+}
+
+/// Observer-side opening of one preregistered held-out NCI-60 challenge. This
+/// measures rank agreement with an in-vitro panel only; it is not evidence of
+/// efficacy, safety, mechanism, animal benefit, or clinical benefit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerNci60ResponseQualification {
+    pub schema_version: u16,
+    pub method_version: u16,
+    pub qualification_id: Uuid,
+    pub world_id: WorldId,
+    pub request_id: Uuid,
+    pub artifact_hash: Digest,
+    pub prediction_hash: Digest,
+    pub challenge_id: Uuid,
+    pub intervention: CancerNciInterventionIdentity,
+    pub observed_response_ranks: Vec<CancerNci60ObservedRank>,
+    pub pairwise_comparison_count: u8,
+    pub concordant_pair_count: u8,
+    /// None means every observed line tied, leaving no informative pair.
+    pub pairwise_concordance_per_mille: Option<u16>,
+    pub most_responsive_line_correct: Option<bool>,
+    pub least_responsive_line_correct: Option<bool>,
+    pub answer_key: CancerResearchEvidenceReference,
+    pub limitations: Vec<String>,
+}
+
+impl CancerNci60ResponseQualification {
+    #[must_use]
+    pub fn deterministic_id(request_id: Uuid, method_version: u16) -> Uuid {
+        Uuid::new_v5(
+            &request_id,
+            format!("observer-nci60-response-qualification:v{method_version}").as_bytes(),
+        )
+    }
+
+    pub fn validate_against(
+        &self,
+        contribution: &CancerResearchContribution,
+    ) -> Result<(), CancerResearchContractError> {
+        let prediction = contribution
+            .nci60_response_prediction
+            .as_ref()
+            .ok_or(CancerResearchContractError::InvalidResponseQualification)?;
+        prediction.validate()?;
+        self.intervention.validate()?;
+        let observed_unique = self
+            .observed_response_ranks
+            .iter()
+            .map(|observation| observation.cell_line)
+            .collect::<std::collections::BTreeSet<_>>();
+        let (comparisons, concordant, per_mille, top_correct, bottom_correct) =
+            response_rank_concordance(
+                &prediction.predicted_response_order,
+                &self.observed_response_ranks,
+            )?;
+        if self.schema_version != CANCER_NCI60_RESPONSE_QUALIFICATION_SCHEMA_VERSION
+            || self.method_version != CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION
+            || self.qualification_id != Self::deterministic_id(self.request_id, self.method_version)
+            || self.request_id != contribution.request_id
+            || self.artifact_hash != contribution.canonical_hash()?
+            || self.prediction_hash != Digest::canonical(prediction)?
+            || self.challenge_id != prediction.challenge_id
+            || self.intervention != prediction.intervention
+            || self.observed_response_ranks.len() != 6
+            || observed_unique.len() != 6
+            || self.pairwise_comparison_count != comparisons
+            || self.concordant_pair_count != concordant
+            || self.pairwise_concordance_per_mille != per_mille
+            || self.most_responsive_line_correct != top_correct
+            || self.least_responsive_line_correct != bottom_correct
+            || self.answer_key.kind != CancerResearchEvidenceKind::AssayObservation
+            || self.answer_key.validate().is_err()
+            || !(3..=6).contains(&self.limitations.len())
+            || self
+                .limitations
+                .iter()
+                .any(|limitation| !bounded_text(limitation, 512))
+        {
+            return Err(CancerResearchContractError::InvalidResponseQualification);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_hash(
+        &self,
+        contribution: &CancerResearchContribution,
+    ) -> Result<Digest, CancerResearchContractError> {
+        self.validate_against(contribution)?;
+        Ok(Digest::canonical(self)?)
+    }
+}
+
+type CancerNci60RankScore = (u8, u8, Option<u16>, Option<bool>, Option<bool>);
+
+fn response_rank_concordance(
+    predicted: &[CancerNci60CnsLine],
+    observed: &[CancerNci60ObservedRank],
+) -> Result<CancerNci60RankScore, CancerResearchContractError> {
+    if predicted.len() != 6 || observed.len() != 6 {
+        return Err(CancerResearchContractError::InvalidResponseQualification);
+    }
+    let predicted_positions = predicted
+        .iter()
+        .enumerate()
+        .map(|(index, line)| (*line, index))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if predicted_positions.len() != 6
+        || observed
+            .iter()
+            .map(|observation| observation.cell_line)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+            != 6
+        || observed.iter().enumerate().any(|(index, observation)| {
+            observation.rank == 0
+                || usize::from(observation.rank) > index + 1
+                || (index > 0
+                    && (observed[index - 1].rank > observation.rank
+                        || (observed[index - 1].rank == observation.rank
+                            && observed[index - 1].cell_line >= observation.cell_line)
+                        || (observed[index - 1].rank < observation.rank
+                            && usize::from(observation.rank) != index + 1)))
+        })
+    {
+        return Err(CancerResearchContractError::InvalidResponseQualification);
+    }
+    let mut concordant = 0_u8;
+    let mut comparisons = 0_u8;
+    for left in 0..observed.len() {
+        for right in (left + 1)..observed.len() {
+            if observed[left].rank == observed[right].rank {
+                continue;
+            }
+            comparisons = comparisons.saturating_add(1);
+            if predicted_positions[&observed[left].cell_line]
+                < predicted_positions[&observed[right].cell_line]
+            {
+                concordant = concordant.saturating_add(1);
+            }
+        }
+    }
+    let per_mille = (comparisons > 0)
+        .then(|| {
+            u16::try_from(u32::from(concordant) * 1_000 / u32::from(comparisons))
+                .map_err(|_| CancerResearchContractError::InvalidResponseQualification)
+        })
+        .transpose()?;
+    let top_rank = observed
+        .first()
+        .ok_or(CancerResearchContractError::InvalidResponseQualification)?
+        .rank;
+    let bottom_rank = observed
+        .last()
+        .ok_or(CancerResearchContractError::InvalidResponseQualification)?
+        .rank;
+    let predicted_top = predicted
+        .first()
+        .ok_or(CancerResearchContractError::InvalidResponseQualification)?;
+    let predicted_bottom = predicted
+        .last()
+        .ok_or(CancerResearchContractError::InvalidResponseQualification)?;
+    let informative = top_rank != bottom_rank;
+    let top_correct = informative.then(|| {
+        observed.iter().any(|observation| {
+            observation.rank == top_rank && &observation.cell_line == predicted_top
+        })
+    });
+    let bottom_correct = informative.then(|| {
+        observed.iter().any(|observation| {
+            observation.rank == bottom_rank && &observation.cell_line == predicted_bottom
+        })
+    });
+    Ok((
+        comparisons,
+        concordant,
+        per_mille,
+        top_correct,
+        bottom_correct,
+    ))
 }
 
 /// Closed subject models that a research contribution may ask the observer-side
@@ -784,6 +1074,8 @@ pub struct CancerResearchContribution {
     pub claims: Vec<CancerResearchClaim>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub nci60_response_prediction: Option<CancerNci60ResponsePrediction>,
 }
 
 impl CancerResearchContribution {
@@ -814,6 +1106,27 @@ impl CancerResearchContribution {
         claims: Vec<CancerResearchClaim>,
         virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
     ) -> Result<Self, CancerResearchContractError> {
+        Self::new_with_virtual_experiment_and_response_prediction(
+            selection,
+            artifact_kind,
+            title,
+            abstract_text,
+            claims,
+            virtual_experiment_plan,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_virtual_experiment_and_response_prediction(
+        selection: &CancerResearchTurnSelection,
+        artifact_kind: CancerResearchArtifactKind,
+        title: impl Into<String>,
+        abstract_text: impl Into<String>,
+        claims: Vec<CancerResearchClaim>,
+        virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
+        nci60_response_prediction: Option<CancerNci60ResponsePrediction>,
+    ) -> Result<Self, CancerResearchContractError> {
         let contribution = Self {
             schema_version: CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION,
             contribution_id: Uuid::new_v5(
@@ -829,6 +1142,7 @@ impl CancerResearchContribution {
             abstract_text: abstract_text.into(),
             claims,
             virtual_experiment_plan,
+            nci60_response_prediction,
         };
         contribution.validate_against(selection)?;
         Ok(contribution)
@@ -844,6 +1158,7 @@ impl CancerResearchContribution {
             LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                | CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
         ) {
             return Err(CancerResearchContractError::UnsupportedContributionSchema(
@@ -886,15 +1201,18 @@ impl CancerResearchContribution {
                 self.schema_version,
                 VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                     | REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                    | CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                     | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
             ) && self.virtual_experiment_plan.is_none())
             || (self.artifact_kind == CancerResearchArtifactKind::ExperimentProposal
                 && matches!(
                     self.schema_version,
                     REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                        | CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                         | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 )
                 && self.virtual_experiment_plan.is_none())
+            || self.response_prediction_invalid_for(selection)
         {
             return Err(CancerResearchContractError::InvalidContribution);
         }
@@ -903,6 +1221,28 @@ impl CancerResearchContribution {
 
     pub fn canonical_hash(&self) -> Result<Digest, CancerResearchContractError> {
         Ok(Digest::canonical(self)?)
+    }
+
+    fn response_prediction_invalid_for(&self, selection: &CancerResearchTurnSelection) -> bool {
+        let challenges = selection
+            .evidence
+            .iter()
+            .filter(|reference| reference.kind == CancerResearchEvidenceKind::ResponseChallenge)
+            .collect::<Vec<_>>();
+        if self.schema_version < CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION {
+            return self.nci60_response_prediction.is_some();
+        }
+        match (
+            challenges.as_slice(),
+            self.nci60_response_prediction.as_ref(),
+        ) {
+            ([], None) => false,
+            ([challenge], Some(prediction)) => {
+                prediction.validate().is_err()
+                    || challenge.source_id != prediction.challenge_source_id()
+            }
+            _ => true,
+        }
     }
 }
 
@@ -1088,6 +1428,10 @@ pub enum CancerResearchContractError {
     InvalidVirtualExperimentPlan,
     #[error("cancer virtual experiment result is invalid or mismatched")]
     InvalidVirtualExperimentResult,
+    #[error("NCI-60 response prediction is invalid or mismatched to its held-out challenge")]
+    InvalidResponsePrediction,
+    #[error("NCI-60 response qualification is invalid or crossed its held-out provenance")]
+    InvalidResponseQualification,
     #[error("cancer-research novelty audit is invalid or overstates its evidence")]
     InvalidNoveltyAudit,
     #[error("cancer-research canonical hashing failed: {0}")]
@@ -1251,5 +1595,238 @@ mod tests {
         historical_schema_two.schema_version =
             VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION;
         assert!(historical_schema_two.validate_against(&selection).is_ok());
+
+        let mut corrupt_schema_four = historical_schema_two;
+        corrupt_schema_four.schema_version = CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION;
+        assert!(matches!(
+            corrupt_schema_four.validate_against(&selection),
+            Err(CancerResearchContractError::InvalidContribution)
+        ));
+    }
+
+    #[test]
+    fn held_out_response_prediction_is_bound_to_one_exact_challenge() {
+        let (world_id, resident_id, profile) = fixture();
+        let challenge_id = Uuid::from_u128(0x600d);
+        let prediction = CancerNci60ResponsePrediction {
+            schema_version: CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION,
+            challenge_id,
+            intervention: CancerNciInterventionIdentity::Combination {
+                nsc_1: 12,
+                nsc_2: 34,
+            },
+            predicted_response_order: vec![
+                CancerNci60CnsLine::Sf268,
+                CancerNci60CnsLine::Sf295,
+                CancerNci60CnsLine::Sf539,
+                CancerNci60CnsLine::Snb19,
+                CancerNci60CnsLine::Snb75,
+                CancerNci60CnsLine::U251,
+            ],
+        };
+        let challenge = CancerResearchEvidenceReference {
+            kind: CancerResearchEvidenceKind::ResponseChallenge,
+            source_id: prediction.challenge_source_id(),
+            content_hash: Digest::sha256(b"prompt-safe challenge without labels"),
+        };
+        let device_turn = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(39),
+            SimTick::new(59),
+            2,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::GenerateMechanisticHypothesis,
+            CancerResearchInferenceTier::Exploration,
+            profile.clone(),
+            vec![challenge.clone()],
+            None,
+            2_048,
+        );
+        assert!(matches!(
+            device_turn,
+            Err(CancerResearchContractError::EvidenceFirewallViolation)
+        ));
+        let selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(40),
+            SimTick::new(60),
+            3,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::GenerateMechanisticHypothesis,
+            CancerResearchInferenceTier::Exploration,
+            profile,
+            vec![challenge],
+            None,
+            2_048,
+        )
+        .expect("challenge selection");
+        let contribution =
+            CancerResearchContribution::new_with_virtual_experiment_and_response_prediction(
+                &selection,
+                CancerResearchArtifactKind::Hypothesis,
+                "A preregistered response ranking",
+                "The proposed mechanism makes a falsifiable ordering prediction before labels open.",
+                vec![CancerResearchClaim {
+                    statement: "The exact NSC pair may produce heterogeneous CNS-line response."
+                        .to_owned(),
+                    testable_prediction: "The committed line ordering will agree with held-out assay ranks."
+                        .to_owned(),
+                    falsification_test: "Held-out pairwise concordance is no better than reversal."
+                        .to_owned(),
+                    citation_hashes: Vec::new(),
+                }],
+                None,
+                Some(prediction.clone()),
+            )
+            .expect("bound response prediction");
+        assert!(contribution.validate_against(&selection).is_ok());
+
+        let mut mismatched = contribution.clone();
+        mismatched
+            .nci60_response_prediction
+            .as_mut()
+            .expect("prediction")
+            .intervention = CancerNciInterventionIdentity::SingleAgent { nsc: 12 };
+        assert!(matches!(
+            mismatched.validate_against(&selection),
+            Err(CancerResearchContractError::InvalidContribution)
+        ));
+    }
+
+    #[test]
+    fn response_qualification_recomputes_rank_concordance_and_provenance() {
+        let (world_id, resident_id, profile) = fixture();
+        let challenge_id = Uuid::from_u128(0x5151);
+        let predicted = vec![
+            CancerNci60CnsLine::Sf268,
+            CancerNci60CnsLine::Sf295,
+            CancerNci60CnsLine::Sf539,
+            CancerNci60CnsLine::Snb19,
+            CancerNci60CnsLine::Snb75,
+            CancerNci60CnsLine::U251,
+        ];
+        let prediction = CancerNci60ResponsePrediction {
+            schema_version: CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION,
+            challenge_id,
+            intervention: CancerNciInterventionIdentity::SingleAgent { nsc: 101 },
+            predicted_response_order: predicted.clone(),
+        };
+        let selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(50),
+            SimTick::new(70),
+            5,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::GenerateMechanisticHypothesis,
+            CancerResearchInferenceTier::Exploration,
+            profile,
+            vec![CancerResearchEvidenceReference {
+                kind: CancerResearchEvidenceKind::ResponseChallenge,
+                source_id: prediction.challenge_source_id(),
+                content_hash: Digest::sha256(b"challenge"),
+            }],
+            None,
+            2_048,
+        )
+        .expect("selection");
+        let contribution =
+            CancerResearchContribution::new_with_virtual_experiment_and_response_prediction(
+                &selection,
+                CancerResearchArtifactKind::Hypothesis,
+                "Response rank",
+                "A committed ranking is opened against one held-out assay profile.",
+                vec![CancerResearchClaim {
+                    statement: "Responses vary by line.".to_owned(),
+                    testable_prediction: "The rank is concordant.".to_owned(),
+                    falsification_test: "The rank is reversed.".to_owned(),
+                    citation_hashes: Vec::new(),
+                }],
+                None,
+                Some(prediction.clone()),
+            )
+            .expect("contribution");
+        let result = CancerNci60ResponseQualification {
+            schema_version: CANCER_NCI60_RESPONSE_QUALIFICATION_SCHEMA_VERSION,
+            method_version: CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+            qualification_id: CancerNci60ResponseQualification::deterministic_id(
+                contribution.request_id,
+                CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+            ),
+            world_id,
+            request_id: contribution.request_id,
+            artifact_hash: contribution.canonical_hash().expect("artifact hash"),
+            prediction_hash: Digest::canonical(&prediction).expect("prediction hash"),
+            challenge_id,
+            intervention: prediction.intervention,
+            observed_response_ranks: predicted
+                .into_iter()
+                .enumerate()
+                .map(|(index, cell_line)| CancerNci60ObservedRank {
+                    cell_line,
+                    rank: u8::try_from(index + 1).expect("six ranks fit u8"),
+                })
+                .collect(),
+            pairwise_comparison_count: 15,
+            concordant_pair_count: 15,
+            pairwise_concordance_per_mille: Some(1_000),
+            most_responsive_line_correct: Some(true),
+            least_responsive_line_correct: Some(true),
+            answer_key: CancerResearchEvidenceReference {
+                kind: CancerResearchEvidenceKind::AssayObservation,
+                source_id: "nci-cellminer-nci60:held-out-answer-key-v1".to_owned(),
+                content_hash: Digest::sha256(b"answer-key"),
+            },
+            limitations: vec![
+                "Immortalized cell-line rank agreement is not patient efficacy.".to_owned(),
+                "The panel contains six CNS lines and no immune microenvironment.".to_owned(),
+                "This result does not establish safety, dose, or mechanism.".to_owned(),
+            ],
+        };
+        assert!(result.validate_against(&contribution).is_ok());
+
+        let mut forged = result;
+        forged.concordant_pair_count = 14;
+        assert!(matches!(
+            forged.validate_against(&contribution),
+            Err(CancerResearchContractError::InvalidResponseQualification)
+        ));
+    }
+
+    #[test]
+    fn response_rank_scoring_preserves_ties_and_marks_all_ties_uninformative() {
+        let predicted = vec![
+            CancerNci60CnsLine::Sf268,
+            CancerNci60CnsLine::Sf295,
+            CancerNci60CnsLine::Sf539,
+            CancerNci60CnsLine::Snb19,
+            CancerNci60CnsLine::Snb75,
+            CancerNci60CnsLine::U251,
+        ];
+        let partial_ties = predicted
+            .iter()
+            .copied()
+            .zip([1, 1, 3, 4, 5, 6])
+            .map(|(cell_line, rank)| CancerNci60ObservedRank { cell_line, rank })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            response_rank_concordance(&predicted, &partial_ties).expect("partial ties"),
+            (14, 14, Some(1_000), Some(true), Some(true))
+        );
+
+        let all_ties = predicted
+            .iter()
+            .copied()
+            .map(|cell_line| CancerNci60ObservedRank { cell_line, rank: 1 })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            response_rank_concordance(&predicted, &all_ties).expect("all ties"),
+            (0, 0, None, None, None)
+        );
     }
 }

@@ -4,6 +4,10 @@
 !.env.example
 .tools
 target
+data/source-cache
+data/derived-cache
+runtime-artifacts*
+runtime-qualification
 web/node_modules
 web/dist
 web/.vinext

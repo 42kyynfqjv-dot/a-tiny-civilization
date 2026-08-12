@@ -62,7 +62,17 @@ sudo systemctl enable --now \
 
 Both units load the root-protected production environment through systemd, run as the
 unprivileged project owner, expose no listener, and retain read-only host/filesystem
-hardening. The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
+hardening. On every evidence-worker start, its `ExecStartPre` verifies the pinned
+NCI-60 catalogue and ignored answer key, then copies only the answer key into the
+unit-private `/run/atiny-cancer-evidence/` staging tree. A hash mismatch or missing
+key fails the unit before any qualification can run. Container-profile operators
+must first run `bash scripts/stage-cancer-nci60-qualification-key.sh`; Compose mounts
+that content-addressed, mode-`0444` file only into `cancer-evidence-worker` and refuses
+to auto-create a missing source path.
+The host model-worker unit also makes both the ignored source key and the evidence
+worker's `/run` staging tree inaccessible inside its own mount namespace.
+
+The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
 records from Europe PMC every six hours. The model worker uses dedicated Cancer World
 OpenRouter and optional Fireworks keys. Exploration tries the pinned free GPT-OSS route
 before the metered Fireworks GPT-OSS overflow; literature audits retain their separate

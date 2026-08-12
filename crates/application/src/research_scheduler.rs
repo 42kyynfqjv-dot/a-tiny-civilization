@@ -34,6 +34,9 @@ const SECONDS_PER_DAY: u64 = 86_400;
 const BLIND_RESEARCH_MAX_OUTPUT_TOKENS: u16 = 4_096;
 const EMBEDDED_PRIMITIVES: &str =
     include_str!("../../../data/cancer-research/biological-primitives-v1.json");
+const EMBEDDED_NCI60_CHALLENGE_CATALOGUE: &str = include_str!(
+    "../../../data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json"
+);
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -48,6 +51,74 @@ struct PrimitiveBundle {
 struct PrimitiveRecord {
     source_id: String,
     content: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Nci60ChallengeCatalogue {
+    schema_version: u16,
+    catalogue_id: String,
+    evidence_class: String,
+    intended_use: String,
+    source_registry_hash: Digest,
+    source: serde_json::Value,
+    cns_cell_lines: Vec<String>,
+    single_agent_partition: serde_json::Value,
+    combination_partition: serde_json::Value,
+    single_agent_candidates: Vec<Nci60SingleAgentCandidate>,
+    combination_candidates: Vec<Nci60CombinationCandidate>,
+    leakage_boundary: Nci60CatalogueLeakageBoundary,
+    limitations: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Nci60CatalogueLeakageBoundary {
+    access_class: String,
+    allowed_in_model_context: bool,
+    contains_observed_response_values: bool,
+    contains_derived_rank_labels: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Nci60ChallengeCompound {
+    nsc: u64,
+    drug_name: String,
+    mechanism: Option<String>,
+    fda_approved: Option<bool>,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Nci60SingleAgentCandidate {
+    challenge_id: String,
+    compound: Nci60ChallengeCompound,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Nci60CombinationCandidate {
+    challenge_id: String,
+    first: Nci60ChallengeCompound,
+    second: Nci60ChallengeCompound,
+    source_record_count: usize,
+}
+
+#[derive(Serialize)]
+#[serde(deny_unknown_fields)]
+struct Nci60PromptSafeChallenge<'a> {
+    schema_version: u16,
+    catalogue_id: &'a str,
+    source_candidate_id: &'a str,
+    evidence_class: &'a str,
+    intended_use: &'a str,
+    cns_cell_lines: &'a [String],
+    #[serde(skip_serializing_if = "Option::is_none")]
+    single_agent: Option<&'a Nci60SingleAgentCandidate>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    combination: Option<&'a Nci60CombinationCandidate>,
+    limitations: &'a [String],
 }
 
 /// Derives and idempotently enqueues the exact blind-discovery turn due at the
@@ -205,6 +276,11 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
                 BLIND_RESEARCH_MAX_OUTPUT_TOKENS,
             )
         };
+    if let Some(challenge) =
+        nci60_response_challenge_document_for_turn(state.world_id(), turn_ordinal, stage)?
+    {
+        evidence_documents.push(challenge);
+    }
     evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
     let evidence = evidence_documents
         .iter()
@@ -704,6 +780,231 @@ fn embedded_biological_primitives()
     Ok(documents)
 }
 
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+enum Nci60ChallengeClass {
+    SingleAgent,
+    Combination,
+}
+
+impl Nci60ChallengeClass {
+    const fn selection_domain(self) -> &'static str {
+        match self {
+            Self::SingleAgent => "single-agent",
+            Self::Combination => "combination",
+        }
+    }
+}
+
+/// Returns a challenge only for an ordinary treatment-discovery turn. Device
+/// work and campaign turns must remain independent of the held-out benchmark.
+fn nci60_response_challenge_document_for_turn(
+    world_id: world_domain::WorldId,
+    turn_ordinal: u32,
+    stage: CancerResearchStage,
+) -> Result<Option<CancerResearchEvidenceDocument>, CancerResearchSchedulerError> {
+    if CancerResearchProgram::for_ordinal(turn_ordinal) != CancerResearchProgram::Treatments
+        || stage != CancerResearchStage::BlindDiscovery
+    {
+        return Ok(None);
+    }
+    let catalogue = embedded_nci60_challenge_catalogue()?;
+    nci60_response_challenge_document(world_id, turn_ordinal, &catalogue).map(Some)
+}
+
+fn embedded_nci60_challenge_catalogue()
+-> Result<Nci60ChallengeCatalogue, CancerResearchSchedulerError> {
+    let catalogue: Nci60ChallengeCatalogue =
+        serde_json::from_str(EMBEDDED_NCI60_CHALLENGE_CATALOGUE)?;
+    if catalogue.schema_version != 1
+        || catalogue.catalogue_id != "nci-cellminer-2-15-cns-challenge-catalogue-v1"
+        || catalogue.evidence_class != "in_vitro_immortalized_cell_line_response_challenge_metadata"
+        || catalogue.intended_use.trim().is_empty()
+        || catalogue.source_registry_hash == Digest::ZERO
+        || !catalogue.source.is_object()
+        || !catalogue.single_agent_partition.is_object()
+        || !catalogue.combination_partition.is_object()
+        || catalogue.cns_cell_lines.len() != 6
+        || catalogue.single_agent_candidates.is_empty()
+        || catalogue.combination_candidates.is_empty()
+        || catalogue.leakage_boundary.access_class != "prompt_safe_candidate_metadata"
+        || !catalogue.leakage_boundary.allowed_in_model_context
+        || catalogue.leakage_boundary.contains_observed_response_values
+        || catalogue.leakage_boundary.contains_derived_rank_labels
+        || catalogue.limitations.len() < 3
+    {
+        return Err(CancerResearchSchedulerError::InvalidResponseChallengeCatalogue);
+    }
+    Ok(catalogue)
+}
+
+/// Selects one prompt-safe, label-free held-out challenge from the embedded
+/// catalogue. The treatment-program ordinal fixes the class cadence: one
+/// single-agent challenge followed by three combination challenges. Within
+/// each class, a world-bound affine permutation visits every candidate exactly
+/// once before the cycle repeats. No observed value or answer-key commitment
+/// enters this process.
+fn nci60_response_challenge_document(
+    world_id: world_domain::WorldId,
+    turn_ordinal: u32,
+    catalogue: &Nci60ChallengeCatalogue,
+) -> Result<CancerResearchEvidenceDocument, CancerResearchSchedulerError> {
+    let (challenge_class, class_ordinal) = nci60_challenge_slot(turn_ordinal)
+        .ok_or(CancerResearchSchedulerError::InvalidResponseChallengeTurn)?;
+    let challenge_id = Uuid::new_v5(
+        &world_id.as_uuid(),
+        format!("nci60-response-challenge:v1:{turn_ordinal}").as_bytes(),
+    );
+    let (source_candidate_id, source_id, content) =
+        if challenge_class == Nci60ChallengeClass::SingleAgent {
+            let index = nci60_permutation_index(
+                world_id,
+                challenge_class,
+                class_ordinal,
+                catalogue.single_agent_candidates.len(),
+            )?;
+            let candidate = &catalogue.single_agent_candidates[index];
+            if candidate.compound.nsc == 0 || candidate.challenge_id.trim().is_empty() {
+                return Err(CancerResearchSchedulerError::InvalidResponseChallengeCatalogue);
+            }
+            let content = serde_json::to_string(&Nci60PromptSafeChallenge {
+                schema_version: 1,
+                catalogue_id: &catalogue.catalogue_id,
+                source_candidate_id: &candidate.challenge_id,
+                evidence_class: &catalogue.evidence_class,
+                intended_use: &catalogue.intended_use,
+                cns_cell_lines: &catalogue.cns_cell_lines,
+                single_agent: Some(candidate),
+                combination: None,
+                limitations: &catalogue.limitations,
+            })?;
+            (
+                candidate.challenge_id.as_str(),
+                format!(
+                    "cancer-world://nci60-response-challenge/{challenge_id}/single-agent/{}",
+                    candidate.compound.nsc
+                ),
+                content,
+            )
+        } else {
+            let index = nci60_permutation_index(
+                world_id,
+                challenge_class,
+                class_ordinal,
+                catalogue.combination_candidates.len(),
+            )?;
+            let candidate = &catalogue.combination_candidates[index];
+            if candidate.first.nsc == 0
+                || candidate.first.nsc >= candidate.second.nsc
+                || candidate.challenge_id.trim().is_empty()
+            {
+                return Err(CancerResearchSchedulerError::InvalidResponseChallengeCatalogue);
+            }
+            let content = serde_json::to_string(&Nci60PromptSafeChallenge {
+                schema_version: 1,
+                catalogue_id: &catalogue.catalogue_id,
+                source_candidate_id: &candidate.challenge_id,
+                evidence_class: &catalogue.evidence_class,
+                intended_use: &catalogue.intended_use,
+                cns_cell_lines: &catalogue.cns_cell_lines,
+                single_agent: None,
+                combination: Some(candidate),
+                limitations: &catalogue.limitations,
+            })?;
+            (
+                candidate.challenge_id.as_str(),
+                format!(
+                    "cancer-world://nci60-response-challenge/{challenge_id}/combination/{}-{}",
+                    candidate.first.nsc, candidate.second.nsc
+                ),
+                content,
+            )
+        };
+    if content.contains("response_rank")
+        || content.contains("activity_z_milli")
+        || content.contains("combo_score_milli")
+        || content.contains("answer_payload")
+    {
+        return Err(CancerResearchSchedulerError::InvalidResponseChallengeCatalogue);
+    }
+    debug_assert!(!source_candidate_id.is_empty());
+    Ok(CancerResearchEvidenceDocument {
+        reference: CancerResearchEvidenceReference {
+            kind: CancerResearchEvidenceKind::ResponseChallenge,
+            source_id,
+            content_hash: Digest::sha256(content.as_bytes()),
+        },
+        content,
+    })
+}
+
+/// Maps the global scheduler ordinal to a class-local challenge ordinal. Real
+/// treatment turns are the odd global ordinals, so class selection must be
+/// based on this program-local ordinal rather than the global parity/cadence.
+fn nci60_challenge_slot(turn_ordinal: u32) -> Option<(Nci60ChallengeClass, u32)> {
+    if CancerResearchProgram::for_ordinal(turn_ordinal) != CancerResearchProgram::Treatments {
+        return None;
+    }
+    let treatment_turn_ordinal = turn_ordinal / 2;
+    if treatment_turn_ordinal.is_multiple_of(4) {
+        Some((Nci60ChallengeClass::SingleAgent, treatment_turn_ordinal / 4))
+    } else {
+        Some((
+            Nci60ChallengeClass::Combination,
+            treatment_turn_ordinal - treatment_turn_ordinal / 4 - 1,
+        ))
+    }
+}
+
+fn nci60_permutation_index(
+    world_id: world_domain::WorldId,
+    challenge_class: Nci60ChallengeClass,
+    class_ordinal: u32,
+    candidate_count: usize,
+) -> Result<usize, CancerResearchSchedulerError> {
+    let modulus = u64::try_from(candidate_count)
+        .map_err(|_| CancerResearchSchedulerError::InvalidResponseChallengeCatalogue)?;
+    if modulus == 0 {
+        return Err(CancerResearchSchedulerError::InvalidResponseChallengeCatalogue);
+    }
+    let entropy = Digest::canonical(&(
+        "a-tiny-civilization:nci60-response-challenge-permutation:v1",
+        world_id,
+        challenge_class.selection_domain(),
+    ))?;
+    let offset = u64::from_be_bytes(
+        entropy.as_bytes()[..8]
+            .try_into()
+            .expect("SHA-256 digest contains at least eight bytes"),
+    ) % modulus;
+    let mut step = u64::from_be_bytes(
+        entropy.as_bytes()[8..16]
+            .try_into()
+            .expect("SHA-256 digest contains at least sixteen bytes"),
+    ) % modulus;
+    if step == 0 {
+        step = 1;
+    }
+    while greatest_common_divisor(step, modulus) != 1 {
+        step = (step + 1) % modulus;
+        if step == 0 {
+            step = 1;
+        }
+    }
+    let phase = u64::from(class_ordinal) % modulus;
+    let index = (u128::from(offset) + u128::from(phase) * u128::from(step)) % u128::from(modulus);
+    usize::try_from(index)
+        .map_err(|_| CancerResearchSchedulerError::InvalidResponseChallengeCatalogue)
+}
+
+const fn greatest_common_divisor(mut left: u64, mut right: u64) -> u64 {
+    while right != 0 {
+        let remainder = left % right;
+        left = right;
+        right = remainder;
+    }
+    left
+}
+
 #[derive(Serialize)]
 struct ResidentBurdenObservation<'a> {
     observation_schema_version: u16,
@@ -861,6 +1162,10 @@ pub enum CancerResearchSchedulerError {
     EmptyCancerBurdenCohort,
     #[error("embedded Cancer World biological primitives are invalid")]
     InvalidPrimitiveBundle,
+    #[error("embedded NCI-60 response challenge catalogue is invalid or leaks labels")]
+    InvalidResponseChallengeCatalogue,
+    #[error("NCI-60 response challenges are only valid on treatment-program turns")]
+    InvalidResponseChallengeTurn,
     #[error("Cancer World research campaign lineage is invalid")]
     InvalidCampaign,
     #[error("existing Cancer World research request does not match its deterministic tick")]
@@ -894,6 +1199,141 @@ mod tests {
             assert!(!lowercase.contains("dosage"));
             assert!(!lowercase.contains("treatment protocol"));
         }
+    }
+
+    #[test]
+    fn response_challenges_are_deterministic_complete_and_label_free() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x6000));
+        let catalogue = embedded_nci60_challenge_catalogue().expect("challenge catalogue");
+        let single =
+            nci60_response_challenge_document(world_id, 1, &catalogue).expect("single challenge");
+        let repeated =
+            nci60_response_challenge_document(world_id, 1, &catalogue).expect("repeated challenge");
+        let combination = nci60_response_challenge_document(world_id, 3, &catalogue)
+            .expect("combination challenge");
+        assert_eq!(single, repeated);
+        assert_eq!(
+            single.reference.kind,
+            CancerResearchEvidenceKind::ResponseChallenge
+        );
+        assert!(single.reference.source_id.contains("/single-agent/"));
+        assert!(combination.reference.source_id.contains("/combination/"));
+        for challenge in [single, combination] {
+            assert_eq!(
+                challenge.reference.content_hash,
+                Digest::sha256(challenge.content.as_bytes())
+            );
+            let value: serde_json::Value =
+                serde_json::from_str(&challenge.content).expect("challenge JSON");
+            assert_eq!(value["cns_cell_lines"].as_array().map(Vec::len), Some(6));
+            let encoded = challenge.content.to_ascii_lowercase();
+            assert!(!encoded.contains("response_rank"));
+            assert!(!encoded.contains("activity_z_milli"));
+            assert!(!encoded.contains("combo_score_milli"));
+            assert!(!encoded.contains("answer_payload"));
+        }
+    }
+
+    #[test]
+    fn response_challenge_cycle_uses_both_classes_on_actual_treatment_ordinals() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x6001));
+        let catalogue = embedded_nci60_challenge_catalogue().expect("challenge catalogue");
+        let mut single_ids = BTreeSet::new();
+        let mut combination_ids = BTreeSet::new();
+
+        for treatment_turn_ordinal in 0..512_u32 {
+            let turn_ordinal = treatment_turn_ordinal * 2 + 1;
+            let first = nci60_response_challenge_document(world_id, turn_ordinal, &catalogue)
+                .expect("challenge");
+            let repeated = nci60_response_challenge_document(world_id, turn_ordinal, &catalogue)
+                .expect("repeated challenge");
+            assert_eq!(first, repeated);
+
+            let content: serde_json::Value =
+                serde_json::from_str(&first.content).expect("challenge JSON");
+            let source_candidate_id = content["source_candidate_id"]
+                .as_str()
+                .expect("source candidate ID")
+                .to_owned();
+            if first.reference.source_id.contains("/single-agent/") {
+                assert!(single_ids.insert(source_candidate_id));
+            } else {
+                assert!(first.reference.source_id.contains("/combination/"));
+                assert!(combination_ids.insert(source_candidate_id));
+            }
+        }
+
+        assert_eq!(single_ids.len(), 128);
+        assert_eq!(combination_ids.len(), 384);
+    }
+
+    #[test]
+    fn response_challenge_permutations_cover_each_catalogue_class_before_reuse() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x6002));
+        let catalogue = embedded_nci60_challenge_catalogue().expect("challenge catalogue");
+        for (class, candidate_count) in [
+            (
+                Nci60ChallengeClass::SingleAgent,
+                catalogue.single_agent_candidates.len(),
+            ),
+            (
+                Nci60ChallengeClass::Combination,
+                catalogue.combination_candidates.len(),
+            ),
+        ] {
+            let indices = (0..u32::try_from(candidate_count).expect("bounded catalogue"))
+                .map(|ordinal| {
+                    nci60_permutation_index(world_id, class, ordinal, candidate_count)
+                        .expect("permutation index")
+                })
+                .collect::<BTreeSet<_>>();
+            assert_eq!(indices.len(), candidate_count);
+            assert_eq!(indices.first(), Some(&0));
+            assert_eq!(indices.last(), Some(&(candidate_count - 1)));
+            assert_eq!(
+                nci60_permutation_index(
+                    world_id,
+                    class,
+                    u32::try_from(candidate_count).expect("bounded catalogue"),
+                    candidate_count,
+                )
+                .expect("first repeated cycle index"),
+                nci60_permutation_index(world_id, class, 0, candidate_count)
+                    .expect("first permutation index")
+            );
+        }
+    }
+
+    #[test]
+    fn response_challenges_skip_device_and_campaign_turns() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x6003));
+        assert!(
+            nci60_response_challenge_document_for_turn(
+                world_id,
+                2,
+                CancerResearchStage::BlindDiscovery,
+            )
+            .expect("device turn")
+            .is_none()
+        );
+        assert!(
+            nci60_response_challenge_document_for_turn(
+                world_id,
+                1,
+                CancerResearchStage::IndependentReplication,
+            )
+            .expect("campaign turn")
+            .is_none()
+        );
+        assert!(
+            nci60_response_challenge_document_for_turn(
+                world_id,
+                1,
+                CancerResearchStage::BlindDiscovery,
+            )
+            .expect("treatment discovery turn")
+            .is_some()
+        );
     }
 
     #[test]

@@ -9,6 +9,11 @@ User=shmuel
 Group=shmuel
 WorkingDirectory=/home/shmuel/codex/emergent-civilization
 EnvironmentFile=/etc/a-tiny-civilization-production.env
+Environment=CANCER_NCI60_CHALLENGE_CATALOGUE_PATH=/home/shmuel/codex/emergent-civilization/data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json
+Environment=CANCER_NCI60_ANSWER_KEY_PATH=/run/atiny-cancer-evidence/nci60/559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce/nci-cellminer-2-15-cns-challenge-answer-key-v1.json
+RuntimeDirectory=atiny-cancer-evidence
+RuntimeDirectoryMode=0750
+ExecStartPre=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/stage-cancer-nci60-qualification-key.sh --source /home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json --runtime-root /run/atiny-cancer-evidence/nci60
 ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-evidence-worker
 Restart=on-failure
 RestartSec=15s
@@ -19,6 +24,7 @@ ProtectHome=read-only
 ProtectKernelTunables=true
 ProtectKernelModules=true
 ProtectControlGroups=true
+ReadWritePaths=/run/atiny-cancer-evidence
 RestrictSUIDSGID=true
 LockPersonality=true
 

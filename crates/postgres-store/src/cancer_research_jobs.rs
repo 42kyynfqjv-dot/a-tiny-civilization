@@ -1,9 +1,10 @@
 use application::{
-    CANCER_RESEARCH_CATALOG_PAGE_SIZE, CancerResearchAttemptPersistenceState,
-    CancerResearchCampaignCandidate, CancerResearchCampaignFollowup, CancerResearchCatalogItem,
-    CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
-    CancerResearchLiteratureSnapshot, CancerResearchMemoryInput, CancerResearchModelReceipt,
-    CancerResearchModelRequest, CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
+    CANCER_RESEARCH_CATALOG_PAGE_SIZE, CancerNci60QualificationCandidate,
+    CancerResearchAttemptPersistenceState, CancerResearchCampaignCandidate,
+    CancerResearchCampaignFollowup, CancerResearchCatalogItem, CancerResearchJobEntry,
+    CancerResearchJobStore, CancerResearchLadderResult, CancerResearchLiteratureSnapshot,
+    CancerResearchMemoryInput, CancerResearchModelReceipt, CancerResearchModelRequest,
+    CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
     CancerResearchPaidReservationDecision, CancerResearchPriorResult,
     CancerResearchRouteAttemptRecord, CancerVirtualExperimentCandidate,
     CancerVirtualExperimentCatalogSummary, CognitionBillingClass, CognitionBillingScope,
@@ -17,8 +18,9 @@ use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 use world_domain::{
-    CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchNoveltyStatus,
-    CancerResearchStage, CancerVirtualExperimentResult, Digest, EventSequence,
+    CancerNci60ResponseQualification, CancerResearchInferenceTier, CancerResearchNoveltyAudit,
+    CancerResearchNoveltyStatus, CancerResearchStage, CancerVirtualExperimentResult, Digest,
+    EventSequence,
 };
 
 use crate::PostgresStore;
@@ -537,6 +539,160 @@ impl CancerResearchJobStore for PostgresStore {
         .await
         .map_err(operation_error)?;
         transaction.commit().await.map_err(operation_error)
+    }
+
+    async fn load_unqualified_cancer_nci60_predictions(
+        &self,
+        world_id: world_domain::WorldId,
+        method_version: u16,
+        limit: usize,
+    ) -> Result<Vec<CancerNci60QualificationCandidate>, StoreError> {
+        if method_version == 0 {
+            return Err(StoreError::Conflict(
+                "NCI-60 qualification method version must be nonzero".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            LEFT JOIN cancer_nci60_response_qualifications AS qualification
+              ON qualification.request_id=request.request_id
+             AND qualification.method_version=$2
+            WHERE request.world_id=$1
+              AND result.result_payload->'receipt' <> 'null'::JSONB
+              AND result.result_payload->'receipt'->'contribution'->'nci60_response_prediction' IS NOT NULL
+              AND qualification.qualification_id IS NULL
+            ORDER BY request.ordinal, request.request_id
+            LIMIT $3
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(method_version))
+        .bind(i64::try_from(limit.clamp(1, 64)).map_err(corrupt)?)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let mut candidates = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (request, result) = parse_historical_research_result(row, world_id)?;
+            let mut challenge_documents = request.evidence_documents.iter().filter(|document| {
+                document.reference.kind
+                    == world_domain::CancerResearchEvidenceKind::ResponseChallenge
+            });
+            let challenge_document = challenge_documents.next().cloned().ok_or_else(|| {
+                corrupt("NCI-60 prediction request omitted its challenge document")
+            })?;
+            if challenge_documents.next().is_some() {
+                return Err(corrupt(
+                    "NCI-60 prediction request contains multiple challenge documents",
+                ));
+            }
+            let contribution = result
+                .receipt
+                .ok_or_else(|| corrupt("NCI-60 prediction omitted its receipt"))?
+                .contribution;
+            if contribution.nci60_response_prediction.is_none() {
+                return Err(corrupt(
+                    "NCI-60 qualification candidate omitted its prediction",
+                ));
+            }
+            let artifact_hash = contribution.canonical_hash().map_err(corrupt)?;
+            candidates.push(CancerNci60QualificationCandidate {
+                world_id,
+                request_id: request.request_id,
+                ordinal: request.selection.ordinal,
+                artifact_hash,
+                contribution,
+                challenge_document,
+            });
+        }
+        Ok(candidates)
+    }
+
+    async fn store_cancer_nci60_qualification(
+        &self,
+        qualification: &CancerNci60ResponseQualification,
+        contribution: &world_domain::CancerResearchContribution,
+    ) -> Result<(), StoreError> {
+        qualification
+            .validate_against(contribution)
+            .map_err(corrupt)?;
+        let payload = serde_json::to_value(qualification).map_err(corrupt)?;
+        let checksum = qualification
+            .canonical_hash(contribution)
+            .map_err(corrupt)?;
+        let stored_result_payload: Value = sqlx::query_scalar(
+            "SELECT result_payload FROM cancer_research_results WHERE request_id=$1",
+        )
+        .bind(qualification.request_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let stored_result: CancerResearchLadderResult =
+            serde_json::from_value(stored_result_payload).map_err(corrupt)?;
+        let stored_contribution = &stored_result
+            .receipt
+            .ok_or_else(|| corrupt("NCI-60 qualification source omitted its receipt"))?
+            .contribution;
+        if stored_contribution != contribution {
+            return Err(StoreError::Corrupt(
+                "NCI-60 qualification contribution differs from immutable research result"
+                    .to_owned(),
+            ));
+        }
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO cancer_nci60_response_qualifications (
+                qualification_id,world_id,request_id,method_version,artifact_hash,
+                prediction_hash,challenge_id,answer_key_hash,result_payload,result_checksum
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+            ON CONFLICT (request_id,method_version) DO NOTHING
+            "#,
+        )
+        .bind(qualification.qualification_id)
+        .bind(qualification.world_id.as_uuid())
+        .bind(qualification.request_id)
+        .bind(i32::from(qualification.method_version))
+        .bind(qualification.artifact_hash.as_bytes().as_slice())
+        .bind(qualification.prediction_hash.as_bytes().as_slice())
+        .bind(qualification.challenge_id)
+        .bind(qualification.answer_key.content_hash.as_bytes().as_slice())
+        .bind(&payload)
+        .bind(checksum.as_bytes().as_slice())
+        .execute(self.pool())
+        .await
+        .map_err(operation_error)?;
+        if inserted.rows_affected() == 1 {
+            return Ok(());
+        }
+        let existing = sqlx::query_as::<_, (Uuid, Value, Vec<u8>)>(
+            "SELECT qualification_id,result_payload,result_checksum FROM cancer_nci60_response_qualifications WHERE request_id=$1 AND method_version=$2",
+        )
+        .bind(qualification.request_id)
+        .bind(i32::from(qualification.method_version))
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        match existing {
+            Some((qualification_id, stored_payload, stored_checksum))
+                if qualification_id == qualification.qualification_id
+                    && stored_payload == payload
+                    && digest_from_db(&stored_checksum, "NCI-60 qualification checksum")?
+                        == checksum =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(StoreError::Corrupt(format!(
+                "NCI-60 qualification {} conflicts with its durable result",
+                qualification.qualification_id
+            ))),
+            None => Err(StoreError::Conflict(
+                "NCI-60 qualification disappeared during idempotency check".to_owned(),
+            )),
+        }
     }
 
     async fn enqueue_cancer_research_request(

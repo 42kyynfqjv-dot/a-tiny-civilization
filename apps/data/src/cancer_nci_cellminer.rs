@@ -24,6 +24,10 @@ const COMBO_SOURCE_ID: &str = "nci-cellminer-almanac";
 const SINGLE_SPLIT_DOMAIN: &str =
     "a-tiny-civilization/nci-cellminer/single-agent-compound-split/v1";
 const COMBO_SPLIT_DOMAIN: &str = "a-tiny-civilization/nci-cellminer/almanac-pair-split/v1";
+const CHALLENGE_SET_DOMAIN: &str =
+    "a-tiny-civilization/nci-cellminer/cns-response-challenge-set/v1";
+const CHALLENGE_ANSWER_DOMAIN: &str =
+    "a-tiny-civilization/nci-cellminer/cns-response-challenge-answers/v1";
 const MIN_MECHANISM_SUPPORT: usize = 3;
 const MAX_DOWNLOAD_BYTES: u64 = 64 * 1024 * 1024;
 const CNS_LINES: [&str; 6] = [
@@ -58,7 +62,7 @@ const ARTIFACTS: [ArtifactSpec; 2] = [
     },
 ];
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct AcquisitionManifest {
     schema_version: u16,
     source: String,
@@ -68,7 +72,7 @@ struct AcquisitionManifest {
     source_set_hash: Digest,
 }
 
-#[derive(Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize)]
 struct AcquiredArtifact {
     artifact_id: String,
     url: String,
@@ -91,7 +95,7 @@ struct CellminerBaseline {
     limitations: Vec<String>,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Clone, Debug, Serialize)]
 struct BaselineSource {
     custodian: String,
     cellminer_database_version: String,
@@ -186,6 +190,141 @@ struct ObservedComboProfile {
     source_record_count: usize,
     observed_cns_line_count: usize,
     mean_combo_score_milli: i64,
+}
+
+#[derive(Debug, Serialize)]
+struct CellminerChallengeCatalogue {
+    schema_version: u16,
+    catalogue_id: String,
+    evidence_class: String,
+    intended_use: String,
+    source_registry_hash: Digest,
+    source: BaselineSource,
+    cns_cell_lines: Vec<String>,
+    single_agent_partition: ChallengePartition,
+    combination_partition: ChallengePartition,
+    single_agent_candidates: Vec<SingleAgentCandidate>,
+    combination_candidates: Vec<CombinationCandidate>,
+    leakage_boundary: CatalogueLeakageBoundary,
+    limitations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChallengePartition {
+    source_id: String,
+    split: SplitSummary,
+    eligibility_rule: String,
+    candidate_count: usize,
+    candidate_set_commitment: Digest,
+}
+
+#[derive(Debug, Serialize)]
+struct CatalogueLeakageBoundary {
+    access_class: String,
+    allowed_in_model_context: bool,
+    contains_observed_response_values: bool,
+    contains_derived_rank_labels: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct ChallengeCompound {
+    nsc: u64,
+    drug_name: String,
+    mechanism: Option<String>,
+    fda_approved: Option<bool>,
+}
+
+#[derive(Debug, Serialize)]
+struct SingleAgentCandidate {
+    challenge_id: String,
+    compound: ChallengeCompound,
+}
+
+#[derive(Debug, Serialize)]
+struct CombinationCandidate {
+    challenge_id: String,
+    first: ChallengeCompound,
+    second: ChallengeCompound,
+    source_record_count: usize,
+}
+
+#[derive(Debug, Serialize)]
+struct CellminerChallengeAnswerKey {
+    schema_version: u16,
+    answer_key_id: String,
+    evidence_class: String,
+    intended_use: String,
+    source_registry_hash: Digest,
+    source: BaselineSource,
+    cns_cell_lines: Vec<String>,
+    ranking_rule: String,
+    single_agent_response_measure: String,
+    combination_response_measure: String,
+    catalogue_reference: ChallengeCatalogueReference,
+    single_agent_answers: Vec<SingleAgentAnswer>,
+    combination_answers: Vec<CombinationAnswer>,
+    leakage_boundary: AnswerKeyLeakageBoundary,
+    limitations: Vec<String>,
+}
+
+#[derive(Debug, Serialize)]
+struct ChallengeCatalogueReference {
+    catalogue_id: String,
+    catalogue_artifact_sha256: Digest,
+    answer_payload_commitment: Digest,
+}
+
+#[derive(Debug, Serialize)]
+struct AnswerKeyLeakageBoundary {
+    access_class: String,
+    allowed_in_model_context: bool,
+    contains_observed_response_values: bool,
+    contains_derived_rank_labels: bool,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct SingleAgentAnswer {
+    challenge_id: String,
+    nsc: u64,
+    observations: Vec<SingleAgentObservation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct SingleAgentObservation {
+    cell_line: String,
+    activity_z_milli: i64,
+    descending_response_rank: u8,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct CombinationAnswer {
+    challenge_id: String,
+    nsc_1: u64,
+    nsc_2: u64,
+    observations: Vec<CombinationObservation>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
+struct CombinationObservation {
+    cell_line: String,
+    combo_score_milli: i64,
+    descending_interaction_rank: u8,
+    interaction_direction: InteractionDirection,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum InteractionDirection {
+    Negative,
+    Zero,
+    Positive,
+}
+
+#[derive(Serialize)]
+struct ChallengeAnswerPayload<'a> {
+    domain: &'static str,
+    single_agent_answers: &'a [SingleAgentAnswer],
+    combination_answers: &'a [CombinationAnswer],
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -372,6 +511,570 @@ pub fn derive_baseline(source_directory: &Path, registry_path: &Path, output: &P
             .held_out_assessment
             .evaluated_held_out_observation_count
     );
+    Ok(())
+}
+
+pub fn derive_challenges(
+    source_directory: &Path,
+    registry_path: &Path,
+    catalogue_output: &Path,
+    answer_key_output: &Path,
+) -> Result<()> {
+    if catalogue_output == answer_key_output {
+        bail!("challenge catalogue and answer key must be distinct artifacts");
+    }
+    for output in [catalogue_output, answer_key_output] {
+        if output.exists() {
+            bail!("refusing to replace existing artifact {}", output.display());
+        }
+    }
+
+    let registry_bytes = fs::read(registry_path)
+        .with_context(|| format!("read registry {}", registry_path.display()))?;
+    let registry = CancerDatasetRegistry::from_slice(&registry_bytes)
+        .context("validate Cancer World dataset registry")?;
+    for required in [SINGLE_SOURCE_ID, COMBO_SOURCE_ID] {
+        if !registry
+            .sources
+            .iter()
+            .any(|source| source.source_id == required)
+        {
+            bail!("Cancer World registry does not contain {required}");
+        }
+    }
+
+    let manifest: AcquisitionManifest = read_json(&source_directory.join("acquisition.json"))?;
+    verify_manifest(source_directory, &manifest)?;
+    let single_bytes = verified_artifact(source_directory, &manifest, "nci60-average-z-score")?;
+    let combo_bytes = verified_artifact(source_directory, &manifest, "nci-almanac-combo-score")?;
+    let single_workbook = workbook_bytes(&single_bytes, SINGLE_INNER)?;
+    let combo_workbook = workbook_bytes(&combo_bytes, COMBO_INNER)?;
+    let (single_metadata, single_drugs) = read_single_drugs(&single_workbook)?;
+    let (combo_metadata, pairs) = read_drug_pairs(&combo_workbook)?;
+    let expected_metadata = WorkbookMetadata {
+        database_version: manifest.cellminer_database_version.clone(),
+        export_date: manifest.export_date.clone(),
+    };
+    if single_metadata != expected_metadata || combo_metadata != expected_metadata {
+        bail!("CellMiner workbook metadata differs from acquisition manifest");
+    }
+
+    let (single_agent_candidates, single_agent_answers) =
+        build_single_agent_challenges(&single_drugs)?;
+    let (combination_candidates, combination_answers) =
+        build_combination_challenges(&single_drugs, &pairs)?;
+    let answer_payload_commitment =
+        answer_payload_commitment(&single_agent_answers, &combination_answers)?;
+    let source = BaselineSource {
+        custodian: manifest.source.clone(),
+        cellminer_database_version: manifest.cellminer_database_version.clone(),
+        export_date: manifest.export_date.clone(),
+        source_set_hash: manifest.source_set_hash,
+        artifacts: manifest.artifacts.clone(),
+    };
+    let version = manifest.cellminer_database_version.replace('.', "-");
+    let catalogue_id = format!("nci-cellminer-{version}-cns-challenge-catalogue-v1");
+    let catalogue = CellminerChallengeCatalogue {
+        schema_version: 1,
+        catalogue_id: catalogue_id.clone(),
+        evidence_class: "in_vitro_immortalized_cell_line_response_challenge_metadata".to_owned(),
+        intended_use: "Prompt-safe identities and source metadata for blinded Cancer World qualification against held-out NCI-60 CNS single-agent activity and NCI-ALMANAC combination interaction measurements; not patient efficacy estimation.".to_owned(),
+        source_registry_hash: registry.content_digest()?,
+        source: source.clone(),
+        cns_cell_lines: CNS_LINES.iter().map(|value| (*value).to_owned()).collect(),
+        single_agent_partition: challenge_partition_for_single(
+            &single_drugs,
+            &single_agent_candidates,
+        ),
+        combination_partition: challenge_partition_for_combinations(
+            &pairs,
+            &combination_candidates,
+        ),
+        single_agent_candidates,
+        combination_candidates,
+        leakage_boundary: CatalogueLeakageBoundary {
+            access_class: "prompt_safe_candidate_metadata".to_owned(),
+            allowed_in_model_context: true,
+            contains_observed_response_values: false,
+            contains_derived_rank_labels: false,
+        },
+        limitations: vec![
+            "Candidate inclusion discloses that all six CNS lines have a retained measurement and that the six retained values are not all equal, but discloses no response value, direction, or line-specific rank.".to_owned(),
+            "FDA metadata means only whether the exact NCI-60 row was marked FDA approved; false is not a regulatory conclusion and null means the ALMANAC compound lacked a matching NCI-60 metadata row.".to_owned(),
+            "Mechanism strings and drug names are source metadata, not verified target engagement, dosing instructions, or treatment recommendations.".to_owned(),
+            "The qualification-only answer key is a separate artifact and must never be attached to a model request, retrieval result, memory, or prompt.".to_owned(),
+        ],
+    };
+    verify_catalogue_has_no_response_labels(&catalogue)?;
+    let catalogue_bytes = pretty_json_bytes(&catalogue)?;
+    let catalogue_artifact_sha256 = Digest::sha256(&catalogue_bytes);
+
+    let answer_key = CellminerChallengeAnswerKey {
+        schema_version: 1,
+        answer_key_id: format!("nci-cellminer-{version}-cns-challenge-answer-key-v1"),
+        evidence_class: "qualification_only_in_vitro_immortalized_cell_line_response".to_owned(),
+        intended_use: "Deterministic scoring of predictions produced without access to this artifact; never model context and never evidence of patient efficacy.".to_owned(),
+        source_registry_hash: registry.content_digest()?,
+        source,
+        cns_cell_lines: CNS_LINES.iter().map(|value| (*value).to_owned()).collect(),
+        ranking_rule: "Each six-line answer profile is serialized from largest observed value to smallest, with cell-line identifier ascending as the deterministic tie break. Rank 1 is the largest observed value and ties share 1 + the number of strictly larger values (competition ranking). For NCI-60 activity, larger z score means greater relative sensitivity; for ALMANAC, larger ComboScore means a stronger greater-than-additive interaction signal.".to_owned(),
+        single_agent_response_measure: "CellMiner average NCI-60 compound-activity z score after quality control, stored as exact parsed value times 1,000.".to_owned(),
+        combination_response_measure: "Median NCI-ALMANAC ComboScore across repeated canonical-pair source records for each CNS cell line, stored as value times 1,000.".to_owned(),
+        catalogue_reference: ChallengeCatalogueReference {
+            catalogue_id,
+            catalogue_artifact_sha256,
+            answer_payload_commitment,
+        },
+        single_agent_answers,
+        combination_answers,
+        leakage_boundary: AnswerKeyLeakageBoundary {
+            access_class: "qualification_worker_only".to_owned(),
+            allowed_in_model_context: false,
+            contains_observed_response_values: true,
+            contains_derived_rank_labels: true,
+        },
+        limitations: vec![
+            "These labels measure established two-dimensional NCI-60 cell-line behavior, not patients, organoids, xenografts, immune effects, toxicity, exposure, or clinical benefit.".to_owned(),
+            "A high activity z score or positive ComboScore can qualify a prediction against this assay family only; it cannot validate a treatment claim.".to_owned(),
+            "Ranks are relative within the six CellMiner CNS lines for one compound or pair and are not comparable across candidates.".to_owned(),
+            "The answer key is isolated for blindness, not because the underlying official NCI measurements are private.".to_owned(),
+        ],
+    };
+    verify_challenge_pair(&catalogue, &catalogue_bytes, &answer_key)?;
+    let answer_key_bytes = pretty_json_bytes(&answer_key)?;
+
+    write_new(catalogue_output, &catalogue_bytes)?;
+    write_new(answer_key_output, &answer_key_bytes)?;
+    println!(
+        "derived {} single-agent and {} combination held-out challenges; catalogue sha256 {}, answer payload commitment {}",
+        catalogue.single_agent_candidates.len(),
+        catalogue.combination_candidates.len(),
+        catalogue_artifact_sha256,
+        answer_payload_commitment,
+    );
+    Ok(())
+}
+
+fn build_single_agent_challenges(
+    drugs: &[SingleDrug],
+) -> Result<(Vec<SingleAgentCandidate>, Vec<SingleAgentAnswer>)> {
+    let mut candidates = Vec::new();
+    let mut answers = Vec::new();
+    for drug in drugs {
+        if !is_held_out(SINGLE_SPLIT_DOMAIN, &drug.nsc.to_string()) {
+            continue;
+        }
+        let Some(values) = complete_cns(&drug.cns) else {
+            continue;
+        };
+        if !has_informative_rank(&values) {
+            continue;
+        }
+        let challenge_id = single_challenge_id(drug.nsc);
+        candidates.push(SingleAgentCandidate {
+            challenge_id: challenge_id.clone(),
+            compound: ChallengeCompound {
+                nsc: drug.nsc,
+                drug_name: drug.name.clone(),
+                mechanism: drug.mechanism.clone(),
+                fda_approved: Some(drug.fda_approved),
+            },
+        });
+        let ranks = descending_ranks(&values)?;
+        let mut observations = CNS_LINES
+            .iter()
+            .zip(values)
+            .zip(ranks)
+            .map(
+                |((cell_line, activity_z_milli), descending_response_rank)| {
+                    SingleAgentObservation {
+                        cell_line: (*cell_line).to_owned(),
+                        activity_z_milli,
+                        descending_response_rank,
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| {
+            right
+                .activity_z_milli
+                .cmp(&left.activity_z_milli)
+                .then_with(|| left.cell_line.cmp(&right.cell_line))
+        });
+        answers.push(SingleAgentAnswer {
+            challenge_id,
+            nsc: drug.nsc,
+            observations,
+        });
+    }
+    candidates.sort_by(|left, right| left.challenge_id.cmp(&right.challenge_id));
+    answers.sort_by(|left, right| left.challenge_id.cmp(&right.challenge_id));
+    ensure_unique_challenge_ids(candidates.iter().map(|value| value.challenge_id.as_str()))?;
+    ensure_unique_challenge_ids(answers.iter().map(|value| value.challenge_id.as_str()))?;
+    if candidates.is_empty() || candidates.len() != answers.len() {
+        bail!("single-agent challenge derivation produced an invalid candidate/answer set");
+    }
+    Ok((candidates, answers))
+}
+
+fn build_combination_challenges(
+    drugs: &[SingleDrug],
+    pairs: &[DrugPair],
+) -> Result<(Vec<CombinationCandidate>, Vec<CombinationAnswer>)> {
+    let drug_metadata = drugs
+        .iter()
+        .map(|drug| (drug.nsc, drug))
+        .collect::<BTreeMap<_, _>>();
+    let mut candidates = Vec::new();
+    let mut answers = Vec::new();
+    for pair in pairs {
+        if !is_held_out(COMBO_SPLIT_DOMAIN, &pair_id(pair.nsc_1, pair.nsc_2)) {
+            continue;
+        }
+        let Some(values) = complete_cns(&pair.cns) else {
+            continue;
+        };
+        if !has_informative_rank(&values) {
+            continue;
+        }
+        let challenge_id = combination_challenge_id(pair.nsc_1, pair.nsc_2);
+        candidates.push(CombinationCandidate {
+            challenge_id: challenge_id.clone(),
+            first: ChallengeCompound {
+                nsc: pair.nsc_1,
+                drug_name: pair.name_1.clone(),
+                mechanism: pair.mechanism_1.clone(),
+                fda_approved: drug_metadata.get(&pair.nsc_1).map(|drug| drug.fda_approved),
+            },
+            second: ChallengeCompound {
+                nsc: pair.nsc_2,
+                drug_name: pair.name_2.clone(),
+                mechanism: pair.mechanism_2.clone(),
+                fda_approved: drug_metadata.get(&pair.nsc_2).map(|drug| drug.fda_approved),
+            },
+            source_record_count: pair.source_record_count,
+        });
+        let ranks = descending_ranks(&values)?;
+        let mut observations = CNS_LINES
+            .iter()
+            .zip(values)
+            .zip(ranks)
+            .map(
+                |((cell_line, combo_score_milli), descending_interaction_rank)| {
+                    CombinationObservation {
+                        cell_line: (*cell_line).to_owned(),
+                        combo_score_milli,
+                        descending_interaction_rank,
+                        interaction_direction: interaction_direction(combo_score_milli),
+                    }
+                },
+            )
+            .collect::<Vec<_>>();
+        observations.sort_by(|left, right| {
+            right
+                .combo_score_milli
+                .cmp(&left.combo_score_milli)
+                .then_with(|| left.cell_line.cmp(&right.cell_line))
+        });
+        answers.push(CombinationAnswer {
+            challenge_id,
+            nsc_1: pair.nsc_1,
+            nsc_2: pair.nsc_2,
+            observations,
+        });
+    }
+    candidates.sort_by(|left, right| left.challenge_id.cmp(&right.challenge_id));
+    answers.sort_by(|left, right| left.challenge_id.cmp(&right.challenge_id));
+    ensure_unique_challenge_ids(candidates.iter().map(|value| value.challenge_id.as_str()))?;
+    ensure_unique_challenge_ids(answers.iter().map(|value| value.challenge_id.as_str()))?;
+    if candidates.is_empty() || candidates.len() != answers.len() {
+        bail!("combination challenge derivation produced an invalid candidate/answer set");
+    }
+    Ok((candidates, answers))
+}
+
+fn challenge_partition_for_single(
+    drugs: &[SingleDrug],
+    candidates: &[SingleAgentCandidate],
+) -> ChallengePartition {
+    let (calibration, held_out) = partition_ids(
+        drugs.iter().map(|drug| drug.nsc.to_string()),
+        SINGLE_SPLIT_DOMAIN,
+    );
+    let candidate_ids = candidates
+        .iter()
+        .map(|candidate| candidate.challenge_id.clone())
+        .collect::<Vec<_>>();
+    ChallengePartition {
+        source_id: SINGLE_SOURCE_ID.to_owned(),
+        split: split_summary(
+            "NSC compound",
+            SINGLE_SPLIT_DOMAIN,
+            &calibration,
+            &held_out,
+        ),
+        eligibility_rule: "Held-out whole NSC compound with a retained value for every one of the six declared CNS cell lines and at least two distinct retained values, so the profile contains an informative pairwise rank.".to_owned(),
+        candidate_count: candidate_ids.len(),
+        candidate_set_commitment: string_set_commitment(
+            &format!("{CHALLENGE_SET_DOMAIN}/single-agent"),
+            &candidate_ids,
+        ),
+    }
+}
+
+fn challenge_partition_for_combinations(
+    pairs: &[DrugPair],
+    candidates: &[CombinationCandidate],
+) -> ChallengePartition {
+    let (calibration, held_out) = partition_ids(
+        pairs.iter().map(|pair| pair_id(pair.nsc_1, pair.nsc_2)),
+        COMBO_SPLIT_DOMAIN,
+    );
+    let candidate_ids = candidates
+        .iter()
+        .map(|candidate| candidate.challenge_id.clone())
+        .collect::<Vec<_>>();
+    ChallengePartition {
+        source_id: COMBO_SOURCE_ID.to_owned(),
+        split: split_summary(
+            "canonical NSC drug pair",
+            COMBO_SPLIT_DOMAIN,
+            &calibration,
+            &held_out,
+        ),
+        eligibility_rule: "Held-out whole canonical NSC pair with a retained median ComboScore for every one of the six declared CNS cell lines and at least two distinct retained median values, so the profile contains an informative pairwise rank.".to_owned(),
+        candidate_count: candidate_ids.len(),
+        candidate_set_commitment: string_set_commitment(
+            &format!("{CHALLENGE_SET_DOMAIN}/combination"),
+            &candidate_ids,
+        ),
+    }
+}
+
+fn partition_ids(ids: impl Iterator<Item = String>, domain: &str) -> (Vec<String>, Vec<String>) {
+    let mut calibration = Vec::new();
+    let mut held_out = Vec::new();
+    for id in ids {
+        if is_held_out(domain, &id) {
+            held_out.push(id);
+        } else {
+            calibration.push(id);
+        }
+    }
+    (calibration, held_out)
+}
+
+fn complete_cns(values: &[Option<i64>; 6]) -> Option<[i64; 6]> {
+    let mut complete = [0; 6];
+    for (target, source) in complete.iter_mut().zip(values) {
+        *target = (*source)?;
+    }
+    Some(complete)
+}
+
+fn has_informative_rank(values: &[i64; 6]) -> bool {
+    values[1..].iter().any(|value| *value != values[0])
+}
+
+fn descending_ranks(values: &[i64; 6]) -> Result<[u8; 6]> {
+    let mut ranks = [0; 6];
+    for (index, value) in values.iter().enumerate() {
+        ranks[index] = u8::try_from(1 + values.iter().filter(|other| *other > value).count())?;
+    }
+    Ok(ranks)
+}
+
+fn interaction_direction(value: i64) -> InteractionDirection {
+    match value.cmp(&0) {
+        std::cmp::Ordering::Less => InteractionDirection::Negative,
+        std::cmp::Ordering::Equal => InteractionDirection::Zero,
+        std::cmp::Ordering::Greater => InteractionDirection::Positive,
+    }
+}
+
+fn single_challenge_id(nsc: u64) -> String {
+    format!("nci60-cns-single-nsc-{nsc}")
+}
+
+fn combination_challenge_id(left: u64, right: u64) -> String {
+    let (left, right) = if left <= right {
+        (left, right)
+    } else {
+        (right, left)
+    };
+    format!("nci-almanac-cns-combination-nsc-{left}-{right}")
+}
+
+fn ensure_unique_challenge_ids<'a>(ids: impl Iterator<Item = &'a str>) -> Result<()> {
+    let mut seen = BTreeSet::new();
+    for id in ids {
+        if !seen.insert(id) {
+            bail!("challenge identifier {id:?} is duplicated");
+        }
+    }
+    Ok(())
+}
+
+fn answer_payload_commitment(
+    single_agent_answers: &[SingleAgentAnswer],
+    combination_answers: &[CombinationAnswer],
+) -> Result<Digest> {
+    let payload = ChallengeAnswerPayload {
+        domain: CHALLENGE_ANSWER_DOMAIN,
+        single_agent_answers,
+        combination_answers,
+    };
+    Ok(Digest::sha256(&serde_json::to_vec(&payload)?))
+}
+
+fn verify_catalogue_has_no_response_labels(catalogue: &CellminerChallengeCatalogue) -> Result<()> {
+    const FORBIDDEN_KEYS: [&str; 6] = [
+        "observations",
+        "activity_z_milli",
+        "descending_response_rank",
+        "combo_score_milli",
+        "descending_interaction_rank",
+        "interaction_direction",
+    ];
+    fn inspect(value: &serde_json::Value, path: &str) -> Result<()> {
+        match value {
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    if FORBIDDEN_KEYS.contains(&key.as_str()) {
+                        bail!("prompt-safe catalogue contains forbidden answer field {path}.{key}");
+                    }
+                    inspect(value, &format!("{path}.{key}"))?;
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for (index, value) in values.iter().enumerate() {
+                    inspect(value, &format!("{path}[{index}]"))?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    inspect(&serde_json::to_value(catalogue)?, "$catalogue")
+}
+
+fn verify_challenge_pair(
+    catalogue: &CellminerChallengeCatalogue,
+    catalogue_bytes: &[u8],
+    answer_key: &CellminerChallengeAnswerKey,
+) -> Result<()> {
+    verify_catalogue_has_no_response_labels(catalogue)?;
+    if !catalogue.leakage_boundary.allowed_in_model_context
+        || catalogue.leakage_boundary.contains_observed_response_values
+        || catalogue.leakage_boundary.contains_derived_rank_labels
+        || answer_key.leakage_boundary.allowed_in_model_context
+        || !answer_key
+            .leakage_boundary
+            .contains_observed_response_values
+        || !answer_key.leakage_boundary.contains_derived_rank_labels
+    {
+        bail!("CellMiner challenge leakage access classes are inconsistent");
+    }
+    if answer_key.catalogue_reference.catalogue_id != catalogue.catalogue_id
+        || answer_key.catalogue_reference.catalogue_artifact_sha256
+            != Digest::sha256(catalogue_bytes)
+    {
+        bail!("CellMiner answer key does not bind the exact candidate catalogue artifact");
+    }
+    let actual_commitment = answer_payload_commitment(
+        &answer_key.single_agent_answers,
+        &answer_key.combination_answers,
+    )?;
+    if actual_commitment != answer_key.catalogue_reference.answer_payload_commitment {
+        bail!("CellMiner answer payload commitment differs from its answer key");
+    }
+    let single_candidates = catalogue
+        .single_agent_candidates
+        .iter()
+        .map(|candidate| (&candidate.challenge_id, candidate.compound.nsc))
+        .collect::<BTreeMap<_, _>>();
+    let single_answers = answer_key
+        .single_agent_answers
+        .iter()
+        .map(|answer| (&answer.challenge_id, answer.nsc))
+        .collect::<BTreeMap<_, _>>();
+    let combination_candidates = catalogue
+        .combination_candidates
+        .iter()
+        .map(|candidate| {
+            (
+                &candidate.challenge_id,
+                (candidate.first.nsc, candidate.second.nsc),
+            )
+        })
+        .collect::<BTreeMap<_, _>>();
+    let combination_answers = answer_key
+        .combination_answers
+        .iter()
+        .map(|answer| (&answer.challenge_id, (answer.nsc_1, answer.nsc_2)))
+        .collect::<BTreeMap<_, _>>();
+    if single_candidates != single_answers || combination_candidates != combination_answers {
+        bail!("CellMiner challenge catalogue identities do not match answer-key identities");
+    }
+    let expected_lines = CNS_LINES.iter().copied().collect::<BTreeSet<_>>();
+    for answer in &answer_key.single_agent_answers {
+        let actual_lines = answer
+            .observations
+            .iter()
+            .map(|observation| observation.cell_line.as_str())
+            .collect::<BTreeSet<_>>();
+        if actual_lines != expected_lines
+            || answer
+                .observations
+                .windows(2)
+                .all(|pair| pair[0].activity_z_milli == pair[1].activity_z_milli)
+            || answer.observations.windows(2).any(|pair| {
+                pair[0].activity_z_milli < pair[1].activity_z_milli
+                    || (pair[0].activity_z_milli == pair[1].activity_z_milli
+                        && pair[0].cell_line > pair[1].cell_line)
+            })
+            || answer.observations.iter().any(|observation| {
+                usize::from(observation.descending_response_rank)
+                    != 1 + answer
+                        .observations
+                        .iter()
+                        .filter(|other| other.activity_z_milli > observation.activity_z_milli)
+                        .count()
+            })
+        {
+            bail!("CellMiner single-agent answer is incomplete or noncanonical");
+        }
+    }
+    for answer in &answer_key.combination_answers {
+        let actual_lines = answer
+            .observations
+            .iter()
+            .map(|observation| observation.cell_line.as_str())
+            .collect::<BTreeSet<_>>();
+        if actual_lines != expected_lines
+            || answer
+                .observations
+                .windows(2)
+                .all(|pair| pair[0].combo_score_milli == pair[1].combo_score_milli)
+            || answer.observations.windows(2).any(|pair| {
+                pair[0].combo_score_milli < pair[1].combo_score_milli
+                    || (pair[0].combo_score_milli == pair[1].combo_score_milli
+                        && pair[0].cell_line > pair[1].cell_line)
+            })
+            || answer.observations.iter().any(|observation| {
+                usize::from(observation.descending_interaction_rank)
+                    != 1 + answer
+                        .observations
+                        .iter()
+                        .filter(|other| other.combo_score_milli > observation.combo_score_milli)
+                        .count()
+                    || observation.interaction_direction
+                        != interaction_direction(observation.combo_score_milli)
+            })
+        {
+            bail!("CellMiner combination answer is incomplete or noncanonical");
+        }
+    }
     Ok(())
 }
 
@@ -1134,9 +1837,14 @@ fn read_json<T: for<'de> Deserialize<'de>>(path: &Path) -> Result<T> {
 }
 
 fn write_json_new<T: Serialize>(path: &Path, value: &T) -> Result<()> {
+    let bytes = pretty_json_bytes(value)?;
+    write_new(path, &bytes)
+}
+
+fn pretty_json_bytes<T: Serialize>(value: &T) -> Result<Vec<u8>> {
     let mut bytes = serde_json::to_vec_pretty(value).context("encode canonical JSON artifact")?;
     bytes.push(b'\n');
-    write_new(path, &bytes)
+    Ok(bytes)
 }
 
 fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
@@ -1178,5 +1886,154 @@ mod tests {
         assert_eq!(mean_u64(&[1, 2]).expect("mean"), 2);
         assert_eq!(ratio_ppm(1, 4), 250_000);
         assert_eq!(relative_improvement_ppm(75, 100), 250_000);
+    }
+
+    #[test]
+    fn challenge_ranks_and_identifiers_are_deterministic() {
+        assert_eq!(single_challenge_id(740), "nci60-cns-single-nsc-740");
+        assert_eq!(
+            combination_challenge_id(752, 740),
+            "nci-almanac-cns-combination-nsc-740-752"
+        );
+        assert_eq!(
+            descending_ranks(&[200, 100, 200, -50, 0, 50]).expect("ranks"),
+            [1, 3, 1, 6, 5, 4]
+        );
+        assert!(!has_informative_rank(&[250; 6]));
+        assert!(has_informative_rank(&[250, 250, 250, 250, 250, 251]));
+        assert_eq!(interaction_direction(-1), InteractionDirection::Negative);
+        assert_eq!(interaction_direction(0), InteractionDirection::Zero);
+        assert_eq!(interaction_direction(1), InteractionDirection::Positive);
+    }
+
+    #[test]
+    fn challenge_builders_exclude_all_tied_profiles_for_both_measurement_classes() {
+        let single_drugs = vec![
+            SingleDrug {
+                nsc: 100_071,
+                name: "all tied".to_owned(),
+                fda_approved: false,
+                mechanism: None,
+                cns: [Some(250); 6],
+            },
+            SingleDrug {
+                nsc: 10_010,
+                name: "informative".to_owned(),
+                fda_approved: false,
+                mechanism: None,
+                cns: [
+                    Some(250),
+                    Some(250),
+                    Some(250),
+                    Some(250),
+                    Some(250),
+                    Some(251),
+                ],
+            },
+        ];
+        let (single_candidates, single_answers) =
+            build_single_agent_challenges(&single_drugs).expect("single challenges");
+        assert_eq!(single_candidates.len(), 1);
+        assert_eq!(single_answers.len(), 1);
+        assert_eq!(single_candidates[0].compound.nsc, 10_010);
+
+        let pairs = vec![
+            DrugPair {
+                nsc_1: 102_816,
+                name_1: "first".to_owned(),
+                mechanism_1: None,
+                nsc_2: 105_014,
+                name_2: "all tied".to_owned(),
+                mechanism_2: None,
+                cns: [Some(0); 6],
+                source_record_count: 1,
+            },
+            DrugPair {
+                nsc_1: 102_816,
+                name_1: "first".to_owned(),
+                mechanism_1: None,
+                nsc_2: 109_724,
+                name_2: "informative".to_owned(),
+                mechanism_2: None,
+                cns: [Some(0), Some(0), Some(0), Some(0), Some(0), Some(1)],
+                source_record_count: 1,
+            },
+        ];
+        let (combination_candidates, combination_answers) =
+            build_combination_challenges(&[], &pairs).expect("combination challenges");
+        assert_eq!(combination_candidates.len(), 1);
+        assert_eq!(combination_answers.len(), 1);
+        assert_eq!(combination_candidates[0].second.nsc, 109_724);
+    }
+
+    #[test]
+    fn answer_commitment_changes_without_exposing_labels_in_catalogue_shape() {
+        let digest = Digest::sha256(b"test");
+        let catalogue = CellminerChallengeCatalogue {
+            schema_version: 1,
+            catalogue_id: "catalogue-test".to_owned(),
+            evidence_class: "test".to_owned(),
+            intended_use: "test".to_owned(),
+            source_registry_hash: digest,
+            source: BaselineSource {
+                custodian: "test".to_owned(),
+                cellminer_database_version: "test".to_owned(),
+                export_date: "test".to_owned(),
+                source_set_hash: digest,
+                artifacts: Vec::new(),
+            },
+            cns_cell_lines: CNS_LINES.iter().map(|line| (*line).to_owned()).collect(),
+            single_agent_partition: ChallengePartition {
+                source_id: SINGLE_SOURCE_ID.to_owned(),
+                split: split_summary(
+                    "NSC compound",
+                    SINGLE_SPLIT_DOMAIN,
+                    &[],
+                    &["740".to_owned()],
+                ),
+                eligibility_rule: "test".to_owned(),
+                candidate_count: 1,
+                candidate_set_commitment: digest,
+            },
+            combination_partition: ChallengePartition {
+                source_id: COMBO_SOURCE_ID.to_owned(),
+                split: split_summary("canonical NSC drug pair", COMBO_SPLIT_DOMAIN, &[], &[]),
+                eligibility_rule: "test".to_owned(),
+                candidate_count: 0,
+                candidate_set_commitment: digest,
+            },
+            single_agent_candidates: vec![SingleAgentCandidate {
+                challenge_id: single_challenge_id(740),
+                compound: ChallengeCompound {
+                    nsc: 740,
+                    drug_name: "test".to_owned(),
+                    mechanism: Some("test".to_owned()),
+                    fda_approved: Some(false),
+                },
+            }],
+            combination_candidates: Vec::new(),
+            leakage_boundary: CatalogueLeakageBoundary {
+                access_class: "prompt_safe_candidate_metadata".to_owned(),
+                allowed_in_model_context: true,
+                contains_observed_response_values: false,
+                contains_derived_rank_labels: false,
+            },
+            limitations: Vec::new(),
+        };
+        verify_catalogue_has_no_response_labels(&catalogue).expect("catalogue is label-free");
+
+        let mut first = vec![SingleAgentAnswer {
+            challenge_id: single_challenge_id(740),
+            nsc: 740,
+            observations: vec![SingleAgentObservation {
+                cell_line: CNS_LINES[0].to_owned(),
+                activity_z_milli: 100,
+                descending_response_rank: 1,
+            }],
+        }];
+        let first_commitment = answer_payload_commitment(&first, &[]).expect("commitment");
+        first[0].observations[0].activity_z_milli = 101;
+        let changed_commitment = answer_payload_commitment(&first, &[]).expect("commitment");
+        assert_ne!(first_commitment, changed_commitment);
     }
 }

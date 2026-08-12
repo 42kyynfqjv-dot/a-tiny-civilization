@@ -20,10 +20,16 @@ RUN apt-get update \
 
 RUN useradd --create-home --uid 10001 civilization
 WORKDIR /app
-COPY --from=builder /source/target/release/civilization-api /app/civilization-api
-COPY --from=builder /source/target/release/civilization-data /app/civilization-data
-COPY --from=builder /source/target/release/civilization-projector /app/civilization-projector
-COPY --from=builder /source/target/release/civilization-runner /app/civilization-runner
+RUN install -d -o civilization -g civilization -m 0500 /app/qualification \
+    && install -d -o civilization -g civilization -m 0555 /app/data /app/data/cancer-research
+COPY --from=builder --chown=10001:10001 --chmod=0555 /source/target/release/civilization-api /app/civilization-api
+COPY --from=builder --chown=10001:10001 --chmod=0555 /source/target/release/civilization-data /app/civilization-data
+COPY --from=builder --chown=10001:10001 --chmod=0555 /source/target/release/civilization-projector /app/civilization-projector
+COPY --from=builder --chown=10001:10001 --chmod=0555 /source/target/release/civilization-runner /app/civilization-runner
+# The catalogue is deliberately prompt-safe and public. The corresponding
+# answer key is never baked into the image; only the qualification worker gets
+# that file through its dedicated read-only bind mount.
+COPY --from=builder --chown=10001:10001 --chmod=0444 /source/data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json /app/data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json
 
 USER civilization
 EXPOSE 8080

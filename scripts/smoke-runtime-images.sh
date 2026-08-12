@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 app_image="${ATINY_APP_IMAGE:-a-tiny-civilization-app:ci}"
 web_image="${ATINY_WEB_IMAGE:-a-tiny-civilization-web:ci}"
 
@@ -19,6 +20,28 @@ docker run --rm \
   --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=16m,mode=1777 \
   "$app_image" /app/civilization-runner --help >/dev/null
+
+catalogue_digest="$(docker run --rm \
+  --user 10001:10001 \
+  --read-only \
+  --cap-drop ALL \
+  --security-opt no-new-privileges \
+  "$app_image" sha256sum \
+    /app/data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json \
+  | awk '{print $1}')"
+if [[ "$catalogue_digest" != 'ab9f8087135aeb6a62c1d351d088a492b3dafb1c01dd4c37af0d0659be5362a5' ]]; then
+  echo "Rust runtime image does not expose the pinned prompt-safe NCI catalogue to uid 10001" >&2
+  exit 1
+fi
+
+# A clean CI checkout intentionally has no held-out answer key. Hosts that have
+# derived it exercise the real bind and uid boundary as part of the image smoke.
+nci60_answer_source="${CANCER_NCI60_ANSWER_KEY_SOURCE_PATH:-${project_root}/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json}"
+if [[ -f "$nci60_answer_source" ]]; then
+  ATINY_APP_IMAGE="$app_image" \
+    CANCER_NCI60_ANSWER_KEY_SOURCE_PATH="$nci60_answer_source" \
+    bash "${project_root}/scripts/smoke-cancer-nci60-qualification-key.sh"
+fi
 
 web_container=""
 cleanup() {

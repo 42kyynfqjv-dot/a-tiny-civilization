@@ -9,18 +9,19 @@ use std::{
 
 use anyhow::{Context, Result};
 use application::{
-    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchEvidenceDocument,
-    CancerResearchJobStore, CancerResearchLiteratureSnapshot, CancerResearchModel,
-    CancerResearchModelAdapters, CancerResearchNoveltySource, CancerResearchWorkerConfiguration,
-    CancerResearchWorkerOutcome, CognitionModel, CognitionModelRoute, CognitionProviderId,
-    CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore, MemoryOutboxStore,
-    ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore,
-    advance_world, advance_world_with_celestial, advance_world_with_celestial_and_cognition,
-    calculate_cancer_research_novelty, construct_configured_genesis_with_materials,
-    execute_cancer_virtual_experiment, initialize_or_resume_configured_world_with_materials,
-    initialize_or_resume_world, process_next_cancer_research_job, process_next_cognition_job,
-    resume_world, resume_world_from_snapshot, retire_world_for_successor,
-    schedule_due_cancer_research_turn, schedule_world_cognition,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerNci60Qualifier,
+    CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchLiteratureSnapshot,
+    CancerResearchModel, CancerResearchModelAdapters, CancerResearchNoveltySource,
+    CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome, CognitionModel,
+    CognitionModelRoute, CognitionProviderId, CognitionWorkerConfiguration, CognitionWorkerStep,
+    FoundationStore, MemoryOutboxStore, ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError,
+    WorldSession, WorldStore, advance_world, advance_world_with_celestial,
+    advance_world_with_celestial_and_cognition, calculate_cancer_research_novelty,
+    construct_configured_genesis_with_materials, execute_cancer_virtual_experiment,
+    initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
+    process_next_cancer_research_job, process_next_cognition_job, resume_world,
+    resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
+    schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -52,13 +53,14 @@ use world_data_filesystem::{
     load_provisional_world_composition, verify_provisional_world_artifacts,
 };
 use world_domain::{
-    BirthCategory, BodilyNeedState, CANCER_RESEARCH_INITIAL_RESIDENTS,
-    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
-    CancerResearchBootstrap, CapacityExhaustionPolicy, CelestialState, Digest, EntityId,
-    OrganismRole, PartitionedExecution, PersonRepresentation, ProvisionalLocalEnvironmentBaseline,
-    ProvisionalLocalSurfaceBaseline, ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind,
-    SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldExperimentCommitment,
-    WorldId, WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, BodilyNeedState, CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+    CANCER_RESEARCH_INITIAL_RESIDENTS, CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
+    CANCER_VIRTUAL_LAB_METHOD_VERSION, CancerResearchBootstrap, CapacityExhaustionPolicy,
+    CelestialState, Digest, EntityId, OrganismRole, PartitionedExecution, PersonRepresentation,
+    ProvisionalLocalEnvironmentBaseline, ProvisionalLocalSurfaceBaseline,
+    ProvisionalLocalWeatherBaseline, S2CellId, SchedulerKind, SimTick, SpeciesIdentity,
+    TdbSecondsSinceJ2000, WorldConfiguration, WorldExperimentCommitment, WorldId, WorldManifest,
+    WorldSeed, WorldStatus,
 };
 
 /// New full-Earth worlds start with the source-backed sky and embodied-activity
@@ -322,6 +324,19 @@ enum Command {
             default_value = "https://www.ebi.ac.uk/europepmc/webservices/rest/search"
         )]
         endpoint: String,
+
+        /// Prompt-safe candidate catalogue embedded into the production build.
+        #[arg(
+            long,
+            env = "CANCER_NCI60_CHALLENGE_CATALOGUE_PATH",
+            default_value = "data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json"
+        )]
+        nci60_challenge_catalogue_path: PathBuf,
+
+        /// Qualification-only labels. This file must remain outside model
+        /// context, research memory, and the public artifact tree.
+        #[arg(long, env = "CANCER_NCI60_ANSWER_KEY_PATH")]
+        nci60_answer_key_path: PathBuf,
 
         /// Fetch once and exit (used by deployment checks and deterministic tests).
         #[arg(long, default_value_t = false)]
@@ -711,6 +726,8 @@ async fn main() -> Result<()> {
             refresh_seconds,
             page_size,
             endpoint,
+            nci60_challenge_catalogue_path,
+            nci60_answer_key_path,
             once,
         } => {
             serve_cancer_evidence_worker(
@@ -719,6 +736,10 @@ async fn main() -> Result<()> {
                 &endpoint,
                 page_size,
                 refresh_seconds,
+                CancerNci60QualificationPaths {
+                    catalogue: &nci60_challenge_catalogue_path,
+                    answer_key: &nci60_answer_key_path,
+                },
                 once,
             )
             .await
@@ -885,12 +906,18 @@ fn database_url_from_postgres_environment() -> Result<Option<String>> {
 
 const EUROPE_PMC_GBM_QUERY: &str = "(TITLE_ABS:\"glioblastoma\" OR TITLE_ABS:\"glioblastoma multiforme\") AND OPEN_ACCESS:Y AND (LICENSE:\"CC BY\" OR LICENSE:\"CC0\") sort_date:y";
 
+struct CancerNci60QualificationPaths<'a> {
+    catalogue: &'a std::path::Path,
+    answer_key: &'a std::path::Path,
+}
+
 async fn serve_cancer_evidence_worker(
     store: &PostgresStore,
     world_id: WorldId,
     endpoint: &str,
     page_size: u16,
     refresh_seconds: u64,
+    nci60_paths: CancerNci60QualificationPaths<'_>,
     once: bool,
 ) -> Result<()> {
     let endpoint = Url::parse(endpoint).context("parse Cancer World evidence endpoint")?;
@@ -940,11 +967,76 @@ async fn serve_cancer_evidence_worker(
             }
             Err(error) => return Err(error),
         }
+        match qualify_pending_cancer_nci60_predictions(
+            store,
+            world_id,
+            nci60_paths.catalogue,
+            nci60_paths.answer_key,
+        )
+        .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::info!(world_id = %world_id, qualification_count = count, "Cancer World held-out NCI-60 qualification batch completed")
+            }
+            Ok(_) => {}
+            Err(error) if !once => {
+                tracing::error!(world_id = %world_id, %error, "Cancer World NCI-60 qualification failed; frozen predictions remain queued")
+            }
+            Err(error) => return Err(error),
+        }
         if once {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
+}
+
+async fn qualify_pending_cancer_nci60_predictions(
+    store: &PostgresStore,
+    world_id: WorldId,
+    catalogue_path: &std::path::Path,
+    answer_key_path: &std::path::Path,
+) -> Result<usize> {
+    let candidates = store
+        .load_unqualified_cancer_nci60_predictions(
+            world_id,
+            CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+            32,
+        )
+        .await
+        .context("load preregistered Cancer World NCI-60 predictions")?;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    if catalogue_path == answer_key_path {
+        anyhow::bail!("NCI-60 candidate catalogue and isolated answer key must be distinct files");
+    }
+    let catalogue_bytes = fs::read(catalogue_path).with_context(|| {
+        format!(
+            "read prompt-safe NCI-60 catalogue {}",
+            catalogue_path.display()
+        )
+    })?;
+    let answer_key_bytes = fs::read(answer_key_path).with_context(|| {
+        format!(
+            "read isolated NCI-60 answer key {}",
+            answer_key_path.display()
+        )
+    })?;
+    let qualifier = CancerNci60Qualifier::new(&catalogue_bytes, &answer_key_bytes)
+        .context("validate and index the runtime-isolated NCI-60 answer key")?;
+    let mut stored = 0_usize;
+    for candidate in candidates {
+        let result = qualifier
+            .qualify(&candidate)
+            .context("open one frozen NCI-60 response prediction")?;
+        store
+            .store_cancer_nci60_qualification(&result, &candidate.contribution)
+            .await
+            .context("store immutable NCI-60 response qualification")?;
+        stored += 1;
+    }
+    Ok(stored)
 }
 
 async fn execute_pending_cancer_virtual_experiments(

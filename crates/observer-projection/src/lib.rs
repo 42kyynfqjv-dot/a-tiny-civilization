@@ -45,7 +45,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 7;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 8;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -859,6 +859,9 @@ pub struct PublicCancerResearchArtifact {
     /// asynchronous evidence worker has not audited this artifact yet.
     pub novelty_audit: Option<PublicCancerResearchNoveltyAudit>,
     pub virtual_experiment: Option<PublicCancerVirtualExperimentResult>,
+    /// Held-out NCI-60 CNS rank qualification, when this artifact preregistered
+    /// a concrete prediction. This is in-vitro assay evidence only.
+    pub nci60_qualification: Option<PublicCancerNci60ResponseQualification>,
     pub created_at: DateTime<Utc>,
     /// Later artifacts deterministically classified as the same line of work.
     /// They remain immutable and auditable but are collapsed into this original
@@ -928,6 +931,14 @@ pub struct PublicCancerVirtualExperimentResult {
     pub result: CancerVirtualExperimentResult,
     pub result_hash: Digest,
     pub memory_state: PublicResearchMemoryState,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerNci60ResponseQualification {
+    #[serde(flatten)]
+    pub result: world_domain::CancerNci60ResponseQualification,
+    pub result_hash: Digest,
     pub created_at: DateTime<Utc>,
 }
 

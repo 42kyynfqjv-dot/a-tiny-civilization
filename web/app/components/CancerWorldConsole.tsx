@@ -43,6 +43,12 @@ type Contribution = {
     exposure_hours: number;
     cohort_size: number;
   } | null;
+  nci60_response_prediction?: {
+    schema_version: number;
+    challenge_id: string;
+    intervention: { kind: "single_agent"; nsc: number } | { kind: "combination"; nsc_1: number; nsc_2: number };
+    predicted_response_order: string[];
+  } | null;
 };
 
 type ResearchDuplicate = {
@@ -144,8 +150,30 @@ type ResearchArtifact = {
   memory_state: "queued" | "accepted";
   novelty_audit: NoveltyAudit | null;
   virtual_experiment: VirtualExperiment | null;
+  nci60_qualification: Nci60Qualification | null;
   created_at: string;
   duplicates: ResearchDuplicate[];
+};
+
+type Nci60Qualification = {
+  schema_version: number;
+  method_version: number;
+  qualification_id: string;
+  world_id: string;
+  request_id: string;
+  artifact_hash: string;
+  prediction_hash: string;
+  challenge_id: string;
+  intervention: { kind: "single_agent"; nsc: number } | { kind: "combination"; nsc_1: number; nsc_2: number };
+  observed_response_ranks: { cell_line: string; rank: number }[];
+  pairwise_comparison_count: number;
+  concordant_pair_count: number;
+  pairwise_concordance_per_mille: number | null;
+  most_responsive_line_correct: boolean | null;
+  least_responsive_line_correct: boolean | null;
+  limitations: string[];
+  result_hash: string;
+  created_at: string;
 };
 
 type ResearchCampaign = {
@@ -446,6 +474,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       {artifact.duplicates.length > 0 && <span className="duplicate">{artifact.duplicates.length} DUPLICATE{artifact.duplicates.length === 1 ? "" : "S"} COLLAPSED</span>}
       <span className={`novelty ${novelty?.status ?? "pending"}`}>{noveltyLabel(novelty?.status)}</span>
       {artifact.virtual_experiment && <span className="virtual-run">MODEL TEST RUN</span>}
+      {artifact.nci60_qualification && <span className="virtual-run">NCI BENCHMARK OPENED</span>}
       <span className={artifact.memory_state === "accepted" ? "accepted" : "queued"}>{artifact.memory_state === "accepted" ? "MEMORY CONNECTED" : "MEMORY QUEUED"}</span>
     </div>
     <h3>{contribution.title}</h3>
@@ -474,6 +503,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       </div> : <p className="cancer-novelty-pending">This new artifact is queued for the next literature scan.</p>}
     </details>
     {contribution.virtual_experiment_plan && <VirtualExperimentPanel artifact={artifact} />}
+    {contribution.nci60_response_prediction && <Nci60QualificationPanel artifact={artifact} />}
     {contribution.claims.map((claim, index) => <details key={`${artifact.request_id}-${index}`}>
       <summary>CLAIM {index + 1} · {claim.statement}</summary>
       <dl>
@@ -493,6 +523,38 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
     </details>}
     <footer><code>ARTIFACT {shortHash(artifact.artifact_hash)}</code><time>{formatTime(artifact.created_at)}</time></footer>
   </article>;
+}
+
+function Nci60QualificationPanel({ artifact }: { artifact: ResearchArtifact }) {
+  const prediction = artifact.contribution.nci60_response_prediction;
+  const result = artifact.nci60_qualification;
+  if (!prediction) return null;
+  const identity = prediction.intervention.kind === "single_agent"
+    ? `NSC ${prediction.intervention.nsc}`
+    : `NSC ${prediction.intervention.nsc_1} + ${prediction.intervention.nsc_2}`;
+  const metric = prediction.intervention.kind === "single_agent" ? "ACTIVITY / SENSITIVITY" : "GREATER-THAN-ADDITIVE INTERACTION";
+  const observedRanks = result?.observed_response_ranks
+    .map((observation) => `${humanize(observation.cell_line)}${result.observed_response_ranks.filter((other) => other.rank === observation.rank).length > 1 ? ` (T${observation.rank})` : ""}`)
+    .join(" → ");
+  return <details className="cancer-virtual-experiment" open={Boolean(result)}>
+    <summary>RUNTIME-ISOLATED NCI-60 CHECK · {result ? `${result.pairwise_concordance_per_mille === null ? "NO INFORMATIVE PAIRS" : formatScore(result.pairwise_concordance_per_mille)} RANK AGREEMENT` : "FROZEN / AWAITING OPEN"}</summary>
+    {result ? <div className="cancer-virtual-body">
+      <p className="cancer-model-only">PUBLIC IN-VITRO BENCHMARK OBSERVATION · NOT A TREATMENT VERDICT, PATIENT EFFICACY, OR CLINICAL EVIDENCE</p>
+      <div className="cancer-virtual-plan">
+        <span>INTERVENTION<strong>{identity}</strong></span>
+        <span>RANKED METRIC<strong>{metric}</strong></span>
+        <span>PAIRWISE AGREEMENT<strong>{result.concordant_pair_count} / {result.pairwise_comparison_count}</strong></span>
+        <span>TOP RANK GROUP<strong>{result.most_responsive_line_correct === null ? "UNINFORMATIVE" : result.most_responsive_line_correct ? "MATCHED" : "MISSED"}</strong></span>
+        <span>BOTTOM RANK GROUP<strong>{result.least_responsive_line_correct === null ? "UNINFORMATIVE" : result.least_responsive_line_correct ? "MATCHED" : "MISSED"}</strong></span>
+      </div>
+      <div className="cancer-nci-rank-grid">
+        <span><small>PREDICTED ORDER</small><strong>{prediction.predicted_response_order.map(humanize).join(" → ")}</strong></span>
+        <span><small>OBSERVED ORDER · TIES PRESERVED</small><strong>{observedRanks}</strong></span>
+      </div>
+      {result.limitations.map((limitation) => <p key={limitation}>{limitation}</p>)}
+      <small>QUALIFICATION V{result.method_version} · RESULT {shortHash(result.result_hash)}</small>
+    </div> : <p className="cancer-novelty-pending">The response ranking is frozen. The isolated answer-key worker has not opened this challenge yet.</p>}
+  </details>;
 }
 
 function VirtualExperimentPanel({ artifact }: { artifact: ResearchArtifact }) {

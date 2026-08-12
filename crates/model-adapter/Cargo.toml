@@ -14,12 +14,12 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 url.workspace = true
+uuid.workspace = true
 world-domain = { path = "../world-domain" }
 
 [dev-dependencies]
 axum.workspace = true
 tokio.workspace = true
-uuid.workspace = true
 
 [lints]
 workspace = true

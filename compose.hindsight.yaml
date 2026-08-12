@@ -205,6 +205,8 @@ services:
       CANCER_EVIDENCE_REFRESH_SECONDS: ${CANCER_EVIDENCE_REFRESH_SECONDS:-21600}
       CANCER_EVIDENCE_PAGE_SIZE: ${CANCER_EVIDENCE_PAGE_SIZE:-24}
       CANCER_EVIDENCE_ENDPOINT: ${CANCER_EVIDENCE_ENDPOINT:-https://www.ebi.ac.uk/europepmc/webservices/rest/search}
+      CANCER_NCI60_CHALLENGE_CATALOGUE_PATH: /app/data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json
+      CANCER_NCI60_ANSWER_KEY_PATH: /app/qualification/nci-cellminer-2-15-cns-challenge-answer-key-v1-559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce.json
     depends_on:
       migrate:
         condition: service_healthy
@@ -215,6 +217,18 @@ services:
     logging: *local-logging
     stop_grace_period: 30s
     read_only: true
+    volumes:
+      # Qualification labels are available to this observer-side worker only.
+      # They are never mounted into the runner, research worker, Hindsight, API,
+      # or web services and therefore cannot leak into a research prompt. The
+      # staging helper verifies the pinned bytes and makes this file readable by
+      # the image's uid 10001 without mounting the surrounding source cache.
+      - type: bind
+        source: ${CANCER_NCI60_ANSWER_KEY_HOST_PATH:-./runtime-qualification/nci60/559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce/nci-cellminer-2-15-cns-challenge-answer-key-v1.json}
+        target: /app/qualification/nci-cellminer-2-15-cns-challenge-answer-key-v1-559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce.json
+        read_only: true
+        bind:
+          create_host_path: false
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
     cap_drop:

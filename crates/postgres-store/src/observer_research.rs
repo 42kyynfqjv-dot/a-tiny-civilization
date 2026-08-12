@@ -8,7 +8,8 @@ use chrono::{DateTime, NaiveDate, Utc};
 use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerLabCapability,
-    PublicCancerLabCapabilityStatus, PublicCancerResearchArtifact, PublicCancerResearchCampaign,
+    PublicCancerLabCapabilityStatus, PublicCancerNci60ResponseQualification,
+    PublicCancerResearchArtifact, PublicCancerResearchCampaign,
     PublicCancerResearchCampaignOutcome, PublicCancerResearchDuplicate,
     PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
     PublicCancerResearchProgramSummary, PublicCancerResearchView,
@@ -19,7 +20,8 @@ use sqlx::FromRow;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 use world_domain::{
-    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
+    CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION, CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
+    CANCER_VIRTUAL_LAB_METHOD_VERSION, CancerNci60ResponseQualification,
     CancerResearchNoveltyAudit, CancerResearchProgram, CancerVirtualExperimentInterpretation,
     CancerVirtualExperimentResult, Digest, WorldId,
 };
@@ -41,6 +43,9 @@ struct ResearchProjectionRow {
     experiment_checksum: Option<Vec<u8>>,
     experiment_created_at: Option<DateTime<Utc>>,
     experiment_memory_completed_at: Option<DateTime<Utc>>,
+    qualification_payload: Option<Value>,
+    qualification_checksum: Option<Vec<u8>>,
+    qualification_created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -142,7 +147,10 @@ impl ObserverCancerResearchStore for PostgresStore {
                    experiment.result_payload AS experiment_payload,
                    experiment.result_checksum AS experiment_checksum,
                    experiment.created_at AS experiment_created_at,
-                   experiment_memory.completed_at AS experiment_memory_completed_at
+                   experiment_memory.completed_at AS experiment_memory_completed_at,
+                   qualification.result_payload AS qualification_payload,
+                   qualification.result_checksum AS qualification_checksum,
+                   qualification.created_at AS qualification_created_at
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
             LEFT JOIN memory_outbox AS memory
@@ -161,6 +169,9 @@ impl ObserverCancerResearchStore for PostgresStore {
              AND experiment_memory.agent_id=$2
              AND (experiment_memory.payload->>'ordinal')::BIGINT=request.ordinal
              AND experiment_memory.payload->>'context'='Cancer World virtual experiment result'
+            LEFT JOIN cancer_nci60_response_qualifications AS qualification
+              ON qualification.request_id=request.request_id
+             AND qualification.method_version=$5
             WHERE request.world_id=$1
               AND result.result_payload->'receipt' <> 'null'::JSONB
             ORDER BY request.ordinal, request.request_id
@@ -170,6 +181,9 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(collective_id.as_uuid())
         .bind(i32::from(CANCER_RESEARCH_NOVELTY_METHOD_VERSION))
         .bind(i32::from(CANCER_VIRTUAL_LAB_METHOD_VERSION))
+        .bind(i32::from(
+            CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+        ))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -283,6 +297,46 @@ impl ObserverCancerResearchStore for PostgresStore {
                     ));
                 }
             };
+            let nci60_qualification = match (
+                row.qualification_payload,
+                row.qualification_checksum,
+                row.qualification_created_at,
+            ) {
+                (None, None, None) => None,
+                (Some(payload), Some(checksum), Some(created_at)) => {
+                    let result: CancerNci60ResponseQualification = serde_json::from_value(payload)
+                        .map_err(|error| {
+                            corrupt(format!("invalid NCI-60 qualification result: {error}"))
+                        })?;
+                    result
+                        .validate_against(&receipt.contribution)
+                        .map_err(contract_error)?;
+                    let result_hash =
+                        digest_from_db(&checksum, "NCI-60 qualification result checksum")?;
+                    if result.world_id != world_id
+                        || result.request_id != request.request_id
+                        || result.artifact_hash != artifact_hash
+                        || result
+                            .canonical_hash(&receipt.contribution)
+                            .map_err(contract_error)?
+                            != result_hash
+                    {
+                        return Err(corrupt(
+                            "Cancer World NCI-60 qualification crossed its immutable artifact provenance",
+                        ));
+                    }
+                    Some(PublicCancerNci60ResponseQualification {
+                        result,
+                        result_hash,
+                        created_at,
+                    })
+                }
+                _ => {
+                    return Err(corrupt(
+                        "Cancer World NCI-60 qualification is only partially persisted",
+                    ));
+                }
+            };
             artifacts.push(PublicCancerResearchArtifact {
                 request_id: request.request_id,
                 selected_at_tick: request.selection.selected_at_tick,
@@ -313,6 +367,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 },
                 novelty_audit,
                 virtual_experiment,
+                nci60_qualification,
                 created_at: row.created_at,
                 duplicates: Vec::new(),
             });

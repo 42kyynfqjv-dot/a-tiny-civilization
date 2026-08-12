@@ -568,6 +568,19 @@ enum DeriveCommand {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Derive a prompt-safe held-out candidate catalogue and an isolated qualification key.
+    CancerNciCellminerChallenges {
+        #[arg(long)]
+        source_directory: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+        /// New candidate-only artifact that is safe to attach to model requests.
+        #[arg(long)]
+        catalogue_output: PathBuf,
+        /// New response-label artifact for the qualification worker only.
+        #[arg(long)]
+        answer_key_output: PathBuf,
+    },
     /// Select one source-confirmed land patch from the public world seed.
     ///
     /// This makes no habitat, population, or survivability assertion.
@@ -1596,6 +1609,17 @@ async fn main() -> Result<()> {
                 registry,
                 output,
             } => cancer_nci_cellminer::derive_baseline(&source_directory, &registry, &output),
+            DeriveCommand::CancerNciCellminerChallenges {
+                source_directory,
+                registry,
+                catalogue_output,
+                answer_key_output,
+            } => cancer_nci_cellminer::derive_challenges(
+                &source_directory,
+                &registry,
+                &catalogue_output,
+                &answer_key_output,
+            ),
             DeriveCommand::ProvisionalLandOriginSelection {
                 land_reference_root_index,
                 artifact_root,
