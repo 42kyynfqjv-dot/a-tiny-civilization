@@ -1266,6 +1266,9 @@ select {
 .cancer-virtual-plan strong, .cancer-virtual-values strong { color: #d9cee7; display: block; font-family: var(--font-geist-sans), sans-serif; font-size: 13px; font-weight: 450; margin-top: 7px; }
 .cancer-virtual-values strong { font-size: clamp(15px, 2vw, 24px); }
 .cancer-virtual-values small, .cancer-virtual-body > small { color: #746b80; font-family: var(--font-geist-mono), monospace; font-size: 8px; }
+.cancer-mechanistic-readout { border-top: 1px solid rgba(196, 156, 255, .16); margin: 24px 0 18px; padding-top: 18px; }
+.cancer-mechanistic-label { color: #a985d7 !important; font-family: var(--font-geist-mono), monospace !important; font-size: 8px !important; letter-spacing: .1em; text-transform: uppercase; }
+.cancer-mechanistic-readout .cancer-virtual-values strong { font-size: clamp(12px, 1.4vw, 18px); }
 .cancer-artifact-card .cancer-duplicate-ledger { border: 1px solid rgba(233, 195, 110, .22); margin-top: 22px; padding: 17px 19px; }
 .cancer-artifact-card .cancer-duplicate-ledger summary { color: #e9c36e; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .11em; }
 .cancer-duplicate-ledger > div { display: grid; gap: 1px; margin-top: 14px; }

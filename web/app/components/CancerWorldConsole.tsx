@@ -94,10 +94,32 @@ type VirtualExperiment = {
   uncertainty_high_parts_per_million: number;
   interpretation: string;
   model_calibration: string;
+  mechanistic_readout?: {
+    schema_version: number;
+    fidelity: string;
+    calibration_grade: string;
+    baseline_clones: CloneFractions;
+    post_exposure_clones: CloneFractions;
+    pharmacokinetics?: {
+      systemic_exposure_parts_per_million: number;
+      bbb_penetration_parts_per_million: number;
+      unbound_brain_exposure_parts_per_million: number;
+      effective_exposure_hours: number;
+    };
+    delivered_exposure_parts_per_million: number;
+    target_engagement_parts_per_million: number;
+    resistant_selection_parts_per_million: number;
+  };
   caveats: string[];
   result_hash: string;
   memory_state: "queued" | "accepted";
   created_at: string;
+};
+
+type CloneFractions = {
+  treatment_sensitive_parts_per_million: number;
+  drug_tolerant_parts_per_million: number;
+  resistant_parts_per_million: number;
 };
 
 type ResearchArtifact = {
@@ -493,10 +515,30 @@ function VirtualExperimentPanel({ artifact }: { artifact: ResearchArtifact }) {
         <span><small>ESTIMATED CHANGE</small><strong>{formatSignedParts(result.estimated_change_parts_per_million)}</strong></span>
         <span><small>MODEL INTERVAL</small><strong>{formatSignedParts(result.uncertainty_low_parts_per_million)} to {formatSignedParts(result.uncertainty_high_parts_per_million)}</strong></span>
       </div>
+      {result.mechanistic_readout && <MechanisticReadout result={result.mechanistic_readout} />}
       {result.caveats.map((caveat) => <p key={caveat}>{caveat}</p>)}
       <small>LAB V{result.method_version} · RESULT {shortHash(result.result_hash)}</small>
     </div> : <p className="cancer-novelty-pending">The closed experiment plan is waiting for the deterministic virtual lab worker.</p>}
   </details>;
+}
+
+function MechanisticReadout({ result }: { result: NonNullable<VirtualExperiment["mechanistic_readout"]> }) {
+  const pk = result.pharmacokinetics;
+  return <div className="cancer-mechanistic-readout">
+    <p className="cancer-mechanistic-label">STRUCTURAL MULTISCALE TRACE · {humanize(result.calibration_grade)}</p>
+    <div className="cancer-virtual-values">
+      <span><small>SENSITIVE CLONES</small><strong>{formatParts(result.baseline_clones.treatment_sensitive_parts_per_million)} → {formatParts(result.post_exposure_clones.treatment_sensitive_parts_per_million)}</strong></span>
+      <span><small>DRUG-TOLERANT CLONES</small><strong>{formatParts(result.baseline_clones.drug_tolerant_parts_per_million)} → {formatParts(result.post_exposure_clones.drug_tolerant_parts_per_million)}</strong></span>
+      <span><small>RESISTANT CLONES</small><strong>{formatParts(result.baseline_clones.resistant_parts_per_million)} → {formatParts(result.post_exposure_clones.resistant_parts_per_million)}</strong></span>
+      <span><small>RESISTANCE SELECTION</small><strong>{formatSignedParts(result.resistant_selection_parts_per_million)}</strong></span>
+    </div>
+    <div className="cancer-virtual-values">
+      <span><small>DELIVERED EXPOSURE</small><strong>{formatParts(result.delivered_exposure_parts_per_million)}</strong></span>
+      <span><small>TARGET ENGAGEMENT</small><strong>{formatParts(result.target_engagement_parts_per_million)}</strong></span>
+      <span><small>BBB PENETRATION</small><strong>{pk ? formatParts(pk.bbb_penetration_parts_per_million) : "N/A"}</strong></span>
+      <span><small>UNBOUND BRAIN EXPOSURE</small><strong>{pk ? formatParts(pk.unbound_brain_exposure_parts_per_million) : "N/A"}</strong></span>
+    </div>
+  </div>;
 }
 
 function SearchResults({ outcome }: { outcome: SearchOutcome }) {

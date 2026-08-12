@@ -512,13 +512,13 @@ fn cancer_lab_capabilities() -> Vec<PublicCancerLabCapability> {
         ),
         (
             "Tumor heterogeneity, evolution, and acquired resistance",
-            Missing,
-            "The lab does not yet simulate competing clones, selection pressure, or longitudinal resistance.",
+            Abstracted,
+            "Every current screen now exposes sensitive, drug-tolerant, and resistant phenotypic compartments plus treatment selection. Mutation, genomic lineages, plasticity, and longitudinal relapse remain absent.",
         ),
         (
             "Pharmacokinetics, pharmacodynamics, and blood-brain barrier",
-            Missing,
-            "Drug exposure, distribution, metabolism, clearance, and brain penetration are not mechanistically modeled.",
+            Abstracted,
+            "Orthotopic drug-like screens now expose systemic, BBB, unbound-brain, and target-engagement values. They remain dimensionless structural assumptions until a real compound profile is source-calibrated.",
         ),
         (
             "Spatial microenvironment and immune dynamics",

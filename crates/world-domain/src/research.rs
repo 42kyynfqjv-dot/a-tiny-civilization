@@ -20,8 +20,12 @@ pub const REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 3;
 /// the observer-side lab has executed their required, frozen plan.
 pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 4;
 pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
-pub const CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
-pub const CANCER_VIRTUAL_LAB_METHOD_VERSION: u16 = 1;
+pub const LEGACY_CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
+/// Schema v2 adds a compact multiscale readout. Historical v1 results remain
+/// readable and immutable; the current method writes v2 rows beside them.
+pub const CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 2;
+pub const CANCER_VIRTUAL_MECHANISTIC_READOUT_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_VIRTUAL_LAB_METHOD_VERSION: u16 = 2;
 pub const CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 1;
 pub const MAX_CANCER_RESEARCH_NOVELTY_MATCHES: usize = 5;
@@ -494,6 +498,123 @@ pub enum CancerVirtualExperimentInterpretation {
     ModelInconclusive,
 }
 
+/// The fidelity name is intentionally narrow. A structural screen can reject
+/// internally weak ideas, but it is neither a calibrated tissue model nor a
+/// substitute for biological validation.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualLabFidelity {
+    StructuralMultiscaleScreen,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerVirtualCalibrationGrade {
+    StructuralUncalibrated,
+}
+
+/// Three coarse phenotypic compartments expose treatment selection instead of
+/// allowing an apparently smaller tumor to hide enrichment of resistant cells.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerVirtualCloneFractions {
+    pub treatment_sensitive_parts_per_million: u32,
+    pub drug_tolerant_parts_per_million: u32,
+    pub resistant_parts_per_million: u32,
+}
+
+impl CancerVirtualCloneFractions {
+    fn validate(&self) -> Result<(), CancerResearchContractError> {
+        let total = u64::from(self.treatment_sensitive_parts_per_million)
+            + u64::from(self.drug_tolerant_parts_per_million)
+            + u64::from(self.resistant_parts_per_million);
+        if total != 1_000_000 {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        }
+        Ok(())
+    }
+}
+
+/// Dimensionless, bounded exposure summary for drug-like interventions. It is
+/// present only when an orthotopic subject receives molecular inhibition or
+/// targeted delivery. Source-calibrated compound profiles will replace these
+/// structural values in a later fidelity tier.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerVirtualPkReadout {
+    pub systemic_exposure_parts_per_million: u32,
+    pub bbb_penetration_parts_per_million: u32,
+    pub unbound_brain_exposure_parts_per_million: u32,
+    pub effective_exposure_hours: u16,
+}
+
+impl CancerVirtualPkReadout {
+    fn validate(&self) -> Result<(), CancerResearchContractError> {
+        if self.systemic_exposure_parts_per_million > 1_000_000
+            || self.bbb_penetration_parts_per_million > 1_000_000
+            || self.unbound_brain_exposure_parts_per_million > 1_000_000
+            || self.effective_exposure_hours == 0
+            || self.effective_exposure_hours > 2_160
+        {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        }
+        let maximum_brain_exposure = u64::from(self.systemic_exposure_parts_per_million)
+            * u64::from(self.bbb_penetration_parts_per_million)
+            / 1_000_000;
+        if u64::from(self.unbound_brain_exposure_parts_per_million) > maximum_brain_exposure {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        }
+        Ok(())
+    }
+}
+
+/// Compact mechanistic trace emitted by every current structural screen. It is
+/// deliberately small enough to retain at high research volume while exposing
+/// the two major failure modes hidden by the old scalar model: inadequate brain
+/// exposure and treatment-driven resistant-clone enrichment.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerVirtualMechanisticReadout {
+    pub schema_version: u16,
+    pub fidelity: CancerVirtualLabFidelity,
+    pub calibration_grade: CancerVirtualCalibrationGrade,
+    pub baseline_clones: CancerVirtualCloneFractions,
+    pub post_exposure_clones: CancerVirtualCloneFractions,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub pharmacokinetics: Option<CancerVirtualPkReadout>,
+    pub delivered_exposure_parts_per_million: u32,
+    pub target_engagement_parts_per_million: u32,
+    pub resistant_selection_parts_per_million: i32,
+}
+
+impl CancerVirtualMechanisticReadout {
+    fn validate(&self) -> Result<(), CancerResearchContractError> {
+        self.baseline_clones.validate()?;
+        self.post_exposure_clones.validate()?;
+        if self.schema_version != CANCER_VIRTUAL_MECHANISTIC_READOUT_SCHEMA_VERSION
+            || self.delivered_exposure_parts_per_million > 1_000_000
+            || self.target_engagement_parts_per_million > 1_000_000
+            || !(-1_000_000..=1_000_000).contains(&self.resistant_selection_parts_per_million)
+            || self.resistant_selection_parts_per_million
+                != i32::try_from(self.post_exposure_clones.resistant_parts_per_million)
+                    .unwrap_or(i32::MAX)
+                    - i32::try_from(self.baseline_clones.resistant_parts_per_million)
+                        .unwrap_or(i32::MAX)
+        {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        }
+        if let Some(pharmacokinetics) = &self.pharmacokinetics {
+            pharmacokinetics.validate()?;
+            if self.delivered_exposure_parts_per_million
+                != pharmacokinetics.unbound_brain_exposure_parts_per_million
+            {
+                return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+            }
+        }
+        Ok(())
+    }
+}
+
 /// A deterministic result from the deliberately simplified observer-side
 /// virtual lab. It is a model projection—not wet-lab evidence, an animal study,
 /// a clinical result, or a causal fact inside Cancer World.
@@ -517,6 +638,8 @@ pub struct CancerVirtualExperimentResult {
     pub uncertainty_high_parts_per_million: i32,
     pub interpretation: CancerVirtualExperimentInterpretation,
     pub model_calibration: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mechanistic_readout: Option<CancerVirtualMechanisticReadout>,
     pub caveats: Vec<String>,
 }
 
@@ -537,8 +660,17 @@ impl CancerVirtualExperimentResult {
             return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
         };
         plan.validate()?;
-        if self.schema_version != CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION
-            || self.method_version == 0
+        let legacy = self.schema_version == LEGACY_CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION
+            && self.method_version == 1
+            && self.model_calibration == "uncalibrated_mechanistic_projection_v1"
+            && self.mechanistic_readout.is_none()
+            && self.caveats.len() == 2;
+        let current = self.schema_version == CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION
+            && self.method_version == CANCER_VIRTUAL_LAB_METHOD_VERSION
+            && self.model_calibration == "structural_multiscale_projection_v2"
+            && self.mechanistic_readout.is_some()
+            && (3..=6).contains(&self.caveats.len());
+        if (!legacy && !current)
             || self.experiment_id != Self::deterministic_id(self.request_id, self.method_version)
             || self.request_id != contribution.request_id
             || self.artifact_hash != contribution.canonical_hash()?
@@ -553,11 +685,22 @@ impl CancerVirtualExperimentResult {
                     - i32::try_from(self.control_value_parts_per_million).unwrap_or(i32::MAX)
             || self.uncertainty_low_parts_per_million > self.estimated_change_parts_per_million
             || self.uncertainty_high_parts_per_million < self.estimated_change_parts_per_million
-            || self.model_calibration != "uncalibrated_mechanistic_projection_v1"
-            || self.caveats.len() != 2
             || self.caveats.iter().any(|caveat| !bounded_text(caveat, 512))
         {
             return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+        }
+        if let Some(readout) = &self.mechanistic_readout {
+            readout.validate()?;
+            let pharmacokinetics_expected = self.subject_model
+                == CancerVirtualSubjectModel::OrthotopicMouse
+                && matches!(
+                    plan.intervention_modality,
+                    CancerVirtualInterventionModality::MolecularInhibition
+                        | CancerVirtualInterventionModality::TargetedDelivery
+                );
+            if readout.pharmacokinetics.is_some() != pharmacokinetics_expected {
+                return Err(CancerResearchContractError::InvalidVirtualExperimentResult);
+            }
         }
         Ok(())
     }

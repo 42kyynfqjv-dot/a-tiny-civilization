@@ -20,6 +20,11 @@ services:
       - local-cognition-models:/root/.ollama
     networks:
       - backend
+    # Local cognition is a deterministic fallback, not a reason to starve the
+    # canonical runner or public observer services on the shared host.
+    cpus: ${LOCAL_COGNITION_CPU_LIMIT:-2.0}
+    mem_limit: ${LOCAL_COGNITION_MEMORY_LIMIT:-3g}
+    pids_limit: 256
     restart: unless-stopped
     logging: *local-logging
 
@@ -55,6 +60,11 @@ services:
       - hindsight-model-cache:/home/hindsight/.cache
     networks:
       - backend
+    # Embedding/consolidation can briefly consume every core while a backlog is
+    # drained. Bound it so both live worlds retain scheduling headroom.
+    cpus: ${HINDSIGHT_CPU_LIMIT:-4.0}
+    mem_limit: ${HINDSIGHT_MEMORY_LIMIT:-6g}
+    pids_limit: 512
     restart: unless-stopped
     stop_grace_period: 30s
     logging: *local-logging
