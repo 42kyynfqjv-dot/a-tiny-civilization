@@ -20,7 +20,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v9";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v10";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -380,14 +380,17 @@ fn research_api_request(
         }
     };
     let task_rule = match request.selection.task {
+        CancerResearchTask::GenerateMechanisticHypothesis => {
+            "Generate one mechanistic hypothesis. Set artifact_kind to hypothesis and virtual_experiment_plan to null."
+        }
         CancerResearchTask::ProposeDiscriminatingExperiment => {
-            "Propose a controlled discriminating experiment with a concrete falsification route. Supply the closed virtual_experiment_plan that the deterministic model can execute. Do not invent an outcome or claim the experiment has already run."
+            "Propose a controlled discriminating experiment with a concrete falsification route. Set artifact_kind to experiment_proposal. Supply the closed virtual_experiment_plan that the deterministic model can execute. Its secondary_target must differ from primary_target or be null. Do not invent an outcome or claim the experiment has already run."
         }
         CancerResearchTask::DesignDiagnosticInstrument => {
-            "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection. Do not claim that it has been built or measured."
+            "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Set artifact_kind to diagnostic_instrument_design. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection; secondary_target must differ from primary_target or be null. Do not claim that it has been built or measured."
         }
         CancerResearchTask::DesignTreatmentMachine => {
-            "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection. Do not claim efficacy or that it has been built."
+            "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Set artifact_kind to treatment_machine_design. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection; secondary_target must differ from primary_target or be null. Do not claim efficacy or that it has been built."
         }
         _ => "Follow the selected research task exactly.",
     };
@@ -614,11 +617,12 @@ fn parse_research_response(
                 "completion omitted research content or tool arguments".to_owned(),
             )
         })?;
-    let output: ResearchModelOutput = serde_json::from_str(content).map_err(|error| {
+    let mut output: ResearchModelOutput = serde_json::from_str(content).map_err(|error| {
         CancerResearchModelError::InvalidResponse(format!(
             "completion was not a bounded research contribution: {error}"
         ))
     })?;
+    normalize_research_output(&request.selection, &mut output);
     let allowed_citations = request
         .selection
         .evidence
@@ -675,6 +679,52 @@ fn parse_research_response(
         .validate_against(route, request)
         .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
     Ok(receipt)
+}
+
+/// Normalize redundant presentation fields before enforcing the canonical
+/// research contract. Provider-side JSON schemas cannot express relationships
+/// such as "secondary target differs from primary target", and the pinned free
+/// route occasionally returns the right work with the wrong redundant artifact
+/// label. This repair is deterministic, never invents evidence or an outcome,
+/// and leaves incompatible experiment plans to the strict domain validator.
+fn normalize_research_output(
+    selection: &world_domain::CancerResearchTurnSelection,
+    output: &mut ResearchModelOutput,
+) {
+    output.title = output.title.trim().to_owned();
+    output.abstract_text = output.abstract_text.trim().to_owned();
+    for claim in &mut output.claims {
+        claim.statement = claim.statement.trim().to_owned();
+        claim.testable_prediction = claim.testable_prediction.trim().to_owned();
+        claim.falsification_test = claim.falsification_test.trim().to_owned();
+        claim.citation_hashes.sort_unstable();
+        claim.citation_hashes.dedup();
+    }
+    if let Some(plan) = &mut output.virtual_experiment_plan
+        && plan.secondary_target == Some(plan.primary_target)
+    {
+        plan.secondary_target = None;
+    }
+    match (selection.stage, selection.task) {
+        (
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::GenerateMechanisticHypothesis,
+        ) => {
+            output.artifact_kind = CancerResearchArtifactKind::Hypothesis;
+            output.virtual_experiment_plan = None;
+        }
+        (
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::ProposeDiscriminatingExperiment,
+        ) => output.artifact_kind = CancerResearchArtifactKind::ExperimentProposal,
+        (CancerResearchStage::BlindDiscovery, CancerResearchTask::DesignDiagnosticInstrument) => {
+            output.artifact_kind = CancerResearchArtifactKind::DiagnosticInstrumentDesign
+        }
+        (CancerResearchStage::BlindDiscovery, CancerResearchTask::DesignTreatmentMachine) => {
+            output.artifact_kind = CancerResearchArtifactKind::TreatmentMachineDesign
+        }
+        _ => {}
+    }
 }
 
 fn research_billed_micro_usd(
@@ -1370,6 +1420,48 @@ mod tests {
                 .as_array()
                 .is_some_and(|modalities| !modalities.contains(&json!("diagnostic_sensing")))
         );
+    }
+
+    #[test]
+    fn free_research_output_repairs_only_redundant_contract_fields() {
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let mut output: ResearchModelOutput = serde_json::from_value(json!({
+            "artifact_kind": "critique",
+            "title": "  A bounded hypothesis  ",
+            "abstract_text": "  The mechanism remains unverified.  ",
+            "claims": [{
+                "statement": "  A reversible state may alter growth.  ",
+                "testable_prediction": "  Perturbation changes the readout.  ",
+                "falsification_test": "  The readout remains unchanged.  ",
+                "citation_hashes": []
+            }],
+            "virtual_experiment_plan": {
+                "schema_version": 1,
+                "subject_model": "tumor_organoid",
+                "intervention_modality": "molecular_inhibition",
+                "primary_target": "cell_division",
+                "secondary_target": "cell_division",
+                "primary_endpoint": "relative_tumor_burden",
+                "intensity_parts_per_million": 500000,
+                "exposure_hours": 72,
+                "cohort_size": 32
+            }
+        }))
+        .expect("model output");
+
+        normalize_research_output(&request.selection, &mut output);
+
+        assert_eq!(output.artifact_kind, CancerResearchArtifactKind::Hypothesis);
+        assert_eq!(output.title, "A bounded hypothesis");
+        assert_eq!(
+            output.claims[0].statement,
+            "A reversible state may alter growth."
+        );
+        assert!(output.virtual_experiment_plan.is_none());
     }
 
     #[tokio::test]
