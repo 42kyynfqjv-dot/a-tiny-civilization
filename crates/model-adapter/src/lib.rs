@@ -20,7 +20,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v10";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v11";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -436,6 +436,11 @@ fn research_api_request(
             .expect("research request payload is an object")
             .remove("response_format");
         payload["reasoning"] = json!({"effort": "low", "exclude": true});
+    } else if route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b() {
+        // Harmony GPT-OSS models default to medium reasoning on Fireworks.
+        // Low effort keeps enough of the fixed output allowance available for
+        // the required JSON object and materially reduces latency and cost.
+        payload["reasoning_effort"] = json!("low");
     }
     apply_openrouter_provider_policy(&mut payload, provider, route);
     Ok(payload)
@@ -1420,6 +1425,24 @@ mod tests {
                 .as_array()
                 .is_some_and(|modalities| !modalities.contains(&json!("diagnostic_sensing")))
         );
+    }
+
+    #[test]
+    fn fireworks_research_uses_low_reasoning_and_keeps_strict_output() {
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let payload = research_api_request(
+            &CognitionProviderId::fireworks_cancer(),
+            &CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
+            &request,
+        )
+        .expect("valid Fireworks payload");
+
+        assert_eq!(payload["reasoning_effort"], "low");
+        assert_eq!(payload["response_format"]["type"], "json_schema");
     }
 
     #[test]
