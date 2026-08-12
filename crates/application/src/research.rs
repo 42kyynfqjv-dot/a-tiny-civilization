@@ -9,7 +9,7 @@ use world_domain::{
     CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
     CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchStage,
     CancerResearchTurnSelection, CancerVirtualEndpoint, CancerVirtualExperimentInterpretation,
-    CancerVirtualExperimentResult, Digest, EntityId,
+    CancerVirtualExperimentPlan, CancerVirtualExperimentResult, Digest, EntityId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -63,6 +63,11 @@ pub const MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS: usize = 8;
 pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
 pub const MAX_CANCER_RESEARCH_CATALOG_ENTRIES: usize = 256;
 pub const CANCER_RESEARCH_CATALOG_PAGE_SIZE: usize = 24;
+pub const CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS: usize = 3;
+pub const CANCER_RESEARCH_CAMPAIGN_MAX_TESTS: usize = 5;
+pub const CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SOURCE_PREFIX: &str =
+    "cancer-world://campaign-directive/";
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
 const MAX_MODEL_ID_BYTES: usize = 256;
 const MAX_ADAPTER_VERSION_BYTES: usize = 128;
@@ -167,6 +172,190 @@ pub struct CancerVirtualExperimentCatalogSummary {
     pub uncertainty_high_parts_per_million: i32,
     pub interpretation: CancerVirtualExperimentInterpretation,
     pub evidence_class: String,
+}
+
+/// One immutable follow-up in a campaign rooted in a model-supported artifact.
+/// The frozen root hash in every request is the lineage edge; no mutable
+/// campaign record is needed to reconstruct the complete tree.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancerResearchCampaignFollowup {
+    pub request: CancerResearchModelRequest,
+    pub result: Option<CancerResearchLadderResult>,
+    pub virtual_experiment: Option<CancerVirtualExperimentResult>,
+    pub request_completed: bool,
+}
+
+/// Read model used by the scheduler to continue exactly one deterministic
+/// campaign. The root already survived one virtual projection and passed the
+/// observer-side overlap gate before it can enter this structure.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancerResearchCampaignCandidate {
+    pub root: CancerResearchPriorResult,
+    pub root_experiment: CancerVirtualExperimentResult,
+    pub followups: Vec<CancerResearchCampaignFollowup>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchCampaignOutcome {
+    Falsified,
+    SurvivedReplicationRound,
+    Inconclusive,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchCampaignVariation {
+    SubjectModel,
+    Intensity,
+    Exposure,
+    EndpointOrTarget,
+    ModalityOrTarget,
+}
+
+/// Machine-readable protocol supplied to one campaign turn. A design turn is
+/// locked to an exact, distinct plan. A synthesis turn receives the immutable
+/// deterministic outcome and may explain it, but cannot change it.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "phase", rename_all = "snake_case")]
+pub enum CancerResearchCampaignDirective {
+    AdversarialTest {
+        schema_version: u16,
+        campaign_id: Uuid,
+        root_artifact_hash: Digest,
+        test_index: u8,
+        variation: CancerResearchCampaignVariation,
+        required_plan: CancerVirtualExperimentPlan,
+        prior_plan_hashes: Vec<Digest>,
+    },
+    Synthesis {
+        schema_version: u16,
+        campaign_id: Uuid,
+        root_artifact_hash: Digest,
+        outcome: CancerResearchCampaignOutcome,
+        supporting_tests: u8,
+        falsifying_tests: u8,
+        inconclusive_tests: u8,
+    },
+}
+
+impl CancerResearchCampaignDirective {
+    #[must_use]
+    pub fn campaign_id(root_request_id: Uuid) -> Uuid {
+        Uuid::new_v5(&root_request_id, b"cancer-research-campaign:v1")
+    }
+
+    pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
+        match self {
+            Self::AdversarialTest {
+                schema_version,
+                campaign_id,
+                root_artifact_hash,
+                test_index,
+                required_plan,
+                prior_plan_hashes,
+                ..
+            } => {
+                if *schema_version != CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION
+                    || campaign_id.is_nil()
+                    || *root_artifact_hash == Digest::ZERO
+                    || usize::from(*test_index) >= CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    || prior_plan_hashes.is_empty()
+                    || prior_plan_hashes.len() > CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    || prior_plan_hashes.windows(2).any(|pair| pair[0] >= pair[1])
+                    || prior_plan_hashes.contains(&Digest::ZERO)
+                    || required_plan.validate().is_err()
+                    || prior_plan_hashes.contains(
+                        &Digest::canonical(required_plan)
+                            .map_err(|_| CancerResearchModelContractError::InvalidMemoryInputs)?,
+                    )
+                {
+                    return Err(CancerResearchModelContractError::InvalidMemoryInputs);
+                }
+            }
+            Self::Synthesis {
+                schema_version,
+                campaign_id,
+                root_artifact_hash,
+                outcome,
+                supporting_tests,
+                falsifying_tests,
+                inconclusive_tests,
+            } => {
+                let total = usize::from(*supporting_tests)
+                    .saturating_add(usize::from(*falsifying_tests))
+                    .saturating_add(usize::from(*inconclusive_tests));
+                let outcome_matches = match outcome {
+                    CancerResearchCampaignOutcome::Falsified => *falsifying_tests > 0,
+                    CancerResearchCampaignOutcome::SurvivedReplicationRound => {
+                        *falsifying_tests == 0
+                            && usize::from(*supporting_tests)
+                                >= CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS
+                    }
+                    CancerResearchCampaignOutcome::Inconclusive => {
+                        *falsifying_tests == 0
+                            && usize::from(*supporting_tests)
+                                < CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS
+                            && total == CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    }
+                };
+                if *schema_version != CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION
+                    || campaign_id.is_nil()
+                    || *root_artifact_hash == Digest::ZERO
+                    || total == 0
+                    || total > CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    || !outcome_matches
+                {
+                    return Err(CancerResearchModelContractError::InvalidMemoryInputs);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub fn evidence_document(
+        &self,
+        world_id: world_domain::WorldId,
+    ) -> Result<CancerResearchEvidenceDocument, CancerResearchModelContractError> {
+        self.validate()?;
+        let content = serde_json::to_string(self)
+            .map_err(|_| CancerResearchModelContractError::InvalidEvidenceDocuments)?;
+        Ok(CancerResearchEvidenceDocument {
+            reference: CancerResearchEvidenceReference {
+                kind: CancerResearchEvidenceKind::AssayObservation,
+                source_id: format!(
+                    "{CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SOURCE_PREFIX}{world_id}/{}",
+                    match self {
+                        Self::AdversarialTest { campaign_id, .. }
+                        | Self::Synthesis { campaign_id, .. } => campaign_id,
+                    }
+                ),
+                content_hash: Digest::sha256(content.as_bytes()),
+            },
+            content,
+        })
+    }
+}
+
+pub fn cancer_research_campaign_directive(
+    request: &CancerResearchModelRequest,
+) -> Result<Option<CancerResearchCampaignDirective>, CancerResearchModelContractError> {
+    let mut directives = request.evidence_documents.iter().filter(|document| {
+        document
+            .reference
+            .source_id
+            .starts_with(CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SOURCE_PREFIX)
+    });
+    let Some(document) = directives.next() else {
+        return Ok(None);
+    };
+    if directives.next().is_some() {
+        return Err(CancerResearchModelContractError::InvalidEvidenceDocuments);
+    }
+    let directive: CancerResearchCampaignDirective = serde_json::from_str(&document.content)
+        .map_err(|_| CancerResearchModelContractError::InvalidEvidenceDocuments)?;
+    directive.validate()?;
+    Ok(Some(directive))
 }
 
 impl CancerVirtualExperimentCatalogSummary {
@@ -947,6 +1136,18 @@ pub trait CancerResearchJobStore: Send + Sync {
         _before_ordinal: u32,
         _program: world_domain::CancerResearchProgram,
     ) -> Result<Option<CancerResearchPriorResult>, StoreError> {
+        Ok(None)
+    }
+
+    /// Returns the oldest not-yet-resolved, model-supported candidate in one
+    /// program together with every immutable follow-up. Stores may return none;
+    /// they must never infer or overwrite a campaign outcome.
+    async fn load_cancer_research_campaign_candidate(
+        &self,
+        _world_id: world_domain::WorldId,
+        _before_ordinal: u32,
+        _program: world_domain::CancerResearchProgram,
+    ) -> Result<Option<CancerResearchCampaignCandidate>, StoreError> {
         Ok(None)
     }
 

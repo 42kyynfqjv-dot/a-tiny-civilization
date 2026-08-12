@@ -6,13 +6,16 @@ use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use observer_projection::{
     ObserverCancerResearchStore, ObserverProjectionStoreError,
-    PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerResearchArtifact,
-    PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
+    PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerLabCapability,
+    PublicCancerLabCapabilityStatus, PublicCancerResearchArtifact, PublicCancerResearchCampaign,
+    PublicCancerResearchCampaignOutcome, PublicCancerResearchDuplicate,
+    PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
     PublicCancerResearchProgramSummary, PublicCancerResearchView,
     PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
+use std::collections::BTreeMap;
 use uuid::Uuid;
 use world_domain::{
     CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
@@ -287,6 +290,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 target: request.selection.target,
                 task: request.selection.task,
                 inference_tier: request.selection.inference_tier,
+                frozen_candidate_hash: request.selection.frozen_candidate_hash,
                 contribution: receipt.contribution,
                 artifact_hash,
                 evidence: request.selection.evidence,
@@ -312,6 +316,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 duplicates: Vec::new(),
             });
         }
+        let campaigns = reconstruct_campaigns(&artifacts)?;
         let (mut artifacts, duplicate_artifacts) = collapse_duplicate_research(artifacts);
         let distinct_artifacts = u64::try_from(artifacts.len())
             .map_err(|_| corrupt("distinct artifact count overflow"))?;
@@ -370,10 +375,179 @@ impl ObserverCancerResearchStore for PostgresStore {
             memory_queued: to_u64(stats.memory_queued, "queued memory count")?,
             memory_accepted: to_u64(stats.memory_accepted, "accepted memory count")?,
             programs,
+            campaigns,
+            lab_capabilities: cancer_lab_capabilities(),
             artifacts,
             evidence,
         }))
     }
+}
+
+fn reconstruct_campaigns(
+    artifacts: &[PublicCancerResearchArtifact],
+) -> Result<Vec<PublicCancerResearchCampaign>, ObserverProjectionStoreError> {
+    let roots = artifacts
+        .iter()
+        .filter(|artifact| artifact.frozen_candidate_hash.is_none())
+        .map(|artifact| (artifact.artifact_hash, artifact))
+        .collect::<BTreeMap<_, _>>();
+    let mut children = BTreeMap::<Digest, Vec<&PublicCancerResearchArtifact>>::new();
+    for artifact in artifacts {
+        if let Some(root_hash) = artifact.frozen_candidate_hash {
+            children.entry(root_hash).or_default().push(artifact);
+        }
+    }
+    let mut campaigns = Vec::with_capacity(children.len());
+    for (root_hash, entries) in children {
+        let root = roots.get(&root_hash).copied().ok_or_else(|| {
+            corrupt("Cancer World campaign child references a missing root artifact")
+        })?;
+        if entries.iter().any(|entry| entry.program != root.program) {
+            return Err(corrupt(
+                "Cancer World campaign crossed its independent program boundary",
+            ));
+        }
+        let mut supporting_tests = 0_u8;
+        let mut falsifying_tests = 0_u8;
+        let mut inconclusive_tests = 0_u8;
+        let mut synthesis_complete = false;
+        let mut newest_ordinal = root.ordinal;
+        for entry in entries {
+            newest_ordinal = newest_ordinal.max(entry.ordinal);
+            match entry.task {
+                world_domain::CancerResearchTask::DesignIndependentReplication => {
+                    let Some(experiment) = entry.virtual_experiment.as_ref() else {
+                        continue;
+                    };
+                    match experiment.result.interpretation {
+                        CancerVirtualExperimentInterpretation::ModelSupportsPrediction => {
+                            supporting_tests = supporting_tests.saturating_add(1);
+                        }
+                        CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
+                        | CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff => {
+                            falsifying_tests = falsifying_tests.saturating_add(1);
+                        }
+                        CancerVirtualExperimentInterpretation::ModelInconclusive => {
+                            inconclusive_tests = inconclusive_tests.saturating_add(1);
+                        }
+                    }
+                }
+                world_domain::CancerResearchTask::InterpretReplicationResult => {
+                    synthesis_complete = true;
+                }
+                _ => {
+                    return Err(corrupt(
+                        "Cancer World campaign contains an invalid follow-up task",
+                    ));
+                }
+            }
+        }
+        let outcome = campaign_outcome(supporting_tests, falsifying_tests, inconclusive_tests);
+        campaigns.push(PublicCancerResearchCampaign {
+            campaign_id: application::CancerResearchCampaignDirective::campaign_id(root.request_id),
+            program: root.program,
+            root_request_id: root.request_id,
+            root_artifact_hash: root_hash,
+            root_title: root.contribution.title.clone(),
+            outcome,
+            supporting_tests,
+            falsifying_tests,
+            inconclusive_tests,
+            synthesis_complete,
+            newest_ordinal,
+        });
+    }
+    campaigns.sort_by(|left, right| {
+        right
+            .newest_ordinal
+            .cmp(&left.newest_ordinal)
+            .then_with(|| left.campaign_id.cmp(&right.campaign_id))
+    });
+    Ok(campaigns)
+}
+
+fn campaign_outcome(
+    supporting_tests: u8,
+    falsifying_tests: u8,
+    inconclusive_tests: u8,
+) -> PublicCancerResearchCampaignOutcome {
+    let test_count = usize::from(supporting_tests)
+        .saturating_add(usize::from(falsifying_tests))
+        .saturating_add(usize::from(inconclusive_tests));
+    if falsifying_tests > 0 {
+        PublicCancerResearchCampaignOutcome::Falsified
+    } else if usize::from(supporting_tests)
+        >= application::CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS
+    {
+        PublicCancerResearchCampaignOutcome::SurvivedReplicationRound
+    } else if test_count >= application::CANCER_RESEARCH_CAMPAIGN_MAX_TESTS {
+        PublicCancerResearchCampaignOutcome::Inconclusive
+    } else {
+        PublicCancerResearchCampaignOutcome::Testing
+    }
+}
+
+fn cancer_lab_capabilities() -> Vec<PublicCancerLabCapability> {
+    use PublicCancerLabCapabilityStatus::{Abstracted, Available, Missing, RequiresRealLab};
+    [
+        (
+            "Closed preregistered experiment plans",
+            Available,
+            "Plans freeze subject abstraction, modality, targets, endpoint, intensity, exposure, and cohort before execution.",
+        ),
+        (
+            "Adversarial replication campaigns",
+            Available,
+            "Promoted roots receive up to five distinct tests and survive only after three supporting results with no falsifying result.",
+        ),
+        (
+            "Cell culture, organoid, and mouse subjects",
+            Abstracted,
+            "These are bounded mathematical subject factors, not cell-level organoids or anatomically exact animals.",
+        ),
+        (
+            "Tumor mechanisms and intervention response",
+            Abstracted,
+            "Seven mechanism targets, seven intervention modalities, and six endpoints are represented with uncalibrated coefficients.",
+        ),
+        (
+            "Tumor heterogeneity, evolution, and acquired resistance",
+            Missing,
+            "The lab does not yet simulate competing clones, selection pressure, or longitudinal resistance.",
+        ),
+        (
+            "Pharmacokinetics, pharmacodynamics, and blood-brain barrier",
+            Missing,
+            "Drug exposure, distribution, metabolism, clearance, and brain penetration are not mechanistically modeled.",
+        ),
+        (
+            "Spatial microenvironment and immune dynamics",
+            Missing,
+            "Spatial tissue structure, stromal interactions, immune populations, and cytokine dynamics are not represented.",
+        ),
+        (
+            "Combination therapy interactions",
+            Missing,
+            "Synergy, antagonism, scheduling, and adaptive multi-intervention protocols are not executable yet.",
+        ),
+        (
+            "Whole-organism toxicity and device physics",
+            Missing,
+            "Multi-organ safety, instrumentation geometry, calibration, manufacturing tolerances, and failure physics are absent.",
+        ),
+        (
+            "Biological or clinical validation",
+            RequiresRealLab,
+            "No simulation can establish efficacy or safety; wet-lab, animal, and ultimately clinical validation remain external requirements.",
+        ),
+    ]
+    .into_iter()
+    .map(|(capability, status, detail)| PublicCancerLabCapability {
+        capability: capability.to_owned(),
+        status,
+        detail: detail.to_owned(),
+    })
+    .collect()
 }
 
 fn collapse_duplicate_research(
@@ -501,4 +675,29 @@ fn unavailable(error: sqlx::Error) -> ObserverProjectionStoreError {
 
 fn corrupt(message: impl Into<String>) -> ObserverProjectionStoreError {
     ObserverProjectionStoreError::Corrupt(message.into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn campaign_outcomes_are_computed_not_awarded_by_the_model() {
+        assert_eq!(
+            campaign_outcome(2, 0, 1),
+            PublicCancerResearchCampaignOutcome::Testing
+        );
+        assert_eq!(
+            campaign_outcome(3, 0, 0),
+            PublicCancerResearchCampaignOutcome::SurvivedReplicationRound
+        );
+        assert_eq!(
+            campaign_outcome(4, 1, 0),
+            PublicCancerResearchCampaignOutcome::Falsified
+        );
+        assert_eq!(
+            campaign_outcome(2, 0, 3),
+            PublicCancerResearchCampaignOutcome::Inconclusive
+        );
+    }
 }

@@ -45,7 +45,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 5;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 6;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -841,6 +841,9 @@ pub struct PublicCancerResearchArtifact {
     pub target: CancerResearchTarget,
     pub task: CancerResearchTask,
     pub inference_tier: CancerResearchInferenceTier,
+    /// The immutable root artifact for campaign follow-ups. None means this is
+    /// not a replication or synthesis child.
+    pub frozen_candidate_hash: Option<Digest>,
     pub contribution: CancerResearchContribution,
     pub artifact_hash: Digest,
     pub evidence: Vec<CancerResearchEvidenceReference>,
@@ -861,6 +864,49 @@ pub struct PublicCancerResearchArtifact {
     /// They remain immutable and auditable but are collapsed into this original
     /// entry for observers.
     pub duplicates: Vec<PublicCancerResearchDuplicate>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicCancerResearchCampaignOutcome {
+    Testing,
+    Falsified,
+    SurvivedReplicationRound,
+    Inconclusive,
+}
+
+/// Read-side reconstruction of one adversarial campaign. The root hash stored
+/// on each immutable request is the lineage edge; this summary has no write
+/// authority over research history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerResearchCampaign {
+    pub campaign_id: Uuid,
+    pub program: CancerResearchProgram,
+    pub root_request_id: Uuid,
+    pub root_artifact_hash: Digest,
+    pub root_title: String,
+    pub outcome: PublicCancerResearchCampaignOutcome,
+    pub supporting_tests: u8,
+    pub falsifying_tests: u8,
+    pub inconclusive_tests: u8,
+    pub synthesis_complete: bool,
+    pub newest_ordinal: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicCancerLabCapabilityStatus {
+    Available,
+    Abstracted,
+    Missing,
+    RequiresRealLab,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerLabCapability {
+    pub capability: String,
+    pub status: PublicCancerLabCapabilityStatus,
+    pub detail: String,
 }
 
 /// Compact read-side rollup for one independent research program.
@@ -931,6 +977,8 @@ pub struct PublicCancerResearchView {
     pub memory_queued: u64,
     pub memory_accepted: u64,
     pub programs: Vec<PublicCancerResearchProgramSummary>,
+    pub campaigns: Vec<PublicCancerResearchCampaign>,
+    pub lab_capabilities: Vec<PublicCancerLabCapability>,
     pub artifacts: Vec<PublicCancerResearchArtifact>,
     pub evidence: Vec<PublicCancerResearchEvidence>,
 }

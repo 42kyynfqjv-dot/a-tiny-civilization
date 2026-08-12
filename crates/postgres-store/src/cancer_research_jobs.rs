@@ -1,10 +1,11 @@
 use application::{
     CANCER_RESEARCH_CATALOG_PAGE_SIZE, CancerResearchAttemptPersistenceState,
-    CancerResearchCatalogItem, CancerResearchJobEntry, CancerResearchJobStore,
-    CancerResearchLadderResult, CancerResearchLiteratureSnapshot, CancerResearchMemoryInput,
-    CancerResearchModelReceipt, CancerResearchModelRequest, CancerResearchNoveltyCandidate,
-    CancerResearchPaidAuthorization, CancerResearchPaidReservationDecision,
-    CancerResearchPriorResult, CancerResearchRouteAttemptRecord, CancerVirtualExperimentCandidate,
+    CancerResearchCampaignCandidate, CancerResearchCampaignFollowup, CancerResearchCatalogItem,
+    CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
+    CancerResearchLiteratureSnapshot, CancerResearchMemoryInput, CancerResearchModelReceipt,
+    CancerResearchModelRequest, CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
+    CancerResearchPaidReservationDecision, CancerResearchPriorResult,
+    CancerResearchRouteAttemptRecord, CancerVirtualExperimentCandidate,
     CancerVirtualExperimentCatalogSummary, CognitionBillingClass, CognitionBillingScope,
     CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain,
@@ -61,6 +62,29 @@ struct PriorResearchResultRow {
     request_checksum: Vec<u8>,
     result_payload: Value,
     result_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct CampaignRootRow {
+    request_payload: Value,
+    request_checksum: Vec<u8>,
+    result_payload: Value,
+    result_checksum: Vec<u8>,
+    experiment_payload: Value,
+    experiment_checksum: Vec<u8>,
+    audit_payload: Value,
+    audit_checksum: Vec<u8>,
+}
+
+#[derive(FromRow)]
+struct CampaignFollowupRow {
+    request_payload: Value,
+    request_checksum: Vec<u8>,
+    request_completed: bool,
+    result_payload: Option<Value>,
+    result_checksum: Option<Vec<u8>>,
+    experiment_payload: Option<Value>,
+    experiment_checksum: Option<Vec<u8>>,
 }
 
 #[derive(FromRow)]
@@ -977,6 +1001,234 @@ impl CancerResearchJobStore for PostgresStore {
             ));
         }
         Ok(Some(prior))
+    }
+
+    async fn load_cancer_research_campaign_candidate(
+        &self,
+        world_id: world_domain::WorldId,
+        before_ordinal: u32,
+        program: world_domain::CancerResearchProgram,
+    ) -> Result<Option<CancerResearchCampaignCandidate>, StoreError> {
+        let row = sqlx::query_as::<_, CampaignRootRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum,
+                   experiment.result_payload AS experiment_payload,
+                   experiment.result_checksum AS experiment_checksum,
+                   audit.audit_payload, audit.audit_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            JOIN cancer_virtual_experiment_results AS experiment
+              ON experiment.request_id=request.request_id
+             AND experiment.method_version=$4
+            JOIN cancer_research_novelty_audits AS audit
+              ON audit.request_id=request.request_id
+             AND audit.method_version=$5
+            WHERE request.world_id=$1
+              AND request.ordinal < $2
+              AND MOD(request.ordinal, 2) = $3
+              AND request.stage='blind_discovery'
+              AND result.result_payload->'receipt' <> 'null'::JSONB
+              AND result.result_payload->'receipt'->'contribution'->'virtual_experiment_plan' IS NOT NULL
+              AND experiment.result_payload->>'interpretation'='model_supports_prediction'
+              AND audit.normalized_status IN ('new_combination','no_close_match_found')
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM cancer_research_requests AS child
+                  JOIN cancer_research_results AS child_result USING (request_id)
+                  WHERE child.world_id=request.world_id
+                    AND child.ordinal < $2
+                    AND child.request_payload->'selection'->>'frozen_candidate_hash'
+                        = ENCODE(experiment.artifact_hash, 'hex')
+                    AND child.request_payload->'selection'->>'task'
+                        = 'interpret_replication_result'
+                    AND child_result.result_payload->'receipt' <> 'null'::JSONB
+              )
+            ORDER BY request.ordinal, request.request_id
+            LIMIT 1
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i64::from(before_ordinal))
+        .bind(i64::from(program.ordinal_remainder()))
+        .bind(i32::from(world_domain::CANCER_VIRTUAL_LAB_METHOD_VERSION))
+        .bind(i32::from(
+            world_domain::CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
+        ))
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+
+        let (root_request, root_result) = parse_historical_research_result(
+            PriorResearchResultRow {
+                request_payload: row.request_payload,
+                request_checksum: row.request_checksum,
+                result_payload: row.result_payload,
+                result_checksum: row.result_checksum,
+            },
+            world_id,
+        )?;
+        if root_request.selection.ordinal >= before_ordinal
+            || root_request.selection.stage != CancerResearchStage::BlindDiscovery
+            || world_domain::CancerResearchProgram::for_ordinal(root_request.selection.ordinal)
+                != program
+        {
+            return Err(corrupt("campaign root crossed its selection boundary"));
+        }
+        let root = CancerResearchPriorResult {
+            request: root_request,
+            result: root_result,
+        };
+        root.validate().map_err(corrupt)?;
+        let root_artifact_hash = root.contribution().canonical_hash().map_err(corrupt)?;
+        let root_experiment: CancerVirtualExperimentResult =
+            serde_json::from_value(row.experiment_payload).map_err(corrupt)?;
+        root_experiment
+            .validate_against(root.contribution())
+            .map_err(corrupt)?;
+        if root_experiment.artifact_hash != root_artifact_hash
+            || root_experiment.interpretation
+                != world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+            || root_experiment
+                .canonical_hash(root.contribution())
+                .map_err(corrupt)?
+                != digest_from_db(
+                    &row.experiment_checksum,
+                    "campaign root experiment checksum",
+                )?
+        {
+            return Err(corrupt(
+                "campaign root virtual experiment failed its durable provenance",
+            ));
+        }
+        let novelty: CancerResearchNoveltyAudit =
+            serde_json::from_value(row.audit_payload).map_err(corrupt)?;
+        novelty.validate().map_err(corrupt)?;
+        if novelty.world_id != world_id
+            || novelty.request_id != root.request.request_id
+            || novelty.artifact_hash != root_artifact_hash
+            || !matches!(
+                novelty.status,
+                CancerResearchNoveltyStatus::NewCombination
+                    | CancerResearchNoveltyStatus::NoCloseMatchFound
+            )
+            || novelty.canonical_hash().map_err(corrupt)?
+                != digest_from_db(&row.audit_checksum, "campaign root novelty checksum")?
+        {
+            return Err(corrupt(
+                "campaign root novelty audit failed its durable provenance",
+            ));
+        }
+
+        let followup_rows = sqlx::query_as::<_, CampaignFollowupRow>(
+            r#"
+            SELECT child.request_payload, child.request_checksum,
+                   child.completed_at IS NOT NULL AS request_completed,
+                   result.result_payload, result.result_checksum,
+                   experiment.result_payload AS experiment_payload,
+                   experiment.result_checksum AS experiment_checksum
+            FROM cancer_research_requests AS child
+            LEFT JOIN cancer_research_results AS result USING (request_id)
+            LEFT JOIN cancer_virtual_experiment_results AS experiment
+              ON experiment.request_id=child.request_id
+             AND experiment.method_version=$4
+            WHERE child.world_id=$1
+              AND child.ordinal < $2
+              AND child.stage='independent_replication'
+              AND child.request_payload->'selection'->>'frozen_candidate_hash'=$3
+            ORDER BY child.ordinal, child.request_id
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i64::from(before_ordinal))
+        .bind(root_artifact_hash.to_string())
+        .bind(i32::from(world_domain::CANCER_VIRTUAL_LAB_METHOD_VERSION))
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+
+        let mut followups = Vec::with_capacity(followup_rows.len());
+        for row in followup_rows {
+            let request: CancerResearchModelRequest =
+                serde_json::from_value(row.request_payload).map_err(corrupt)?;
+            request.validate().map_err(corrupt)?;
+            if request.selection.world_id != world_id
+                || request.selection.ordinal >= before_ordinal
+                || request.selection.stage != CancerResearchStage::IndependentReplication
+                || request.selection.frozen_candidate_hash != Some(root_artifact_hash)
+                || request.canonical_hash().map_err(corrupt)?
+                    != digest_from_db(&row.request_checksum, "campaign follow-up request checksum")?
+            {
+                return Err(corrupt(
+                    "campaign follow-up request failed its durable provenance",
+                ));
+            }
+            let result = match (row.result_payload, row.result_checksum) {
+                (Some(payload), Some(checksum)) => {
+                    let result: CancerResearchLadderResult =
+                        serde_json::from_value(payload).map_err(corrupt)?;
+                    let registry = match request.selection.inference_tier {
+                        CancerResearchInferenceTier::Exploration => {
+                            CognitionRouteRegistry::cancer_research_exploration()
+                        }
+                        CancerResearchInferenceTier::Escalation => {
+                            CognitionRouteRegistry::cancer_research_escalation()
+                        }
+                    };
+                    result
+                        .validate_against(&registry, &request)
+                        .map_err(corrupt)?;
+                    if Digest::canonical(&result).map_err(corrupt)?
+                        != digest_from_db(&checksum, "campaign follow-up result checksum")?
+                    {
+                        return Err(corrupt(
+                            "campaign follow-up result failed its durable checksum",
+                        ));
+                    }
+                    Some(result)
+                }
+                (None, None) => None,
+                _ => return Err(corrupt("campaign follow-up result is incomplete")),
+            };
+            let virtual_experiment = match (row.experiment_payload, row.experiment_checksum) {
+                (Some(payload), Some(checksum)) => {
+                    let experiment: CancerVirtualExperimentResult =
+                        serde_json::from_value(payload).map_err(corrupt)?;
+                    let contribution = result
+                        .as_ref()
+                        .and_then(|result| result.receipt.as_ref())
+                        .map(|receipt| &receipt.contribution)
+                        .ok_or_else(|| {
+                            corrupt("campaign experiment omitted its successful contribution")
+                        })?;
+                    experiment.validate_against(contribution).map_err(corrupt)?;
+                    if experiment.canonical_hash(contribution).map_err(corrupt)?
+                        != digest_from_db(&checksum, "campaign follow-up experiment checksum")?
+                    {
+                        return Err(corrupt(
+                            "campaign follow-up experiment failed its durable checksum",
+                        ));
+                    }
+                    Some(experiment)
+                }
+                (None, None) => None,
+                _ => return Err(corrupt("campaign follow-up experiment is incomplete")),
+            };
+            followups.push(CancerResearchCampaignFollowup {
+                request,
+                result,
+                virtual_experiment,
+                request_completed: row.request_completed,
+            });
+        }
+        Ok(Some(CancerResearchCampaignCandidate {
+            root,
+            root_experiment,
+            followups,
+        }))
     }
 
     async fn load_cancer_research_catalog(

@@ -3,12 +3,13 @@
 use std::{collections::BTreeMap, fmt, sync::Arc, time::Duration};
 
 use application::{
-    CANCER_RESEARCH_MODEL_CONTRACT_VERSION, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchModel,
-    CancerResearchModelError, CancerResearchModelReceipt, CancerResearchModelRequest,
-    CognitionBillingClass, CognitionModel, CognitionModelError, CognitionModelRoute,
-    CognitionProviderId, CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
-    CognitionRouteRegistry, ModelCognitionLadderResult, ModelCognitionReceipt,
-    ModelCognitionRequest, ModelTokenUsage,
+    CANCER_RESEARCH_MODEL_CONTRACT_VERSION, COGNITION_MODEL_CONTRACT_VERSION,
+    CancerResearchCampaignDirective, CancerResearchModel, CancerResearchModelError,
+    CancerResearchModelReceipt, CancerResearchModelRequest, CognitionBillingClass, CognitionModel,
+    CognitionModelError, CognitionModelRoute, CognitionProviderId, CognitionRouteAttempt,
+    CognitionRouteAttemptStatus, CognitionRoutePurpose, CognitionRouteRegistry,
+    ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
+    cancer_research_campaign_directive,
 };
 use async_trait::async_trait;
 use reqwest::{Client, StatusCode, Url};
@@ -20,7 +21,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v11";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v12";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -379,6 +380,8 @@ fn research_api_request(
             "This is an independent-replication turn on a frozen candidate. Prefer discriminating tests and report contradictions. Citation hashes must exactly match supplied evidence content hashes."
         }
     };
+    let campaign_directive = cancer_research_campaign_directive(request)
+        .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
     let task_rule = match request.selection.task {
         CancerResearchTask::GenerateMechanisticHypothesis => {
             "Generate one mechanistic hypothesis. Set artifact_kind to hypothesis and virtual_experiment_plan to null."
@@ -392,7 +395,16 @@ fn research_api_request(
         CancerResearchTask::DesignTreatmentMachine => {
             "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Set artifact_kind to treatment_machine_design. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection; secondary_target must differ from primary_target or be null. Do not claim efficacy or that it has been built."
         }
-        _ => "Follow the selected research task exactly.",
+        CancerResearchTask::ChallengeFrozenHypothesis
+        | CancerResearchTask::AuditAgainstLiterature => {
+            "Adversarially compare the frozen candidate with the supplied licensed literature. Set artifact_kind to literature_audit and virtual_experiment_plan to null. Report contradictions and missing evidence; do not invent a completed experiment."
+        }
+        CancerResearchTask::DesignIndependentReplication => {
+            "Design one adversarial replication of the frozen candidate. Set artifact_kind to experiment_proposal and copy the exact required_plan from the campaign directive into virtual_experiment_plan. The plan is deliberately varied from all prior tests. Explain what observation would falsify the candidate, but do not invent an outcome or claim the experiment ran."
+        }
+        CancerResearchTask::InterpretReplicationResult => {
+            "Synthesize only the supplied immutable campaign results. Set artifact_kind to replication_result and virtual_experiment_plan to null. The campaign directive fixes the outcome; explain it without upgrading a virtual model projection into wet-lab, animal, clinical, or causal evidence."
+        }
     };
     let program_rule = match CancerResearchProgram::for_ordinal(request.selection.ordinal) {
         CancerResearchProgram::Devices => {
@@ -402,8 +414,11 @@ fn research_api_request(
             "You are working in the Treatments program. Advance a falsifiable therapeutic mechanism, intervention, delivery method, or treatment apparatus intended to change disease burden. Diagnostic-only work belongs to the separate Devices program and must not be this contribution's central result."
         }
     };
-    let contribution_schema =
-        research_contribution_schema(request.selection.stage, request.selection.task);
+    let contribution_schema = research_contribution_schema(
+        request.selection.stage,
+        request.selection.task,
+        campaign_directive.as_ref(),
+    );
     let schema_text = serde_json::to_string(&contribution_schema)
         .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
     let system_prompt = format!(
@@ -446,12 +461,20 @@ fn research_api_request(
     Ok(payload)
 }
 
-fn research_contribution_schema(stage: CancerResearchStage, task: CancerResearchTask) -> Value {
+fn research_contribution_schema(
+    stage: CancerResearchStage,
+    task: CancerResearchTask,
+    campaign_directive: Option<&CancerResearchCampaignDirective>,
+) -> Value {
     let artifact_kinds = match task {
         CancerResearchTask::DesignDiagnosticInstrument => {
             vec!["diagnostic_instrument_design"]
         }
         CancerResearchTask::DesignTreatmentMachine => vec!["treatment_machine_design"],
+        CancerResearchTask::DesignIndependentReplication => vec!["experiment_proposal"],
+        CancerResearchTask::InterpretReplicationResult => vec!["replication_result"],
+        CancerResearchTask::ChallengeFrozenHypothesis
+        | CancerResearchTask::AuditAgainstLiterature => vec!["literature_audit"],
         _ => match stage {
             CancerResearchStage::BlindDiscovery => {
                 vec!["hypothesis", "experiment_proposal", "critique"]
@@ -477,7 +500,7 @@ fn research_contribution_schema(stage: CancerResearchStage, task: CancerResearch
             "maxItems": 32
         })
     };
-    let virtual_experiment = virtual_experiment_plan_schema(stage, task);
+    let virtual_experiment = virtual_experiment_plan_schema(stage, task, campaign_directive);
     json!({
         "type": "object",
         "properties": {
@@ -507,7 +530,34 @@ fn research_contribution_schema(stage: CancerResearchStage, task: CancerResearch
     })
 }
 
-fn virtual_experiment_plan_schema(stage: CancerResearchStage, task: CancerResearchTask) -> Value {
+fn virtual_experiment_plan_schema(
+    stage: CancerResearchStage,
+    task: CancerResearchTask,
+    campaign_directive: Option<&CancerResearchCampaignDirective>,
+) -> Value {
+    if task == CancerResearchTask::DesignIndependentReplication {
+        return match campaign_directive {
+            Some(CancerResearchCampaignDirective::AdversarialTest { required_plan, .. }) => {
+                serde_json::to_value(required_plan)
+                    .expect("campaign plan is serializable")
+                    .as_object()
+                    .map(|plan| {
+                        let properties = plan
+                            .iter()
+                            .map(|(field, value)| (field.clone(), json!({"const": value})))
+                            .collect::<serde_json::Map<_, _>>();
+                        json!({
+                            "type": "object",
+                            "properties": properties,
+                            "required": plan.keys().cloned().collect::<Vec<_>>(),
+                            "additionalProperties": false
+                        })
+                    })
+                    .unwrap_or_else(|| json!({"type": "null"}))
+            }
+            _ => json!({"type": "null"}),
+        };
+    }
     if stage != CancerResearchStage::BlindDiscovery {
         return json!({"type": "null"});
     }
@@ -573,7 +623,8 @@ fn virtual_experiment_plan_schema(stage: CancerResearchStage, task: CancerResear
     match task {
         CancerResearchTask::ProposeDiscriminatingExperiment
         | CancerResearchTask::DesignDiagnosticInstrument
-        | CancerResearchTask::DesignTreatmentMachine => plan,
+        | CancerResearchTask::DesignTreatmentMachine
+        | CancerResearchTask::DesignIndependentReplication => plan,
         _ => json!({"anyOf": [plan, {"type": "null"}]}),
     }
 }
@@ -628,6 +679,7 @@ fn parse_research_response(
         ))
     })?;
     normalize_research_output(&request.selection, &mut output);
+    validate_campaign_output(request, &output)?;
     let allowed_citations = request
         .selection
         .evidence
@@ -728,7 +780,62 @@ fn normalize_research_output(
         (CancerResearchStage::BlindDiscovery, CancerResearchTask::DesignTreatmentMachine) => {
             output.artifact_kind = CancerResearchArtifactKind::TreatmentMachineDesign
         }
+        (
+            CancerResearchStage::LiteratureAudit,
+            CancerResearchTask::ChallengeFrozenHypothesis
+            | CancerResearchTask::AuditAgainstLiterature,
+        ) => {
+            output.artifact_kind = CancerResearchArtifactKind::LiteratureAudit;
+            output.virtual_experiment_plan = None;
+        }
+        (
+            CancerResearchStage::IndependentReplication,
+            CancerResearchTask::DesignIndependentReplication,
+        ) => output.artifact_kind = CancerResearchArtifactKind::ExperimentProposal,
+        (
+            CancerResearchStage::IndependentReplication,
+            CancerResearchTask::InterpretReplicationResult,
+        ) => {
+            output.artifact_kind = CancerResearchArtifactKind::ReplicationResult;
+            output.virtual_experiment_plan = None;
+        }
         _ => {}
+    }
+}
+
+fn validate_campaign_output(
+    request: &CancerResearchModelRequest,
+    output: &ResearchModelOutput,
+) -> Result<(), CancerResearchModelError> {
+    match cancer_research_campaign_directive(request)
+        .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?
+    {
+        Some(CancerResearchCampaignDirective::AdversarialTest { required_plan, .. })
+            if output.virtual_experiment_plan.as_ref() != Some(&required_plan) =>
+        {
+            Err(CancerResearchModelError::InvalidResponse(
+                "campaign replication did not preserve its preregistered required plan".to_owned(),
+            ))
+        }
+        Some(CancerResearchCampaignDirective::Synthesis { .. })
+            if output.virtual_experiment_plan.is_some() =>
+        {
+            Err(CancerResearchModelError::InvalidResponse(
+                "campaign synthesis attempted to introduce an unexecuted plan".to_owned(),
+            ))
+        }
+        Some(_) => Ok(()),
+        None if matches!(
+            request.selection.task,
+            CancerResearchTask::DesignIndependentReplication
+                | CancerResearchTask::InterpretReplicationResult
+        ) =>
+        {
+            Err(CancerResearchModelError::InvalidResponse(
+                "campaign task omitted its immutable directive".to_owned(),
+            ))
+        }
+        None => Ok(()),
     }
 }
 
@@ -1176,7 +1283,9 @@ mod tests {
     use world_domain::{
         BodilyNeedState, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
         CancerResearchInferenceTier, CancerResearchProfile, CancerResearchTarget,
-        CancerResearchTask, EntityId, SimTick, WorldId, WorldSeed,
+        CancerResearchTask, CancerVirtualEndpoint, CancerVirtualExperimentPlan,
+        CancerVirtualInterventionModality, CancerVirtualMechanismTarget, CancerVirtualSubjectModel,
+        EntityId, SimTick, WorldId, WorldSeed,
     };
 
     use super::*;
@@ -1333,6 +1442,40 @@ mod tests {
             .expect("research request")
     }
 
+    fn campaign_request(required_plan: CancerVirtualExperimentPlan) -> CancerResearchModelRequest {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xcace));
+        let resident_id = EntityId::deterministic(world_id, b"campaign-adapter-test");
+        let root_artifact_hash = Digest::sha256(b"campaign-root");
+        let directive = CancerResearchCampaignDirective::AdversarialTest {
+            schema_version: application::CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
+            campaign_id: Uuid::from_u128(0xfeed),
+            root_artifact_hash,
+            test_index: 0,
+            variation: application::CancerResearchCampaignVariation::SubjectModel,
+            required_plan,
+            prior_plan_hashes: vec![Digest::sha256(b"root-plan")],
+        };
+        let evidence_document = directive.evidence_document(world_id).expect("directive");
+        let selection = world_domain::CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(100),
+            SimTick::new(120),
+            2,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::IndependentReplication,
+            CancerResearchTask::DesignIndependentReplication,
+            CancerResearchInferenceTier::Exploration,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            vec![evidence_document.reference.clone()],
+            Some(root_artifact_hash),
+            2_048,
+        )
+        .expect("campaign selection");
+        CancerResearchModelRequest::new(selection, vec![evidence_document], Vec::new())
+            .expect("campaign request")
+    }
+
     async fn adapter_for(
         provider: CognitionProviderId,
         response: Value,
@@ -1401,6 +1544,7 @@ mod tests {
         let diagnostic = research_contribution_schema(
             CancerResearchStage::BlindDiscovery,
             CancerResearchTask::DesignDiagnosticInstrument,
+            None,
         );
         assert_eq!(
             diagnostic["properties"]["artifact_kind"]["enum"],
@@ -1414,6 +1558,7 @@ mod tests {
         let treatment = research_contribution_schema(
             CancerResearchStage::BlindDiscovery,
             CancerResearchTask::DesignTreatmentMachine,
+            None,
         );
         assert_eq!(
             treatment["properties"]["artifact_kind"]["enum"],
@@ -1425,6 +1570,56 @@ mod tests {
                 .as_array()
                 .is_some_and(|modalities| !modalities.contains(&json!("diagnostic_sensing")))
         );
+    }
+
+    #[test]
+    fn campaign_replication_schema_and_validation_lock_the_preregistered_plan() {
+        let required_plan = CancerVirtualExperimentPlan {
+            schema_version: world_domain::CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+            subject_model: CancerVirtualSubjectModel::TumorOrganoid,
+            intervention_modality: CancerVirtualInterventionModality::MolecularInhibition,
+            primary_target: CancerVirtualMechanismTarget::DnaRepair,
+            secondary_target: Some(CancerVirtualMechanismTarget::Invasion),
+            primary_endpoint: CancerVirtualEndpoint::ViableTumorFraction,
+            intensity_parts_per_million: 420_000,
+            exposure_hours: 72,
+            cohort_size: 64,
+        };
+        let request = campaign_request(required_plan.clone());
+        let directive = cancer_research_campaign_directive(&request)
+            .expect("valid directive")
+            .expect("campaign directive");
+        let schema = research_contribution_schema(
+            CancerResearchStage::IndependentReplication,
+            CancerResearchTask::DesignIndependentReplication,
+            Some(&directive),
+        );
+        assert_eq!(
+            schema["properties"]["artifact_kind"]["enum"],
+            json!(["experiment_proposal"])
+        );
+        assert_eq!(
+            schema["properties"]["virtual_experiment_plan"]["properties"]["intensity_parts_per_million"]
+                ["const"],
+            json!(420_000)
+        );
+        let mut output = ResearchModelOutput {
+            artifact_kind: CancerResearchArtifactKind::ExperimentProposal,
+            title: "Adversarial replication".to_owned(),
+            abstract_text: "A preregistered challenge.".to_owned(),
+            claims: Vec::new(),
+            virtual_experiment_plan: Some(required_plan),
+        };
+        assert!(validate_campaign_output(&request, &output).is_ok());
+        output
+            .virtual_experiment_plan
+            .as_mut()
+            .expect("plan")
+            .exposure_hours = 73;
+        assert!(matches!(
+            validate_campaign_output(&request, &output),
+            Err(CancerResearchModelError::InvalidResponse(_))
+        ));
     }
 
     #[test]

@@ -108,6 +108,7 @@ type ResearchArtifact = {
   target: string;
   task: string;
   inference_tier: string;
+  frozen_candidate_hash: string | null;
   contribution: Contribution;
   artifact_hash: string;
   evidence: { kind: string; source_id: string; content_hash: string }[];
@@ -123,6 +124,26 @@ type ResearchArtifact = {
   virtual_experiment: VirtualExperiment | null;
   created_at: string;
   duplicates: ResearchDuplicate[];
+};
+
+type ResearchCampaign = {
+  campaign_id: string;
+  program: ResearchProgram;
+  root_request_id: string;
+  root_artifact_hash: string;
+  root_title: string;
+  outcome: "testing" | "falsified" | "survived_replication_round" | "inconclusive";
+  supporting_tests: number;
+  falsifying_tests: number;
+  inconclusive_tests: number;
+  synthesis_complete: boolean;
+  newest_ordinal: number;
+};
+
+type LabCapability = {
+  capability: string;
+  status: "available" | "abstracted" | "missing" | "requires_real_lab";
+  detail: string;
 };
 
 type ResearchProgramSummary = {
@@ -159,6 +180,8 @@ type ResearchView = {
   memory_queued: number;
   memory_accepted: number;
   programs: ResearchProgramSummary[];
+  campaigns?: ResearchCampaign[];
+  lab_capabilities?: LabCapability[];
   artifacts: ResearchArtifact[];
   evidence: ResearchEvidence[];
 };
@@ -244,6 +267,7 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
   const telemetry = record?.telemetry;
   const research = record?.research;
   const summary = research?.programs?.find((item) => item.program === program);
+  const programCampaigns = research?.campaigns?.filter((campaign) => campaign.program === program) ?? [];
   const programArtifacts = research?.artifacts.filter((artifact) => artifact.program === program) ?? [];
   const visibleArtifacts = programArtifacts.filter((artifact) => filter === "all" || artifactStatus(artifact) === filter);
   return <main className="cancer-console" data-program={program}>
@@ -298,6 +322,13 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
         <ProgramScore label="Inconclusive" value={summary?.model_inconclusive ?? 0} tone="inconclusive" />
         <ProgramScore label="Needs testing" value={summary?.awaiting_evaluation ?? 0} tone="needs_testing" />
       </div>
+      <div className="cancer-campaigns">
+        <div className="cancer-campaigns-heading">
+          <span>THEORY CAMPAIGNS</span>
+          <p>Only model-supported, low-overlap ideas enter. One adverse result kills a campaign; three distinct supporting model tests are required to survive a round.</p>
+        </div>
+        {programCampaigns.length ? programCampaigns.map((campaign) => <CampaignCard campaign={campaign} key={campaign.campaign_id} />) : <EmptyState text="No idea in this program has earned an adversarial replication campaign yet." />}
+      </div>
       <div className="cancer-research-filters" aria-label="Filter research outcomes">
         {(["all", "promising", "killed", "inconclusive", "needs_testing"] as ResearchFilter[]).map((item) => <button aria-pressed={filter === item} key={item} onClick={() => setFilter(item)} type="button">
           {item === "all" ? "Everything" : humanize(item)}
@@ -339,6 +370,18 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       </div>
     </details>
 
+    <details className="cancer-console-section cancer-lab-boundary">
+      <summary><span>SIMULATED LAB</span><strong>What this system can—and cannot—test</strong><small>Open the capability boundary</small></summary>
+      <p className="cancer-model-only">THE VIRTUAL LAB TRIAGES IDEAS. IT DOES NOT PRODUCE BIOLOGICAL OR CLINICAL EVIDENCE.</p>
+      <div className="cancer-lab-capabilities">
+        {(research?.lab_capabilities ?? []).map((item) => <article data-status={item.status} key={item.capability}>
+          <span>{humanize(item.status)}</span>
+          <strong>{item.capability}</strong>
+          <p>{item.detail}</p>
+        </article>)}
+      </div>
+    </details>
+
     <details className="cancer-console-ledger">
       <summary>SYSTEM LEDGER</summary>
       <dl>
@@ -352,6 +395,20 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       </dl>
     </details>
   </main>;
+}
+
+function CampaignCard({ campaign }: { campaign: ResearchCampaign }) {
+  const tests = campaign.supporting_tests + campaign.falsifying_tests + campaign.inconclusive_tests;
+  return <article className="cancer-campaign-card" data-outcome={campaign.outcome}>
+    <div><span>{humanize(campaign.outcome)}</span><small>{tests}/5 TESTS · TURN {campaign.newest_ordinal}</small></div>
+    <h3>{campaign.root_title}</h3>
+    <dl>
+      <div><dt>SUPPORTED</dt><dd>{campaign.supporting_tests}</dd></div>
+      <div><dt>FALSIFIED</dt><dd>{campaign.falsifying_tests}</dd></div>
+      <div><dt>INCONCLUSIVE</dt><dd>{campaign.inconclusive_tests}</dd></div>
+    </dl>
+    <footer><code>ROOT {shortHash(campaign.root_artifact_hash)}</code><span>{campaign.synthesis_complete ? "SYNTHESIS COMPLETE" : "ACTIVE / AWAITING NEXT STEP"}</span></footer>
+  </article>;
 }
 
 function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {

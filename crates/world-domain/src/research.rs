@@ -15,7 +15,10 @@ pub const LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 1;
 pub const VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 2;
 /// Schema v3 requires every newly proposed experiment or machine design to carry
 /// a closed plan that the deterministic observer-side virtual lab can execute.
-pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 3;
+pub const REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 3;
+/// Schema v4 permits independent-replication protocols to remain proposals until
+/// the observer-side lab has executed their required, frozen plan.
+pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 4;
 pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_VIRTUAL_LAB_METHOD_VERSION: u16 = 1;
@@ -697,6 +700,7 @@ impl CancerResearchContribution {
             self.schema_version,
             LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                | REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
         ) {
             return Err(CancerResearchContractError::UnsupportedContributionSchema(
@@ -738,10 +742,15 @@ impl CancerResearchContribution {
             ) && matches!(
                 self.schema_version,
                 VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                    | REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                     | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
             ) && self.virtual_experiment_plan.is_none())
             || (self.artifact_kind == CancerResearchArtifactKind::ExperimentProposal
-                && self.schema_version == CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                && matches!(
+                    self.schema_version,
+                    REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                        | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                )
                 && self.virtual_experiment_plan.is_none())
         {
             return Err(CancerResearchContractError::InvalidContribution);
@@ -875,7 +884,8 @@ fn artifact_kind_valid_for_stage(
                 | CancerResearchArtifactKind::Retraction
         ) | (
             CancerResearchStage::IndependentReplication,
-            CancerResearchArtifactKind::ReplicationResult
+            CancerResearchArtifactKind::ExperimentProposal
+                | CancerResearchArtifactKind::ReplicationResult
                 | CancerResearchArtifactKind::Critique
                 | CancerResearchArtifactKind::Retraction
                 | CancerResearchArtifactKind::Paper

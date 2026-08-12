@@ -5,14 +5,18 @@ use uuid::Uuid;
 use world_domain::{
     CancerBurdenState, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
     CancerResearchInferenceTier, CancerResearchProfile, CancerResearchProgram, CancerResearchStage,
-    CancerResearchTask, CancerTrajectory, Digest, EntityId, OrganismRole, SimTick,
-    WorldExperimentCommitment,
+    CancerResearchTask, CancerTrajectory, CancerVirtualEndpoint, CancerVirtualExperimentPlan,
+    CancerVirtualInterventionModality, CancerVirtualSubjectModel, Digest, EntityId, OrganismRole,
+    SimTick, WorldExperimentCommitment,
 };
 
 use crate::{
-    CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchMemoryInput,
-    CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES,
-    MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS, StoreError,
+    CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION, CANCER_RESEARCH_CAMPAIGN_MAX_TESTS,
+    CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS, CancerResearchCampaignCandidate,
+    CancerResearchCampaignDirective, CancerResearchCampaignOutcome,
+    CancerResearchCampaignVariation, CancerResearchEvidenceDocument, CancerResearchJobStore,
+    CancerResearchMemoryInput, CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES,
+    StoreError,
 };
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
@@ -21,9 +25,10 @@ pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
 /// deterministic; a slower runner slows research rather than dropping work.
 pub const CANCER_RESEARCH_TURNS_PER_TEN_TICKS: u64 = 7;
 pub const CANCER_RESEARCH_SCHEDULE_TICK_SPAN: u64 = 10;
-/// Approximately seven simulated days at the accelerated cadence. The odd
-/// interval makes successive audits alternate between the two programs.
-pub const CANCER_RESEARCH_ESCALATION_INTERVAL_TURNS: u32 = 1_411;
+/// One in five turns in each program is reserved for an eligible theory
+/// campaign. If nothing has earned promotion, the slot remains ordinary blind
+/// discovery rather than manufacturing a promising result.
+pub const CANCER_RESEARCH_CAMPAIGN_INTERVAL_PROGRAM_TURNS: u32 = 5;
 const SECONDS_PER_DAY: u64 = 86_400;
 const BLIND_RESEARCH_MAX_OUTPUT_TOKENS: u16 = 4_096;
 const EMBEDDED_PRIMITIVES: &str =
@@ -148,45 +153,27 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
     } else {
         None
     };
-    let promoted = if turn_ordinal.is_multiple_of(CANCER_RESEARCH_ESCALATION_INTERVAL_TURNS) {
-        latest_hypothesis.clone()
+    let campaign_turn = if program_turn_ordinal % CANCER_RESEARCH_CAMPAIGN_INTERVAL_PROGRAM_TURNS
+        == CANCER_RESEARCH_CAMPAIGN_INTERVAL_PROGRAM_TURNS - 1
+    {
+        store
+            .load_cancer_research_campaign_candidate(state.world_id(), turn_ordinal, program)
+            .await?
+            .map(prepare_campaign_turn)
+            .transpose()?
+            .flatten()
     } else {
         None
     };
-    let literature = if promoted.is_some() {
-        store
-            .load_cancer_research_literature(
-                state.world_id(),
-                MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS,
-            )
-            .await?
-    } else {
-        Vec::new()
-    };
     let (stage, task, inference_tier, frozen_candidate_hash, model_max_output_tokens) =
-        if let Some(prior) = &promoted.filter(|_| !literature.is_empty()) {
-            prior.validate()?;
-            let content = serde_json::to_string(prior.contribution())?;
-            let candidate_hash = Digest::canonical(prior.contribution())?;
-            evidence_documents.push(CancerResearchEvidenceDocument {
-                reference: CancerResearchEvidenceReference {
-                    kind: CancerResearchEvidenceKind::FrozenHypothesis,
-                    source_id: format!(
-                        "cancer-world://{}/artifact/{}",
-                        state.world_id(),
-                        prior.contribution().contribution_id
-                    ),
-                    content_hash: Digest::sha256(content.as_bytes()),
-                },
-                content,
-            });
-            evidence_documents.extend(literature.into_iter().map(|snapshot| snapshot.document));
+        if let Some(campaign) = campaign_turn {
+            evidence_documents.extend(campaign.evidence_documents);
             (
-                CancerResearchStage::LiteratureAudit,
-                CancerResearchTask::ChallengeFrozenHypothesis,
-                CancerResearchInferenceTier::Escalation,
-                Some(candidate_hash),
-                4_096,
+                CancerResearchStage::IndependentReplication,
+                campaign.task,
+                campaign.inference_tier,
+                Some(campaign.root_artifact_hash),
+                campaign.model_max_output_tokens,
             )
         } else {
             (
@@ -251,6 +238,328 @@ pub async fn schedule_due_cancer_research_turn<S: CancerResearchJobStore + ?Size
     let request_id = request.request_id;
     store.enqueue_cancer_research_request(&request).await?;
     Ok(Some(request_id))
+}
+
+struct PreparedCampaignTurn {
+    task: CancerResearchTask,
+    inference_tier: CancerResearchInferenceTier,
+    root_artifact_hash: Digest,
+    model_max_output_tokens: u16,
+    evidence_documents: Vec<CancerResearchEvidenceDocument>,
+}
+
+fn prepare_campaign_turn(
+    candidate: CancerResearchCampaignCandidate,
+) -> Result<Option<PreparedCampaignTurn>, CancerResearchSchedulerError> {
+    candidate.root.validate()?;
+    let root_contribution = candidate.root.contribution();
+    candidate
+        .root_experiment
+        .validate_against(root_contribution)?;
+    if candidate.root_experiment.interpretation
+        != world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+    {
+        return Err(CancerResearchSchedulerError::InvalidCampaign);
+    }
+    let root_plan = root_contribution
+        .virtual_experiment_plan
+        .as_ref()
+        .ok_or(CancerResearchSchedulerError::InvalidCampaign)?;
+    let root_artifact_hash = root_contribution.canonical_hash()?;
+    let campaign_id =
+        CancerResearchCampaignDirective::campaign_id(candidate.root.request.request_id);
+    let world_id = candidate.root.request.selection.world_id;
+    let mut evidence_documents = vec![campaign_evidence_document(
+        CancerResearchEvidenceKind::FrozenHypothesis,
+        format!("cancer-world://{world_id}/campaign/{campaign_id}/root"),
+        root_contribution,
+    )?];
+    evidence_documents.push(campaign_evidence_document(
+        CancerResearchEvidenceKind::AssayObservation,
+        format!("cancer-world://{world_id}/campaign/{campaign_id}/root-experiment"),
+        &candidate.root_experiment,
+    )?);
+
+    let mut supporting_tests = 0_u8;
+    let mut falsifying_tests = 0_u8;
+    let mut inconclusive_tests = 0_u8;
+    let mut prior_plan_hashes = vec![Digest::canonical(root_plan)?];
+    let mut synthesis_complete = false;
+
+    for followup in candidate.followups {
+        followup.request.validate()?;
+        if followup.request.selection.world_id != world_id
+            || followup.request.selection.frozen_candidate_hash != Some(root_artifact_hash)
+            || followup.request.selection.stage != CancerResearchStage::IndependentReplication
+        {
+            return Err(CancerResearchSchedulerError::InvalidCampaign);
+        }
+        if !followup.request_completed {
+            return Ok(None);
+        }
+        let Some(result) = followup.result else {
+            continue;
+        };
+        let registry = match followup.request.selection.inference_tier {
+            CancerResearchInferenceTier::Exploration => {
+                crate::CognitionRouteRegistry::cancer_research_exploration()
+            }
+            CancerResearchInferenceTier::Escalation => {
+                crate::CognitionRouteRegistry::cancer_research_escalation()
+            }
+        };
+        result.validate_against(&registry, &followup.request)?;
+        let Some(receipt) = result.receipt else {
+            continue;
+        };
+        let contribution = receipt.contribution;
+        evidence_documents.push(campaign_evidence_document(
+            CancerResearchEvidenceKind::PriorResearchArtifact,
+            format!(
+                "cancer-world://{world_id}/campaign/{campaign_id}/artifact/{}",
+                contribution.contribution_id
+            ),
+            &contribution,
+        )?);
+        match followup.request.selection.task {
+            CancerResearchTask::DesignIndependentReplication => {
+                let experiment = followup.virtual_experiment.as_ref();
+                let Some(experiment) = experiment else {
+                    return Ok(None);
+                };
+                experiment.validate_against(&contribution)?;
+                let plan = contribution
+                    .virtual_experiment_plan
+                    .as_ref()
+                    .ok_or(CancerResearchSchedulerError::InvalidCampaign)?;
+                prior_plan_hashes.push(Digest::canonical(plan)?);
+                match experiment.interpretation {
+                    world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction => {
+                        supporting_tests = supporting_tests.saturating_add(1);
+                    }
+                    world_domain::CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
+                    | world_domain::CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff => {
+                        falsifying_tests = falsifying_tests.saturating_add(1);
+                    }
+                    world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive => {
+                        inconclusive_tests = inconclusive_tests.saturating_add(1);
+                    }
+                }
+                evidence_documents.push(campaign_evidence_document(
+                    CancerResearchEvidenceKind::AssayObservation,
+                    format!(
+                        "cancer-world://{world_id}/campaign/{campaign_id}/experiment/{}",
+                        experiment.experiment_id
+                    ),
+                    &experiment,
+                )?);
+            }
+            CancerResearchTask::InterpretReplicationResult => {
+                synthesis_complete = true;
+            }
+            _ => return Err(CancerResearchSchedulerError::InvalidCampaign),
+        }
+    }
+    if synthesis_complete {
+        return Ok(None);
+    }
+
+    let test_count = usize::from(supporting_tests)
+        .saturating_add(usize::from(falsifying_tests))
+        .saturating_add(usize::from(inconclusive_tests));
+    let outcome = if falsifying_tests > 0 {
+        Some(CancerResearchCampaignOutcome::Falsified)
+    } else if usize::from(supporting_tests) >= CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS {
+        Some(CancerResearchCampaignOutcome::SurvivedReplicationRound)
+    } else if test_count >= CANCER_RESEARCH_CAMPAIGN_MAX_TESTS {
+        Some(CancerResearchCampaignOutcome::Inconclusive)
+    } else {
+        None
+    };
+
+    let (task, inference_tier, directive) = if let Some(outcome) = outcome {
+        (
+            CancerResearchTask::InterpretReplicationResult,
+            if outcome == CancerResearchCampaignOutcome::SurvivedReplicationRound {
+                CancerResearchInferenceTier::Escalation
+            } else {
+                CancerResearchInferenceTier::Exploration
+            },
+            CancerResearchCampaignDirective::Synthesis {
+                schema_version: CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
+                campaign_id,
+                root_artifact_hash,
+                outcome,
+                supporting_tests,
+                falsifying_tests,
+                inconclusive_tests,
+            },
+        )
+    } else {
+        prior_plan_hashes.sort_unstable();
+        prior_plan_hashes.dedup();
+        let test_index =
+            u8::try_from(test_count).map_err(|_| CancerResearchSchedulerError::InvalidCampaign)?;
+        let (variation, required_plan) =
+            varied_campaign_plan(root_plan, test_index, &prior_plan_hashes)?;
+        (
+            CancerResearchTask::DesignIndependentReplication,
+            CancerResearchInferenceTier::Exploration,
+            CancerResearchCampaignDirective::AdversarialTest {
+                schema_version: CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
+                campaign_id,
+                root_artifact_hash,
+                test_index,
+                variation,
+                required_plan,
+                prior_plan_hashes,
+            },
+        )
+    };
+    evidence_documents.push(directive.evidence_document(world_id)?);
+    evidence_documents.sort_by(|left, right| left.reference.cmp(&right.reference));
+    if evidence_documents
+        .windows(2)
+        .any(|pair| pair[0].reference >= pair[1].reference)
+    {
+        return Err(CancerResearchSchedulerError::InvalidCampaign);
+    }
+    Ok(Some(PreparedCampaignTurn {
+        task,
+        inference_tier,
+        root_artifact_hash,
+        model_max_output_tokens: BLIND_RESEARCH_MAX_OUTPUT_TOKENS,
+        evidence_documents,
+    }))
+}
+
+fn campaign_evidence_document(
+    kind: CancerResearchEvidenceKind,
+    source_id: String,
+    value: &impl Serialize,
+) -> Result<CancerResearchEvidenceDocument, CancerResearchSchedulerError> {
+    let content = serde_json::to_string(value)?;
+    Ok(CancerResearchEvidenceDocument {
+        reference: CancerResearchEvidenceReference {
+            kind,
+            source_id,
+            content_hash: Digest::sha256(content.as_bytes()),
+        },
+        content,
+    })
+}
+
+fn varied_campaign_plan(
+    root: &CancerVirtualExperimentPlan,
+    test_index: u8,
+    prior_plan_hashes: &[Digest],
+) -> Result<
+    (CancerResearchCampaignVariation, CancerVirtualExperimentPlan),
+    CancerResearchSchedulerError,
+> {
+    let variation = match test_index {
+        0 => CancerResearchCampaignVariation::SubjectModel,
+        1 => CancerResearchCampaignVariation::Intensity,
+        2 => CancerResearchCampaignVariation::Exposure,
+        3 => CancerResearchCampaignVariation::EndpointOrTarget,
+        4 => CancerResearchCampaignVariation::ModalityOrTarget,
+        _ => return Err(CancerResearchSchedulerError::InvalidCampaign),
+    };
+    let mut plan = root.clone();
+    match variation {
+        CancerResearchCampaignVariation::SubjectModel => {
+            plan.subject_model = rotate_subject_model(root.subject_model);
+        }
+        CancerResearchCampaignVariation::Intensity => {
+            plan.intensity_parts_per_million = if root.intensity_parts_per_million <= 750_000 {
+                root.intensity_parts_per_million.saturating_add(250_000)
+            } else {
+                root.intensity_parts_per_million
+                    .saturating_sub(250_000)
+                    .max(1)
+            };
+        }
+        CancerResearchCampaignVariation::Exposure => {
+            plan.exposure_hours = if root.exposure_hours <= 1_080 {
+                root.exposure_hours.saturating_mul(2).min(2_160)
+            } else {
+                (root.exposure_hours / 2).max(1)
+            };
+        }
+        CancerResearchCampaignVariation::EndpointOrTarget => {
+            plan.primary_endpoint = rotate_endpoint(root.primary_endpoint);
+        }
+        CancerResearchCampaignVariation::ModalityOrTarget => {
+            plan.intervention_modality = rotate_modality(root.intervention_modality);
+        }
+    }
+    plan.validate()?;
+    let mut plan_hash = Digest::canonical(&plan)?;
+    let mut cohort_adjustment = 0_u16;
+    while prior_plan_hashes.contains(&plan_hash) {
+        cohort_adjustment = cohort_adjustment.saturating_add(1);
+        if cohort_adjustment > 16 {
+            return Err(CancerResearchSchedulerError::InvalidCampaign);
+        }
+        plan.cohort_size = if root.cohort_size < 4_096 {
+            root.cohort_size
+                .saturating_add(cohort_adjustment)
+                .min(4_096)
+        } else {
+            root.cohort_size.saturating_sub(cohort_adjustment).max(8)
+        };
+        plan_hash = Digest::canonical(&plan)?;
+    }
+    Ok((variation, plan))
+}
+
+const fn rotate_subject_model(model: CancerVirtualSubjectModel) -> CancerVirtualSubjectModel {
+    match model {
+        CancerVirtualSubjectModel::CellCulture => CancerVirtualSubjectModel::TumorOrganoid,
+        CancerVirtualSubjectModel::TumorOrganoid => CancerVirtualSubjectModel::OrthotopicMouse,
+        CancerVirtualSubjectModel::OrthotopicMouse => CancerVirtualSubjectModel::CellCulture,
+    }
+}
+
+const fn rotate_endpoint(endpoint: CancerVirtualEndpoint) -> CancerVirtualEndpoint {
+    match endpoint {
+        CancerVirtualEndpoint::RelativeTumorBurden => CancerVirtualEndpoint::ViableTumorFraction,
+        CancerVirtualEndpoint::ViableTumorFraction => CancerVirtualEndpoint::InvasiveCellFraction,
+        CancerVirtualEndpoint::InvasiveCellFraction => CancerVirtualEndpoint::HypoxicCellFraction,
+        CancerVirtualEndpoint::HypoxicCellFraction => {
+            CancerVirtualEndpoint::OffTargetHealthyCellLoss
+        }
+        CancerVirtualEndpoint::OffTargetHealthyCellLoss => {
+            CancerVirtualEndpoint::DetectionSensitivity
+        }
+        CancerVirtualEndpoint::DetectionSensitivity => CancerVirtualEndpoint::RelativeTumorBurden,
+    }
+}
+
+const fn rotate_modality(
+    modality: CancerVirtualInterventionModality,
+) -> CancerVirtualInterventionModality {
+    match modality {
+        CancerVirtualInterventionModality::MolecularInhibition => {
+            CancerVirtualInterventionModality::Radiation
+        }
+        CancerVirtualInterventionModality::Radiation => CancerVirtualInterventionModality::Thermal,
+        CancerVirtualInterventionModality::Thermal => {
+            CancerVirtualInterventionModality::ElectricField
+        }
+        CancerVirtualInterventionModality::ElectricField => {
+            CancerVirtualInterventionModality::TargetedDelivery
+        }
+        CancerVirtualInterventionModality::TargetedDelivery => {
+            CancerVirtualInterventionModality::SurgicalResection
+        }
+        CancerVirtualInterventionModality::SurgicalResection => {
+            CancerVirtualInterventionModality::DiagnosticSensing
+        }
+        CancerVirtualInterventionModality::DiagnosticSensing => {
+            CancerVirtualInterventionModality::MolecularInhibition
+        }
+    }
 }
 
 fn research_ordinal_due_at_tick(tick: u64) -> Result<Option<u32>, CancerResearchSchedulerError> {
@@ -518,6 +827,8 @@ pub enum CancerResearchSchedulerError {
     EmptyCancerBurdenCohort,
     #[error("embedded Cancer World biological primitives are invalid")]
     InvalidPrimitiveBundle,
+    #[error("Cancer World research campaign lineage is invalid")]
+    InvalidCampaign,
     #[error("embedded Cancer World biological primitives could not be decoded: {0}")]
     Decode(#[from] serde_json::Error),
     #[error("Cancer World research scheduler hashing failed: {0}")]
@@ -527,7 +838,7 @@ pub enum CancerResearchSchedulerError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use world_domain::{WorldId, WorldSeed};
+    use world_domain::{CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION, WorldId, WorldSeed};
 
     #[test]
     fn embedded_primitives_are_content_addressed_sorted_and_treatment_free() {
@@ -619,6 +930,35 @@ mod tests {
         assert_eq!(first.len(), 167);
         assert_eq!(first, repeated);
         assert_eq!(first.iter().copied().collect::<BTreeSet<_>>().len(), 167);
+    }
+
+    #[test]
+    fn campaign_variations_are_distinct_preregistered_plans() {
+        let root = CancerVirtualExperimentPlan {
+            schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+            subject_model: CancerVirtualSubjectModel::CellCulture,
+            intervention_modality: CancerVirtualInterventionModality::MolecularInhibition,
+            primary_target: world_domain::CancerVirtualMechanismTarget::DnaRepair,
+            secondary_target: None,
+            primary_endpoint: CancerVirtualEndpoint::RelativeTumorBurden,
+            intensity_parts_per_million: 400_000,
+            exposure_hours: 72,
+            cohort_size: 64,
+        };
+        let mut prior_hashes = vec![Digest::canonical(&root).expect("root hash")];
+        let mut variations = Vec::new();
+        for test_index in 0..u8::try_from(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS).expect("test count") {
+            prior_hashes.sort_unstable();
+            let (variation, plan) =
+                varied_campaign_plan(&root, test_index, &prior_hashes).expect("varied plan");
+            plan.validate().expect("valid campaign plan");
+            let plan_hash = Digest::canonical(&plan).expect("plan hash");
+            assert!(!prior_hashes.contains(&plan_hash));
+            prior_hashes.push(plan_hash);
+            assert!(!variations.contains(&variation));
+            variations.push(variation);
+        }
+        assert_eq!(variations.len(), CANCER_RESEARCH_CAMPAIGN_MAX_TESTS);
     }
 
     #[test]
