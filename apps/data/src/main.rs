@@ -23,7 +23,8 @@ use tiff::tags::Tag as TiffTag;
 use uuid::Uuid;
 use weezl::{BitOrder as LzwBitOrder, decode::Decoder as LzwDecoder};
 use world_data::{
-    BooleanFieldCell, COPERNICUS_LCCS_CLASSES, DataLayerKind, ERA5_NORMAL_FIRST_YEAR,
+    BooleanFieldCell, CANCER_DATASET_REGISTRY_MEDIA_TYPE, COPERNICUS_LCCS_CLASSES,
+    CancerDatasetAdmissionStatus, CancerDatasetRegistry, DataLayerKind, ERA5_NORMAL_FIRST_YEAR,
     ERA5_NORMAL_LAST_YEAR, FAUNA_POPULATION_PLAN_SCHEMA_VERSION, FaunaBirthCategoryCount,
     FaunaBodyMassPlan, FaunaBodyMassSelection, FaunaEcologyPlan, FaunaEcologyPlanEntry,
     FaunaEcologyProfileSelection, FaunaMetabolicRatePlan, FaunaMetabolicRateSelection,
@@ -161,6 +162,11 @@ enum SourceCommand {
 
 #[derive(Debug, Subcommand)]
 enum InspectCommand {
+    /// Validate the source-candidate and qualification boundary for Cancer World.
+    CancerDatasetRegistry {
+        #[arg(long)]
+        input: PathBuf,
+    },
     /// Resolve one exact S2 cell centre to its WGS84 E7 geographic coordinate.
     S2Geographic {
         #[arg(long)]
@@ -1284,6 +1290,9 @@ async fn main() -> Result<()> {
             } => fetch_source(&manifest, &artifact_root).await,
         },
         Command::Inspect { command } => match command {
+            InspectCommand::CancerDatasetRegistry { input } => {
+                inspect_cancer_dataset_registry(&input)
+            }
             InspectCommand::S2Geographic { s2_cell_id } => inspect_s2_geographic(s2_cell_id),
             InspectCommand::FaunaRangeCandidateSet { input } => {
                 inspect_fauna_range_candidate_set(&input)
@@ -2297,6 +2306,37 @@ struct FaunaTraitTaxaInspection {
     catalog: FaunaTaxonomyCatalogInspection,
     sources: Vec<FaunaTraitSourceTaxaInspection>,
     policy: &'static str,
+}
+
+fn inspect_cancer_dataset_registry(input: &Path) -> Result<()> {
+    let bytes = fs::read(input)
+        .with_context(|| format!("read Cancer World dataset registry {}", input.display()))?;
+    let registry = CancerDatasetRegistry::from_slice(&bytes)
+        .with_context(|| format!("validate Cancer World dataset registry {}", input.display()))?;
+    let registry_only_sources = registry
+        .sources
+        .iter()
+        .filter(|source| {
+            source.admission_status
+                == CancerDatasetAdmissionStatus::RegistryOnlyTermsAndArtifactsUnverified
+        })
+        .count();
+    println!(
+        "{}",
+        serde_json::to_string(&serde_json::json!({
+            "content_hash": registry.content_digest()?,
+            "disease_scope": registry.disease_scope,
+            "media_type": CANCER_DATASET_REGISTRY_MEDIA_TYPE,
+            "minimum_independent_validation_datasets": registry.policy.minimum_independent_validation_datasets,
+            "patient_split_unit": registry.policy.calibration_and_validation_split_unit,
+            "qualification_requirement_count": registry.policy.required_qualification_evidence.len(),
+            "registry_id": registry.registry_id,
+            "registry_only_source_count": registry_only_sources,
+            "source_count": registry.sources.len(),
+            "status": "source-candidates-only-no-patient-data-admitted",
+        }))?
+    );
+    Ok(())
 }
 
 fn inspect_fauna_range_candidate_set(input: &Path) -> Result<()> {

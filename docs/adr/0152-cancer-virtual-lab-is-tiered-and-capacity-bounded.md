@@ -47,6 +47,11 @@ Cancer World uses a fidelity ladder:
 5. **External validation.** Wet-lab, animal, and clinical evidence remain outside
    the simulation and are never inferred from a model tier.
 
+Source admission and the university-ready qualification gate are specified in
+[ADR 0153](0153-cancer-evidence-is-qualified-by-intended-use.md). In particular,
+no aggregate “tumor realism percentage” can substitute for patient-disjoint,
+out-of-sample validation against a declared intended use.
+
 Method 1 results remain immutable and readable. Method 2 writes parallel
 content-addressed result rows and the observer projection reads only the current
 method. Compact summaries are retained; large per-cell trajectories are

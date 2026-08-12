@@ -1,6 +1,7 @@
 //! Deterministic, provenance-complete scientific input bundles.
 
 mod boolean_field;
+mod cancer_evidence;
 mod fauna;
 mod fauna_evidence;
 mod fauna_ranges;
@@ -22,6 +23,14 @@ mod terrain;
 pub use boolean_field::{
     BooleanFieldCell, BooleanFieldTileError, PACKED_BOOLEAN_FIELD_TILE_MEDIA_TYPE,
     PACKED_BOOLEAN_FIELD_TILE_SCHEMA_VERSION, PackedBooleanFieldTile,
+};
+
+pub use cancer_evidence::{
+    CANCER_DATASET_REGISTRY_MEDIA_TYPE, CANCER_DATASET_REGISTRY_SCHEMA_VERSION,
+    CancerDatasetAccessClass, CancerDatasetAdmissionPolicy, CancerDatasetAdmissionStatus,
+    CancerDatasetModality, CancerDatasetPipelineRole, CancerDatasetRegistry,
+    CancerDatasetRegistryError, CancerDatasetSource, CancerMissingParameterPolicy,
+    CancerQualificationRequirement, CancerSpecimenContext,
 };
 
 pub use fauna::{

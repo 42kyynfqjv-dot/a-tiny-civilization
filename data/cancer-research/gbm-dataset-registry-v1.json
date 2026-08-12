@@ -1,0 +1,258 @@
+{
+  "registry_schema_version": 1,
+  "registry_id": "gbm-source-candidates-v1",
+  "disease_scope": "Adult glioblastoma and closely related adult high-grade diffuse glioma evidence, retained with diagnosis and cohort boundaries rather than silently merged.",
+  "policy": {
+    "patient_data_may_enter_public_repository": false,
+    "controlled_data_requires_documented_authorization": true,
+    "calibration_and_validation_split_unit": "patient",
+    "missing_numeric_parameter_policy": "reject_rather_than_invent",
+    "minimum_independent_validation_datasets": 2,
+    "required_qualification_evidence": [
+      "baseline_reproduction",
+      "calibration_validation_patient_separation",
+      "cross_dataset_generalization",
+      "external_falsification_protocol",
+      "reproducible_frozen_inputs",
+      "strong_baseline_comparison",
+      "uncertainty_and_sensitivity_analysis"
+    ],
+    "candidate_claim": "This simulation-generated candidate passed declared retrospective computational qualification and is ready for independent experimental falsification.",
+    "prohibited_claim": "A simulation result alone is not a treatment, evidence of clinical efficacy, or a cure."
+  },
+  "sources": [
+    {
+      "source_id": "cptac-high-grade-glioma-2024",
+      "title": "Multi-scale signaling and tumor evolution in high-grade gliomas",
+      "custodian": "National Cancer Institute Clinical Proteomic Tumor Analysis Consortium",
+      "canonical_url": "https://gdc.cancer.gov/about-data/publications/CPTAC-3_2024_1",
+      "documentation_url": "https://gdc.cancer.gov/about-gdc/contributed-genomic-data-cancer-research/clinical-proteomic-tumor-analysis-consortium-cptac",
+      "terms_url": "https://gdc.cancer.gov/about-gdc/gdc-policies",
+      "version_locator": "Publication release dated 2024-07-08; exact GDC and PDC release identifiers and file hashes must be frozen before admission.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "mixed_open_and_controlled",
+      "admission_status": "registry_only_terms_and_artifacts_unverified",
+      "disease_scope": "High-grade glioma cohort containing 212 glioblastomas and 16 grade-4 IDH-mutant astrocytomas; diagnoses must remain distinguishable.",
+      "modalities": [
+        "clinical_annotation",
+        "genomics",
+        "lipidomics",
+        "metabolomics",
+        "phosphoproteomics",
+        "proteomics",
+        "transcriptomics"
+      ],
+      "specimen_contexts": [
+        "normal_brain_comparator",
+        "primary_resection",
+        "recurrent_resection"
+      ],
+      "pipeline_roles": [
+        "evolution_calibration",
+        "held_out_validation_candidate",
+        "mechanism_context",
+        "population_prior"
+      ],
+      "patient_level_linkage": true,
+      "contains_intervention_outcomes": false,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "The cohort mixes molecularly distinct adult high-grade glioma diagnoses.",
+        "Most measurements are destructive endpoint assays rather than repeated observations of the same living tissue.",
+        "Open and controlled files have different access obligations."
+      ]
+    },
+    {
+      "source_id": "glass-data-resource-2022",
+      "title": "Glioma Longitudinal AnalySiS Consortium Data Resource",
+      "custodian": "GLASS Consortium",
+      "canonical_url": "https://glass-consortium.org/datasets/",
+      "documentation_url": "https://glass-consortium.org/",
+      "terms_url": "https://www.synapse.org/glass",
+      "version_locator": "Public resource release dated 2022-05-31; exact Synapse entity versions must be frozen before admission.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "account_and_terms",
+      "admission_status": "registry_only_terms_and_artifacts_unverified",
+      "disease_scope": "Adult diffuse glioma with multi-timepoint profiles; histologic and molecular diagnoses must remain explicit.",
+      "modalities": [
+        "clinical_annotation",
+        "copy_number",
+        "dna_methylation",
+        "somatic_variants",
+        "transcriptomics"
+      ],
+      "specimen_contexts": [
+        "primary_resection",
+        "recurrent_resection"
+      ],
+      "pipeline_roles": [
+        "evolution_calibration",
+        "held_out_validation_candidate",
+        "population_prior"
+      ],
+      "patient_level_linkage": true,
+      "contains_intervention_outcomes": false,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "The resource is heterogeneous because contributing cohorts used different assays and collection practices.",
+        "Raw sequencing is not generally available for analysis because multiple jurisdictions govern contributed data.",
+        "Longitudinal observations describe realized histories and do not reveal outcomes under treatments not received."
+      ]
+    },
+    {
+      "source_id": "ivy-glioblastoma-atlas",
+      "title": "Ivy Glioblastoma Atlas Project",
+      "custodian": "Allen Institute for Brain Science and partners",
+      "canonical_url": "https://gbm.brain-map.org/static/home",
+      "documentation_url": "https://registry.opendata.aws/allen-ivy-glioblastoma-atlas/",
+      "terms_url": "https://alleninstitute.org/legal/terms-use/",
+      "version_locator": "Static public atlas with no scheduled updates; exact public-bucket object inventory and hashes must be frozen before admission.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "public_unauthenticated",
+      "admission_status": "registry_only_terms_and_artifacts_unverified",
+      "disease_scope": "Anatomically annotated human glioblastoma resections with de-identified specimen metadata.",
+      "modalities": [
+        "clinical_annotation",
+        "histology",
+        "in_situ_hybridization",
+        "transcriptomics"
+      ],
+      "specimen_contexts": [
+        "primary_resection"
+      ],
+      "pipeline_roles": [
+        "held_out_validation_candidate",
+        "mechanism_context",
+        "spatial_calibration"
+      ],
+      "patient_level_linkage": true,
+      "contains_intervention_outcomes": false,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "Laser-microdissected regions and adjacent sections are samples of a heterogeneous tumor rather than a complete three-dimensional tumor.",
+        "The atlas is cross-sectional and cannot identify untreated temporal trajectories.",
+        "Additional clinical and genomic data in the partner database require registration."
+      ]
+    },
+    {
+      "source_id": "nci-pdmr-models",
+      "title": "NCI Patient-Derived Models Repository",
+      "custodian": "National Cancer Institute",
+      "canonical_url": "https://dctd.cancer.gov/drug-discovery-development/reagents-materials/pdmr/models",
+      "documentation_url": "https://dctd.cancer.gov/drug-discovery-development/reagents-materials/pdmr",
+      "terms_url": "https://www.cancer.gov/policies/copyright-reuse",
+      "version_locator": "Continuously maintained repository; individual model, sequence-pipeline, pathology, and material revisions must be pinned independently.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "material_request_and_public_metadata",
+      "admission_status": "registry_only_terms_and_artifacts_unverified",
+      "disease_scope": "Multi-cancer patient-derived model repository; only diagnosis-confirmed glioblastoma models are eligible for GBM qualification.",
+      "modalities": [
+        "clinical_annotation",
+        "genomics",
+        "growth_kinetics",
+        "histology",
+        "patient_derived_models",
+        "transcriptomics"
+      ],
+      "specimen_contexts": [
+        "patient_derived_culture",
+        "patient_derived_organoid",
+        "patient_derived_xenograft",
+        "rapid_autopsy"
+      ],
+      "pipeline_roles": [
+        "held_out_validation_candidate",
+        "mechanism_context",
+        "model_qualification"
+      ],
+      "patient_level_linkage": true,
+      "contains_intervention_outcomes": false,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "Repository acquisition routes include rapid autopsy, but that does not mean every available model was derived from autopsy tissue.",
+        "Mouse stroma, culture selection, passage, and engraftment can change a patient tumor model.",
+        "Physical models require an approved request and material-transfer agreement."
+      ]
+    },
+    {
+      "source_id": "spatial-gbm-prjna1337938",
+      "title": "A spatially resolved human glioblastoma atlas reveals distinct cellular and molecular patterns of anatomical niches",
+      "custodian": "Publication authors, NCBI SRA, Zenodo, and UCSC Cell Browser",
+      "canonical_url": "https://pmc.ncbi.nlm.nih.gov/articles/PMC13031279/",
+      "documentation_url": "https://www.ncbi.nlm.nih.gov/bioproject/PRJNA1337938",
+      "terms_url": "https://www.ncbi.nlm.nih.gov/home/about/policies/",
+      "version_locator": "BioProject PRJNA1337938 plus Zenodo records 17622242 and 17572905; exact repository revisions and checksums must be frozen before admission.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "public_unauthenticated",
+      "admission_status": "registry_only_terms_and_artifacts_unverified",
+      "disease_scope": "Human glioblastoma single-cell, CITE-seq, and spatial transcriptomic tissue atlas.",
+      "modalities": [
+        "clinical_annotation",
+        "histology",
+        "single_cell_transcriptomics",
+        "spatial_transcriptomics",
+        "transcriptomics"
+      ],
+      "specimen_contexts": [
+        "primary_resection"
+      ],
+      "pipeline_roles": [
+        "held_out_validation_candidate",
+        "mechanism_context",
+        "spatial_calibration"
+      ],
+      "patient_level_linkage": true,
+      "contains_intervention_outcomes": false,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "Spatial assays cover sampled sections and panels rather than every molecular species in a complete living tumor.",
+        "Different spatial platforms have different resolution, capture, and batch characteristics.",
+        "Public availability does not waive repository terms, attribution, or patient-protection obligations."
+      ]
+    },
+    {
+      "source_id": "tcga-gbm-2013",
+      "title": "The Somatic Genomic Landscape of Glioblastoma",
+      "custodian": "National Cancer Institute Genomic Data Commons",
+      "canonical_url": "https://gdc.cancer.gov/about-data/publications/gbm_2013",
+      "documentation_url": "https://gdc.cancer.gov/access-data/data-access-processes-and-tools",
+      "terms_url": "https://gdc.cancer.gov/about-gdc/gdc-policies",
+      "version_locator": "Publication data freeze dated 2012-10-10 plus current GDC release identifiers; exact files and corrections must be frozen before admission.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "mixed_open_and_controlled",
+      "admission_status": "registry_only_terms_and_artifacts_unverified",
+      "disease_scope": "Retrospective multidimensional characterization of more than 500 glioblastoma tumors.",
+      "modalities": [
+        "clinical_annotation",
+        "copy_number",
+        "dna_methylation",
+        "genomics",
+        "histology",
+        "somatic_variants",
+        "transcriptomics"
+      ],
+      "specimen_contexts": [
+        "primary_resection"
+      ],
+      "pipeline_roles": [
+        "held_out_validation_candidate",
+        "mechanism_context",
+        "population_prior"
+      ],
+      "patient_level_linkage": true,
+      "contains_intervention_outcomes": false,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "The cohort is retrospective and cross-sectional for most participants.",
+        "Some raw genomic files and potentially identifying fields require dbGaP authorization.",
+        "Molecular association and survival correlation do not identify causal treatment effects."
+      ]
+    }
+  ]
+}
