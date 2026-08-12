@@ -1,0 +1,341 @@
+{
+  "schema_version": 1,
+  "baseline_id": "nci-cellminer-2-15-cns-response-baseline-v1",
+  "evidence_class": "in_vitro_immortalized_cell_line_response",
+  "intended_use": "Leakage-resistant reference checks for Cancer World single-agent and combination response predictions in the NCI-60 CNS panel; not patient efficacy estimation.",
+  "source_registry_hash": "291dabfdb7f4938166c8a608e2d001af2b193bcbe001c3b26cbd2fa109e23706",
+  "source": {
+    "custodian": "National Cancer Institute CellMiner",
+    "cellminer_database_version": "2.15",
+    "export_date": "09-17-2025",
+    "source_set_hash": "d8015cbc0ed8e2fce6be466a0725d1762b5e9276dc830187049776326324da14",
+    "artifacts": [
+      {
+        "artifact_id": "nci60-average-z-score",
+        "url": "https://discover.nci.nih.gov/cellminer/download/processeddataset/DTP_NCI60_ZSCORE.zip",
+        "file_name": "DTP_NCI60_ZSCORE.zip",
+        "inner_workbook": "output/DTP_NCI60_ZSCORE.xlsx",
+        "byte_length": 8514360,
+        "sha256": "17e6a62597a32caa5d43d2e8f81422c108b47bcefd51a3b2269834001da1d7aa"
+      },
+      {
+        "artifact_id": "nci-almanac-combo-score",
+        "url": "https://discover.nci.nih.gov/cellminer/download/processeddataset/DTP_NCI60_ALMANAC_COMBO_SCORE.zip",
+        "file_name": "DTP_NCI60_ALMANAC_COMBO_SCORE.zip",
+        "inner_workbook": "output/DTP_NCI60_ALMANAC_COMBO_SCORE.xlsx",
+        "byte_length": 1653406,
+        "sha256": "161a0801e5a34c1fd1a3ae5b3c743d0b481d979b1c61fb08c75031b980233a0a"
+      }
+    ]
+  },
+  "single_agent": {
+    "source_id": "nci-cellminer-nci60",
+    "response_measure": "CellMiner average NCI-60 compound-activity z score after quality control; higher values mean greater relative sensitivity.",
+    "cns_cell_lines": [
+      "CNS:SF-268",
+      "CNS:SF-295",
+      "CNS:SF-539",
+      "CNS:SNB-19",
+      "CNS:SNB-75",
+      "CNS:U251"
+    ],
+    "compound_count": 25731,
+    "compounds_with_known_mechanism": 1116,
+    "fda_approved_compound_count": 326,
+    "observed_cns_response_count": 147914,
+    "split": {
+      "unit": "NSC compound",
+      "derivation_domain": "a-tiny-civilization/nci-cellminer/single-agent-compound-split/v1",
+      "rule": "sha256(domain || 0x00 || canonical unit id), first eight bytes modulo 5; zero is held out",
+      "calibration_unit_count": 20599,
+      "held_out_unit_count": 5132,
+      "calibration_set_commitment": "4bb534a9e24f9a64e39542e37ea2dfcb54581a77b1d9569239ea9a05d2a2136d",
+      "held_out_set_commitment": "3ffd8ced9eedf91666b8e41fe72808095937682ad79d355f1b52020bef48936d"
+    },
+    "held_out_assessment": {
+      "predictor": "Median calibration response for the same declared mechanism and CNS cell line; whole NSC compounds are held out.",
+      "baseline": "Median calibration response for the CNS cell line without compound or mechanism information.",
+      "minimum_calibration_group_support": 3,
+      "eligible_held_out_observation_count": 1297,
+      "evaluated_held_out_observation_count": 758,
+      "evaluated_held_out_compound_count": 128,
+      "coverage_parts_per_million": 584426,
+      "predictor_mean_absolute_error_z_milli": 493,
+      "baseline_mean_absolute_error_z_milli": 638,
+      "relative_mae_improvement_parts_per_million": 227272
+    },
+    "top_observed_fda_approved_cns_profiles": [
+      {
+        "nsc": 57197,
+        "drug_name": "Caffeic Acid",
+        "mechanism": null,
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 980
+      },
+      {
+        "nsc": 755980,
+        "drug_name": "Lenvatinib",
+        "mechanism": "PK:YK,PDGFR,FGFR,VEGFR,KDR,RET",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 963
+      },
+      {
+        "nsc": 756647,
+        "drug_name": "Quizartinib",
+        "mechanism": "PK:YK,PDGFR,FLT,KIT,FLT3",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 941
+      },
+      {
+        "nsc": 765396,
+        "drug_name": "BMN-673",
+        "mechanism": "PARP1|PARP2",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 935
+      },
+      {
+        "nsc": 279836,
+        "drug_name": "Mitoxantrone",
+        "mechanism": "TOP2",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 931
+      },
+      {
+        "nsc": 134727,
+        "drug_name": "Mitomycin",
+        "mechanism": "A2|AlkAg",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 850
+      },
+      {
+        "nsc": 100880,
+        "drug_name": "Camptothecin",
+        "mechanism": "TOP1",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 815
+      },
+      {
+        "nsc": 757050,
+        "drug_name": "badil",
+        "mechanism": null,
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 815
+      },
+      {
+        "nsc": 755880,
+        "drug_name": "Mitomycin",
+        "mechanism": "A2|AlkAg",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 810
+      },
+      {
+        "nsc": 609699,
+        "drug_name": "Topotecan",
+        "mechanism": "TOP1",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 801
+      },
+      {
+        "nsc": 759263,
+        "drug_name": "Topotecan",
+        "mechanism": "TOP1",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 788
+      },
+      {
+        "nsc": 94600,
+        "drug_name": "Camptothecin",
+        "mechanism": "TOP1",
+        "observed_cns_line_count": 6,
+        "mean_activity_z_milli": 786
+      }
+    ]
+  },
+  "combinations": {
+    "source_id": "nci-cellminer-almanac",
+    "response_measure": "NCI-ALMANAC ComboScore; higher values generally indicate more growth inhibition than expected from the component drugs tested separately.",
+    "cns_cell_lines": [
+      "CNS:SF-268",
+      "CNS:SF-295",
+      "CNS:SF-539",
+      "CNS:SNB-19",
+      "CNS:SNB-75",
+      "CNS:U251"
+    ],
+    "source_drug_pair_record_count": 5355,
+    "drug_pair_count": 5242,
+    "repeated_canonical_pair_record_count": 113,
+    "observed_cns_combo_score_count": 30589,
+    "positive_cns_combo_score_count": 9326,
+    "split": {
+      "unit": "canonical NSC drug pair",
+      "derivation_domain": "a-tiny-civilization/nci-cellminer/almanac-pair-split/v1",
+      "rule": "sha256(domain || 0x00 || canonical unit id), first eight bytes modulo 5; zero is held out",
+      "calibration_unit_count": 4175,
+      "held_out_unit_count": 1067,
+      "calibration_set_commitment": "dd9e3dabea5cb2f47a8cc67d7076a2a5006eeb1b9c078ad18674d6e5f124ac04",
+      "held_out_set_commitment": "9d39eaffd6a48fbb8871aef93f7206183889b9e6598733e05ba68eecfd051d89"
+    },
+    "held_out_assessment": {
+      "predictor": "Median calibration ComboScore for the same canonical mechanism pair and CNS cell line; whole drug pairs are held out.",
+      "baselines": [
+        "Zero ComboScore (no greater-than-additive interaction signal).",
+        "Median calibration ComboScore for the CNS cell line without drug or mechanism information."
+      ],
+      "minimum_calibration_group_support": 3,
+      "eligible_held_out_observation_count": 6222,
+      "evaluated_held_out_observation_count": 3187,
+      "evaluated_held_out_pair_count": 551,
+      "coverage_parts_per_million": 512215,
+      "predictor_mean_absolute_error_score_milli": 40172,
+      "no_interaction_zero_mean_absolute_error_score_milli": 44651,
+      "calibration_line_median_mean_absolute_error_score_milli": 41316
+    },
+    "top_observed_cns_combo_profiles": [
+      {
+        "nsc_1": 3053,
+        "drug_name_1": "Actinomycin D",
+        "nsc_2": 180973,
+        "drug_name_2": "Tamoxifen",
+        "source_record_count": 1,
+        "observed_cns_line_count": 5,
+        "mean_combo_score_milli": 316000
+      },
+      {
+        "nsc_1": 3053,
+        "drug_name_1": "Actinomycin D",
+        "nsc_2": 702294,
+        "drug_name_2": "Estramustine",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 246333
+      },
+      {
+        "nsc_1": 3053,
+        "drug_name_1": "Actinomycin D",
+        "nsc_2": 719276,
+        "drug_name_2": "Fulvestrant",
+        "source_record_count": 1,
+        "observed_cns_line_count": 5,
+        "mean_combo_score_milli": 246200
+      },
+      {
+        "nsc_1": 628503,
+        "drug_name_1": "Docetaxel",
+        "nsc_2": 745750,
+        "drug_name_2": "Lapatinib",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 221333
+      },
+      {
+        "nsc_1": 125973,
+        "drug_name_1": "Paclitaxel",
+        "nsc_2": 702294,
+        "drug_name_2": "Estramustine",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 216000
+      },
+      {
+        "nsc_1": 3053,
+        "drug_name_1": "Actinomycin D",
+        "nsc_2": 246131,
+        "drug_name_2": "Valrubicin",
+        "source_record_count": 1,
+        "observed_cns_line_count": 5,
+        "mean_combo_score_milli": 215400
+      },
+      {
+        "nsc_1": 606869,
+        "drug_name_1": "Clofarabine",
+        "nsc_2": 681239,
+        "drug_name_2": "Bortezomib",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 201166
+      },
+      {
+        "nsc_1": 628503,
+        "drug_name_1": "Docetaxel",
+        "nsc_2": 702294,
+        "drug_name_2": "Estramustine",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 197000
+      },
+      {
+        "nsc_1": 628503,
+        "drug_name_1": "Docetaxel",
+        "nsc_2": 715055,
+        "drug_name_2": "Gefitinib",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 196666
+      },
+      {
+        "nsc_1": 180973,
+        "drug_name_1": "Tamoxifen",
+        "nsc_2": 628503,
+        "drug_name_2": "Docetaxel",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 196500
+      },
+      {
+        "nsc_1": 681239,
+        "drug_name_1": "Bortezomib",
+        "nsc_2": 718781,
+        "drug_name_2": "Erlotinib",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 193000
+      },
+      {
+        "nsc_1": 122758,
+        "drug_name_1": "Isotretinoin",
+        "nsc_2": 125973,
+        "drug_name_2": "Paclitaxel",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 181166
+      },
+      {
+        "nsc_1": 715055,
+        "drug_name_1": "Gefitinib",
+        "nsc_2": 761432,
+        "drug_name_2": "Cabazitaxel",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 167333
+      },
+      {
+        "nsc_1": 67574,
+        "drug_name_1": "Vincristine",
+        "nsc_2": 715055,
+        "drug_name_2": "Gefitinib",
+        "source_record_count": 1,
+        "observed_cns_line_count": 6,
+        "mean_combo_score_milli": 165000
+      },
+      {
+        "nsc_1": 125973,
+        "drug_name_1": "Paclitaxel",
+        "nsc_2": 180973,
+        "drug_name_2": "Tamoxifen",
+        "source_record_count": 1,
+        "observed_cns_line_count": 5,
+        "mean_combo_score_milli": 160400
+      }
+    ]
+  },
+  "limitations": [
+    "NCI-60 measurements are responses of long-established two-dimensional cell lines, not patients, organoids, xenografts, immune-competent tumors, or clinical outcomes.",
+    "The six CNS lines are a broad CNS tumor panel and must not be silently relabeled as a representative glioblastoma patient cohort.",
+    "CellMiner z scores are normalized activity patterns after its quality-control procedure; they are not doses, probabilities of response, or comparable to ALMANAC ComboScores.",
+    "Positive ALMANAC ComboScores are hypothesis-generating in-vitro interaction signals and do not establish safety, therapeutic index, mechanism, animal efficacy, or clinical benefit.",
+    "The CellMiner ALMANAC export contains repeated records for some canonical NSC pairs. This baseline keeps all source records and uses the per-cell-line median when one canonical pair has multiple records.",
+    "Mechanism labels are used only by the declared baseline predictor. Candidate models must be evaluated on the committed held-out compound or drug-pair split without reading held-out responses.",
+    "The ranked reference profiles report observed public data for auditability; they are not treatment recommendations."
+  ]
+}

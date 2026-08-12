@@ -60,6 +60,8 @@ endpoint, cohort, split, baseline, confidence interval, and intended use attache
   lipidomic layers alongside genomic and transcriptomic measurements.
 - NCI PDMR supplies characterized patient-derived model routes, including rapid
   autopsy among its acquisition sources, for later model qualification.
+- NCI-60 and NCI-ALMANAC through CellMiner supply single-agent and combination
+  response checks in immortalized cell lines, explicitly below patient evidence.
 
 The axes remain separate until a documented join proves compatible patient,
 specimen, diagnosis, assay, unit, and time semantics. The normalizer cannot create a
@@ -69,6 +71,13 @@ The first real-data vertical slice is recorded in
 [`docs/science/CANCER_WORLD_TCGA_GBM_BASELINE.md`](../science/CANCER_WORLD_TCGA_GBM_BASELINE.md).
 It establishes an aggregate patient-disjoint TCGA-GBM molecular baseline. It does
 not advance the virtual lab to intervention-response qualification.
+
+The first real intervention-response slice is recorded in
+[`docs/science/CANCER_WORLD_NCI_CELLMINER_BASELINE.md`](../science/CANCER_WORLD_NCI_CELLMINER_BASELINE.md).
+It freezes NCI-60 single-agent and ALMANAC combination matrices, holds out whole
+compounds and whole canonical drug pairs, and publishes simple mechanism-based
+baselines. Its intended use is in-vitro response falsification. It cannot establish
+patient efficacy, safety, or a cure.
 
 ## Verification
 

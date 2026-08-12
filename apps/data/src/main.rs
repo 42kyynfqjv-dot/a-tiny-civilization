@@ -9,6 +9,7 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod cancer_nci_cellminer;
 mod cancer_tcga;
 
 use anyhow::{Context, Result, bail};
@@ -163,6 +164,12 @@ enum SourceCommand {
     /// Acquire the open TCGA-GBM clinical and masked-mutation slice.
     CancerTcgaGbm {
         /// New directory beneath the ignored source cache. Existing paths fail closed.
+        #[arg(long)]
+        output_directory: PathBuf,
+    },
+    /// Acquire CellMiner's normalized NCI-60 and NCI-ALMANAC response matrices.
+    CancerNciCellminer {
+        /// Directory beneath the ignored source cache. Existing verified files resume safely.
         #[arg(long)]
         output_directory: PathBuf,
     },
@@ -548,6 +555,16 @@ enum DeriveCommand {
         #[arg(long)]
         registry: PathBuf,
         /// New aggregate-only artifact; no patient identifiers are emitted.
+        #[arg(long)]
+        output: PathBuf,
+    },
+    /// Derive compound- and pair-disjoint CNS response baselines from CellMiner.
+    CancerNciCellminerBaseline {
+        #[arg(long)]
+        source_directory: PathBuf,
+        #[arg(long)]
+        registry: PathBuf,
+        /// New aggregate artifact; raw response matrices remain outside the repository.
         #[arg(long)]
         output: PathBuf,
     },
@@ -1309,6 +1326,9 @@ async fn main() -> Result<()> {
             SourceCommand::CancerTcgaGbm { output_directory } => {
                 cancer_tcga::acquire(&output_directory).await
             }
+            SourceCommand::CancerNciCellminer { output_directory } => {
+                cancer_nci_cellminer::acquire(&output_directory).await
+            }
         },
         Command::Inspect { command } => match command {
             InspectCommand::CancerDatasetRegistry { input } => {
@@ -1571,6 +1591,11 @@ async fn main() -> Result<()> {
                 registry,
                 output,
             } => cancer_tcga::derive_baseline(&source_directory, &registry, &output),
+            DeriveCommand::CancerNciCellminerBaseline {
+                source_directory,
+                registry,
+                output,
+            } => cancer_nci_cellminer::derive_baseline(&source_directory, &registry, &output),
             DeriveCommand::ProvisionalLandOriginSelection {
                 land_reference_root_index,
                 artifact_root,

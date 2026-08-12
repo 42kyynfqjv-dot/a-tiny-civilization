@@ -138,6 +138,74 @@
       ]
     },
     {
+      "source_id": "nci-cellminer-almanac",
+      "title": "CellMiner DTP ALMANAC Combo Score",
+      "custodian": "National Cancer Institute Genomics and Pharmacology Facility and Developmental Therapeutics Program",
+      "canonical_url": "https://discover.nci.nih.gov/cellminer/download/processeddataset/DTP_NCI60_ALMANAC_COMBO_SCORE.zip",
+      "documentation_url": "https://discover.nci.nih.gov/cellminer/html/drug_almanac_combo_score.html",
+      "terms_url": "https://www.cancer.gov/policies/copyright-reuse",
+      "version_locator": "CellMiner database 2.15 export dated 2025-09-17; retained ZIP SHA-256 161a0801e5a34c1fd1a3ae5b3c743d0b481d979b1c61fb08c75031b980233a0a.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "public_unauthenticated",
+      "admission_status": "source_snapshot_verified",
+      "disease_scope": "NCI-60 multi-cancer immortalized cell-line panel; only the explicitly labeled CNS panel is used by the GBM-oriented baseline, without treating it as a patient cohort.",
+      "modalities": [
+        "drug_combination_response"
+      ],
+      "specimen_contexts": [
+        "immortalized_cell_line"
+      ],
+      "pipeline_roles": [
+        "held_out_validation_candidate",
+        "intervention_response_calibration",
+        "mechanism_context",
+        "model_qualification"
+      ],
+      "patient_level_linkage": false,
+      "contains_intervention_outcomes": true,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "ComboScore is an in-vitro interaction screen and does not measure patient benefit, toxicity, therapeutic index, or clinical safety.",
+        "The normalized matrix summarizes drug-pair activity and does not retain the full concentration-response surface needed to independently recompute every score.",
+        "Long-established two-dimensional cell lines omit patient tumor architecture, pharmacokinetics, immune context, and much of the microenvironment."
+      ]
+    },
+    {
+      "source_id": "nci-cellminer-nci60",
+      "title": "CellMiner Compound Activity: DTP NCI-60 Average Z Score",
+      "custodian": "National Cancer Institute Genomics and Pharmacology Facility and Developmental Therapeutics Program",
+      "canonical_url": "https://discover.nci.nih.gov/cellminer/download/processeddataset/DTP_NCI60_ZSCORE.zip",
+      "documentation_url": "https://discover.nci.nih.gov/cellminer/html/drug_zscore.html",
+      "terms_url": "https://www.cancer.gov/policies/copyright-reuse",
+      "version_locator": "CellMiner database 2.15 export dated 2025-09-17; retained ZIP SHA-256 17e6a62597a32caa5d43d2e8f81422c108b47bcefd51a3b2269834001da1d7aa.",
+      "reviewed_on": "2026-08-12",
+      "access_class": "public_unauthenticated",
+      "admission_status": "source_snapshot_verified",
+      "disease_scope": "NCI-60 multi-cancer immortalized cell-line panel; only the explicitly labeled CNS panel is used by the GBM-oriented baseline, without treating it as a patient cohort.",
+      "modalities": [
+        "drug_response"
+      ],
+      "specimen_contexts": [
+        "immortalized_cell_line"
+      ],
+      "pipeline_roles": [
+        "held_out_validation_candidate",
+        "intervention_response_calibration",
+        "mechanism_context",
+        "model_qualification"
+      ],
+      "patient_level_linkage": false,
+      "contains_intervention_outcomes": true,
+      "supports_counterfactual_treatment_claims": false,
+      "patient_data_redistributable_in_public_repo": false,
+      "limitations": [
+        "Activity z scores are normalized pattern values, not administered doses, response probabilities, or clinical effect sizes.",
+        "The six CNS lines are not a representative sample of contemporary molecularly defined glioblastoma patients.",
+        "Long-established two-dimensional cell lines omit patient tumor architecture, pharmacokinetics, immune context, and much of the microenvironment."
+      ]
+    },
+    {
       "source_id": "nci-pdmr-models",
       "title": "NCI Patient-Derived Models Repository",
       "custodian": "National Cancer Institute",

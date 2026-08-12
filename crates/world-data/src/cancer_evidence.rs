@@ -31,6 +31,8 @@ pub enum CancerDatasetModality {
     ClinicalAnnotation,
     CopyNumber,
     DnaMethylation,
+    DrugCombinationResponse,
+    DrugResponse,
     Genomics,
     GrowthKinetics,
     Histology,
@@ -49,6 +51,7 @@ pub enum CancerDatasetModality {
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CancerSpecimenContext {
+    ImmortalizedCellLine,
     NormalBrainComparator,
     PatientDerivedCulture,
     PatientDerivedOrganoid,
@@ -63,6 +66,7 @@ pub enum CancerSpecimenContext {
 pub enum CancerDatasetPipelineRole {
     EvolutionCalibration,
     HeldOutValidationCandidate,
+    InterventionResponseCalibration,
     MechanismContext,
     ModelQualification,
     PopulationPrior,
@@ -261,8 +265,10 @@ impl CancerDatasetSource {
         }
         if self.supports_counterfactual_treatment_claims
             || self.patient_data_redistributable_in_public_repo
-            || self.admission_status
-                != CancerDatasetAdmissionStatus::RegistryOnlyTermsAndArtifactsUnverified
+            || self.admission_status == CancerDatasetAdmissionStatus::NormalizedCalibrationEligible
+            || (self.admission_status == CancerDatasetAdmissionStatus::SourceSnapshotVerified
+                && (self.access_class != CancerDatasetAccessClass::PublicUnauthenticated
+                    || self.patient_level_linkage))
         {
             return Err(CancerDatasetRegistryError::UnsafeSourceClaim(
                 self.source_id.clone(),
@@ -359,7 +365,7 @@ mod tests {
     #[test]
     fn committed_registry_is_valid_and_content_addressable() {
         let registry = CancerDatasetRegistry::from_slice(REGISTRY).expect("valid registry");
-        assert_eq!(registry.sources.len(), 6);
+        assert_eq!(registry.sources.len(), 8);
         assert_ne!(registry.content_digest().expect("digest"), Digest::ZERO);
     }
 
@@ -367,6 +373,21 @@ mod tests {
     fn observational_sources_cannot_claim_counterfactual_treatments() {
         let mut registry = CancerDatasetRegistry::from_slice(REGISTRY).expect("valid registry");
         registry.sources[0].supports_counterfactual_treatment_claims = true;
+        assert!(matches!(
+            registry.validate(),
+            Err(CancerDatasetRegistryError::UnsafeSourceClaim(_))
+        ));
+    }
+
+    #[test]
+    fn verified_public_snapshot_cannot_claim_patient_linkage() {
+        let mut registry = CancerDatasetRegistry::from_slice(REGISTRY).expect("valid registry");
+        let source = registry
+            .sources
+            .iter_mut()
+            .find(|source| source.source_id == "nci-cellminer-nci60")
+            .expect("CellMiner source");
+        source.patient_level_linkage = true;
         assert!(matches!(
             registry.validate(),
             Err(CancerDatasetRegistryError::UnsafeSourceClaim(_))
