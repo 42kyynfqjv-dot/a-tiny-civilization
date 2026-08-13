@@ -43,6 +43,20 @@ and `sysctl net.bridge.bridge-nf-call-iptables`. This is a host-level networking
 choice: retain the loopback-only published ports and Compose network boundaries above;
 do not compensate by placing `cloudflared` or PostgreSQL on the web/API network.
 
+The regular cognition worker is the sole container granted outbound access. Compose
+attaches it to the stable `br-atiny-cog` bridge in addition to `backend`; the checked-in
+nftables policy permits that bridge to initiate DNS and HTTPS only. After Docker has
+created the bridge, install the persistent policy and the equivalent live rules:
+
+```bash
+sudo bash scripts/install-cognition-egress-firewall.sh \
+  --confirm-host-firewall-install
+```
+
+This does not open egress for PostgreSQL, the runner, projector, API, Hindsight, or the
+local model. A free external route may still be unavailable or return an invalid
+contract response; each outcome is recorded and the ladder continues safely.
+
 ### Cancer World outbound research workers
 
 The production host keeps Docker forwarding closed, so the two processes that need

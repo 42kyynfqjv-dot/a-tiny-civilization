@@ -11,7 +11,7 @@ use world_domain::{
 pub use world_domain::{CognitionReading as CognitionInputReading, cognition_request_id};
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
-pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 1;
+pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 2;
 pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 7;
 pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
@@ -394,6 +394,14 @@ impl CognitionRouteRegistry {
         Self {
             policy_version: COGNITION_ROUTE_POLICY_VERSION,
             routes: vec![
+                // Public-world cognition is free-remote-first. The exact
+                // OpenRouter receipt remains an external input and paid use
+                // still requires a separate authorization that is disabled by
+                // default. Local models are deterministic operational
+                // fallbacks, not the preferred cognition source.
+                CognitionModelRoute::openrouter_free(),
+                CognitionModelRoute::openrouter_gpt_oss_20b_free(),
+                CognitionModelRoute::openrouter_gpt_oss_120b_free(),
                 CognitionModelRoute::local_qwen2_5_1_5b(),
                 CognitionModelRoute::local_gpt_oss_20b(),
                 CognitionModelRoute::cloudflare_gpt_oss_20b(),
@@ -402,9 +410,6 @@ impl CognitionRouteRegistry {
                 CognitionModelRoute::groq_gpt_oss_120b(),
                 CognitionModelRoute::cerebras_llama3_1_8b(),
                 CognitionModelRoute::cerebras_gpt_oss_120b(),
-                CognitionModelRoute::openrouter_free(),
-                CognitionModelRoute::openrouter_gpt_oss_20b_free(),
-                CognitionModelRoute::openrouter_gpt_oss_120b_free(),
                 CognitionModelRoute::openrouter_deepseek_v4_flash(),
             ],
         }
@@ -1300,10 +1305,7 @@ mod tests {
     #[test]
     fn production_registry_has_capacity_without_relaxing_route_approval() {
         let registry = CognitionRouteRegistry::production_default();
-        assert_eq!(
-            registry.routes[0],
-            CognitionModelRoute::local_qwen2_5_1_5b()
-        );
+        assert_eq!(registry.routes[0], CognitionModelRoute::openrouter_free());
         assert_eq!(
             registry.validate(CognitionRoutePurpose::ProductionWorld),
             Ok(())

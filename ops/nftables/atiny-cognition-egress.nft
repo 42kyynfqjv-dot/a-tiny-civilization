@@ -1,0 +1,6 @@
+# Install these rules inside the existing `inet filter` forward chain after
+# Docker has created br-atiny-cog. They deliberately grant only DNS and HTTPS
+# initiated from the dedicated cognition bridge; return traffic is stateful.
+insert rule inet filter forward ct state established,related accept comment "a-tiny-civilization-established"
+insert rule inet filter forward iifname "br-atiny-cog" udp dport 53 accept comment "a-tiny-civilization-cognition-dns-udp"
+insert rule inet filter forward iifname "br-atiny-cog" tcp dport { 53, 443 } accept comment "a-tiny-civilization-cognition-dns-https"

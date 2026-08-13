@@ -146,7 +146,12 @@ services:
       local-cognition:
         condition: service_healthy
     networks:
-      - backend
+      backend: {}
+      cognition-egress:
+        # Keep the default route on the narrowly firewalled outbound bridge.
+        # The backend attachment remains available for PostgreSQL, Hindsight,
+        # and the local model, but does not grant every backend service egress.
+        gw_priority: 1
     init: true
     restart: unless-stopped
     logging: *local-logging
@@ -247,3 +252,11 @@ volumes:
   local-cognition-models:
     name: atiny-ollama
     external: true
+
+networks:
+  cognition-egress:
+    driver: bridge
+    driver_opts:
+      # A stable host interface lets nftables grant HTTPS egress to this one
+      # service network without opening the shared backend bridge.
+      com.docker.network.bridge.name: br-atiny-cog

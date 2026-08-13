@@ -32,6 +32,12 @@ ladder.
   paid route.
   Missing credentials or a disabled provider produce a recorded skip; inclusion in
   source code does not enable a provider or replace a current terms review.
+- Route policy version two makes OpenRouter's dynamic free router and the two
+  pinned free GPT-OSS variants the first production-world attempts. The local
+  models remain zero-cost fallbacks, other admitted free providers follow, and
+  the paid DeepSeek route remains last and separately authorized. This order
+  became active only for newly selected cognition requests; every earlier
+  request retains its exact versioned registry and attempt receipts.
 - A separate development policy may additionally admit NVIDIA's hosted Nemotron
   development endpoint. It cannot validate as production policy and creates no
   private-soak or launch-wait requirement.
