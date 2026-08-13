@@ -31,10 +31,9 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
-    CANCER_BIOLOGY_RULESET_VERSION, CANCER_RESEARCH_WORLD_RULESET_VERSION,
-    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_INTERACTION_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
+    CANCER_BIOLOGY_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
+    GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION,
+    InitialMaterialInstance, InitialOrganism, LOCAL_WEATHER_RULESET_VERSION,
     MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
     run_partition_capacity_probe,
@@ -63,9 +62,9 @@ use world_domain::{
     WorldSeed, WorldStatus,
 };
 
-/// New full-Earth worlds start with the source-backed sky and embodied-activity
-/// integration driver. Older worlds retain the ruleset committed at genesis.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = LOCAL_INTERACTION_RULESET_VERSION;
+/// New ordinary full-Earth worlds start with the grounded language repair layered
+/// over every earlier physical driver. Older worlds retain their genesis ruleset.
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
@@ -1569,7 +1568,7 @@ async fn advance_one_world_once(
     store: &PostgresStore,
     current: &WorldSession,
 ) -> Result<WorldSession, WorldRuntimeError> {
-    if current.state.ruleset_version() >= CANCER_RESEARCH_WORLD_RULESET_VERSION {
+    if current.state.manifest().experiment.is_some() {
         schedule_due_cancer_research_turn(store, &current.state)
             .await
             .map_err(|error| {
@@ -4169,7 +4168,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_source_backed_environment_ruleset() {
+    fn provisional_full_earth_defaults_to_the_grounded_language_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -4195,7 +4194,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, LOCAL_INTERACTION_RULESET_VERSION);
+        assert_eq!(ruleset_version, GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION);
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -4322,7 +4321,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, LOCAL_INTERACTION_RULESET_VERSION);
+        assert_eq!(ruleset_version, GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION);
     }
 
     #[test]

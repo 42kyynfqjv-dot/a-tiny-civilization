@@ -27,14 +27,15 @@ use world_domain::{
     CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
     COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
     COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
-    CancerBurdenState, CancerBurdenTransition, CanonicalHashError, CelestialState,
-    CognitionDeadlineInput, CognitionInputOutcome, CognitionReading, CognitionRequestSelection,
-    CognitionUnavailableReason, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest,
-    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
-    EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
-    HERITABLE_ACTION_KINDS, HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
-    HERITABLE_DISPOSITION_SCHEMA_VERSION, HERITABLE_PROBABILITY_SCALE, HeritableActionWeight,
-    HeritableDisposition, HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION, CancerBurdenState, CancerBurdenTransition,
+    CanonicalHashError, CelestialState, CognitionDeadlineInput, CognitionInputOutcome,
+    CognitionReading, CognitionRequestSelection, CognitionUnavailableReason,
+    DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
+    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
+    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
+    HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
+    HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
+    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION, LOCAL_WEATHER_EVENT_SCHEMA_VERSION,
     MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
     MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION,
@@ -185,6 +186,12 @@ pub const CANCER_RESEARCH_WORLD_RULESET_VERSION: u32 = 37;
 /// replayable progression transition per simulated day. Its provisional numeric
 /// parameters remain implementation assumptions pending scientific validation.
 pub const CANCER_BIOLOGY_RULESET_VERSION: u32 = 38;
+/// Ruleset thirty-nine normalizes the acoustic form family, emits a physical form
+/// alongside a contemporaneous motor action, grounds learning only in directly
+/// heard human sources, and rotates equally near recipients deterministically.
+/// It is an ordinary-world driver; explicit experiment worlds retain their exact
+/// ruleset-thirty-eight behavior.
+pub const GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION: u32 = 39;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -522,6 +529,46 @@ struct PolicyActionDraw<'a> {
 }
 
 #[derive(Serialize)]
+struct PolicySignalOccurrenceDraw<'a> {
+    policy_version: u16,
+    world_seed: u64,
+    organism_id: EntityId,
+    tick: SimTick,
+    age_ticks: u64,
+    motor_weight: u64,
+    normalized_signal_weight: u64,
+    signal_candidates: &'a [PolicyCandidate],
+}
+
+#[derive(Serialize)]
+struct PolicySignalFormDraw<'a> {
+    policy_version: u16,
+    world_seed: u64,
+    organism_id: EntityId,
+    tick: SimTick,
+    age_ticks: u64,
+    signal_candidates: &'a [PolicyCandidate],
+}
+
+#[derive(Serialize)]
+struct SignalRecipientRotationDraw {
+    driver_version: u16,
+    world_seed: u64,
+    source_id: EntityId,
+    recipient_id: EntityId,
+    tick: SimTick,
+}
+
+#[derive(Serialize)]
+struct GroundedSignalAttentionDraw {
+    driver_version: u16,
+    world_seed: u64,
+    observer_id: EntityId,
+    tick: SimTick,
+    heard_sources_digest: Digest,
+}
+
+#[derive(Serialize)]
 struct SocialAttentionDraw {
     social_attention_version: u16,
     world_seed: u64,
@@ -687,6 +734,13 @@ fn competitive_signal_convention_candidate_weight(
             .unwrap_or(0)
             .min(SIGNAL_CONTEXT_REUSE_MAX_BONUS),
     )
+}
+
+fn normalized_signal_family_weight(signal_candidates: &[PolicyCandidate]) -> u64 {
+    let total = signal_candidates.iter().fold(0_u64, |sum, candidate| {
+        sum.saturating_add(u64::from(candidate.weight))
+    });
+    total.div_ceil(u64::from(world_domain::SIGNAL_FORM_VARIANT_COUNT))
 }
 
 fn signal_convention_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
@@ -2569,6 +2623,7 @@ impl EngineState {
             self.organisms.keys().collect()
         };
         let mut recipients = Vec::new();
+        let signal_tick = self.tick.checked_next()?;
         for recipient_id in candidate_ids {
             let recipient = self
                 .organisms
@@ -2586,12 +2641,24 @@ impl EngineState {
                 source_patch == patch
             };
             if audible {
-                recipients.push((recipient, patch));
+                let rotation_key = if self.uses_contemporaneous_signal_driver() {
+                    first_digest_u64(Digest::canonical(&SignalRecipientRotationDraw {
+                        driver_version: 1,
+                        world_seed: self.manifest.seed.get(),
+                        source_id,
+                        recipient_id: recipient.organism_id,
+                        tick: signal_tick,
+                    })?)
+                } else {
+                    0
+                };
+                recipients.push((recipient, patch, rotation_key));
             }
         }
-        recipients.sort_by_key(|(recipient, patch)| {
+        recipients.sort_by_key(|(recipient, patch, rotation_key)| {
             (
                 Self::patch_grid_distance(source_patch, *patch),
+                *rotation_key,
                 recipient.organism_id,
             )
         });
@@ -2600,7 +2667,7 @@ impl EngineState {
         }
         Ok(recipients
             .into_iter()
-            .map(|(recipient, _)| DomainEvent::OrganismPerceived {
+            .map(|(recipient, _, _)| DomainEvent::OrganismPerceived {
                 organism_id: recipient.organism_id,
                 perception: SituatedPerception {
                     subject_id: Some(source_id),
@@ -3092,15 +3159,20 @@ impl EngineState {
         age_ticks: u64,
         cognition_preference: Option<CognitionMotorPreference>,
     ) -> Result<PrimitiveAction, EngineError> {
-        let candidates = self.deterministic_policy_candidates_with_cognition(
+        let mut candidates = self.deterministic_policy_candidates_with_cognition(
             organism,
             age_ticks,
             cognition_preference,
         )?;
+        if self.uses_contemporaneous_signal_driver() {
+            candidates.retain(|candidate| candidate.action.kind != PrimitiveActionKind::EmitSignal);
+        }
         let needs = organism.bodily_regulation.needs;
 
         let digest = Digest::canonical(&PolicyActionDraw {
-            policy_version: if self.uses_signal_convention_reuse_driver() {
+            policy_version: if self.uses_contemporaneous_signal_driver() {
+                10
+            } else if self.uses_signal_convention_reuse_driver() {
                 9
             } else if self.uses_selectable_movement_driver() {
                 8
@@ -3151,6 +3223,83 @@ impl EngineState {
             action.intensity = u16::from(digest.as_bytes()[8] % 4) + 1;
         }
         Ok(action)
+    }
+
+    fn deterministic_policy_signal_with_cognition(
+        &self,
+        organism: &OrganismState,
+        age_ticks: u64,
+        cognition_preference: Option<CognitionMotorPreference>,
+    ) -> Result<Option<u8>, EngineError> {
+        if !self.uses_contemporaneous_signal_driver() {
+            return Ok(None);
+        }
+        let candidates = self.deterministic_policy_candidates_with_cognition(
+            organism,
+            age_ticks,
+            cognition_preference,
+        )?;
+        let motor_weight = candidates
+            .iter()
+            .filter(|candidate| candidate.action.kind != PrimitiveActionKind::EmitSignal)
+            .try_fold(0_u64, |total, candidate| {
+                total
+                    .checked_add(u64::from(candidate.weight))
+                    .ok_or(EngineError::TooManyEvents)
+            })?;
+        let signal_candidates = candidates
+            .into_iter()
+            .filter(|candidate| candidate.action.kind == PrimitiveActionKind::EmitSignal)
+            .collect::<Vec<_>>();
+        let normalized_signal_weight = normalized_signal_family_weight(&signal_candidates);
+        let total_family_weight = motor_weight
+            .checked_add(normalized_signal_weight)
+            .ok_or(EngineError::TooManyEvents)?;
+        let occurrence_digest = Digest::canonical(&PolicySignalOccurrenceDraw {
+            policy_version: 1,
+            world_seed: self.manifest.seed.get(),
+            organism_id: organism.organism_id,
+            tick: self.tick.checked_next()?,
+            age_ticks,
+            motor_weight,
+            normalized_signal_weight,
+            signal_candidates: &signal_candidates,
+        })?;
+        if first_digest_u64(occurrence_digest) % total_family_weight >= normalized_signal_weight {
+            return Ok(None);
+        }
+
+        let form_digest = Digest::canonical(&PolicySignalFormDraw {
+            policy_version: 1,
+            world_seed: self.manifest.seed.get(),
+            organism_id: organism.organism_id,
+            tick: self.tick.checked_next()?,
+            age_ticks,
+            signal_candidates: &signal_candidates,
+        })?;
+        let signal_weight = signal_candidates
+            .iter()
+            .try_fold(0_u64, |total, candidate| {
+                total
+                    .checked_add(u64::from(candidate.weight))
+                    .ok_or(EngineError::TooManyEvents)
+            })?;
+        let mut roll = first_digest_u64(form_digest) % signal_weight;
+        let selected = signal_candidates
+            .into_iter()
+            .find(|candidate| {
+                let weight = u64::from(candidate.weight);
+                if roll < weight {
+                    true
+                } else {
+                    roll -= weight;
+                    false
+                }
+            })
+            .expect("positive signal-form weights cover the deterministic roll");
+        Ok(Some(u8::try_from(selected.action.intensity).expect(
+            "signal-form domain is bounded to an unsigned byte",
+        )))
     }
 
     fn next_action_value(
@@ -3423,6 +3572,85 @@ impl EngineState {
                 }
                 observations.insert(*observer_id, co_located[actor_index]);
             }
+        }
+        Ok(observations)
+    }
+
+    fn contemporaneous_signal_observations(
+        &self,
+        events: &[DomainEvent],
+        actions: &BTreeMap<EntityId, PrimitiveAction>,
+    ) -> Result<BTreeMap<EntityId, (EntityId, u8)>, EngineError> {
+        let mut emitted = BTreeMap::new();
+        for event in events {
+            if let DomainEvent::OrganismSignalEmitted {
+                organism_id,
+                signal_form,
+            } = event
+                && emitted.insert(*organism_id, *signal_form).is_some()
+            {
+                return Err(EngineError::InvalidContemporaneousSignalEventSet);
+            }
+        }
+
+        let mut heard = BTreeMap::<EntityId, Vec<(EntityId, u8)>>::new();
+        for event in events {
+            let DomainEvent::OrganismPerceived {
+                organism_id: observer_id,
+                perception,
+            } = event
+            else {
+                continue;
+            };
+            let Some(source_id) = perception.subject_id else {
+                continue;
+            };
+            let Some(signal_form) = perception.readings.iter().find_map(|reading| {
+                (reading.channel == PerceptionChannel::Sound
+                    && reading.property_code == "signal_amplitude")
+                    .then(|| u8::try_from(reading.quantized_value).ok())
+                    .flatten()
+            }) else {
+                continue;
+            };
+            if emitted.get(&source_id) != Some(&signal_form)
+                || !actions.contains_key(observer_id)
+                || !actions.contains_key(&source_id)
+                || self
+                    .organisms
+                    .get(observer_id)
+                    .is_none_or(|organism| organism.role != OrganismRole::Person)
+                || self
+                    .organisms
+                    .get(&source_id)
+                    .is_none_or(|organism| organism.role != OrganismRole::Person)
+            {
+                continue;
+            }
+            heard
+                .entry(*observer_id)
+                .or_default()
+                .push((source_id, signal_form));
+        }
+
+        let mut observations = BTreeMap::new();
+        for (observer_id, mut candidates) in heard {
+            candidates.sort_unstable();
+            candidates.dedup();
+            let heard_sources_digest = Digest::canonical(&candidates)?;
+            let digest = Digest::canonical(&GroundedSignalAttentionDraw {
+                driver_version: 1,
+                world_seed: self.manifest.seed.get(),
+                observer_id,
+                tick: self.tick.checked_next()?,
+                heard_sources_digest,
+            })?;
+            let index = usize::try_from(
+                first_digest_u64(digest)
+                    % u64::try_from(candidates.len()).expect("heard-source count fits u64"),
+            )
+            .expect("bounded heard-source index fits usize");
+            observations.insert(observer_id, candidates[index]);
         }
         Ok(observations)
     }
@@ -4546,6 +4774,11 @@ impl EngineState {
                                             movement_direction: input.movement_direction(),
                                         })
                                     });
+                                let signal_form = self.deterministic_policy_signal_with_cognition(
+                                    organism,
+                                    to_age_ticks,
+                                    cognition_preference,
+                                )?;
                                 let action = self.deterministic_policy_action_with_cognition(
                                     organism,
                                     to_age_ticks,
@@ -4569,6 +4802,33 @@ impl EngineState {
                                             .ok_or(EngineError::TooManyEvents)?,
                                         event,
                                     ));
+                                }
+                                if let Some(signal_form) = signal_form {
+                                    let signal_index = u32::try_from(events.len())
+                                        .map_err(|_| EngineError::TooManyEvents)?;
+                                    events.push(Emission::new(
+                                        partition.partition(),
+                                        work.key(),
+                                        signal_index,
+                                        DomainEvent::OrganismSignalEmitted {
+                                            organism_id: organism.organism_id,
+                                            signal_form,
+                                        },
+                                    ));
+                                    for perception in self.local_signal_perceptions_with_index(
+                                        organism.organism_id,
+                                        u16::from(signal_form),
+                                        local_index.as_ref(),
+                                    )? {
+                                        let perception_index = u32::try_from(events.len())
+                                            .map_err(|_| EngineError::TooManyEvents)?;
+                                        events.push(Emission::new(
+                                            partition.partition(),
+                                            work.key(),
+                                            perception_index,
+                                            perception,
+                                        ));
+                                    }
                                 }
                                 if action_kind == PrimitiveActionKind::Move {
                                     let from_patch = organism.embodied_patch.ok_or(
@@ -4837,6 +5097,7 @@ impl EngineState {
                         to,
                     });
                     if self.uses_signal_action_association_driver()
+                        && !self.uses_contemporaneous_signal_driver()
                         && let Some(signal_intensity) =
                             observer.recent_signal_from(actor_id, self.tick)
                     {
@@ -4849,6 +5110,39 @@ impl EngineState {
                             .next_signal_action_association(
                                 observer,
                                 signal_intensity,
+                                action,
+                                coordinated,
+                            )?;
+                        events.push(DomainEvent::OrganismSignalActionAssociationChanged {
+                            observer_id,
+                            actor_id,
+                            from,
+                            to,
+                            inhibited_from,
+                            inhibited_to,
+                        });
+                    }
+                }
+                if self.uses_contemporaneous_signal_driver() {
+                    for (observer_id, (actor_id, signal_form)) in
+                        self.contemporaneous_signal_observations(&events, &actions)?
+                    {
+                        let observer = self
+                            .organisms
+                            .get(&observer_id)
+                            .expect("grounded signal observer is a living person");
+                        let action = actions
+                            .get(&actor_id)
+                            .expect("heard human source has a scheduled motor action");
+                        let observer_action = actions
+                            .get(&observer_id)
+                            .expect("grounded signal observer has a scheduled motor action");
+                        let coordinated = observer_action.kind == action.kind
+                            && observer_action.movement_direction == action.movement_direction;
+                        let (from, to, inhibited_from, inhibited_to) = self
+                            .next_signal_action_association(
+                                observer,
+                                signal_form,
                                 action,
                                 coordinated,
                             )?;
@@ -5055,6 +5349,11 @@ impl EngineState {
         self.manifest.ruleset_version >= GROUNDED_PREDICTIVE_COGNITION_RULESET_VERSION
     }
 
+    fn uses_contemporaneous_signal_driver(&self) -> bool {
+        self.manifest.ruleset_version >= GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION
+            && !self.uses_world_experiment_bootstrap()
+    }
+
     fn uses_person_only_cognition(&self) -> bool {
         self.manifest.ruleset_version >= PERSON_COGNITION_RULESET_VERSION
     }
@@ -5160,7 +5459,8 @@ impl EngineState {
             | DomainEvent::OrganismActionValueChanged { organism_id, .. }
             | DomainEvent::OrganismMovementDirectionValueChanged { organism_id, .. }
             | DomainEvent::OrganismPerceived { organism_id, .. }
-            | DomainEvent::OrganismActed { organism_id, .. } => self
+            | DomainEvent::OrganismActed { organism_id, .. }
+            | DomainEvent::OrganismSignalEmitted { organism_id, .. } => self
                 .organisms
                 .get(organism_id)
                 .or_else(|| resulting_state.organisms.get(organism_id))
@@ -5784,6 +6084,69 @@ impl EngineState {
                 }
             }
         }
+        if self.uses_contemporaneous_signal_driver() {
+            if !tick_advanced {
+                if events
+                    .iter()
+                    .any(|event| matches!(event, DomainEvent::OrganismSignalEmitted { .. }))
+                {
+                    return Err(EngineError::InvalidContemporaneousSignalEventSet);
+                }
+            } else {
+                let mut expected_perceptions = Vec::new();
+                let mut emitted_sources = BTreeSet::new();
+                for event in events {
+                    let DomainEvent::OrganismSignalEmitted {
+                        organism_id,
+                        signal_form,
+                    } = event
+                    else {
+                        continue;
+                    };
+                    if !emitted_sources.insert(*organism_id)
+                        || events
+                            .iter()
+                            .filter(|candidate| {
+                                matches!(candidate, DomainEvent::OrganismActed { organism_id: actor_id, action }
+                                    if actor_id == organism_id
+                                        && action.kind != PrimitiveActionKind::EmitSignal)
+                            })
+                            .count()
+                            != 1
+                    {
+                        return Err(EngineError::InvalidContemporaneousSignalEventSet);
+                    }
+                    expected_perceptions.extend(self.local_signal_perceptions_with_index(
+                        *organism_id,
+                        u16::from(*signal_form),
+                        None,
+                    )?);
+                }
+                let actual_perceptions = events
+                    .iter()
+                    .filter(|event| {
+                        matches!(event, DomainEvent::OrganismPerceived { perception, .. }
+                            if perception.readings.iter().any(|reading|
+                                reading.channel == PerceptionChannel::Sound
+                                    && reading.property_code == "signal_amplitude"))
+                    })
+                    .cloned()
+                    .collect::<Vec<_>>();
+                if actual_perceptions != expected_perceptions
+                    || events.iter().any(|event| {
+                        matches!(event, DomainEvent::OrganismActed { action, .. }
+                            if action.kind == PrimitiveActionKind::EmitSignal)
+                    })
+                {
+                    return Err(EngineError::InvalidContemporaneousSignalEventSet);
+                }
+            }
+        } else if events
+            .iter()
+            .any(|event| matches!(event, DomainEvent::OrganismSignalEmitted { .. }))
+        {
+            return Err(EngineError::ContemporaneousSignalUnsupported);
+        }
         if self.uses_social_learning_driver() && tick_advanced {
             let actions = events
                 .iter()
@@ -5865,20 +6228,29 @@ impl EngineState {
                     _ => None,
                 })
                 .collect::<BTreeMap<_, _>>();
-            let expected_observations = self.social_observations(&actions, None)?;
+            let expected_observations = if self.uses_contemporaneous_signal_driver() {
+                self.contemporaneous_signal_observations(events, &actions)?
+            } else {
+                self.social_observations(&actions, None)?
+                    .into_iter()
+                    .filter_map(|(observer_id, actor_id)| {
+                        self.organisms
+                            .get(&observer_id)
+                            .and_then(|observer| {
+                                observer
+                                    .recent_signal_from(actor_id, self.tick)
+                                    .map(|signal_form| (actor_id, signal_form))
+                            })
+                            .map(|observation| (observer_id, observation))
+                    })
+                    .collect()
+            };
             for observer in self
                 .organisms
                 .values()
                 .filter(|organism| organism.is_alive())
             {
-                let expected =
-                    expected_observations
-                        .get(&observer.organism_id)
-                        .and_then(|actor_id| {
-                            observer
-                                .recent_signal_from(*actor_id, self.tick)
-                                .map(|intensity| (*actor_id, intensity))
-                        });
+                let expected = expected_observations.get(&observer.organism_id).copied();
                 let matches = events
                     .iter()
                     .filter_map(|event| match event {
@@ -6110,6 +6482,8 @@ impl EngineState {
     fn event_schema_version(&self) -> u16 {
         if self.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_contemporaneous_signal_driver() {
+            CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
         } else if self.uses_cancer_biology_driver() {
             CANCER_BURDEN_EVENT_SCHEMA_VERSION
         } else if self.uses_world_experiment_bootstrap() {
@@ -7213,6 +7587,18 @@ impl EngineState {
                 action
                     .validate()
                     .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+            }
+            DomainEvent::OrganismSignalEmitted {
+                organism_id,
+                signal_form,
+            } => {
+                if !self.uses_contemporaneous_signal_driver() {
+                    return Err(EngineError::ContemporaneousSignalUnsupported);
+                }
+                if !(1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(signal_form) {
+                    return Err(EngineError::InvalidContemporaneousSignalEventSet);
+                }
+                self.require_living_organism(*organism_id)?;
             }
             DomainEvent::OrganismMoved {
                 organism_id,
@@ -9042,7 +9428,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_cancer_biology_driver() {
+    if state.uses_contemporaneous_signal_driver() {
+        Some(CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION)
+    } else if state.uses_cancer_biology_driver() {
         Some(CANCER_BURDEN_EVENT_SCHEMA_VERSION)
     } else if state.uses_world_experiment_bootstrap() {
         Some(CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION)
@@ -9461,6 +9849,10 @@ pub enum EngineError {
     SignalActionAssociationUnsupported,
     #[error("organism {0} has an invalid signal-action association")]
     InvalidSignalActionAssociation(EntityId),
+    #[error("contemporaneous adjunct signals are unsupported by this ruleset")]
+    ContemporaneousSignalUnsupported,
+    #[error("contemporaneous signal emissions, perceptions, and motor actions disagree")]
+    InvalidContemporaneousSignalEventSet,
     #[error("external cognition is unsupported by this ruleset")]
     CognitionUnsupported,
     #[error("cognition request selection is invalid: {0}")]
@@ -9664,6 +10056,30 @@ mod tests {
         apply_local_cohesion_weights(patch, target, &mut movement).expect("cohesion weighting");
         assert_eq!(movement[0].weight, 2 + LOCAL_COHESION_WEIGHT_BONUS);
         assert!(movement[1..].iter().all(|candidate| candidate.weight == 2));
+    }
+
+    #[test]
+    fn ruleset_thirty_nine_normalizes_the_signal_family_before_occurrence_selection() {
+        let signal_candidates = (1..=world_domain::SIGNAL_FORM_VARIANT_COUNT)
+            .map(|signal_form| PolicyCandidate {
+                action: PrimitiveAction {
+                    kind: PrimitiveActionKind::EmitSignal,
+                    target_id: None,
+                    intensity: u16::from(signal_form),
+                    contact_region: None,
+                    movement_direction: None,
+                },
+                weight: 2,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(normalized_signal_family_weight(&signal_candidates), 2);
+
+        let mut familiar_form_candidates = signal_candidates;
+        familiar_form_candidates[6].weight += SIGNAL_IMITATION_WEIGHT_BONUS;
+        assert_eq!(
+            normalized_signal_family_weight(&familiar_form_candidates),
+            3
+        );
     }
 
     fn manifest() -> WorldManifest {
@@ -9954,6 +10370,98 @@ mod tests {
             mass_grams_value: 70_000,
             mass_grams_decimal_places: 0,
         }
+    }
+
+    fn grounded_language_fixture(
+        world_id: WorldId,
+        person_count: u32,
+    ) -> (WorldManifest, EngineState, EventBatch) {
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(0x39_1a_6e),
+            GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION,
+        );
+        let mut template =
+            regulated_full_earth_person(world_id, 0x3900, 10_000_000_000, 10_000_000);
+        template.initial_age_ticks = 0;
+        template.adult_body_mass = Some(adult_body_mass_fixture(template.species.clone()));
+        let mut reproductive = reproductive_fixture_profile(template.species.clone());
+        reproductive.maturity_age_ticks = 1_000_000;
+        template.reproductive_physiology = Some(reproductive);
+        template.heritable_disposition_profile =
+            Some(heritable_fixture_profile(template.species.clone()));
+        let regulation = template
+            .physiological_regulation
+            .as_mut()
+            .expect("regulated language fixture");
+        regulation.fatigue_failure_seconds = 10_000_000;
+        regulation.thermoneutral_min_millicelsius = -50_000;
+        regulation.thermoneutral_max_millicelsius = 50_000;
+
+        let people = (0..person_count)
+            .map(|ordinal| {
+                let mut person = template.clone();
+                person.organism_id = EntityId::deterministic(
+                    world_id,
+                    format!("grounded-language-person-{ordinal:04}").as_bytes(),
+                );
+                person.birth_category = BirthCategory::new(if ordinal.is_multiple_of(2) {
+                    "female"
+                } else {
+                    "male"
+                })
+                .expect("category");
+                person
+            })
+            .collect::<Vec<_>>();
+        let patch = template.embodied_patch.expect("fixture patch");
+        let water = MaterialIdentity::new(
+            "pubchem",
+            "962",
+            "water",
+            "https://pubchem.ncbi.nlm.nih.gov/compound/962",
+        )
+        .expect("water identity");
+        let reservoir = InitialMaterialInstance {
+            object_id: EntityId::deterministic(world_id, b"grounded-language-water"),
+            material: water.clone(),
+            embodied_patch: patch,
+            initial_mass_milligrams: Some(1_000_000_000),
+            oral_transfer_profiles: vec![OralTransferCommitment {
+                commitment_schema_version: world_domain::ORAL_TRANSFER_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "grounded-language-water-oral-v1".to_owned(),
+                profile_digest: Digest::sha256(b"grounded language water oral fixture"),
+                material: water.clone(),
+                species: human(),
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                transfer_mass_milligrams: 1_000,
+                recoverable_energy_joules: 0,
+                hydration_recovery_seconds: 21_600,
+            }],
+            reservoir: Some(MaterialReservoirCommitment {
+                commitment_schema_version:
+                    world_domain::MATERIAL_RESERVOIR_COMMITMENT_SCHEMA_VERSION,
+                profile_id: "grounded-language-water-reservoir-v1".to_owned(),
+                profile_digest: Digest::sha256(b"grounded language water reservoir fixture"),
+                material: water,
+                evidence_basis: world_domain::OralTransferEvidenceBasis::EngineeringAssumption,
+                coverage_patch: patch.ancestor(10).expect("coverage patch"),
+                maximum_mass_milligrams: 1_000_000_000,
+                replenishment_mass_milligrams_per_tick: 100_000,
+            }),
+        };
+        let initial = EngineState::new(manifest.clone());
+        let genesis_events = initial
+            .plan_configured_genesis_with_materials(
+                surface_provisional_full_earth_configuration(),
+                people,
+                vec![reservoir],
+            )
+            .expect("ruleset-thirty-nine genesis plan");
+        let (running, genesis) = initial
+            .commit(EventSequence::new(1), Digest::ZERO, genesis_events)
+            .expect("ruleset-thirty-nine genesis commit");
+        (manifest, running, genesis)
     }
 
     #[test]
@@ -15566,6 +16074,197 @@ mod tests {
                 .verify_integrity()
                 .expect("stateless-ruleset snapshot integrity");
         }
+    }
+
+    #[test]
+    fn ruleset_thirty_nine_signals_are_adjunct_grounded_and_replayable() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x391a6e));
+        let (manifest, mut running, genesis) = grounded_language_fixture(world_id, 10);
+        assert_eq!(
+            genesis.event_schema_version,
+            CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            running.event_schema_version(),
+            CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&running),
+            Some(CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION)
+        );
+
+        let mut batches = vec![genesis];
+        let mut witnessed_grounding = false;
+        for _ in 0..64 {
+            let next_tick = running.tick.checked_next().expect("bounded fixture tick");
+            let events = running
+                .plan_next_tick_with_celestial_and_cognition(
+                    CelestialState::new(
+                        TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+                        CartesianMillimetres::new(i128::from(next_tick.get()), 2, 3),
+                        CartesianMillimetres::new(4, i128::from(next_tick.get()) + 5, 6),
+                    ),
+                    &[],
+                )
+                .expect("grounded language tick");
+            let actions = events
+                .iter()
+                .filter_map(|event| match event {
+                    DomainEvent::OrganismActed {
+                        organism_id,
+                        action,
+                    } => Some((*organism_id, action.clone())),
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            assert!(
+                actions
+                    .values()
+                    .all(|action| action.kind != PrimitiveActionKind::EmitSignal),
+                "ruleset thirty-nine always retains a real motor action"
+            );
+            let emitted = events
+                .iter()
+                .filter_map(|event| match event {
+                    DomainEvent::OrganismSignalEmitted {
+                        organism_id,
+                        signal_form,
+                    } => Some((*organism_id, *signal_form)),
+                    _ => None,
+                })
+                .collect::<BTreeMap<_, _>>();
+            if !emitted.is_empty() {
+                assert!(
+                    emitted
+                        .keys()
+                        .all(|source_id| actions.contains_key(source_id))
+                );
+                let associations = events
+                    .iter()
+                    .filter_map(|event| match event {
+                        DomainEvent::OrganismSignalActionAssociationChanged {
+                            actor_id,
+                            to,
+                            ..
+                        } => Some((*actor_id, *to)),
+                        _ => None,
+                    })
+                    .collect::<Vec<_>>();
+                assert!(!associations.is_empty());
+                for (actor_id, association) in associations {
+                    let action = actions.get(&actor_id).expect("heard actor acted this tick");
+                    assert_eq!(emitted.get(&actor_id), Some(&association.signal_intensity));
+                    assert_eq!(association.action_kind, action.kind);
+                    assert_eq!(association.movement_direction, action.movement_direction);
+                    assert_ne!(association.action_kind, PrimitiveActionKind::EmitSignal);
+                }
+
+                let mut missing_emission = events.clone();
+                let signal_index = missing_emission
+                    .iter()
+                    .position(|event| matches!(event, DomainEvent::OrganismSignalEmitted { .. }))
+                    .expect("emission index");
+                missing_emission.remove(signal_index);
+                assert!(matches!(
+                    running.clone().commit(
+                        EventSequence::new(
+                            u64::try_from(batches.len()).expect("bounded history") + 1
+                        ),
+                        batches.last().expect("history tail").batch_hash,
+                        missing_emission,
+                    ),
+                    Err(EngineError::InvalidContemporaneousSignalEventSet)
+                ));
+                witnessed_grounding = true;
+            }
+
+            let (next, batch) = running
+                .commit(
+                    EventSequence::new(u64::try_from(batches.len()).expect("bounded history") + 1),
+                    batches.last().expect("history tail").batch_hash,
+                    events,
+                )
+                .expect("grounded language tick commit");
+            running = next;
+            batches.push(batch);
+            if witnessed_grounding {
+                break;
+            }
+        }
+        assert!(
+            witnessed_grounding,
+            "fixed fixture produces an adjunct call"
+        );
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("ruleset-thirty-nine replay")
+                .state,
+            running
+        );
+    }
+
+    #[test]
+    fn ruleset_thirty_nine_rotates_the_bounded_recipient_window() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x391a6f));
+        let (_, mut running, _) = grounded_language_fixture(world_id, 12);
+        let source_id = *running.organisms.keys().next().expect("signal source");
+        let mut all_recipients = BTreeSet::new();
+        let mut observed_orders = BTreeSet::new();
+        for tick in 0..32 {
+            running.tick = SimTick::new(tick);
+            let first = running
+                .local_signal_perceptions_with_index(source_id, 7, None)
+                .expect("rotated recipients");
+            let repeated = running
+                .local_signal_perceptions_with_index(source_id, 7, None)
+                .expect("deterministic repeated recipients");
+            assert_eq!(first, repeated);
+            let recipients = first
+                .iter()
+                .filter_map(|event| match event {
+                    DomainEvent::OrganismPerceived { organism_id, .. } => Some(*organism_id),
+                    _ => None,
+                })
+                .collect::<Vec<_>>();
+            assert_eq!(recipients.len(), MAX_LOCAL_SIGNAL_RECIPIENTS);
+            all_recipients.extend(recipients.iter().copied());
+            observed_orders.insert(recipients);
+        }
+        assert_eq!(all_recipients.len(), 11);
+        assert!(observed_orders.len() > 1);
+    }
+
+    #[test]
+    fn ruleset_thirty_nine_does_not_change_legacy_or_cancer_drivers() {
+        let legacy = EngineState::new(WorldManifest::new(
+            WorldId::from_uuid(Uuid::from_u128(0x390036)),
+            WorldSeed::new(36),
+            GROUNDED_PREDICTIVE_COGNITION_RULESET_VERSION,
+        ));
+        assert!(!legacy.uses_contemporaneous_signal_driver());
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&legacy),
+            Some(COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION)
+        );
+
+        let mut cancer_manifest = WorldManifest::new(
+            WorldId::from_uuid(Uuid::from_u128(0x390038)),
+            WorldSeed::new(38),
+            CANCER_BIOLOGY_RULESET_VERSION,
+        );
+        cancer_manifest.experiment = Some(world_domain::WorldExperimentCommitment::CancerResearch(
+            world_domain::CancerResearchBootstrap::english_literate_abundant_world(),
+        ));
+        let cancer = EngineState::new(cancer_manifest);
+        assert!(!cancer.uses_contemporaneous_signal_driver());
+        assert_eq!(
+            cancer.event_schema_version(),
+            CANCER_BURDEN_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&cancer),
+            Some(CANCER_BURDEN_EVENT_SCHEMA_VERSION)
+        );
     }
 
     #[test]

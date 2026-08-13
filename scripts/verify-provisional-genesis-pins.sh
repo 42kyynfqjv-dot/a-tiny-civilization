@@ -61,7 +61,7 @@ if grep -qF 'full-earth-breadth-first-0.1.1.json' \
   exit 1
 fi
 
-grep -q -- '--ruleset-version 33' scripts/initialize-provisional-world.sh
+grep -q -- '--ruleset-version 39' scripts/initialize-provisional-world.sh
 grep -qF 'ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY' scripts/prepare-canonical-genesis.sh
 grep -qF 'ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1' scripts/prepare-canonical-genesis.sh
 grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-world.sh

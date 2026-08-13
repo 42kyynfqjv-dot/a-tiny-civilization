@@ -114,6 +114,10 @@ pub const CANCER_BURDEN_EVENT_SCHEMA_VERSION: u16 = 36;
 /// It retires a still-populated legacy world without misrepresenting the closure as
 /// extinction and binds the immutable history to the successor's committed ID.
 pub const WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION: u16 = 37;
+/// Schema thirty-eight records a physical signal independently from the producer's
+/// contemporaneous motor action. This permits grounded co-observation without
+/// turning one of 32 forms into 32 separate chances to replace bodily behavior.
+pub const CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION: u16 = 38;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -350,6 +354,12 @@ pub enum DomainEvent {
     OrganismActed {
         organism_id: EntityId,
         action: PrimitiveAction,
+    },
+    /// One label-free acoustic form produced alongside, rather than instead of, the
+    /// organism's contemporaneous primitive motor action.
+    OrganismSignalEmitted {
+        organism_id: EntityId,
+        signal_form: u8,
     },
     /// A resolved physical relocation between discrete full-Earth embodied patches.
     OrganismMoved {
@@ -597,6 +607,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | CANCER_RESEARCH_COHORT_EVENT_SCHEMA_VERSION
             | CANCER_BURDEN_EVENT_SCHEMA_VERSION
             | WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+            | CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -629,6 +640,11 @@ fn validate_event_for_schema(
     }
     if event_schema_version < WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
         && matches!(event, DomainEvent::WorldRetiredForSuccessor { .. })
+    {
+        return Err(EventBatchError::EventRequiresNewerSchema);
+    }
+    if event_schema_version < CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
+        && matches!(event, DomainEvent::OrganismSignalEmitted { .. })
     {
         return Err(EventBatchError::EventRequiresNewerSchema);
     }
@@ -920,6 +936,13 @@ fn validate_event_for_schema(
             {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "movement-direction field disagrees with event schema".to_owned(),
+                ));
+            }
+        }
+        DomainEvent::OrganismSignalEmitted { signal_form, .. } => {
+            if !(1..=crate::SIGNAL_FORM_VARIANT_COUNT).contains(signal_form) {
+                return Err(EventBatchError::InvalidEmbodiedEvent(
+                    "emitted signal form is outside the physical form domain".to_owned(),
                 ));
             }
         }
@@ -2367,5 +2390,38 @@ mod tests {
             Digest::sha256(b"successor retirement schema"),
         )
         .expect("schema thirty-seven accepts a successor retirement");
+    }
+
+    #[test]
+    fn contemporaneous_signal_requires_schema_thirty_eight() {
+        let manifest = manifest();
+        let event = DomainEvent::OrganismSignalEmitted {
+            organism_id: EntityId::from_uuid(Uuid::from_u128(0x519a1)),
+            signal_form: 7,
+        };
+        assert!(matches!(
+            EventBatch::new(
+                WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION,
+                manifest.world_id,
+                EventSequence::new(2),
+                SimTick::new(1),
+                39,
+                Digest::ZERO,
+                vec![event.clone()],
+                Digest::sha256(b"pre-contemporaneous signal schema"),
+            ),
+            Err(EventBatchError::EventRequiresNewerSchema)
+        ));
+        EventBatch::new(
+            CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(2),
+            SimTick::new(1),
+            39,
+            Digest::ZERO,
+            vec![event],
+            Digest::sha256(b"contemporaneous signal schema"),
+        )
+        .expect("schema thirty-eight accepts an adjunct physical signal");
     }
 }
