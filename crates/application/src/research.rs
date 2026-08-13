@@ -58,6 +58,9 @@ pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
 pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 4;
 pub const MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS: usize = 8;
 pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
+/// Covers the maximum accepted Fireworks GPT-OSS prompt plus 4,096 output
+/// tokens at the pinned public tariff, with margin for tokenization variance.
+pub const DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 15_000;
 pub const MAX_CANCER_RESEARCH_CATALOG_ENTRIES: usize = 256;
 pub const CANCER_RESEARCH_CATALOG_PAGE_SIZE: usize = 24;
 pub const CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS: usize = 3;

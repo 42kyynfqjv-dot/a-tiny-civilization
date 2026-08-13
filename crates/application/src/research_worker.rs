@@ -7,7 +7,8 @@ use crate::{
     CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
     CancerResearchModel, CancerResearchModelError, CancerResearchPaidReservationDecision,
     CognitionBillingClass, CognitionProviderId, CognitionRouteAttempt, CognitionRouteAttemptStatus,
-    CognitionRouteRegistry, MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
+    CognitionRouteRegistry, DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+    MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
 };
 
 #[derive(Clone, Debug)]
@@ -23,7 +24,7 @@ impl Default for CancerResearchWorkerConfiguration {
         Self {
             claim_lease_seconds: 300,
             retry_after_seconds: 30,
-            paid_reservation_micro_usd: MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+            paid_reservation_micro_usd: DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
             paid_enabled: false,
         }
     }

@@ -29,7 +29,7 @@ awk '
   printf 'CANCER_WORLD_ID=%s\n' "$world_id"
   printf 'CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED=true\n'
   printf 'CANCER_RESEARCH_PAID_ENABLED=true\n'
-  printf 'CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD=150000\n'
+  printf 'CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD=15000\n'
 } >> "$temporary_file"
 
 chown --reference="$env_file" "$temporary_file"

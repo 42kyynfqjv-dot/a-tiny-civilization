@@ -491,7 +491,7 @@ enum Command {
         #[arg(
             long,
             env = "CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD",
-            default_value_t = application::MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+            default_value_t = application::DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
         )]
         paid_reservation_micro_usd: u64,
 
@@ -4451,7 +4451,7 @@ mod tests {
         assert_eq!(request_timeout_seconds, 120);
         assert_eq!(
             paid_reservation_micro_usd,
-            application::MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
+            application::DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
         );
     }
 

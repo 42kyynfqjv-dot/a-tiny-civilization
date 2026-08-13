@@ -22,7 +22,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v13";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v14";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -781,11 +781,13 @@ fn parse_research_response(
         .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
     let parsed: ChatCompletion = serde_json::from_value(raw)
         .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
-    if parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
+    if parsed.choices.len() != 1 {
         return Err(CancerResearchModelError::InvalidResponse(
             "completion omitted a unique response, model, or choice".to_owned(),
         ));
     }
+    let resolved_model = provider_resolved_model(route, parsed.model.as_deref())
+        .map_err(CancerResearchModelError::InvalidResponse)?;
     let provider_response_id =
         provider_response_identity(provider, parsed.id.as_deref(), response_hash)
             .map_err(CancerResearchModelError::InvalidResponse)?;
@@ -858,7 +860,7 @@ fn parse_research_response(
             .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?,
         provider: provider.clone(),
         requested_model: route.requested_model.clone(),
-        resolved_model: parsed.model,
+        resolved_model,
         provider_response_id,
         usage: ModelTokenUsage {
             prompt_tokens,
@@ -1182,7 +1184,8 @@ fn request_seed_from_bytes(bytes: &[u8; 16]) -> u32 {
 struct ChatCompletion {
     #[serde(default)]
     id: Option<String>,
-    model: String,
+    #[serde(default)]
+    model: Option<String>,
     choices: Vec<Choice>,
     usage: Usage,
 }
@@ -1240,11 +1243,13 @@ fn parse_response(
         .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
     let parsed: ChatCompletion = serde_json::from_value(raw)
         .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
-    if parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
+    if parsed.choices.len() != 1 {
         return Err(CognitionModelError::InvalidResponse(
             "completion omitted a unique response, model, or choice".to_owned(),
         ));
     }
+    let resolved_model = provider_resolved_model(route, parsed.model.as_deref())
+        .map_err(CognitionModelError::InvalidResponse)?;
     let provider_response_id =
         provider_response_identity(provider, parsed.id.as_deref(), response_hash)
             .map_err(CognitionModelError::InvalidResponse)?;
@@ -1285,7 +1290,7 @@ fn parse_response(
             .map_err(|error| CognitionModelError::Rejected(error.to_string()))?,
         provider: provider.clone(),
         requested_model: route.requested_model.clone(),
-        resolved_model: parsed.model,
+        resolved_model,
         provider_response_id,
         usage: ModelTokenUsage {
             prompt_tokens,
@@ -1321,6 +1326,28 @@ fn provider_response_identity(
         return Ok(format!("fireworks-sha256-{response_hash}"));
     }
     Err("completion omitted its provider response identity".to_owned())
+}
+
+fn provider_resolved_model(
+    route: &CognitionModelRoute,
+    resolved_model: Option<&str>,
+) -> Result<String, String> {
+    if let Some(resolved_model) = resolved_model.filter(|value| !value.trim().is_empty()) {
+        return Ok(resolved_model.to_owned());
+    }
+    if route == &CognitionModelRoute::openrouter_cancer_free() {
+        // The dynamic free router has occasionally omitted its selected model
+        // even while returning a complete result. Preserve that uncertainty in
+        // the receipt instead of inventing a concrete backend identity.
+        return Ok("openrouter/free:provider-unreported".to_owned());
+    }
+    if route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b() {
+        // This route is pinned to one exact model, so the route identity is the
+        // resolved model even when the compatible response omits the duplicate
+        // top-level field.
+        return Ok(route.requested_model.clone());
+    }
+    Err("completion omitted its resolved model identity".to_owned())
 }
 
 fn parse_bounded_action(
@@ -2377,6 +2404,27 @@ mod tests {
             )
             .expect("provider identity"),
             "provider-generation-1"
+        );
+    }
+
+    #[test]
+    fn omitted_model_identity_is_normalized_only_when_the_route_still_identifies_it_honestly() {
+        assert_eq!(
+            provider_resolved_model(&CognitionModelRoute::openrouter_cancer_free(), None)
+                .expect("dynamic uncertainty marker"),
+            "openrouter/free:provider-unreported"
+        );
+        let fireworks = CognitionModelRoute::fireworks_cancer_gpt_oss_20b();
+        assert_eq!(
+            provider_resolved_model(&fireworks, None).expect("pinned Fireworks model"),
+            fireworks.requested_model
+        );
+        assert!(
+            provider_resolved_model(
+                &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                None,
+            )
+            .is_err()
         );
     }
 
