@@ -151,6 +151,7 @@ type ResearchArtifact = {
   novelty_audit: NoveltyAudit | null;
   virtual_experiment: VirtualExperiment | null;
   nci60_qualification: Nci60Qualification | null;
+  patient_derived_qualification?: PatientDerivedMolecularQualification | null;
   created_at: string;
   duplicates: ResearchDuplicate[];
 };
@@ -174,6 +175,43 @@ type Nci60Qualification = {
   limitations: string[];
   result_hash: string;
   created_at: string;
+};
+
+type PatientDerivedTargetObservation = {
+  target?: { gene_symbol?: string };
+  gene_symbol?: string;
+  status?: "observed" | "not_detected" | "unresolved" | string;
+  observed_model_count?: number;
+  assayed_model_count?: number;
+  protein_ids?: string[];
+};
+
+type PatientDerivedMolecularQualification = {
+  schema_version?: number;
+  method_version?: number;
+  qualification_id?: string;
+  qualified_at_tick?: string | number;
+  source?: {
+    kind?: string;
+    source_kind?: string;
+    source_id?: string;
+    study_id?: string;
+    study_version_uuid?: string;
+    file_id?: string;
+    file_name?: string;
+    file_md5?: string;
+    content_hash?: string;
+    content_address?: string;
+  };
+  pdc_study_id?: string;
+  study_version_id?: string;
+  source_file_id?: string;
+  source_file_name?: string;
+  source_file_md5?: string;
+  cohort_model_count?: number;
+  target_observations?: PatientDerivedTargetObservation[];
+  targets?: PatientDerivedTargetObservation[];
+  limitations?: string[];
 };
 
 type Nci60BenchmarkPartition = {
@@ -527,6 +565,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       <span className={`novelty ${novelty?.status ?? "pending"}`}>{noveltyLabel(novelty?.status)}</span>
       {artifact.virtual_experiment && <span className="virtual-run">MODEL TEST RUN</span>}
       {artifact.nci60_qualification && <span className="virtual-run">NCI BENCHMARK OPENED</span>}
+      {artifact.patient_derived_qualification && <span className="patient-check">PATIENT-DERIVED TARGET CHECK</span>}
       <span className={artifact.memory_state === "accepted" ? "accepted" : "queued"}>{artifact.memory_state === "accepted" ? "MEMORY CONNECTED" : "MEMORY QUEUED"}</span>
     </div>
     <h3>{contribution.title}</h3>
@@ -556,6 +595,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
     </details>
     {contribution.virtual_experiment_plan && <VirtualExperimentPanel artifact={artifact} />}
     {contribution.nci60_response_prediction && <Nci60QualificationPanel artifact={artifact} />}
+    {artifact.patient_derived_qualification && <PatientDerivedQualificationPanel qualification={artifact.patient_derived_qualification} />}
     {contribution.claims.map((claim, index) => <details key={`${artifact.request_id}-${index}`}>
       <summary>CLAIM {index + 1} · {claim.statement}</summary>
       <dl>
@@ -575,6 +615,57 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
     </details>}
     <footer><code>ARTIFACT {shortHash(artifact.artifact_hash)}</code><time>{formatTime(artifact.created_at)}</time></footer>
   </article>;
+}
+
+function PatientDerivedQualificationPanel({ qualification }: { qualification: PatientDerivedMolecularQualification }) {
+  const targets = qualification.target_observations ?? qualification.targets ?? [];
+  const cohortCount = qualification.cohort_model_count
+    ?? Math.max(0, ...targets.map((target) => target.assayed_model_count ?? 0));
+  const observedTargets = targets.filter((target) => target.status === "observed").length;
+  const studyId = qualification.pdc_study_id ?? qualification.source?.study_id ?? "PDC000711";
+  const sourceFile = qualification.source_file_name ?? qualification.source?.file_name;
+  const sourceHash = qualification.source?.content_hash ?? qualification.source?.content_address;
+  return <section className="cancer-patient-check" aria-label="Patient-derived GBM target check">
+    <header>
+      <div>
+        <span>PATIENT-DERIVED GBM TARGET CHECK</span>
+        <strong>{observedTargets} of {targets.length} exact target{targets.length === 1 ? "" : "s"} observed</strong>
+      </div>
+      <small>{studyId} · {cohortCount || "—"} MODELS</small>
+    </header>
+    <p className="cancer-patient-boundary">MOLECULAR PRESENCE ONLY — NOT TREATMENT RESPONSE, EFFICACY, OR CLINICAL VALIDATION</p>
+    {targets.length > 0 ? <div className="cancer-patient-targets">
+      {targets.map((target, index) => {
+        const geneSymbol = target.target?.gene_symbol ?? target.gene_symbol ?? `TARGET ${index + 1}`;
+        const observedCount = target.observed_model_count ?? 0;
+        const assayedCount = target.assayed_model_count ?? cohortCount;
+        const proteins = target.protein_ids ?? [];
+        const status = target.status ?? "unresolved";
+        return <article data-status={status} key={`${geneSymbol}-${index}`}>
+          <div><strong>{geneSymbol}</strong><span>{patientTargetStatus(status)}</span></div>
+          <p><b>{observedCount}/{assayedCount || cohortCount || "—"}</b> models</p>
+          <small title={proteins.join(", ")}>{proteins.length ? `PROTEIN ${proteins.slice(0, 2).join(" · ")}${proteins.length > 2 ? ` +${proteins.length - 2}` : ""}` : "NO EXACT PROTEIN ACCESSION"}</small>
+        </article>;
+      })}
+    </div> : <p className="cancer-patient-empty">No exact molecular targets were returned with this check.</p>}
+    <details className="cancer-patient-notes">
+      <summary>PROVENANCE + LIMITATIONS · {qualification.limitations?.length ?? 0} NOTES</summary>
+      <div>
+        <p>{studyId}{sourceFile ? ` · ${sourceFile}` : ""}{sourceHash ? ` · ${shortHash(sourceHash)}` : ""}</p>
+        {(qualification.limitations ?? []).map((limitation) => <p key={limitation}>{limitation}</p>)}
+        <small>METHOD V{qualification.method_version ?? "—"}{qualification.qualified_at_tick !== undefined ? ` · QUALIFIED AT TICK ${String(qualification.qualified_at_tick)}` : ""}</small>
+      </div>
+    </details>
+  </section>;
+}
+
+function patientTargetStatus(status: string) {
+  switch (status) {
+    case "observed": return "Observed";
+    case "not_detected": return "Not detected";
+    case "unresolved": return "Unresolved";
+    default: return humanize(status);
+  }
 }
 
 function Nci60QualificationPanel({ artifact }: { artifact: ResearchArtifact }) {

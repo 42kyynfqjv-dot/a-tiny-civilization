@@ -1,0 +1,21 @@
+{
+  "data": {
+    "filesPerStudy": [
+      {
+        "study_id": "ec0e442b-a0b8-4dc7-a4ba-6b5409fc68de",
+        "pdc_study_id": "PDC000711",
+        "file_id": "86e9b7f6-0776-4cb7-b761-dee14321b318",
+        "file_name": "Global_all_original.txt",
+        "file_size": "8118871",
+        "md5sum": "333eef379eaea258efca326d579eef21",
+        "file_location": "studies/711/suppl/Global_all_original.txt",
+        "data_category": "Alternate Processing Pipeline",
+        "file_type": "Text",
+        "file_format": "tsv",
+        "signedUrl": {
+          "url": "https://example.invalid/fixture-signed-url"
+        }
+      }
+    ]
+  }
+}

@@ -76,15 +76,27 @@ sudo systemctl enable --now \
 
 Both units load the root-protected production environment through systemd, run as the
 unprivileged project owner, expose no listener, and retain read-only host/filesystem
-hardening. On every evidence-worker start, its `ExecStartPre` verifies the pinned
-NCI-60 catalogue and ignored answer key, then copies only the answer key into the
-unit-private `/run/atiny-cancer-evidence/` staging tree. A hash mismatch or missing
-key fails the unit before any qualification can run. Container-profile operators
-must first run `bash scripts/stage-cancer-nci60-qualification-key.sh`; Compose mounts
-that content-addressed, mode-`0444` file only into `cancer-evidence-worker` and refuses
-to auto-create a missing source path.
-The host model-worker unit also makes both the ignored source key and the evidence
-worker's `/run` staging tree inaccessible inside its own mount namespace.
+hardening. On every evidence-worker start, unprivileged `ExecStartPre` steps verify
+the pinned NCI-60 labels plus the derived PDC000711 matrix and metadata, then publish
+only those exact files as mode-`0444` content addresses below the unit-private
+`/run/atiny-cancer-evidence/` tree. Systemd never executes repository-owned code as
+root. The exec wrapper re-verifies the PDC pair and gives their exact paths only to
+the evidence process through
+`CANCER_PDC000711_PROTEOME_PATH` and
+`CANCER_PDC000711_PROTEOME_METADATA_PATH`. A missing file, changed hash, metadata/byte
+mismatch, symlink, or partial pair fails the unit before qualification can run.
+
+Container-profile operators must first run both
+`bash scripts/stage-cancer-nci60-qualification-key.sh` and
+`bash scripts/stage-cancer-pdc000711-evidence.sh`. Supply the two emitted PDC host
+paths plus their parent-directory matrix and metadata digests as the matching
+`CANCER_PDC000711_*_HOST_PATH` and `CANCER_PDC000711_*_SHA256` Compose variables.
+Compose mounts all three qualification inputs read-only only into
+`cancer-evidence-worker`, refuses to auto-create missing source paths, and uses
+deliberately nonexistent zero-digest defaults when PDC staging is not configured.
+The host model-worker unit makes both ignored source trees and the evidence worker's
+`/run` staging tree inaccessible inside its own mount namespace and explicitly drops
+the two PDC path variables.
 
 The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
 records from Europe PMC every six hours. The model worker uses dedicated Cancer World

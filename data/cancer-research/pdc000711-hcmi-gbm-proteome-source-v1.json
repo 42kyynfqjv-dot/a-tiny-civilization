@@ -1,0 +1,95 @@
+{
+  "schema_version": 1,
+  "manifest_id": "pdc000711-hcmi-gbm-proteome-source-v1",
+  "source": {
+    "custodian": "National Cancer Institute Proteomic Data Commons",
+    "program": "Human Cancer Models Initiative",
+    "study_title": "Proteomic characterization of the NCI Human Cancer Models Initiative patient-derived cancer model collection",
+    "pdc_study_id": "PDC000711",
+    "study_version_uuid": "ec0e442b-a0b8-4dc7-a4ba-6b5409fc68de",
+    "study_url": "https://pdc.cancer.gov/pdc/study/PDC000711",
+    "hcmi_url": "https://www.cancer.gov/ccg/research/functional-genomics/hcmi"
+  },
+  "license": {
+    "spdx_identifier": "CC-BY-4.0",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "source_terms_url": "https://pdc.cancer.gov/pdc-docs/home",
+    "attribution": "Proteomic Data Commons (PDC), National Cancer Institute, study PDC000711; licensed under CC BY 4.0."
+  },
+  "endpoints": {
+    "graphql": "https://pdc.cancer.gov/graphql",
+    "api_documentation": "https://pdc.cancer.gov/pdc-docs/api-documentation"
+  },
+  "queries": {
+    "file_metadata": "{ filesPerStudy(pdc_study_id:\"PDC000711\" file_name:\"Global_all_original.txt\" offset:0 limit:10) { study_id pdc_study_id file_id file_name file_size md5sum file_location data_category file_type file_format signedUrl { url } } }",
+    "biospecimens": "{ biospecimenPerStudy(pdc_study_id:\"PDC000711\" acceptDUA:true) { aliquot_id sample_id case_id aliquot_submitter_id sample_submitter_id case_submitter_id sample_type disease_type primary_site } }"
+  },
+  "file": {
+    "file_id": "86e9b7f6-0776-4cb7-b761-dee14321b318",
+    "file_name": "Global_all_original.txt",
+    "file_size": 8118871,
+    "md5": "333eef379eaea258efca326d579eef21",
+    "file_location": "studies/711/suppl/Global_all_original.txt",
+    "data_category": "Alternate Processing Pipeline",
+    "file_type": "Text",
+    "file_format": "tsv"
+  },
+  "expected_source_shape": {
+    "biospecimen_records": 75,
+    "model_columns": 75,
+    "data_rows": 12342,
+    "annotation_columns": [
+      "T: Index",
+      "T: NumberPSM",
+      "T: ProteinID",
+      "T: MaxPepProb"
+    ]
+  },
+  "gbm_selection": {
+    "disease_type": "Glioblastoma",
+    "primary_site": "Brain",
+    "expected_model_count": 30,
+    "expected_sample_type_counts": {
+      "Expanded Next Generation Cancer Model": 3,
+      "Next Generation Cancer Model": 27
+    },
+    "expected_case_submitter_ids": [
+      "HCM-BROD-0002-C71",
+      "HCM-BROD-0003-C71",
+      "HCM-BROD-0011-C71",
+      "HCM-BROD-0012-C71",
+      "HCM-BROD-0014-C71",
+      "HCM-BROD-0028-C71",
+      "HCM-BROD-0029-C71",
+      "HCM-BROD-0047-C71",
+      "HCM-BROD-0048-C71",
+      "HCM-BROD-0103-C71",
+      "HCM-BROD-0104-C71",
+      "HCM-BROD-0106-C71",
+      "HCM-BROD-0195-C71",
+      "HCM-BROD-0196-C71",
+      "HCM-BROD-0198-C71",
+      "HCM-BROD-0199-C71",
+      "HCM-BROD-0200-C71",
+      "HCM-BROD-0209-C71",
+      "HCM-BROD-0210-C71",
+      "HCM-BROD-0213-C71",
+      "HCM-BROD-0214-C71",
+      "HCM-BROD-0408-C71",
+      "HCM-BROD-0415-C71",
+      "HCM-BROD-0416-C71",
+      "HCM-BROD-0417-C71",
+      "HCM-BROD-0419-C71",
+      "HCM-BROD-0420-C71",
+      "HCM-BROD-0421-C71",
+      "HCM-BROD-0564-C71",
+      "HCM-BROD-0613-C71"
+    ]
+  },
+  "scientific_boundary": {
+    "measurement": "Provider alternate-pipeline isobaric proteomics abundance values; relative rather than absolute quantities.",
+    "missing_value_policy": "Preserve empty source cells exactly; do not impute, fill, or reinterpret them as zero.",
+    "allowed_claim": "Observed protein coverage and relative abundance patterns across the 30 source-annotated patient-derived glioblastoma models.",
+    "prohibited_claim": "The matrix does not contain intervention response, clinical efficacy, patient outcome, safety, dose, or counterfactual treatment evidence."
+  }
+}

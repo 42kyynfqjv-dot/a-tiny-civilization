@@ -9,7 +9,7 @@ use std::{
 
 use anyhow::{Context, Result};
 use application::{
-    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerNci60Qualifier,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerNci60Qualifier, CancerPdc000711Qualifier,
     CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchLiteratureSnapshot,
     CancerResearchModel, CancerResearchModelAdapters, CancerResearchNoveltySource,
     CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome, CognitionModel,
@@ -336,6 +336,16 @@ enum Command {
         /// context, research memory, and the public artifact tree.
         #[arg(long, env = "CANCER_NCI60_ANSWER_KEY_PATH")]
         nci60_answer_key_path: PathBuf,
+
+        /// Missingness-preserving 30-model PDC000711 GBM proteome. It is opened
+        /// only by this observer evidence worker and never enters model context.
+        #[arg(long, env = "CANCER_PDC000711_PROTEOME_PATH")]
+        pdc000711_proteome_path: PathBuf,
+
+        /// Content-addressed derivation and biospecimen provenance for the
+        /// isolated PDC000711 proteome artifact.
+        #[arg(long, env = "CANCER_PDC000711_PROTEOME_METADATA_PATH")]
+        pdc000711_proteome_metadata_path: PathBuf,
 
         /// Fetch once and exit (used by deployment checks and deterministic tests).
         #[arg(long, default_value_t = false)]
@@ -737,19 +747,27 @@ async fn main() -> Result<()> {
             endpoint,
             nci60_challenge_catalogue_path,
             nci60_answer_key_path,
+            pdc000711_proteome_path,
+            pdc000711_proteome_metadata_path,
             once,
         } => {
             serve_cancer_evidence_worker(
                 &store,
                 world_id,
-                &endpoint,
-                page_size,
-                refresh_seconds,
-                CancerNci60QualificationPaths {
-                    catalogue: &nci60_challenge_catalogue_path,
-                    answer_key: &nci60_answer_key_path,
+                CancerEvidenceWorkerConfiguration {
+                    endpoint: &endpoint,
+                    page_size,
+                    refresh_seconds,
+                    nci60_paths: CancerNci60QualificationPaths {
+                        catalogue: &nci60_challenge_catalogue_path,
+                        answer_key: &nci60_answer_key_path,
+                    },
+                    patient_derived_paths: CancerPatientDerivedQualificationPaths {
+                        matrix: &pdc000711_proteome_path,
+                        metadata: &pdc000711_proteome_metadata_path,
+                    },
+                    once,
                 },
-                once,
             )
             .await
         }
@@ -925,15 +943,33 @@ struct CancerNci60QualificationPaths<'a> {
     answer_key: &'a std::path::Path,
 }
 
+struct CancerPatientDerivedQualificationPaths<'a> {
+    matrix: &'a std::path::Path,
+    metadata: &'a std::path::Path,
+}
+
+struct CancerEvidenceWorkerConfiguration<'a> {
+    endpoint: &'a str,
+    page_size: u16,
+    refresh_seconds: u64,
+    nci60_paths: CancerNci60QualificationPaths<'a>,
+    patient_derived_paths: CancerPatientDerivedQualificationPaths<'a>,
+    once: bool,
+}
+
 async fn serve_cancer_evidence_worker(
     store: &PostgresStore,
     world_id: WorldId,
-    endpoint: &str,
-    page_size: u16,
-    refresh_seconds: u64,
-    nci60_paths: CancerNci60QualificationPaths<'_>,
-    once: bool,
+    configuration: CancerEvidenceWorkerConfiguration<'_>,
 ) -> Result<()> {
+    let CancerEvidenceWorkerConfiguration {
+        endpoint,
+        page_size,
+        refresh_seconds,
+        nci60_paths,
+        patient_derived_paths,
+        once,
+    } = configuration;
     let endpoint = Url::parse(endpoint).context("parse Cancer World evidence endpoint")?;
     if endpoint.scheme() != "https" {
         anyhow::bail!("Cancer World evidence endpoint must use HTTPS");
@@ -998,11 +1034,72 @@ async fn serve_cancer_evidence_worker(
             }
             Err(error) => return Err(error),
         }
+        match qualify_pending_cancer_patient_derived_targets(
+            store,
+            world_id,
+            patient_derived_paths.matrix,
+            patient_derived_paths.metadata,
+        )
+        .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::info!(world_id = %world_id, qualification_count = count, "Cancer World patient-derived GBM molecular qualification batch completed")
+            }
+            Ok(_) => {}
+            Err(error) if !once => {
+                tracing::error!(world_id = %world_id, %error, "Cancer World patient-derived GBM molecular qualification failed; exact-target artifacts remain queued")
+            }
+            Err(error) => return Err(error),
+        }
         if once {
             return Ok(());
         }
         tokio::time::sleep(Duration::from_secs(60)).await;
     }
+}
+
+async fn qualify_pending_cancer_patient_derived_targets(
+    store: &PostgresStore,
+    world_id: WorldId,
+    matrix_path: &std::path::Path,
+    metadata_path: &std::path::Path,
+) -> Result<usize> {
+    let candidates = store
+        .load_unqualified_cancer_patient_derived_molecular_targets(
+            world_id,
+            world_domain::CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
+            32,
+        )
+        .await
+        .context("load Cancer World artifacts with exact molecular targets")?;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    if matrix_path == metadata_path {
+        anyhow::bail!("PDC000711 matrix and derivation metadata must be distinct files");
+    }
+    let matrix_bytes = fs::read(matrix_path)
+        .with_context(|| format!("read isolated PDC000711 matrix {}", matrix_path.display()))?;
+    let metadata_bytes = fs::read(metadata_path).with_context(|| {
+        format!(
+            "read isolated PDC000711 derivation metadata {}",
+            metadata_path.display()
+        )
+    })?;
+    let qualifier = CancerPdc000711Qualifier::new(&metadata_bytes, &matrix_bytes)
+        .context("validate and index isolated PDC000711 GBM proteome")?;
+    let mut stored = 0_usize;
+    for candidate in candidates {
+        let result = qualifier
+            .qualify(&candidate)
+            .context("qualify one exact molecular target set against PDC000711")?;
+        store
+            .store_cancer_patient_derived_molecular_qualification(&result, &candidate.contribution)
+            .await
+            .context("store immutable patient-derived molecular qualification")?;
+        stored += 1;
+    }
+    Ok(stored)
 }
 
 async fn qualify_pending_cancer_nci60_predictions(

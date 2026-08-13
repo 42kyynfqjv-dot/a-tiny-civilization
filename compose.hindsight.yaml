@@ -214,6 +214,8 @@ services:
       CANCER_EVIDENCE_ENDPOINT: ${CANCER_EVIDENCE_ENDPOINT:-https://www.ebi.ac.uk/europepmc/webservices/rest/search}
       CANCER_NCI60_CHALLENGE_CATALOGUE_PATH: /app/data/cancer-research/nci-cellminer-2-15-cns-challenge-catalogue-v1.json
       CANCER_NCI60_ANSWER_KEY_PATH: /app/qualification/nci-cellminer-2-15-cns-challenge-answer-key-v1-559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce.json
+      CANCER_PDC000711_PROTEOME_PATH: /app/qualification/pdc000711/sha256/${CANCER_PDC000711_PROTEOME_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/${CANCER_PDC000711_PROTEOME_METADATA_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/pdc000711-gbm-proteome.tsv
+      CANCER_PDC000711_PROTEOME_METADATA_PATH: /app/qualification/pdc000711/sha256/${CANCER_PDC000711_PROTEOME_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/${CANCER_PDC000711_PROTEOME_METADATA_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/pdc000711-gbm-proteome.metadata.json
     depends_on:
       migrate:
         condition: service_healthy
@@ -233,6 +235,22 @@ services:
       - type: bind
         source: ${CANCER_NCI60_ANSWER_KEY_HOST_PATH:-./runtime-qualification/nci60/559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce/nci-cellminer-2-15-cns-challenge-answer-key-v1.json}
         target: /app/qualification/nci-cellminer-2-15-cns-challenge-answer-key-v1-559d52f45f18901d3ce8fb844f99cd88045ccd3fbd0c99cb7e8139b85e59f4ce.json
+        read_only: true
+        bind:
+          create_host_path: false
+      # Patient-derived model bytes are also observer-side qualification input.
+      # The zero-digest defaults deliberately name nonexistent paths, so this
+      # optional profile fails closed until the staging helper's exact hashes and
+      # paths are supplied. No model-facing service receives either bind.
+      - type: bind
+        source: ${CANCER_PDC000711_PROTEOME_HOST_PATH:-./runtime-qualification/pdc000711/sha256/0000000000000000000000000000000000000000000000000000000000000000/0000000000000000000000000000000000000000000000000000000000000000/pdc000711-gbm-proteome.tsv}
+        target: /app/qualification/pdc000711/sha256/${CANCER_PDC000711_PROTEOME_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/${CANCER_PDC000711_PROTEOME_METADATA_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/pdc000711-gbm-proteome.tsv
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${CANCER_PDC000711_PROTEOME_METADATA_HOST_PATH:-./runtime-qualification/pdc000711/sha256/0000000000000000000000000000000000000000000000000000000000000000/0000000000000000000000000000000000000000000000000000000000000000/pdc000711-gbm-proteome.metadata.json}
+        target: /app/qualification/pdc000711/sha256/${CANCER_PDC000711_PROTEOME_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/${CANCER_PDC000711_PROTEOME_METADATA_SHA256:-0000000000000000000000000000000000000000000000000000000000000000}/pdc000711-gbm-proteome.metadata.json
         read_only: true
         bind:
           create_host_path: false

@@ -22,7 +22,11 @@ pub const CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 4;
 /// Schema v5 adds an optional structured prediction for a held-out NCI-60 CNS
 /// response challenge. New contributions must answer exactly one supplied
 /// challenge and may never manufacture a prediction without that evidence.
-pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 5;
+pub const RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 5;
+/// Schema v6 adds explicit canonical gene-symbol targets. This lets an
+/// observer-side evidence worker perform exact, provenance-bound molecular
+/// lookups without interpreting or fuzzy-matching research prose.
+pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 6;
 pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
 pub const LEGACY_CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
 /// Schema v2 adds a compact multiscale readout. Historical v1 results remain
@@ -35,11 +39,14 @@ pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 1;
 pub const CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_NCI60_RESPONSE_QUALIFICATION_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION: u16 = 1;
+pub const CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION: u16 = 1;
 pub const MAX_CANCER_RESEARCH_NOVELTY_MATCHES: usize = 5;
 pub const MAX_CANCER_RESEARCH_NOVELTY_QUERY_TERMS: usize = 8;
 pub const MAX_CANCER_RESEARCH_NOVELTY_WARNINGS: usize = 4;
 pub const MAX_RESEARCH_EVIDENCE_REFERENCES: usize = 64;
 pub const MAX_RESEARCH_CLAIMS: usize = 8;
+pub const MAX_RESEARCH_MOLECULAR_TARGETS: usize = 4;
 pub const MAX_RESEARCH_CITATIONS: usize = 32;
 pub const MAX_RESEARCH_MODEL_OUTPUT_TOKENS: u16 = 4_096;
 const MAX_RESEARCH_SOURCE_ID_BYTES: usize = 256;
@@ -447,6 +454,32 @@ pub struct CancerResearchClaim {
     pub citation_hashes: Vec<Digest>,
 }
 
+/// An exact HGNC-style gene symbol deliberately kept separate from prose.
+/// Symbols are identities only: naming one does not assert expression,
+/// causality, druggability, safety, or therapeutic effect.
+#[derive(Clone, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerMolecularTarget {
+    pub gene_symbol: String,
+}
+
+impl CancerMolecularTarget {
+    pub fn validate(&self) -> Result<(), CancerResearchContractError> {
+        let bytes = self.gene_symbol.as_bytes();
+        if bytes.is_empty()
+            || bytes.len() > 32
+            || !bytes[0].is_ascii_uppercase()
+            || !bytes[bytes.len() - 1].is_ascii_alphanumeric()
+            || bytes
+                .iter()
+                .any(|byte| !(byte.is_ascii_uppercase() || byte.is_ascii_digit() || *byte == b'-'))
+        {
+            return Err(CancerResearchContractError::InvalidContribution);
+        }
+        Ok(())
+    }
+}
+
 /// A concrete intervention identity from the public NCI compound catalogues.
 /// NSC identifiers are opaque references, not treatment recommendations or a
 /// claim that a compound is safe or effective in people.
@@ -620,6 +653,150 @@ impl CancerNci60ResponseQualification {
                 .any(|limitation| !bounded_text(limitation, 512))
         {
             return Err(CancerResearchContractError::InvalidResponseQualification);
+        }
+        Ok(())
+    }
+
+    pub fn canonical_hash(
+        &self,
+        contribution: &CancerResearchContribution,
+    ) -> Result<Digest, CancerResearchContractError> {
+        self.validate_against(contribution)?;
+        Ok(Digest::canonical(self)?)
+    }
+}
+
+/// Exact target-level result of looking up a structured gene symbol in a
+/// patient-derived tumor-model proteome. It is a molecular-presence check only;
+/// no treatment, response, causality, or efficacy label exists in this type.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerPatientDerivedTargetStatus {
+    Observed,
+    NotDetected,
+    Unresolved,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerPatientDerivedTargetObservation {
+    pub target: CancerMolecularTarget,
+    pub protein_ids: Vec<String>,
+    /// Models for which this exact target had an assay row. Zero means the
+    /// submitted symbol could not be resolved without fuzzy inference.
+    pub assayed_model_count: u16,
+    /// Models with a non-missing reported value for an exact matching row.
+    pub observed_model_count: u16,
+    pub status: CancerPatientDerivedTargetStatus,
+}
+
+impl CancerPatientDerivedTargetObservation {
+    fn validate(&self, cohort_model_count: u16) -> Result<(), CancerResearchContractError> {
+        self.target.validate()?;
+        let valid_protein_ids = self.protein_ids.len() <= 32
+            && self.protein_ids.windows(2).all(|pair| pair[0] < pair[1])
+            && self
+                .protein_ids
+                .iter()
+                .all(|value| value.trim() == value && !value.is_empty() && value.len() <= 128);
+        let counts_valid = self.observed_model_count <= self.assayed_model_count
+            && self.assayed_model_count <= cohort_model_count;
+        let status_valid = match self.status {
+            CancerPatientDerivedTargetStatus::Observed => {
+                self.assayed_model_count == cohort_model_count
+                    && self.observed_model_count > 0
+                    && !self.protein_ids.is_empty()
+            }
+            CancerPatientDerivedTargetStatus::NotDetected => {
+                self.assayed_model_count == cohort_model_count
+                    && self.observed_model_count == 0
+                    && !self.protein_ids.is_empty()
+            }
+            CancerPatientDerivedTargetStatus::Unresolved => {
+                self.assayed_model_count == 0
+                    && self.observed_model_count == 0
+                    && self.protein_ids.is_empty()
+            }
+        };
+        if !valid_protein_ids || !counts_valid || !status_valid {
+            return Err(CancerResearchContractError::InvalidPatientDerivedQualification);
+        }
+        Ok(())
+    }
+}
+
+/// Observer-side molecular corroboration against an immutable PDC-derived
+/// cohort artifact. Patient-linked source rows remain outside the public event
+/// log and model memory; only exact target coverage is retained here.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CancerPatientDerivedMolecularQualification {
+    pub schema_version: u16,
+    pub method_version: u16,
+    pub qualification_id: Uuid,
+    pub world_id: WorldId,
+    pub request_id: Uuid,
+    pub artifact_hash: Digest,
+    pub source: CancerResearchEvidenceReference,
+    pub pdc_study_id: String,
+    pub study_version_id: Uuid,
+    pub source_file_id: Uuid,
+    pub source_file_md5: String,
+    pub cohort_model_count: u16,
+    pub target_observations: Vec<CancerPatientDerivedTargetObservation>,
+    pub limitations: Vec<String>,
+}
+
+impl CancerPatientDerivedMolecularQualification {
+    #[must_use]
+    pub fn deterministic_id(request_id: Uuid, method_version: u16) -> Uuid {
+        Uuid::new_v5(
+            &request_id,
+            format!("observer-patient-derived-molecular-qualification:v{method_version}")
+                .as_bytes(),
+        )
+    }
+
+    pub fn validate_against(
+        &self,
+        contribution: &CancerResearchContribution,
+    ) -> Result<(), CancerResearchContractError> {
+        let expected_targets = contribution.molecular_targets.to_vec();
+        let observed_targets = self
+            .target_observations
+            .iter()
+            .map(|observation| observation.target.clone())
+            .collect::<Vec<_>>();
+        if self.schema_version != CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_SCHEMA_VERSION
+            || self.method_version != CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION
+            || self.qualification_id != Self::deterministic_id(self.request_id, self.method_version)
+            || self.request_id != contribution.request_id
+            || self.artifact_hash != contribution.canonical_hash()?
+            || self.source.kind != CancerResearchEvidenceKind::RawDataset
+            || self.source.validate().is_err()
+            || self.pdc_study_id != "PDC000711"
+            || self.study_version_id.is_nil()
+            || self.source_file_id.is_nil()
+            || self.source_file_md5.len() != 32
+            || !self
+                .source_file_md5
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            || self.cohort_model_count == 0
+            || self.cohort_model_count > 10_000
+            || expected_targets.is_empty()
+            || observed_targets != expected_targets
+            || self
+                .target_observations
+                .iter()
+                .any(|observation| observation.validate(self.cohort_model_count).is_err())
+            || !(4..=6).contains(&self.limitations.len())
+            || self
+                .limitations
+                .iter()
+                .any(|limitation| !bounded_text(limitation, 512))
+        {
+            return Err(CancerResearchContractError::InvalidPatientDerivedQualification);
         }
         Ok(())
     }
@@ -1078,6 +1255,8 @@ pub struct CancerResearchContribution {
     pub title: String,
     pub abstract_text: String,
     pub claims: Vec<CancerResearchClaim>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub molecular_targets: Vec<CancerMolecularTarget>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1133,6 +1312,29 @@ impl CancerResearchContribution {
         virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
         nci60_response_prediction: Option<CancerNci60ResponsePrediction>,
     ) -> Result<Self, CancerResearchContractError> {
+        Self::new_with_structured_evidence_targets(
+            selection,
+            artifact_kind,
+            title,
+            abstract_text,
+            claims,
+            Vec::new(),
+            virtual_experiment_plan,
+            nci60_response_prediction,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_structured_evidence_targets(
+        selection: &CancerResearchTurnSelection,
+        artifact_kind: CancerResearchArtifactKind,
+        title: impl Into<String>,
+        abstract_text: impl Into<String>,
+        claims: Vec<CancerResearchClaim>,
+        molecular_targets: Vec<CancerMolecularTarget>,
+        virtual_experiment_plan: Option<CancerVirtualExperimentPlan>,
+        nci60_response_prediction: Option<CancerNci60ResponsePrediction>,
+    ) -> Result<Self, CancerResearchContractError> {
         let contribution = Self {
             schema_version: CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION,
             contribution_id: Uuid::new_v5(
@@ -1147,6 +1349,7 @@ impl CancerResearchContribution {
             title: title.into(),
             abstract_text: abstract_text.into(),
             claims,
+            molecular_targets,
             virtual_experiment_plan,
             nci60_response_prediction,
         };
@@ -1165,6 +1368,7 @@ impl CancerResearchContribution {
                 | VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                | RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
         ) {
             return Err(CancerResearchContractError::UnsupportedContributionSchema(
@@ -1192,6 +1396,17 @@ impl CancerResearchContribution {
                 .claims
                 .iter()
                 .any(|claim| claim.validate(self.stage).is_err())
+            || (self.schema_version < CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                && !self.molecular_targets.is_empty())
+            || self.molecular_targets.len() > MAX_RESEARCH_MOLECULAR_TARGETS
+            || self
+                .molecular_targets
+                .windows(2)
+                .any(|pair| pair[0] >= pair[1])
+            || self
+                .molecular_targets
+                .iter()
+                .any(|target| target.validate().is_err())
             || !artifact_kind_valid_for_stage(self.artifact_kind, self.stage)
             || (self.schema_version == LEGACY_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 && self.virtual_experiment_plan.is_some())
@@ -1208,6 +1423,7 @@ impl CancerResearchContribution {
                 VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                     | REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                     | CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                    | RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                     | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
             ) && self.virtual_experiment_plan.is_none())
             || (self.artifact_kind == CancerResearchArtifactKind::ExperimentProposal
@@ -1215,6 +1431,7 @@ impl CancerResearchContribution {
                     self.schema_version,
                     REQUIRED_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                         | CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
+                        | RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                         | CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION
                 )
                 && self.virtual_experiment_plan.is_none())
@@ -1235,7 +1452,7 @@ impl CancerResearchContribution {
             .iter()
             .filter(|reference| reference.kind == CancerResearchEvidenceKind::ResponseChallenge)
             .collect::<Vec<_>>();
-        if self.schema_version < CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION {
+        if self.schema_version < RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION {
             return self.nci60_response_prediction.is_some();
         }
         match (
@@ -1438,6 +1655,8 @@ pub enum CancerResearchContractError {
     InvalidResponsePrediction,
     #[error("NCI-60 response qualification is invalid or crossed its held-out provenance")]
     InvalidResponseQualification,
+    #[error("patient-derived molecular qualification is invalid or crossed its provenance")]
+    InvalidPatientDerivedQualification,
     #[error("cancer-research novelty audit is invalid or overstates its evidence")]
     InvalidNoveltyAudit,
     #[error("cancer-research canonical hashing failed: {0}")]

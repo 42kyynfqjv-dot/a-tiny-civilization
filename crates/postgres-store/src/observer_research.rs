@@ -10,9 +10,9 @@ use observer_projection::{
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerLabCapability,
     PublicCancerLabCapabilityStatus, PublicCancerNci60BenchmarkPartition,
     PublicCancerNci60BenchmarkSummary, PublicCancerNci60ResponseQualification,
-    PublicCancerResearchArtifact, PublicCancerResearchCampaign,
-    PublicCancerResearchCampaignOutcome, PublicCancerResearchDuplicate,
-    PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
+    PublicCancerPatientDerivedMolecularQualification, PublicCancerResearchArtifact,
+    PublicCancerResearchCampaign, PublicCancerResearchCampaignOutcome,
+    PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
     PublicCancerResearchProgramSummary, PublicCancerResearchView,
     PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
 };
@@ -21,8 +21,10 @@ use sqlx::FromRow;
 use std::collections::BTreeMap;
 use uuid::Uuid;
 use world_domain::{
-    CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION, CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
-    CANCER_VIRTUAL_LAB_METHOD_VERSION, CancerNci60ResponseQualification,
+    CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+    CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
+    CancerNci60ResponseQualification, CancerPatientDerivedMolecularQualification,
     CancerResearchNoveltyAudit, CancerResearchProgram, CancerVirtualExperimentInterpretation,
     CancerVirtualExperimentResult, Digest, WorldId,
 };
@@ -47,6 +49,9 @@ struct ResearchProjectionRow {
     qualification_payload: Option<Value>,
     qualification_checksum: Option<Vec<u8>>,
     qualification_created_at: Option<DateTime<Utc>>,
+    patient_qualification_payload: Option<Value>,
+    patient_qualification_checksum: Option<Vec<u8>>,
+    patient_qualification_created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -205,7 +210,10 @@ impl ObserverCancerResearchStore for PostgresStore {
                    experiment_memory.completed_at AS experiment_memory_completed_at,
                    qualification.result_payload AS qualification_payload,
                    qualification.result_checksum AS qualification_checksum,
-                   qualification.created_at AS qualification_created_at
+                   qualification.created_at AS qualification_created_at,
+                   patient_qualification.result_payload AS patient_qualification_payload,
+                   patient_qualification.result_checksum AS patient_qualification_checksum,
+                   patient_qualification.created_at AS patient_qualification_created_at
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
             LEFT JOIN memory_outbox AS memory
@@ -227,6 +235,9 @@ impl ObserverCancerResearchStore for PostgresStore {
             LEFT JOIN cancer_nci60_response_qualifications AS qualification
               ON qualification.request_id=request.request_id
              AND qualification.method_version=$5
+            LEFT JOIN cancer_patient_derived_molecular_qualifications AS patient_qualification
+              ON patient_qualification.request_id=request.request_id
+             AND patient_qualification.method_version=$6
             WHERE request.world_id=$1
               AND result.result_payload->'receipt' <> 'null'::JSONB
             ORDER BY request.ordinal, request.request_id
@@ -238,6 +249,9 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(i32::from(CANCER_VIRTUAL_LAB_METHOD_VERSION))
         .bind(i32::from(
             CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+        ))
+        .bind(i32::from(
+            CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
         ))
         .fetch_all(self.pool())
         .await
@@ -392,6 +406,50 @@ impl ObserverCancerResearchStore for PostgresStore {
                     ));
                 }
             };
+            let patient_derived_qualification = match (
+                row.patient_qualification_payload,
+                row.patient_qualification_checksum,
+                row.patient_qualification_created_at,
+            ) {
+                (None, None, None) => None,
+                (Some(payload), Some(checksum), Some(created_at)) => {
+                    let result: CancerPatientDerivedMolecularQualification =
+                        serde_json::from_value(payload).map_err(|error| {
+                            corrupt(format!(
+                                "invalid patient-derived molecular qualification result: {error}"
+                            ))
+                        })?;
+                    result
+                        .validate_against(&receipt.contribution)
+                        .map_err(contract_error)?;
+                    let result_hash = digest_from_db(
+                        &checksum,
+                        "patient-derived molecular qualification result checksum",
+                    )?;
+                    if result.world_id != world_id
+                        || result.request_id != request.request_id
+                        || result.artifact_hash != artifact_hash
+                        || result
+                            .canonical_hash(&receipt.contribution)
+                            .map_err(contract_error)?
+                            != result_hash
+                    {
+                        return Err(corrupt(
+                            "Cancer World patient-derived molecular qualification crossed its immutable artifact provenance",
+                        ));
+                    }
+                    Some(PublicCancerPatientDerivedMolecularQualification {
+                        result,
+                        result_hash,
+                        created_at,
+                    })
+                }
+                _ => {
+                    return Err(corrupt(
+                        "Cancer World patient-derived molecular qualification is only partially persisted",
+                    ));
+                }
+            };
             artifacts.push(PublicCancerResearchArtifact {
                 request_id: request.request_id,
                 selected_at_tick: request.selection.selected_at_tick,
@@ -423,6 +481,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 novelty_audit,
                 virtual_experiment,
                 nci60_qualification,
+                patient_derived_qualification,
                 created_at: row.created_at,
                 duplicates: Vec::new(),
             });

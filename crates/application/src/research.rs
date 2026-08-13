@@ -6,11 +6,11 @@ use serde::{Deserialize, Serialize};
 use thiserror::Error;
 use uuid::Uuid;
 use world_domain::{
-    CancerNci60ResponseQualification, CancerResearchContractError, CancerResearchContribution,
-    CancerResearchEvidenceKind, CancerResearchEvidenceReference, CancerResearchInferenceTier,
-    CancerResearchStage, CancerResearchTurnSelection, CancerVirtualEndpoint,
-    CancerVirtualExperimentInterpretation, CancerVirtualExperimentPlan,
-    CancerVirtualExperimentResult, Digest, EntityId,
+    CancerNci60ResponseQualification, CancerPatientDerivedMolecularQualification,
+    CancerResearchContractError, CancerResearchContribution, CancerResearchEvidenceKind,
+    CancerResearchEvidenceReference, CancerResearchInferenceTier, CancerResearchStage,
+    CancerResearchTurnSelection, CancerVirtualEndpoint, CancerVirtualExperimentInterpretation,
+    CancerVirtualExperimentPlan, CancerVirtualExperimentResult, Digest, EntityId,
 };
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -185,6 +185,15 @@ pub struct CancerNci60QualificationCandidate {
     /// qualification worker rebinds it to the pinned catalogue before opening
     /// any answer, preventing source-ID/content mismatches from being scored.
     pub challenge_document: CancerResearchEvidenceDocument,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancerPatientDerivedMolecularCandidate {
+    pub world_id: world_domain::WorldId,
+    pub request_id: Uuid,
+    pub ordinal: u32,
+    pub artifact_hash: Digest,
+    pub contribution: CancerResearchContribution,
 }
 
 /// One immutable follow-up in a campaign rooted in a model-supported artifact.
@@ -1204,6 +1213,28 @@ pub trait CancerResearchJobStore: Send + Sync {
         Ok(())
     }
 
+    /// Loads successful artifacts with explicit canonical molecular targets
+    /// that have not yet been checked against the current patient-derived
+    /// proteome qualification method.
+    async fn load_unqualified_cancer_patient_derived_molecular_targets(
+        &self,
+        _world_id: world_domain::WorldId,
+        _method_version: u16,
+        _limit: usize,
+    ) -> Result<Vec<crate::CancerPatientDerivedMolecularCandidate>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Appends one exact-target patient-derived molecular lookup. This result
+    /// is observer evidence and is intentionally not written into model memory.
+    async fn store_cancer_patient_derived_molecular_qualification(
+        &self,
+        _qualification: &CancerPatientDerivedMolecularQualification,
+        _contribution: &CancerResearchContribution,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// Inserts one exact content-addressed request. Repeating the identical
     /// request is idempotent; the same ID with different bytes is corruption.
     async fn enqueue_cancer_research_request(
@@ -1649,6 +1680,7 @@ mod tests {
                             .to_owned(),
                     citation_hashes: Vec::new(),
                 }],
+                molecular_targets: Vec::new(),
                 virtual_experiment_plan: None,
                 nci60_response_prediction: None,
             }

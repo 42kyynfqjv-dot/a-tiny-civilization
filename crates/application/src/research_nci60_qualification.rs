@@ -627,6 +627,7 @@ mod tests {
                 falsification_test: "The held-out ordering disagrees.".to_owned(),
                 citation_hashes: Vec::new(),
             }],
+            molecular_targets: Vec::new(),
             virtual_experiment_plan: None,
             nci60_response_prediction: Some(prediction),
         };

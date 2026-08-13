@@ -10,6 +10,7 @@ use std::{
 };
 
 mod cancer_nci_cellminer;
+mod cancer_pdc_hcmi;
 mod cancer_tcga;
 
 use anyhow::{Context, Result, bail};
@@ -170,6 +171,15 @@ enum SourceCommand {
     /// Acquire CellMiner's normalized NCI-60 and NCI-ALMANAC response matrices.
     CancerNciCellminer {
         /// Directory beneath the ignored source cache. Existing verified files resume safely.
+        #[arg(long)]
+        output_directory: PathBuf,
+    },
+    /// Acquire the exact PDC000711 HCMI proteomics matrix and biospecimen join metadata.
+    CancerPdcHcmiGbm {
+        /// Checked-in trust manifest pinning study, file, license, and expected cohort.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Directory beneath the ignored source cache. Existing verified snapshots resume safely.
         #[arg(long)]
         output_directory: PathBuf,
     },
@@ -580,6 +590,18 @@ enum DeriveCommand {
         /// New response-label artifact for the qualification worker only.
         #[arg(long)]
         answer_key_output: PathBuf,
+    },
+    /// Select the 30 source-annotated GBM model columns from PDC000711 without imputation.
+    CancerPdcHcmiGbmProteome {
+        /// Checked-in trust manifest used by acquisition.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Verified acquisition directory beneath the ignored source cache.
+        #[arg(long)]
+        source_directory: PathBuf,
+        /// New directory beneath the ignored derived cache.
+        #[arg(long)]
+        output_directory: PathBuf,
     },
     /// Select one source-confirmed land patch from the public world seed.
     ///
@@ -1342,6 +1364,10 @@ async fn main() -> Result<()> {
             SourceCommand::CancerNciCellminer { output_directory } => {
                 cancer_nci_cellminer::acquire(&output_directory).await
             }
+            SourceCommand::CancerPdcHcmiGbm {
+                manifest,
+                output_directory,
+            } => cancer_pdc_hcmi::acquire(&manifest, &output_directory).await,
         },
         Command::Inspect { command } => match command {
             InspectCommand::CancerDatasetRegistry { input } => {
@@ -1620,6 +1646,11 @@ async fn main() -> Result<()> {
                 &catalogue_output,
                 &answer_key_output,
             ),
+            DeriveCommand::CancerPdcHcmiGbmProteome {
+                manifest,
+                source_directory,
+                output_directory,
+            } => cancer_pdc_hcmi::derive(&manifest, &source_directory, &output_directory),
             DeriveCommand::ProvisionalLandOriginSelection {
                 land_reference_root_index,
                 artifact_root,

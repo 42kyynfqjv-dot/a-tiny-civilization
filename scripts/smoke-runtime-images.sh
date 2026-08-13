@@ -43,6 +43,21 @@ if [[ -f "$nci60_answer_source" ]]; then
     bash "${project_root}/scripts/smoke-cancer-nci60-qualification-key.sh"
 fi
 
+# Patient-derived evidence is intentionally absent from clean CI checkouts. A
+# host with the derived pair must expose both files or neither; a half-staged
+# provenance pair is always a release failure.
+pdc000711_proteome_source="${CANCER_PDC000711_PROTEOME_SOURCE_PATH:-${project_root}/data/derived-cache/pdc000711-hcmi-gbm-proteome/pdc000711-gbm-proteome.tsv}"
+pdc000711_metadata_source="${CANCER_PDC000711_PROTEOME_METADATA_SOURCE_PATH:-${project_root}/data/derived-cache/pdc000711-hcmi-gbm-proteome/pdc000711-gbm-proteome.metadata.json}"
+if [[ -f "$pdc000711_proteome_source" && -f "$pdc000711_metadata_source" ]]; then
+  ATINY_APP_IMAGE="$app_image" \
+    CANCER_PDC000711_PROTEOME_SOURCE_PATH="$pdc000711_proteome_source" \
+    CANCER_PDC000711_PROTEOME_METADATA_SOURCE_PATH="$pdc000711_metadata_source" \
+    bash "${project_root}/scripts/smoke-cancer-pdc000711-evidence.sh"
+elif [[ -e "$pdc000711_proteome_source" || -e "$pdc000711_metadata_source" ]]; then
+  echo "PDC000711 runtime smoke found an incomplete matrix/metadata pair" >&2
+  exit 1
+fi
+
 web_container=""
 cleanup() {
   if [[ -n "$web_container" ]]; then

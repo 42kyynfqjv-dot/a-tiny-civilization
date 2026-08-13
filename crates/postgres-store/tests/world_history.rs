@@ -1232,7 +1232,7 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
         archive
             .emerging_patterns
             .iter()
-            .all(|candidate| !matches!(candidate.pattern.signal_form, 7 | 8 | 9))
+            .all(|candidate| !matches!(candidate.pattern.signal_form, 7..=9))
     );
     assert!(
         archive
