@@ -88,12 +88,13 @@ worker's `/run` staging tree inaccessible inside its own mount namespace.
 
 The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
 records from Europe PMC every six hours. The model worker uses dedicated Cancer World
-OpenRouter and optional Fireworks keys. Exploration tries the pinned free GPT-OSS route
-before the metered Fireworks GPT-OSS overflow; literature audits retain their separate
-DeepSeek ladder. The opportunistic free attempt is bounded to 30 seconds while the
-treasury-capped Fireworks attempt retains the normal 120-second timeout, so shared-pool
-congestion cannot halve the deterministic research cadence. All paid calls share the
-independent durable $2.85 monthly circuit breaker. Their Compose
+OpenRouter and optional Fireworks keys. Exploration tries pinned free GPT-OSS first,
+then the bounded OpenRouter dynamic-free route, and only then the metered Fireworks
+GPT-OSS overflow; literature audits retain their separate DeepSeek ladder. Each free
+attempt is bounded to 30 seconds while the treasury-capped Fireworks attempt retains
+the normal 120-second timeout, so one congested shared pool does not consume the whole
+research window. All paid calls share the independent durable $2.85 monthly circuit
+breaker. Their Compose
 equivalents are behind the `container-research` profile for development hosts whose
 Docker bridges already have outbound HTTPS; do not run both copies concurrently.
 

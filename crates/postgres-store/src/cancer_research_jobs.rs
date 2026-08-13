@@ -1150,9 +1150,8 @@ impl CancerResearchJobStore for PostgresStore {
             JOIN cancer_research_results AS result USING (request_id)
             WHERE request.world_id=$1
               AND request.ordinal < $2
-              AND MOD(request.ordinal, 2) = $4
+              AND MOD(request.ordinal, 2) = $3
               AND request.stage='blind_discovery'
-              AND result.route_policy_version=$3
               AND result.result_payload->'receipt' IS NOT NULL
               AND result.result_payload->'receipt'->'contribution'->>'artifact_kind'='hypothesis'
             ORDER BY request.ordinal DESC, request.request_id
@@ -1161,9 +1160,6 @@ impl CancerResearchJobStore for PostgresStore {
         )
         .bind(world_id.as_uuid())
         .bind(i64::from(before_ordinal))
-        .bind(i32::from(
-            application::CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
-        ))
         .bind(i64::from(program.ordinal_remainder()))
         .fetch_optional(self.pool())
         .await
@@ -1368,14 +1364,11 @@ impl CancerResearchJobStore for PostgresStore {
                 (Some(payload), Some(checksum)) => {
                     let result: CancerResearchLadderResult =
                         serde_json::from_value(payload).map_err(corrupt)?;
-                    let registry = match request.selection.inference_tier {
-                        CancerResearchInferenceTier::Exploration => {
-                            CognitionRouteRegistry::cancer_research_exploration()
-                        }
-                        CancerResearchInferenceTier::Escalation => {
-                            CognitionRouteRegistry::cancer_research_escalation()
-                        }
-                    };
+                    let registry = CognitionRouteRegistry::cancer_research_for_policy(
+                        request.route_purpose(),
+                        result.route_policy_version,
+                    )
+                    .map_err(corrupt)?;
                     result
                         .validate_against(&registry, &request)
                         .map_err(corrupt)?;

@@ -23,14 +23,10 @@ pub struct CancerResearchPriorResult {
 impl CancerResearchPriorResult {
     pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
         self.request.validate()?;
-        let registry = match self.request.selection.inference_tier {
-            CancerResearchInferenceTier::Exploration => {
-                CognitionRouteRegistry::cancer_research_exploration()
-            }
-            CancerResearchInferenceTier::Escalation => {
-                CognitionRouteRegistry::cancer_research_escalation()
-            }
-        };
+        let registry = CognitionRouteRegistry::cancer_research_for_policy(
+            self.request.route_purpose(),
+            self.result.route_policy_version,
+        )?;
         self.result.validate_against(&registry, &self.request)?;
         if self.result.receipt.is_none() {
             return Err(CancerResearchModelContractError::InvalidPriorResult);
@@ -870,6 +866,7 @@ impl CancerResearchModelRequest {
         let approved = match self.selection.inference_tier {
             CancerResearchInferenceTier::Exploration => {
                 route == &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()
+                    || route == &CognitionModelRoute::openrouter_cancer_free()
                     || route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b()
             }
             CancerResearchInferenceTier::Escalation => {

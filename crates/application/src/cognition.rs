@@ -12,7 +12,8 @@ pub use world_domain::{CognitionReading as CognitionInputReading, cognition_requ
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 2;
-pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 7;
+pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 7;
+pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 8;
 pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
@@ -258,6 +259,15 @@ impl CognitionModelRoute {
     }
 
     #[must_use]
+    pub fn openrouter_cancer_free() -> Self {
+        Self {
+            provider: CognitionProviderId::openrouter_cancer(),
+            requested_model: "openrouter/free".to_owned(),
+            billing_class: CognitionBillingClass::FreeAllocation,
+        }
+    }
+
+    #[must_use]
     pub fn fireworks_cancer_gpt_oss_20b() -> Self {
         Self {
             provider: CognitionProviderId::fireworks_cancer(),
@@ -367,7 +377,10 @@ impl CognitionModelRoute {
                 "deepseek/deepseek-v4-pro" | "deepseek/deepseek-v4-flash"
             ),
             ("openrouter_cancer", CognitionBillingClass::FreeAllocation) => {
-                self.requested_model == "openai/gpt-oss-20b:free"
+                matches!(
+                    self.requested_model.as_str(),
+                    "openai/gpt-oss-20b:free" | "openrouter/free"
+                )
             }
             ("fireworks_cancer", CognitionBillingClass::PaidApproved) => {
                 self.requested_model == "accounts/fireworks/models/gpt-oss-20b"
@@ -432,8 +445,43 @@ impl CognitionRouteRegistry {
             policy_version: CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
             routes: vec![
                 CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                CognitionModelRoute::openrouter_cancer_free(),
                 CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
             ],
+        }
+    }
+
+    #[must_use]
+    pub fn cancer_research_exploration_legacy_v7() -> Self {
+        Self {
+            policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
+            routes: vec![
+                CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
+            ],
+        }
+    }
+
+    pub fn cancer_research_for_policy(
+        purpose: CognitionRoutePurpose,
+        policy_version: u16,
+    ) -> Result<Self, CognitionContractError> {
+        match (purpose, policy_version) {
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
+                CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
+            ) => Ok(Self::cancer_research_exploration()),
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
+            ) => Ok(Self::cancer_research_exploration_legacy_v7()),
+            (
+                CognitionRoutePurpose::CancerResearchEscalation,
+                CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION,
+            ) => Ok(Self::cancer_research_escalation()),
+            _ => Err(CognitionContractError::UnsupportedRoutePolicyVersion(
+                policy_version,
+            )),
         }
     }
 
@@ -449,18 +497,20 @@ impl CognitionRouteRegistry {
     }
 
     pub fn validate(&self, purpose: CognitionRoutePurpose) -> Result<(), CognitionContractError> {
-        let expected_policy_version = match purpose {
-            CognitionRoutePurpose::CancerResearchExploration => {
-                CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
-            }
+        let supported_policy_version = match purpose {
+            CognitionRoutePurpose::CancerResearchExploration => matches!(
+                self.policy_version,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
+                    | CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
+            ),
             CognitionRoutePurpose::CancerResearchEscalation => {
-                CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION
+                self.policy_version == CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION
             }
             CognitionRoutePurpose::ProductionWorld | CognitionRoutePurpose::Development => {
-                COGNITION_ROUTE_POLICY_VERSION
+                self.policy_version == COGNITION_ROUTE_POLICY_VERSION
             }
         };
-        if self.policy_version != expected_policy_version {
+        if !supported_policy_version {
             return Err(CognitionContractError::UnsupportedRoutePolicyVersion(
                 self.policy_version,
             ));
@@ -514,12 +564,19 @@ impl CognitionRouteRegistry {
                 }
             }
             CognitionRoutePurpose::CancerResearchExploration => {
-                if self.routes
-                    != vec![
+                let expected = match self.policy_version {
+                    LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION => vec![
                         CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
                         CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
-                    ]
-                {
+                    ],
+                    CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION => vec![
+                        CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                        CognitionModelRoute::openrouter_cancer_free(),
+                        CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
+                    ],
+                    _ => unreachable!("unsupported policy was rejected above"),
+                };
+                if self.routes != expected {
                     return Err(CognitionContractError::InvalidRouteRegistry);
                 }
             }
@@ -1284,6 +1341,7 @@ mod tests {
             CognitionModelRoute::openrouter_gpt_oss_20b_free(),
             CognitionModelRoute::openrouter_gpt_oss_120b_free(),
             CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+            CognitionModelRoute::openrouter_cancer_free(),
             CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
             CognitionModelRoute::cerebras_gpt_oss_120b(),
             CognitionModelRoute::cerebras_llama3_1_8b(),
@@ -1354,8 +1412,21 @@ mod tests {
             exploration.routes,
             vec![
                 CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+                CognitionModelRoute::openrouter_cancer_free(),
                 CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
             ]
+        );
+        let legacy = CognitionRouteRegistry::cancer_research_exploration_legacy_v7();
+        assert_eq!(
+            legacy.validate(CognitionRoutePurpose::CancerResearchExploration),
+            Ok(())
+        );
+        assert_eq!(
+            CognitionRouteRegistry::cancer_research_for_policy(
+                CognitionRoutePurpose::CancerResearchExploration,
+                legacy.policy_version,
+            ),
+            Ok(legacy)
         );
         let registry = CognitionRouteRegistry::cancer_research_escalation();
         assert_eq!(

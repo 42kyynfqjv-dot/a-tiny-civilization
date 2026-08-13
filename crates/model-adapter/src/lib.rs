@@ -22,7 +22,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v12";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v13";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -781,11 +781,14 @@ fn parse_research_response(
         .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
     let parsed: ChatCompletion = serde_json::from_value(raw)
         .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
-    if parsed.id.trim().is_empty() || parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
+    if parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
         return Err(CancerResearchModelError::InvalidResponse(
             "completion omitted a unique response, model, or choice".to_owned(),
         ));
     }
+    let provider_response_id =
+        provider_response_identity(provider, parsed.id.as_deref(), response_hash)
+            .map_err(CancerResearchModelError::InvalidResponse)?;
     let message = &parsed.choices[0].message;
     let tool_arguments = match message.tool_calls.as_slice() {
         [] => None,
@@ -856,7 +859,7 @@ fn parse_research_response(
         provider: provider.clone(),
         requested_model: route.requested_model.clone(),
         resolved_model: parsed.model,
-        provider_response_id: parsed.id,
+        provider_response_id,
         usage: ModelTokenUsage {
             prompt_tokens,
             completion_tokens,
@@ -1099,12 +1102,19 @@ fn apply_openrouter_provider_policy(
             "data_collection": "deny",
             "zdr": true
         })
-    } else if cancer_research {
-        // Cancer exploration uses one pinned zero-cost GPT-OSS route. Do not
-        // substitute another model when its endpoint is unavailable.
+    } else if cancer_research && route.requested_model != "openrouter/free" {
+        // The first Cancer exploration route is pinned to zero-cost GPT-OSS.
+        // Do not substitute another model when its endpoint is unavailable.
         json!({
             "require_parameters": true,
             "allow_fallbacks": false
+        })
+    } else if cancer_research {
+        // The bounded dynamic-free route is an explicit second attempt. It may
+        // select only zero-cost models that implement every requested parameter.
+        json!({
+            "require_parameters": true,
+            "allow_fallbacks": true
         })
     } else {
         json!({
@@ -1170,7 +1180,8 @@ fn request_seed_from_bytes(bytes: &[u8; 16]) -> u32 {
 
 #[derive(Deserialize)]
 struct ChatCompletion {
-    id: String,
+    #[serde(default)]
+    id: Option<String>,
     model: String,
     choices: Vec<Choice>,
     usage: Usage,
@@ -1229,11 +1240,14 @@ fn parse_response(
         .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
     let parsed: ChatCompletion = serde_json::from_value(raw)
         .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
-    if parsed.id.trim().is_empty() || parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
+    if parsed.model.trim().is_empty() || parsed.choices.len() != 1 {
         return Err(CognitionModelError::InvalidResponse(
             "completion omitted a unique response, model, or choice".to_owned(),
         ));
     }
+    let provider_response_id =
+        provider_response_identity(provider, parsed.id.as_deref(), response_hash)
+            .map_err(CognitionModelError::InvalidResponse)?;
     let content = parsed.choices[0]
         .message
         .content
@@ -1272,7 +1286,7 @@ fn parse_response(
         provider: provider.clone(),
         requested_model: route.requested_model.clone(),
         resolved_model: parsed.model,
-        provider_response_id: parsed.id,
+        provider_response_id,
         usage: ModelTokenUsage {
             prompt_tokens,
             completion_tokens,
@@ -1289,6 +1303,24 @@ fn parse_response(
         .validate_against(route, request)
         .map_err(|error| CognitionModelError::InvalidResponse(error.to_string()))?;
     Ok(receipt)
+}
+
+fn provider_response_identity(
+    provider: &CognitionProviderId,
+    response_id: Option<&str>,
+    response_hash: Digest,
+) -> Result<String, String> {
+    if let Some(response_id) = response_id.filter(|value| !value.trim().is_empty()) {
+        return Ok(response_id.to_owned());
+    }
+    if provider == &CognitionProviderId::fireworks_cancer() {
+        // Fireworks occasionally returns a complete successful OpenAI-compatible
+        // payload without its optional top-level `id`. The immutable hash of the
+        // exact raw response is a stronger local identity than discarding a
+        // billable, otherwise valid result as indeterminate.
+        return Ok(format!("fireworks-sha256-{response_hash}"));
+    }
+    Err("completion omitted its provider response identity".to_owned())
 }
 
 fn parse_bounded_action(
@@ -1697,6 +1729,15 @@ mod tests {
         assert!(exploration["provider"].get("zdr").is_none());
         assert!(exploration["provider"].get("data_collection").is_none());
 
+        let dynamic_free = api_request(
+            &CognitionProviderId::openrouter_cancer(),
+            &CognitionModelRoute::openrouter_cancer_free(),
+            &request,
+        )
+        .expect("valid dynamic-free request");
+        assert_eq!(dynamic_free["provider"]["allow_fallbacks"], true);
+        assert_eq!(dynamic_free["provider"]["require_parameters"], true);
+
         let escalation = api_request(
             &CognitionProviderId::openrouter_cancer(),
             &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
@@ -1849,6 +1890,25 @@ mod tests {
         .expect("valid Fireworks payload");
 
         assert_eq!(payload["reasoning_effort"], "low");
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn dynamic_free_research_is_a_structured_second_route() {
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let payload = research_api_request(
+            &CognitionProviderId::openrouter_cancer(),
+            &CognitionModelRoute::openrouter_cancer_free(),
+            &request,
+        )
+        .expect("valid dynamic-free payload");
+
+        assert_eq!(payload["model"], "openrouter/free");
+        assert_eq!(payload["provider"]["allow_fallbacks"], true);
         assert_eq!(payload["response_format"]["type"], "json_schema");
     }
 
@@ -2297,6 +2357,29 @@ mod tests {
         );
     }
 
+    #[test]
+    fn fireworks_missing_response_id_uses_immutable_payload_hash_only_for_fireworks() {
+        let hash = Digest::sha256(b"complete provider response fixture");
+        assert_eq!(
+            provider_response_identity(&CognitionProviderId::fireworks_cancer(), None, hash)
+                .expect("Fireworks hash identity"),
+            format!("fireworks-sha256-{hash}")
+        );
+        assert!(
+            provider_response_identity(&CognitionProviderId::openrouter_cancer(), None, hash)
+                .is_err()
+        );
+        assert_eq!(
+            provider_response_identity(
+                &CognitionProviderId::fireworks_cancer(),
+                Some("provider-generation-1"),
+                hash,
+            )
+            .expect("provider identity"),
+            "provider-generation-1"
+        );
+    }
+
     #[tokio::test]
     async fn ladder_records_skips_and_failures_before_the_first_success() {
         let cloudflare_calls = Arc::new(AtomicUsize::new(0));
@@ -2334,6 +2417,9 @@ mod tests {
                 .map(|attempt| attempt.status)
                 .collect::<Vec<_>>(),
             vec![
+                CognitionRouteAttemptStatus::SkippedUnconfigured,
+                CognitionRouteAttemptStatus::SkippedUnconfigured,
+                CognitionRouteAttemptStatus::SkippedUnconfigured,
                 CognitionRouteAttemptStatus::SkippedUnconfigured,
                 CognitionRouteAttemptStatus::SkippedUnconfigured,
                 CognitionRouteAttemptStatus::Unavailable,
@@ -2417,9 +2503,9 @@ mod tests {
             .await
             .expect("bounded result");
         assert_eq!(calls.load(Ordering::SeqCst), 1);
-        assert_eq!(result.attempts.len(), 4);
+        assert_eq!(result.attempts.len(), 7);
         assert_eq!(
-            result.attempts[3].status,
+            result.attempts[6].status,
             CognitionRouteAttemptStatus::StoppedAttemptLimit
         );
     }

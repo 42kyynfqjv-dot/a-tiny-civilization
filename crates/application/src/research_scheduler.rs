@@ -386,14 +386,11 @@ fn prepare_campaign_turn(
         let Some(result) = followup.result else {
             continue;
         };
-        let registry = match followup.request.selection.inference_tier {
-            CancerResearchInferenceTier::Exploration => {
-                crate::CognitionRouteRegistry::cancer_research_exploration()
-            }
-            CancerResearchInferenceTier::Escalation => {
-                crate::CognitionRouteRegistry::cancer_research_escalation()
-            }
-        };
+        let registry = crate::CognitionRouteRegistry::cancer_research_for_policy(
+            followup.request.route_purpose(),
+            result.route_policy_version,
+        )
+        .map_err(crate::CancerResearchModelContractError::from)?;
         result.validate_against(&registry, &followup.request)?;
         let Some(receipt) = result.receipt else {
             continue;
