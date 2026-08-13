@@ -1,0 +1,310 @@
+{
+  "schema_version": 1,
+  "manifest_id": "edinburgh-ds8038-gsc-response-source-v1",
+  "source": {
+    "custodian": "University of Edinburgh DataShare",
+    "publisher": "University of Edinburgh Institute of Genetics and Cancer, CRUK Edinburgh Centre",
+    "title": "High Content Drug Screening & Analysis Dataset: A comprehensive pharmacological survey across heterogeneous patient-derived glioblastoma stem cell models",
+    "doi": "10.7488/ds/8038",
+    "doi_url": "https://doi.org/10.7488/ds/8038",
+    "handle": "10283/9113",
+    "landing_url": "https://datashare.ed.ac.uk/handle/10283/9113",
+    "full_record_url": "https://datashare.ed.ac.uk/handle/10283/9113?show=full",
+    "item_uuid": "2bbcb530-4bd8-45d8-b0da-f1681352862a",
+    "item_api_url": "https://datashare.ed.ac.uk/server/api/core/items/2bbcb530-4bd8-45d8-b0da-f1681352862a",
+    "related_article_doi": "10.1016/j.isci.2026.115839",
+    "related_article_url": "https://doi.org/10.1016/j.isci.2026.115839",
+    "reviewed_on": "2026-08-13"
+  },
+  "license": {
+    "spdx_identifier": "CC-BY-4.0",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "metadata_evidence_url": "https://datashare.ed.ac.uk/handle/10283/9113?show=full",
+    "metadata_rights_value": "Creative Commons Attribution 4.0 International Public License",
+    "license_bitstream_uuid": "209e6e37-ce06-48f0-8a06-0a411938a3ac",
+    "attribution": "Elliott, Richard; Carragher, Neil. (2025). High Content Drug Screening & Analysis Dataset: A comprehensive pharmacological survey across heterogeneous patient-derived GBM stem cell models. University of Edinburgh DataShare. https://doi.org/10.7488/ds/8038. Licensed under CC BY 4.0.",
+    "commercial_reuse_boundary": "CC BY 4.0 permits commercial reuse and adaptation subject to attribution, license notice, and indication of changes; no endorsement is implied."
+  },
+  "discovery": {
+    "api_origin": "https://datashare.ed.ac.uk",
+    "bitstream_api_template": "https://datashare.ed.ac.uk/server/api/core/bitstreams/{bitstream_uuid}",
+    "download_template": "https://datashare.ed.ac.uk/bitstreams/{bitstream_uuid}/download",
+    "identity_policy": "Resolve only the exact checked-in item UUID and exact checked-in bitstream UUIDs. Require one response per requested UUID and exact UUID, file name, MD5 algorithm, MD5 value, HTTPS content link, and bounded positive size before downloading.",
+    "byte_length_policy": "The reviewed DataShare record exposed rounded human-readable sizes, not exact bytes. expected_byte_length is therefore null rather than guessed. Acquisition resolves sizeBytes from the exact UUID API record, binds it into create-only discovery and source-snapshot artifacts, and requires the downloaded byte count to match exactly.",
+    "metadata_response_max_bytes": 2097152
+  },
+  "inventory": [
+    {
+      "artifact_id": "plate-readme-text",
+      "file_name": "1.README_Repository_HTS_Barcoding_QC_byPlate.txt",
+      "bitstream_uuid": "af9a7cae-5383-4f49-86f8-eb3bd23b203f",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/af9a7cae-5383-4f49-86f8-eb3bd23b203f",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/af9a7cae-5383-4f49-86f8-eb3bd23b203f/download",
+      "provider_reported_size": "18.85Kb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 100000,
+      "md5": "b083f841429222de064e817eba6903fe",
+      "media_type": "text/plain",
+      "role": "plate_metadata_and_qc_flags",
+      "acquire_in_v1": true
+    },
+    {
+      "artifact_id": "plate-readme-workbook",
+      "file_name": "1.README_Repository_HTS_Barcoding_QC_byPlate.xlsx",
+      "bitstream_uuid": "07b3a98e-c146-45d4-a79c-87942448521c",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/07b3a98e-c146-45d4-a79c-87942448521c",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/07b3a98e-c146-45d4-a79c-87942448521c/download",
+      "provider_reported_size": "22.89Kb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 100000,
+      "md5": "f702a2cdf76fb8458643824347588888",
+      "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "role": "redundant_plate_metadata_workbook",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "c3l-high-content-screen",
+      "file_name": "2.C3L_HighContentScreening.zip",
+      "bitstream_uuid": "185fddfa-a84d-42c4-bfc8-c08f5adbb216",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/185fddfa-a84d-42c4-bfc8-c08f5adbb216",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/185fddfa-a84d-42c4-bfc8-c08f5adbb216/download",
+      "provider_reported_size": "1.029Gb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 1500000000,
+      "md5": "5ebb3098257de06269feb913dea8d066",
+      "media_type": "application/zip",
+      "role": "primary_screen_library",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "lopac-high-content-screen",
+      "file_name": "3.LOPAC_HighContentScreening.zip",
+      "bitstream_uuid": "bab1f1f4-ab54-4308-8589-bed19f75551b",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/bab1f1f4-ab54-4308-8589-bed19f75551b",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/bab1f1f4-ab54-4308-8589-bed19f75551b/download",
+      "provider_reported_size": "1.005Gb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 1500000000,
+      "md5": "77815306b58ec7c340706501bb9922c6",
+      "media_type": "application/zip",
+      "role": "primary_screen_library",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "prestwick-fda-high-content-screen",
+      "file_name": "4.PrestwickFDA_HighContentScreening.zip",
+      "bitstream_uuid": "1b348cba-d2b7-44fa-8917-0a29601de819",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/1b348cba-d2b7-44fa-8917-0a29601de819",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/1b348cba-d2b7-44fa-8917-0a29601de819/download",
+      "provider_reported_size": "929.0Mb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 1200000000,
+      "md5": "6121ad88ecc2487c7150780cde3cb46b",
+      "media_type": "application/zip",
+      "role": "primary_screen_library",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "kcgs-high-content-screen",
+      "file_name": "5.KCGS_HighContentScreening.zip",
+      "bitstream_uuid": "ec9f5a00-e60c-4b9e-b5f2-c0cd16181df0",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/ec9f5a00-e60c-4b9e-b5f2-c0cd16181df0",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/ec9f5a00-e60c-4b9e-b5f2-c0cd16181df0/download",
+      "provider_reported_size": "304.7Mb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 500000000,
+      "md5": "fdba46256143ce0315c6728515883909",
+      "media_type": "application/zip",
+      "role": "primary_screen_library",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "targetmol-high-content-screen",
+      "file_name": "6.TargetMol_HighContentScreening.zip",
+      "bitstream_uuid": "e84b1526-1e48-420e-a844-87fdaf971930",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/e84b1526-1e48-420e-a844-87fdaf971930",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/e84b1526-1e48-420e-a844-87fdaf971930/download",
+      "provider_reported_size": "226.5Mb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 400000000,
+      "md5": "2e08066af7e6a96000b42320f7e8fca6",
+      "media_type": "application/zip",
+      "role": "primary_screen_library",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "hit-validation-high-content",
+      "file_name": "7.Hit_Validation_HighContent.zip",
+      "bitstream_uuid": "7f7e626e-99fc-4f9d-9a89-19191943703d",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/7f7e626e-99fc-4f9d-9a89-19191943703d",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/7f7e626e-99fc-4f9d-9a89-19191943703d/download",
+      "provider_reported_size": "186.3Mb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 300000000,
+      "md5": "bf5784ff589f523d4e4679aeba19f275",
+      "media_type": "application/zip",
+      "role": "dose_response_hit_validation",
+      "acquire_in_v1": true
+    },
+    {
+      "artifact_id": "qc-normalised-distributions",
+      "file_name": "8.QC_Normalised_Distributions.xlsx",
+      "bitstream_uuid": "a98b30f8-f319-49fc-91bc-d25a01062d7a",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/a98b30f8-f319-49fc-91bc-d25a01062d7a",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/a98b30f8-f319-49fc-91bc-d25a01062d7a/download",
+      "provider_reported_size": "2.741Mb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 5000000,
+      "md5": "b237b46fc85d70767bb79137f62944ed",
+      "media_type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "role": "normalisation_and_plate_qc_evidence",
+      "acquire_in_v1": true
+    },
+    {
+      "artifact_id": "rppa-cytokine-antibodies",
+      "file_name": "ANTIBODIES_RPPA_Cytokine_array.csv",
+      "bitstream_uuid": "617e9f13-c506-4aff-9b29-ca9480a2901e",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/617e9f13-c506-4aff-9b29-ca9480a2901e",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/617e9f13-c506-4aff-9b29-ca9480a2901e/download",
+      "provider_reported_size": "14.55Kb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 100000,
+      "md5": "3a8c8d8195e75d52a0eb03b004856558",
+      "media_type": "text/csv",
+      "role": "basal_protein_context",
+      "acquire_in_v1": false
+    },
+    {
+      "artifact_id": "cellprofiler-pipeline",
+      "file_name": "GCGR_CellPainting_3.1.5.cpproj",
+      "bitstream_uuid": "f4df60a5-9a31-4c0e-b193-95de65c5c8a1",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/f4df60a5-9a31-4c0e-b193-95de65c5c8a1",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/f4df60a5-9a31-4c0e-b193-95de65c5c8a1/download",
+      "provider_reported_size": "110.4Kb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 1000000,
+      "md5": "2fac59f04b778d89a63f4319f26c5a9a",
+      "media_type": "application/octet-stream",
+      "role": "cellprofiler_pipeline",
+      "acquire_in_v1": true
+    },
+    {
+      "artifact_id": "auc-analysis-script",
+      "file_name": "AUC_script_Figure3B.Rmd",
+      "bitstream_uuid": "f19a89df-a909-42cf-8f4e-6ca0b60dcbb1",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/f19a89df-a909-42cf-8f4e-6ca0b60dcbb1",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/f19a89df-a909-42cf-8f4e-6ca0b60dcbb1/download",
+      "provider_reported_size": "7.021Kb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 100000,
+      "md5": "afb6486a960eb6bdb376f2cdfe874f56",
+      "media_type": "application/octet-stream",
+      "role": "auc_analysis_code",
+      "acquire_in_v1": true
+    },
+    {
+      "artifact_id": "license-text",
+      "file_name": "license_text",
+      "bitstream_uuid": "209e6e37-ce06-48f0-8a06-0a411938a3ac",
+      "api_url": "https://datashare.ed.ac.uk/server/api/core/bitstreams/209e6e37-ce06-48f0-8a06-0a411938a3ac",
+      "download_url": "https://datashare.ed.ac.uk/bitstreams/209e6e37-ce06-48f0-8a06-0a411938a3ac/download",
+      "provider_reported_size": "17.00Kb",
+      "expected_byte_length": null,
+      "byte_length_resolution": "exact_uuid_api_sizeBytes",
+      "maximum_byte_length": 100000,
+      "md5": "2946b37a07baeba80cea628909e28cae",
+      "media_type": "text/plain",
+      "role": "license_evidence",
+      "acquire_in_v1": true
+    }
+  ],
+  "dataset_summary": {
+    "model_count": 6,
+    "model_ids": [
+      "E13",
+      "E21",
+      "E28",
+      "E31",
+      "E34",
+      "E57"
+    ],
+    "transcriptomic_subtypes": {
+      "classical": [
+        "E13",
+        "E28"
+      ],
+      "mesenchymal": [
+        "E21",
+        "E57"
+      ],
+      "proneural": [
+        "E31",
+        "E34"
+      ]
+    },
+    "screened_compound_count": 3866,
+    "primary_screen_hit_count": 211,
+    "dose_response_validated_compound_count": 164,
+    "validated_original_hit_count": 143,
+    "validated_target_class_alternative_count": 21,
+    "format": "384-well high-content Cell Painting",
+    "cellprofiler_version": "3.1.5",
+    "approximate_features_per_cell_before_redundancy_filter": 1006,
+    "replicate_images_per_well": 6,
+    "measurement_endpoints": [
+      "cell_survival",
+      "multiparametric_morphology",
+      "phenotypic_distance",
+      "dose_response_auc"
+    ]
+  },
+  "intended_use": {
+    "evidence_class": "patient_derived_glioblastoma_stem_cell_in_vitro_perturbation_response",
+    "allowed": "Calibrate and falsify narrow in-vitro predictions of compound-associated survival and Cell Painting morphology across the six declared patient-derived GSC lines, with exact source provenance and model-disjoint evaluation.",
+    "prohibited": "This dataset cannot establish patient efficacy, clinical safety, blood-brain-barrier exposure, therapeutic index, immune effects, tumor-microenvironment response, animal efficacy, or a cure.",
+    "v1_subset": "Dose-response hit validation plus the text plate/QC map, normalized-QC workbook, CellProfiler pipeline, AUC script, and license evidence. Primary-screen libraries and basal RPPA/cytokine context remain inventory-pinned but are not downloaded by the v1 command."
+  },
+  "split_firewall": {
+    "primary_split_unit": "patient_derived_gsc_line",
+    "fixed_release_gate": {
+      "training_lines": [
+        "E13",
+        "E21",
+        "E28",
+        "E31"
+      ],
+      "calibration_line": "E34",
+      "untouched_final_line": "E57"
+    },
+    "cross_validation": "Report outer leave-one-GSC-line-out results across all six lines in addition to the fixed release gate; tuning occurs only inside each outer training fold.",
+    "compound_generalization": "A secondary split must hold out complete canonical compounds or chemical scaffolds across every dose, plate, library, and line. Deduplicate compound identities across libraries before assigning a split.",
+    "inseparable_units": [
+      "All images and wells from one biological condition stay together.",
+      "All doses, technical replicates, plate repeats, and derived features for one line-compound condition stay together.",
+      "No plate barcode, library batch, file path, or source row order may be used as a predictive feature."
+    ],
+    "normalization": "Fit transformations, feature selection, redundancy removal, and learned normalization on training partitions only. Held-out plate DMSO controls may establish within-plate technical reference values, but held-out response labels may not influence fitting or thresholds.",
+    "qc": "Apply the published plate inclusion/discard flags before outcome modeling and never change QC rules after reading held-out responses.",
+    "answer_key_boundary": "Observed held-out responses and any ranks derived from them remain qualification-worker-only and must not enter prompts, memory retrieval, research artifacts, or model context."
+  },
+  "limitations": [
+    "The panel has six GSC lines and cannot estimate population-level patient benefit.",
+    "Two-dimensional adherent Cell Painting is a controlled in-vitro assay, not a complete tumor, organoid, xenograft, immune system, or clinical exposure model.",
+    "The primary libraries contain approved, clinical, and preclinical compounds; a screen hit is not a treatment recommendation.",
+    "Several screened compounds are not expected to cross the blood-brain barrier, and morphology or cell loss can reflect nonspecific toxicity.",
+    "The manifest records exact provider names, UUIDs, URLs, and MD5 values. Rounded provider display sizes are evidence labels only; exact byte lengths must be resolved and frozen from DataShare's exact-UUID API before any byte is accepted."
+  ]
+}

@@ -1,0 +1,64 @@
+{
+  "schema_version": 1,
+  "manifest_id": "aacr-gbm5k-dependency-source-v1",
+  "source": {
+    "custodian": "American Association for Cancer Research Figshare",
+    "title": "Table S4 from Fitness Screens Map State-Specific Glioblastoma Stem Cell Vulnerabilities",
+    "article_id": 28183566,
+    "article_version": 1,
+    "article_api_url": "https://api.figshare.com/v2/articles/28183566/versions/1",
+    "landing_url": "https://aacr.figshare.com/articles/dataset/Table_S4_from_Fitness_Screens_Map_State-Specific_Glioblastoma_Stem_Cell_Vulnerabilities/28183566/1",
+    "dataset_doi": "10.1158/0008-5472.28183566",
+    "dataset_doi_url": "https://doi.org/10.1158/0008-5472.28183566",
+    "related_article_title": "Fitness Screens Map State-Specific Glioblastoma Stem Cell Vulnerabilities",
+    "related_article_doi": "10.1158/0008-5472.CAN-23-4024",
+    "related_article_pubmed_url": "https://pubmed.ncbi.nlm.nih.gov/39186687/",
+    "reviewed_on": "2026-08-13"
+  },
+  "license": {
+    "spdx_identifier": "CC-BY-4.0",
+    "license_name": "Creative Commons Attribution 4.0 International",
+    "license_url": "https://creativecommons.org/licenses/by/4.0/",
+    "metadata_evidence_url": "https://aacr.figshare.com/articles/dataset/Table_S4_from_Fitness_Screens_Map_State-Specific_Glioblastoma_Stem_Cell_Vulnerabilities/28183566/1",
+    "attribution": "MacLeod, Graham; Molaei, Fatemeh; Haider, Shahan; Almeida, Maira P.; Lin, Sichun; Kushida, Michelle; Sureshkumar, Haresh; Bhatti, Jasmine K.; Lu, Jack Q.; Schramek, Daniel; Dirks, Peter; Angers, Stephane. Table S4 from Fitness Screens Map State-Specific Glioblastoma Stem Cell Vulnerabilities. American Association for Cancer Research. https://doi.org/10.1158/0008-5472.28183566. Licensed under CC BY 4.0.",
+    "commercial_reuse_boundary": "CC BY 4.0 permits commercial reuse and adaptation subject to attribution, a license notice, and indication of changes; no endorsement is implied."
+  },
+  "artifact": {
+    "description": "Normalized Bayes Factor scores, essentiality calls, and subtype scores from GBM5K and TKOv3 screens.",
+    "expected_file_count": 1,
+    "allowed_media_types": [
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      "application/octet-stream"
+    ],
+    "allowed_file_extensions": [
+      "xlsx"
+    ],
+    "minimum_byte_length": 1024,
+    "maximum_byte_length": 16777216,
+    "identity_resolution": "Resolve only article 28183566 version 1 through its exact public Figshare API URL. Require exact article ID, version, title, dataset DOI, related article DOI, CC BY 4.0 license, exactly one non-link file, a safe XLSX file name, a bounded positive byte length, an HTTPS Figshare download URL, and equal nonzero supplied/computed MD5 values before downloading.",
+    "checksum_policy": "The create-only source snapshot records the API response hash, exact file ID, name, byte length, MD5, downloaded SHA-256, and source-set SHA-256. Existing bytes are accepted only when all recorded identities revalidate; acquisition never replaces a path."
+  },
+  "evidence": {
+    "assay": "Focused CRISPR-Cas9 fitness screening with the GBM5K guide library, with TKOv3 screens retained in the published supplement.",
+    "reported_gsc_culture_count": 30,
+    "reported_material": "patient-derived glioblastoma stem cell cultures",
+    "allowed_claim": "An observer-side qualifier may report exact-symbol genetic-dependency measurements and essentiality calls present in the frozen supplement, preserving every culture/model label and assay method disclosed by the source.",
+    "prohibited_claim": "The source cannot establish drug response, target druggability, blood-brain-barrier exposure, off-target safety, animal efficacy, patient benefit, clinical safety, or a cure. A culture is not called an independent patient unless the source metadata proves that donor relationship."
+  },
+  "leakage_boundary": {
+    "access_class": "qualification_worker_only",
+    "research_prompt_access": false,
+    "research_memory_access": false,
+    "campaign_selection_access": false,
+    "observer_projection_access": "Only immutable target-level qualification results may cross the boundary after an artifact has named its exact molecular targets.",
+    "split_policy": "Because Cancer World generates targets without access to these bytes, the frozen supplement is external qualification evidence. Any later predictive model must split complete GSC cultures and must first resolve donor relationships; culture-disjoint evaluation must never be described as patient-disjoint without source proof.",
+    "identifier_policy": "Exact gene symbols and exact source culture/model labels only. No alias repair, fuzzy matching, subtype guessing, or donor inference."
+  },
+  "limitations": [
+    "The screen measures fitness after genetic perturbation in cultured models, not response to a deliverable treatment.",
+    "Patient-derived cultures omit much of the immune system, blood-brain barrier, vasculature, spatial infiltration, pharmacokinetics, and clinical toxicity.",
+    "A Bayes Factor or essentiality call is method- and screen-context-dependent and is not a universal biological constant.",
+    "The supplement may include GBM5K and TKOv3 columns with different library and processing semantics; acquisition preserves them and later normalization must not silently merge them.",
+    "This manifest intentionally does not guess the file name, byte length, file ID, or checksum from rounded webpage labels; the exact immutable-version API must resolve and freeze them before any bytes are admitted."
+  ]
+}

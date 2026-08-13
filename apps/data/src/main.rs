@@ -9,6 +9,8 @@ use std::{
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
+mod cancer_edinburgh_gsc;
+mod cancer_gbm5k;
 mod cancer_nci_cellminer;
 mod cancer_pdc_hcmi;
 mod cancer_tcga;
@@ -180,6 +182,24 @@ enum SourceCommand {
         #[arg(long)]
         manifest: PathBuf,
         /// Directory beneath the ignored source cache. Existing verified snapshots resume safely.
+        #[arg(long)]
+        output_directory: PathBuf,
+    },
+    /// Acquire Edinburgh DataShare's open GBM stem-cell hit-validation slice.
+    CancerEdinburghGscResponse {
+        /// Checked-in trust manifest pinning the item, bitstreams, license, and split firewall.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Directory beneath the ignored source cache. Existing verified files resume safely.
+        #[arg(long)]
+        output_directory: PathBuf,
+    },
+    /// Acquire AACR Figshare's open GBM5K patient-derived dependency matrix.
+    CancerAacrGbm5kDependency {
+        /// Checked-in trust manifest pinning the immutable article version and license.
+        #[arg(long)]
+        manifest: PathBuf,
+        /// Directory beneath the ignored source cache. Existing verified files resume safely.
         #[arg(long)]
         output_directory: PathBuf,
     },
@@ -1368,6 +1388,14 @@ async fn main() -> Result<()> {
                 manifest,
                 output_directory,
             } => cancer_pdc_hcmi::acquire(&manifest, &output_directory).await,
+            SourceCommand::CancerEdinburghGscResponse {
+                manifest,
+                output_directory,
+            } => cancer_edinburgh_gsc::acquire(&manifest, &output_directory).await,
+            SourceCommand::CancerAacrGbm5kDependency {
+                manifest,
+                output_directory,
+            } => cancer_gbm5k::acquire(&manifest, &output_directory).await,
         },
         Command::Inspect { command } => match command {
             InspectCommand::CancerDatasetRegistry { input } => {

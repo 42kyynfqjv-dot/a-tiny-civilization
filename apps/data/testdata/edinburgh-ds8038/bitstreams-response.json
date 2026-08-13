@@ -1,0 +1,134 @@
+[
+  {
+    "uuid": "af9a7cae-5383-4f49-86f8-eb3bd23b203f",
+    "name": "1.README_Repository_HTS_Barcoding_QC_byPlate.txt",
+    "sizeBytes": 101,
+    "checkSum": {
+      "checkSumAlgorithm": "MD5",
+      "value": "b083f841429222de064e817eba6903fe"
+    },
+    "type": "bitstream",
+    "metadata": {
+      "dc.description.provenance": [
+        {
+          "value": "Synthetic DSpace 7 schema fixture; sizeBytes is a small positive test value, not the authoritative upstream size."
+        }
+      ]
+    },
+    "_links": {
+      "content": {
+        "href": "https://datashare.ed.ac.uk/server/api/core/bitstreams/af9a7cae-5383-4f49-86f8-eb3bd23b203f/content"
+      }
+    }
+  },
+  {
+    "uuid": "7f7e626e-99fc-4f9d-9a89-19191943703d",
+    "name": "7.Hit_Validation_HighContent.zip",
+    "sizeBytes": 202,
+    "checkSum": {
+      "checkSumAlgorithm": "MD5",
+      "value": "bf5784ff589f523d4e4679aeba19f275"
+    },
+    "type": "bitstream",
+    "metadata": {
+      "dc.description.provenance": [
+        {
+          "value": "Synthetic DSpace 7 schema fixture; sizeBytes is a small positive test value, not the authoritative upstream size."
+        }
+      ]
+    },
+    "_links": {
+      "content": {
+        "href": "https://datashare.ed.ac.uk/server/api/core/bitstreams/7f7e626e-99fc-4f9d-9a89-19191943703d/content"
+      }
+    }
+  },
+  {
+    "uuid": "a98b30f8-f319-49fc-91bc-d25a01062d7a",
+    "name": "8.QC_Normalised_Distributions.xlsx",
+    "sizeBytes": 303,
+    "checkSum": {
+      "checkSumAlgorithm": "MD5",
+      "value": "b237b46fc85d70767bb79137f62944ed"
+    },
+    "type": "bitstream",
+    "metadata": {
+      "dc.description.provenance": [
+        {
+          "value": "Synthetic DSpace 7 schema fixture; sizeBytes is a small positive test value, not the authoritative upstream size."
+        }
+      ]
+    },
+    "_links": {
+      "content": {
+        "href": "https://datashare.ed.ac.uk/server/api/core/bitstreams/a98b30f8-f319-49fc-91bc-d25a01062d7a/content"
+      }
+    }
+  },
+  {
+    "uuid": "f4df60a5-9a31-4c0e-b193-95de65c5c8a1",
+    "name": "GCGR_CellPainting_3.1.5.cpproj",
+    "sizeBytes": 404,
+    "checkSum": {
+      "checkSumAlgorithm": "MD5",
+      "value": "2fac59f04b778d89a63f4319f26c5a9a"
+    },
+    "type": "bitstream",
+    "metadata": {
+      "dc.description.provenance": [
+        {
+          "value": "Synthetic DSpace 7 schema fixture; sizeBytes is a small positive test value, not the authoritative upstream size."
+        }
+      ]
+    },
+    "_links": {
+      "content": {
+        "href": "https://datashare.ed.ac.uk/server/api/core/bitstreams/f4df60a5-9a31-4c0e-b193-95de65c5c8a1/content"
+      }
+    }
+  },
+  {
+    "uuid": "f19a89df-a909-42cf-8f4e-6ca0b60dcbb1",
+    "name": "AUC_script_Figure3B.Rmd",
+    "sizeBytes": 505,
+    "checkSum": {
+      "checkSumAlgorithm": "MD5",
+      "value": "afb6486a960eb6bdb376f2cdfe874f56"
+    },
+    "type": "bitstream",
+    "metadata": {
+      "dc.description.provenance": [
+        {
+          "value": "Synthetic DSpace 7 schema fixture; sizeBytes is a small positive test value, not the authoritative upstream size."
+        }
+      ]
+    },
+    "_links": {
+      "content": {
+        "href": "https://datashare.ed.ac.uk/server/api/core/bitstreams/f19a89df-a909-42cf-8f4e-6ca0b60dcbb1/content"
+      }
+    }
+  },
+  {
+    "uuid": "209e6e37-ce06-48f0-8a06-0a411938a3ac",
+    "name": "license_text",
+    "sizeBytes": 606,
+    "checkSum": {
+      "checkSumAlgorithm": "MD5",
+      "value": "2946b37a07baeba80cea628909e28cae"
+    },
+    "type": "bitstream",
+    "metadata": {
+      "dc.description.provenance": [
+        {
+          "value": "Synthetic DSpace 7 schema fixture; sizeBytes is a small positive test value, not the authoritative upstream size."
+        }
+      ]
+    },
+    "_links": {
+      "content": {
+        "href": "https://datashare.ed.ac.uk/server/api/core/bitstreams/209e6e37-ce06-48f0-8a06-0a411938a3ac/content"
+      }
+    }
+  }
+]

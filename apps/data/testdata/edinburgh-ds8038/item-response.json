@@ -1,0 +1,33 @@
+{
+  "uuid": "2bbcb530-4bd8-45d8-b0da-f1681352862a",
+  "name": "High Content Drug Screening & Analysis Dataset: A comprehensive pharmacological survey across heterogeneous patient-derived glioblastoma stem cell models",
+  "handle": "10283/9113",
+  "type": "item",
+  "metadata": {
+    "dc.identifier.doi": [
+      {
+        "value": "10.7488/ds/8038"
+      }
+    ],
+    "dc.rights": [
+      {
+        "value": "Creative Commons Attribution 4.0 International Public License"
+      }
+    ],
+    "dc.title": [
+      {
+        "value": "High Content Drug Screening & Analysis Dataset: A comprehensive pharmacological survey across heterogeneous patient-derived glioblastoma stem cell models"
+      }
+    ],
+    "dc.description.provenance": [
+      {
+        "value": "Synthetic DSpace 7 schema fixture for offline tests; not an authoritative copy of the DataShare record or of upstream byte sizes."
+      }
+    ]
+  },
+  "_links": {
+    "self": {
+      "href": "https://datashare.ed.ac.uk/server/api/core/items/2bbcb530-4bd8-45d8-b0da-f1681352862a"
+    }
+  }
+}
