@@ -17,6 +17,7 @@ RuntimeDirectoryMode=0750
 # never executes repository-owned code as root. Files are published mode 0444.
 ExecStartPre=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/stage-cancer-nci60-qualification-key.sh --source /home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json --runtime-root /run/atiny-cancer-evidence/nci60
 ExecStartPre=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/stage-cancer-pdc000711-evidence.sh --proteome /home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome/pdc000711-gbm-proteome.tsv --metadata /home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome/pdc000711-gbm-proteome.metadata.json --runtime-root /run/atiny-cancer-evidence/pdc000711
+ExecStartPre=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/stage-cancer-tcga-gbm-target-context.sh --source /home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json --runtime-root /run/atiny-cancer-evidence/tcga-gbm
 ExecStart=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/run-cancer-evidence-with-pdc000711.sh
 Restart=on-failure
 RestartSec=15s

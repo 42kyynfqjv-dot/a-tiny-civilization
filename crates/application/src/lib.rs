@@ -4,10 +4,13 @@ mod cognition;
 mod cognition_worker;
 mod memory;
 mod research;
+mod research_billing;
 mod research_nci60_qualification;
 mod research_novelty;
 mod research_patient_derived_qualification;
 mod research_scheduler;
+mod research_tcga_target_context;
+mod research_tissue_refinement;
 mod research_virtual_lab;
 mod research_worker;
 
@@ -15,10 +18,13 @@ pub use cognition::*;
 pub use cognition_worker::*;
 pub use memory::*;
 pub use research::*;
+pub use research_billing::*;
 pub use research_nci60_qualification::*;
 pub use research_novelty::*;
 pub use research_patient_derived_qualification::*;
 pub use research_scheduler::*;
+pub use research_tcga_target_context::*;
+pub use research_tissue_refinement::*;
 pub use research_virtual_lab::*;
 pub use research_worker::*;
 

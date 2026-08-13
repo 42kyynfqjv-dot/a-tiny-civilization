@@ -1252,6 +1252,7 @@ select {
 .cancer-artifact-meta .novelty.pending { color: #6f817a; }
 .cancer-artifact-meta .virtual-run { color: #c49cff; }
 .cancer-artifact-meta .patient-check { color: #68d9d2; }
+.cancer-artifact-meta .tcga-check { color: #e6a977; }
 .cancer-artifact-meta .research-outcome { border: 1px solid currentColor; border-radius: 999px; padding: 3px 7px; }
 .cancer-artifact-meta .research-outcome.promising { color: #65efad; }
 .cancer-artifact-meta .research-outcome.killed { color: #ed796b; }
@@ -1319,6 +1320,28 @@ select {
 .cancer-patient-notes > div { color: #78918b; font-family: var(--font-geist-sans), sans-serif; font-size: 11px; line-height: 1.55; margin: 13px 0 2px 28px; }
 .cancer-patient-notes p { margin: 7px 0; }
 .cancer-patient-notes small { color: #57736d; font-family: var(--font-geist-mono), monospace; font-size: 7px; letter-spacing: .07em; }
+.cancer-tcga-check { background: linear-gradient(135deg, rgba(57, 37, 24, .56), rgba(17, 10, 7, .82)); border: 1px solid rgba(230, 169, 119, .24); margin-top: 12px; padding: 18px 19px 0; }
+.cancer-tcga-check > header { align-items: end; display: flex; gap: 24px; justify-content: space-between; }
+.cancer-tcga-check > header span, .cancer-tcga-check > header small { color: #e6a977; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .11em; }
+.cancer-tcga-check > header strong { color: #f3e5d9; display: block; font-family: var(--font-geist-sans), sans-serif; font-size: clamp(16px, 1.8vw, 23px); font-weight: 430; letter-spacing: -.02em; margin-top: 8px; }
+.cancer-tcga-check > header small { color: #a07e66; white-space: nowrap; }
+.cancer-tcga-boundary { border-left: 2px solid #e6a977; color: #d1ad91 !important; font-family: var(--font-geist-mono), monospace !important; font-size: 8px !important; letter-spacing: .08em; margin: 18px 0 14px !important; padding: 9px 13px; }
+.cancer-tcga-targets { display: grid; gap: 1px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.cancer-tcga-targets article { background: rgba(31, 18, 11, .74); border-top: 1px solid rgba(230, 169, 119, .13); min-width: 0; padding: 15px; }
+.cancer-tcga-targets article > div { align-items: center; display: flex; gap: 12px; justify-content: space-between; }
+.cancer-tcga-targets article > div strong { color: #f5e8dd; font-family: var(--font-geist-sans), sans-serif; font-size: 18px; font-weight: 500; }
+.cancer-tcga-targets article > div span { border: 1px solid currentColor; border-radius: 999px; color: #ac8467; font-size: 7px; letter-spacing: .09em; padding: 3px 7px; text-transform: uppercase; }
+.cancer-tcga-targets article[data-status="evaluated"] > div span { color: #efb982; }
+.cancer-tcga-targets article dl { display: grid; gap: 1px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 14px 0 0; }
+.cancer-tcga-targets article dl div { background: rgba(57, 34, 19, .38); padding: 9px; }
+.cancer-tcga-targets article dt { color: #886951; font-family: var(--font-geist-mono), monospace; font-size: 6px; letter-spacing: .09em; }
+.cancer-tcga-targets article dd { color: #edc8a9; font-family: var(--font-geist-sans), sans-serif; font-size: 16px; margin: 4px 0 0; }
+.cancer-tcga-targets article > p { color: #9a7e6a; font-size: 10px; line-height: 1.45; margin: 14px 0 0; }
+.cancer-artifact-card .cancer-tcga-notes { border-bottom: 0; border-top: 1px solid rgba(230, 169, 119, .13); margin-top: 14px; padding: 13px 0; }
+.cancer-artifact-card .cancer-tcga-notes summary { color: #a77c5d; font-family: var(--font-geist-mono), monospace; font-size: 7px; letter-spacing: .1em; }
+.cancer-tcga-notes > div { color: #9b7e6a; font-family: var(--font-geist-sans), sans-serif; font-size: 11px; line-height: 1.55; margin: 13px 0 2px 28px; }
+.cancer-tcga-notes p { margin: 7px 0; }
+.cancer-tcga-notes small { color: #765a47; font-family: var(--font-geist-mono), monospace; font-size: 7px; letter-spacing: .07em; }
 .cancer-artifact-card .cancer-duplicate-ledger { border: 1px solid rgba(233, 195, 110, .22); margin-top: 22px; padding: 17px 19px; }
 .cancer-artifact-card .cancer-duplicate-ledger summary { color: #e9c36e; font-family: var(--font-geist-mono), monospace; font-size: 8px; letter-spacing: .11em; }
 .cancer-duplicate-ledger > div { display: grid; gap: 1px; margin-top: 14px; }
@@ -1424,6 +1447,9 @@ select {
   .cancer-patient-check > header { align-items: flex-start; flex-direction: column; gap: 10px; }
   .cancer-patient-targets { grid-template-columns: 1fr; }
   .cancer-patient-notes > div { margin-left: 0; }
+  .cancer-tcga-check > header { align-items: flex-start; flex-direction: column; gap: 10px; }
+  .cancer-tcga-targets { grid-template-columns: 1fr; }
+  .cancer-tcga-notes > div { margin-left: 0; }
   .cancer-artifact-card footer { align-items: flex-start; flex-direction: column; gap: 10px; }
   .cancer-search-form { grid-template-columns: 1fr; }
   .cancer-search-form button { min-height: 48px; }

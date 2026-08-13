@@ -1010,10 +1010,14 @@ fn research_billed_micro_usd(
         // serverless tariff: $0.07/M input and $0.30/M output tokens. Cached
         // input is intentionally charged here at the full input rate.
         let numerator = u64::from(prompt_tokens)
-            .checked_mul(70_000)
+            .checked_mul(
+                application::CANCER_FIREWORKS_GPT_OSS_20B_INPUT_MICRO_USD_PER_MILLION_TOKENS,
+            )
             .and_then(|input| {
                 u64::from(completion_tokens)
-                    .checked_mul(300_000)
+                    .checked_mul(
+                        application::CANCER_FIREWORKS_GPT_OSS_20B_OUTPUT_MICRO_USD_PER_MILLION_TOKENS,
+                    )
                     .and_then(|output| input.checked_add(output))
             })
             .ok_or_else(|| {

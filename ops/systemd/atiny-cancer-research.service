@@ -24,8 +24,8 @@ ProtectControlGroups=true
 # Defense in depth: this host worker shares the project owner account for
 # outbound HTTPS, but its mount namespace cannot see the ignored labels, the
 # patient-derived qualification matrix, or the evidence worker's staging tree.
-InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/run/atiny-cancer-evidence
-UnsetEnvironment=CANCER_PDC000711_PROTEOME_PATH CANCER_PDC000711_PROTEOME_METADATA_PATH
+InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json -/run/atiny-cancer-evidence
+UnsetEnvironment=CANCER_PDC000711_PROTEOME_PATH CANCER_PDC000711_PROTEOME_METADATA_PATH CANCER_TCGA_GBM_TARGET_CONTEXT_PATH
 RestrictSUIDSGID=true
 LockPersonality=true
 

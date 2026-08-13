@@ -36,8 +36,9 @@ Cancer World uses a fidelity ladder:
 2. **Adversarial campaign.** Only a novel model-supported root receives distinct
    preregistered follow-up tests. The immutable campaign stopping rules in ADR
    0151 remain authoritative.
-3. **Tissue-scale refinement.** Only campaign survivors may later enter an
-   asynchronous one-job-at-a-time multicellular worker. This worker must have
+3. **Tissue-scale refinement.** Only campaign survivors may enter the separately
+   versioned structural lattice method specified in ADR 0158. Production remains
+   disabled until an asynchronous one-job-at-a-time worker has
    explicit CPU, memory, wall-time, and output-size limits and cannot run in the
    canonical runner process.
 4. **Source-calibrated qualification.** A finalist can advance only after its
@@ -65,12 +66,15 @@ World throughput.
 
 ## Current capability boundary
 
-Method 2 adds structural clone selection and a structural PK/BBB screen. It does
-not yet implement mutation, genomic lineages, reversible plasticity, longitudinal
-relapse, compound-specific ADME and transporters, spatial tissue, immune and
-stromal populations, combination scheduling, multi-organ toxicity, or detailed
-device physics. The public capability manifest must describe these two new
-layers as abstracted, not available or validated.
+Method 2 adds structural clone selection and a structural PK/BBB screen. ADR 0158
+adds a separate, still-uncalibrated spatial lattice refinement for complete
+campaign survivors, although its production worker is not yet wired. Neither
+method implements source-calibrated intervention response, mutation, genomic
+lineages, reversible plasticity, longitudinal relapse, compound-specific ADME
+and transporters, immune and stromal populations, combination scheduling,
+multi-organ toxicity, or detailed device physics. The public capability manifest
+must describe all of these layers precisely as structural, unavailable, or
+unvalidated rather than collapsing them into a realism score.
 
 Potential later engines must preserve the project's licensing and auditability.
 PhysiCell is a commercially usable BSD-3-Clause multicellular engine and is a

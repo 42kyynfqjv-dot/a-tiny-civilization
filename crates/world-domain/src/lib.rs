@@ -16,6 +16,8 @@ mod manifest;
 mod material;
 mod reproduction;
 mod research;
+mod research_tcga;
+mod research_tissue;
 mod solar;
 mod spatial;
 mod tide;
@@ -157,6 +159,24 @@ pub use research::{
     MAX_RESEARCH_MODEL_OUTPUT_TOKENS, MAX_RESEARCH_MOLECULAR_TARGETS,
     RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION,
     VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION, cancer_research_request_id,
+};
+pub use research_tcga::{
+    CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION, CANCER_TCGA_GBM_TARGET_CONTEXT_SCHEMA_VERSION,
+    CancerTcgaGbmTargetContextError, CancerTcgaGbmTargetContextObservation,
+    CancerTcgaGbmTargetContextQualification, CancerTcgaGbmTargetContextStatus,
+};
+pub use research_tissue::{
+    CANCER_TISSUE_REFINEMENT_CAVEATS, CANCER_TISSUE_REFINEMENT_MAX_CELLS,
+    CANCER_TISSUE_REFINEMENT_MAX_GRID_EDGE, CANCER_TISSUE_REFINEMENT_MAX_GRID_SITES,
+    CANCER_TISSUE_REFINEMENT_MAX_INITIAL_CELLS, CANCER_TISSUE_REFINEMENT_MAX_OUTPUT_SNAPSHOTS,
+    CANCER_TISSUE_REFINEMENT_MAX_SNAPSHOTS_PER_SCENARIO, CANCER_TISSUE_REFINEMENT_MAX_STEPS,
+    CANCER_TISSUE_REFINEMENT_METHOD_VERSION, CANCER_TISSUE_REFINEMENT_MIN_GRID_EDGE,
+    CANCER_TISSUE_REFINEMENT_PROTOCOL_SCHEMA_VERSION,
+    CANCER_TISSUE_REFINEMENT_RESULT_SCHEMA_VERSION, CANCER_TISSUE_REFINEMENT_SCENARIO_COUNT,
+    CancerTissueRefinementContractError, CancerTissueRefinementFieldModel,
+    CancerTissueRefinementProtocol, CancerTissueRefinementResult, CancerTissueRefinementScenario,
+    CancerTissueRefinementScenarioSummary, CancerTissueRefinementSnapshot,
+    CancerTissueRefinementTermination, CancerTissueRefinementUncertaintyEnvelope,
 };
 pub use solar::{
     CanonicalPositiveRational, CanonicalPositiveRationalError, PinnedSolarReferenceDistance,

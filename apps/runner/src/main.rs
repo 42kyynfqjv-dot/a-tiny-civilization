@@ -12,16 +12,16 @@ use application::{
     AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerNci60Qualifier, CancerPdc000711Qualifier,
     CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchLiteratureSnapshot,
     CancerResearchModel, CancerResearchModelAdapters, CancerResearchNoveltySource,
-    CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome, CognitionModel,
-    CognitionModelRoute, CognitionProviderId, CognitionWorkerConfiguration, CognitionWorkerStep,
-    FoundationStore, MemoryOutboxStore, ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError,
-    WorldSession, WorldStore, advance_world, advance_world_with_celestial,
-    advance_world_with_celestial_and_cognition, calculate_cancer_research_novelty,
-    construct_configured_genesis_with_materials, execute_cancer_virtual_experiment,
-    initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
-    process_next_cancer_research_job, process_next_cognition_job, resume_world,
-    resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
-    schedule_world_cognition,
+    CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
+    CancerTcgaGbmTargetContextQualifier, CognitionModel, CognitionModelRoute, CognitionProviderId,
+    CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore, MemoryOutboxStore,
+    ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore,
+    advance_world, advance_world_with_celestial, advance_world_with_celestial_and_cognition,
+    calculate_cancer_research_novelty, construct_configured_genesis_with_materials,
+    execute_cancer_virtual_experiment, initialize_or_resume_configured_world_with_materials,
+    initialize_or_resume_world, process_next_cancer_research_job, process_next_cognition_job,
+    reconcile_fireworks_billing_export, resume_world, resume_world_from_snapshot,
+    retire_world_for_successor, schedule_due_cancer_research_turn, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -347,6 +347,11 @@ enum Command {
         #[arg(long, env = "CANCER_PDC000711_PROTEOME_METADATA_PATH")]
         pdc000711_proteome_metadata_path: PathBuf,
 
+        /// Frozen, public, patient-disjoint TCGA-GBM aggregate. This remains
+        /// observer-side context and never enters research prompts or memory.
+        #[arg(long, env = "CANCER_TCGA_GBM_TARGET_CONTEXT_PATH")]
+        tcga_gbm_target_context_path: PathBuf,
+
         /// Fetch once and exit (used by deployment checks and deterministic tests).
         #[arg(long, default_value_t = false)]
         once: bool,
@@ -508,6 +513,21 @@ enum Command {
         /// Drain every currently ready research turn and exit.
         #[arg(long, default_value_t = false)]
         drain: bool,
+    },
+    /// Reconcile indeterminate Cancer World Fireworks reservations against one
+    /// exact authoritative `firectl billing export-metrics` CSV.
+    ReconcileCancerFireworksBilling {
+        /// First day of the UTC billing month represented by the export.
+        #[arg(long)]
+        billing_month: chrono::NaiveDate,
+
+        /// Unmodified Fireworks CSV. Its whole bytes and exact matched rows are hashed.
+        #[arg(long)]
+        export: PathBuf,
+
+        /// Without this flag the command verifies and reports but writes nothing.
+        #[arg(long, default_value_t = false)]
+        confirm_operator_reconciliation: bool,
     },
 }
 
@@ -749,6 +769,7 @@ async fn main() -> Result<()> {
             nci60_answer_key_path,
             pdc000711_proteome_path,
             pdc000711_proteome_metadata_path,
+            tcga_gbm_target_context_path,
             once,
         } => {
             serve_cancer_evidence_worker(
@@ -766,6 +787,7 @@ async fn main() -> Result<()> {
                         matrix: &pdc000711_proteome_path,
                         metadata: &pdc000711_proteome_metadata_path,
                     },
+                    tcga_gbm_target_context_path: &tcga_gbm_target_context_path,
                     once,
                 },
             )
@@ -913,7 +935,86 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Command::ReconcileCancerFireworksBilling {
+            billing_month,
+            export,
+            confirm_operator_reconciliation,
+        } => {
+            reconcile_cancer_fireworks_billing(
+                &store,
+                billing_month,
+                &export,
+                confirm_operator_reconciliation,
+            )
+            .await
+        }
     }
+}
+
+async fn reconcile_cancer_fireworks_billing(
+    store: &PostgresStore,
+    billing_month: chrono::NaiveDate,
+    export_path: &std::path::Path,
+    confirm_operator_reconciliation: bool,
+) -> Result<()> {
+    const MAX_EXPORT_BYTES: u64 = 128 * 1024 * 1024;
+    let metadata = fs::symlink_metadata(export_path)
+        .with_context(|| format!("inspect Fireworks billing export {}", export_path.display()))?;
+    if !metadata.file_type().is_file()
+        || metadata.file_type().is_symlink()
+        || metadata.len() == 0
+        || metadata.len() > MAX_EXPORT_BYTES
+    {
+        anyhow::bail!(
+            "Fireworks billing export must be a nonempty regular file no larger than {MAX_EXPORT_BYTES} bytes"
+        );
+    }
+    let export_bytes = fs::read(export_path)
+        .with_context(|| format!("read Fireworks billing export {}", export_path.display()))?;
+    if u64::try_from(export_bytes.len()).ok() != Some(metadata.len()) {
+        anyhow::bail!("Fireworks billing export changed while it was being read");
+    }
+    let candidates = store
+        .list_indeterminate_cancer_fireworks_dispatches(billing_month)
+        .await
+        .context("load indeterminate Fireworks Cancer World dispatches")?;
+    if candidates.is_empty() {
+        anyhow::bail!("no unreconciled Fireworks dispatches exist for that billing month");
+    }
+    let reconciliations = reconcile_fireworks_billing_export(&export_bytes, &candidates)
+        .context("match authoritative Fireworks billing rows")?;
+    let actual_micro_usd = reconciliations.iter().try_fold(0_u64, |total, item| {
+        total.checked_add(item.actual_micro_usd)
+    });
+    let released_micro_usd = reconciliations.iter().try_fold(0_u64, |total, item| {
+        total.checked_add(item.released_micro_usd)
+    });
+    let (Some(actual_micro_usd), Some(released_micro_usd)) = (actual_micro_usd, released_micro_usd)
+    else {
+        anyhow::bail!("Fireworks reconciliation totals overflowed");
+    };
+    let status = if confirm_operator_reconciliation {
+        store
+            .record_cancer_fireworks_cost_reconciliations(&reconciliations)
+            .await
+            .context("append Fireworks cost reconciliations")?;
+        "recorded"
+    } else {
+        "verified_no_write"
+    };
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&json!({
+            "status": status,
+            "billing_month": billing_month,
+            "matched_requests": reconciliations.len(),
+            "actual_micro_usd": actual_micro_usd,
+            "released_micro_usd": released_micro_usd,
+            "export_sha256": Digest::sha256(&export_bytes),
+            "export_byte_length": export_bytes.len(),
+        }))?
+    );
+    Ok(())
 }
 
 fn database_url_from_postgres_environment() -> Result<Option<String>> {
@@ -954,6 +1055,7 @@ struct CancerEvidenceWorkerConfiguration<'a> {
     refresh_seconds: u64,
     nci60_paths: CancerNci60QualificationPaths<'a>,
     patient_derived_paths: CancerPatientDerivedQualificationPaths<'a>,
+    tcga_gbm_target_context_path: &'a std::path::Path,
     once: bool,
 }
 
@@ -968,6 +1070,7 @@ async fn serve_cancer_evidence_worker(
         refresh_seconds,
         nci60_paths,
         patient_derived_paths,
+        tcga_gbm_target_context_path,
         once,
     } = configuration;
     let endpoint = Url::parse(endpoint).context("parse Cancer World evidence endpoint")?;
@@ -1051,6 +1154,22 @@ async fn serve_cancer_evidence_worker(
             }
             Err(error) => return Err(error),
         }
+        match qualify_pending_cancer_tcga_gbm_target_context(
+            store,
+            world_id,
+            tcga_gbm_target_context_path,
+        )
+        .await
+        {
+            Ok(count) if count > 0 => {
+                tracing::info!(world_id = %world_id, qualification_count = count, "Cancer World TCGA-GBM target-context batch completed")
+            }
+            Ok(_) => {}
+            Err(error) if !once => {
+                tracing::error!(world_id = %world_id, %error, "Cancer World TCGA-GBM target context failed; exact-target artifacts remain queued")
+            }
+            Err(error) => return Err(error),
+        }
         if once {
             return Ok(());
         }
@@ -1097,6 +1216,44 @@ async fn qualify_pending_cancer_patient_derived_targets(
             .store_cancer_patient_derived_molecular_qualification(&result, &candidate.contribution)
             .await
             .context("store immutable patient-derived molecular qualification")?;
+        stored += 1;
+    }
+    Ok(stored)
+}
+
+async fn qualify_pending_cancer_tcga_gbm_target_context(
+    store: &PostgresStore,
+    world_id: WorldId,
+    baseline_path: &std::path::Path,
+) -> Result<usize> {
+    let candidates = store
+        .load_unqualified_cancer_tcga_gbm_target_context(
+            world_id,
+            world_domain::CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION,
+            32,
+        )
+        .await
+        .context("load Cancer World targets without TCGA-GBM context")?;
+    if candidates.is_empty() {
+        return Ok(0);
+    }
+    let baseline_bytes = fs::read(baseline_path).with_context(|| {
+        format!(
+            "read isolated TCGA-GBM aggregate {}",
+            baseline_path.display()
+        )
+    })?;
+    let qualifier = CancerTcgaGbmTargetContextQualifier::new(&baseline_bytes)
+        .context("validate and index the patient-disjoint TCGA-GBM aggregate")?;
+    let mut stored = 0_usize;
+    for candidate in candidates {
+        let result = qualifier
+            .qualify(&candidate)
+            .context("qualify one exact molecular target set against TCGA-GBM")?;
+        store
+            .store_cancer_tcga_gbm_target_context_qualification(&result, &candidate.contribution)
+            .await
+            .context("store immutable TCGA-GBM target-context qualification")?;
         stored += 1;
     }
     Ok(stored)
@@ -4550,6 +4707,35 @@ mod tests {
             paid_reservation_micro_usd,
             application::DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
         );
+    }
+
+    #[test]
+    fn fireworks_reconciliation_is_dry_run_by_default_and_requires_a_month() {
+        let cli = Cli::try_parse_from([
+            "civilization-runner",
+            "--database-url",
+            "postgres://example",
+            "reconcile-cancer-fireworks-billing",
+            "--billing-month",
+            "2026-08-01",
+            "--export",
+            "/run/operator/fireworks.csv",
+        ])
+        .expect("parse Fireworks reconciliation command");
+        let Some(Command::ReconcileCancerFireworksBilling {
+            billing_month,
+            export,
+            confirm_operator_reconciliation,
+        }) = cli.command
+        else {
+            panic!("expected Fireworks reconciliation command");
+        };
+        assert_eq!(
+            billing_month,
+            chrono::NaiveDate::from_ymd_opt(2026, 8, 1).expect("billing month")
+        );
+        assert_eq!(export, std::path::Path::new("/run/operator/fireworks.csv"));
+        assert!(!confirm_operator_reconciliation);
     }
 
     #[test]

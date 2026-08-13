@@ -58,6 +58,12 @@ elif [[ -e "$pdc000711_proteome_source" || -e "$pdc000711_metadata_source" ]]; t
   exit 1
 fi
 
+# The public patient-disjoint aggregate is always available in a clean checkout,
+# but it reaches the evidence worker only through the same content-addressed,
+# read-only runtime boundary as private qualification inputs.
+ATINY_APP_IMAGE="$app_image" \
+  bash "${project_root}/scripts/smoke-cancer-tcga-gbm-target-context.sh"
+
 web_container=""
 cleanup() {
   if [[ -n "$web_container" ]]; then

@@ -14,7 +14,8 @@ use observer_projection::{
     PublicCancerResearchCampaign, PublicCancerResearchCampaignOutcome,
     PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
     PublicCancerResearchProgramSummary, PublicCancerResearchView,
-    PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
+    PublicCancerTcgaGbmTargetContextQualification, PublicCancerVirtualExperimentResult,
+    PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
@@ -23,9 +24,10 @@ use uuid::Uuid;
 use world_domain::{
     CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
     CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
-    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
-    CancerNci60ResponseQualification, CancerPatientDerivedMolecularQualification,
-    CancerResearchNoveltyAudit, CancerResearchProgram, CancerVirtualExperimentInterpretation,
+    CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION,
+    CANCER_VIRTUAL_LAB_METHOD_VERSION, CancerNci60ResponseQualification,
+    CancerPatientDerivedMolecularQualification, CancerResearchNoveltyAudit, CancerResearchProgram,
+    CancerTcgaGbmTargetContextQualification, CancerVirtualExperimentInterpretation,
     CancerVirtualExperimentResult, Digest, WorldId,
 };
 
@@ -52,6 +54,9 @@ struct ResearchProjectionRow {
     patient_qualification_payload: Option<Value>,
     patient_qualification_checksum: Option<Vec<u8>>,
     patient_qualification_created_at: Option<DateTime<Utc>>,
+    tcga_qualification_payload: Option<Value>,
+    tcga_qualification_checksum: Option<Vec<u8>>,
+    tcga_qualification_created_at: Option<DateTime<Utc>>,
 }
 
 #[derive(FromRow)]
@@ -213,7 +218,10 @@ impl ObserverCancerResearchStore for PostgresStore {
                    qualification.created_at AS qualification_created_at,
                    patient_qualification.result_payload AS patient_qualification_payload,
                    patient_qualification.result_checksum AS patient_qualification_checksum,
-                   patient_qualification.created_at AS patient_qualification_created_at
+                   patient_qualification.created_at AS patient_qualification_created_at,
+                   tcga_qualification.result_payload AS tcga_qualification_payload,
+                   tcga_qualification.result_checksum AS tcga_qualification_checksum,
+                   tcga_qualification.created_at AS tcga_qualification_created_at
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
             LEFT JOIN memory_outbox AS memory
@@ -238,6 +246,9 @@ impl ObserverCancerResearchStore for PostgresStore {
             LEFT JOIN cancer_patient_derived_molecular_qualifications AS patient_qualification
               ON patient_qualification.request_id=request.request_id
              AND patient_qualification.method_version=$6
+            LEFT JOIN cancer_tcga_gbm_target_context_qualifications AS tcga_qualification
+              ON tcga_qualification.request_id=request.request_id
+             AND tcga_qualification.method_version=$7
             WHERE request.world_id=$1
               AND result.result_payload->'receipt' <> 'null'::JSONB
             ORDER BY request.ordinal, request.request_id
@@ -253,6 +264,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(i32::from(
             CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
         ))
+        .bind(i32::from(CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION))
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -450,6 +462,50 @@ impl ObserverCancerResearchStore for PostgresStore {
                     ));
                 }
             };
+            let tcga_target_context_qualification = match (
+                row.tcga_qualification_payload,
+                row.tcga_qualification_checksum,
+                row.tcga_qualification_created_at,
+            ) {
+                (None, None, None) => None,
+                (Some(payload), Some(checksum), Some(created_at)) => {
+                    let result: CancerTcgaGbmTargetContextQualification =
+                        serde_json::from_value(payload).map_err(|error| {
+                            corrupt(format!(
+                                "invalid TCGA-GBM target-context qualification result: {error}"
+                            ))
+                        })?;
+                    result
+                        .validate_against(&receipt.contribution)
+                        .map_err(contract_error)?;
+                    let result_hash = digest_from_db(
+                        &checksum,
+                        "TCGA-GBM target-context qualification result checksum",
+                    )?;
+                    if result.world_id != world_id
+                        || result.request_id != request.request_id
+                        || result.artifact_hash != artifact_hash
+                        || result
+                            .canonical_hash(&receipt.contribution)
+                            .map_err(contract_error)?
+                            != result_hash
+                    {
+                        return Err(corrupt(
+                            "Cancer World TCGA-GBM target context crossed its immutable artifact provenance",
+                        ));
+                    }
+                    Some(PublicCancerTcgaGbmTargetContextQualification {
+                        result,
+                        result_hash,
+                        created_at,
+                    })
+                }
+                _ => {
+                    return Err(corrupt(
+                        "Cancer World TCGA-GBM target context is only partially persisted",
+                    ));
+                }
+            };
             artifacts.push(PublicCancerResearchArtifact {
                 request_id: request.request_id,
                 selected_at_tick: request.selection.selected_at_tick,
@@ -482,6 +538,7 @@ impl ObserverCancerResearchStore for PostgresStore {
                 virtual_experiment,
                 nci60_qualification,
                 patient_derived_qualification,
+                tcga_target_context_qualification,
                 created_at: row.created_at,
                 duplicates: Vec::new(),
             });

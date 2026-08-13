@@ -1,13 +1,13 @@
 use anyhow::Result;
 use application::{
-    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CognitionAttemptPersistenceState,
-    CognitionBillingScope, CognitionJobEntry, CognitionJobStore, CognitionModel,
-    CognitionModelError, CognitionModelRoute, CognitionProviderId, CognitionRecallRecord,
-    CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
-    CognitionRouteRegistry, CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore,
-    MemoryAdapterError, MemoryFactKind, MemoryOutboxStore, MemoryRecallOutcome,
-    MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt, ModelCognitionLadderResult,
-    ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchFireworksCostReconciliation,
+    CancerResearchJobStore, CognitionAttemptPersistenceState, CognitionBillingScope,
+    CognitionJobEntry, CognitionJobStore, CognitionModel, CognitionModelError, CognitionModelRoute,
+    CognitionProviderId, CognitionRecallRecord, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CognitionRoutePurpose, CognitionRouteRegistry, CognitionWorkerConfiguration,
+    CognitionWorkerStep, FoundationStore, MemoryAdapterError, MemoryFactKind, MemoryOutboxStore,
+    MemoryRecallOutcome, MemoryRecallRequest, MemoryRetain, MemoryRetainReceipt,
+    ModelCognitionLadderResult, ModelCognitionReceipt, ModelCognitionRequest, ModelTokenUsage,
     PaidCognitionReservationDecision, RecallUnavailableReason, RecalledMemory, ServiceHeartbeat,
     StoreError, StoredWorld, TransitionEffects, WorldStore, advance_world,
     initialize_or_resume_configured_world, initialize_or_resume_configured_world_with_materials,
@@ -2671,6 +2671,160 @@ async fn cancer_research_and_production_use_distinct_cost_accounts(pool: PgPool)
             ("production".to_owned(), 0, 3_000_000),
         ]
     );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn fireworks_export_reconciliation_is_append_only_idempotent_and_releases_only_verified_difference(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let world_id = WorldId::from_uuid(Uuid::new_v4());
+    let request_id = Uuid::new_v4();
+    let resident_id = Uuid::new_v4();
+    let zero = vec![0_u8; 32];
+    sqlx::query(
+        r#"
+        INSERT INTO worlds (
+            id,seed,status,ruleset_version,manifest,manifest_checksum,
+            last_event_checksum,current_state_checksum
+        ) VALUES ($1,'42','running',37,'{}'::JSONB,$2,$2,$2)
+        "#,
+    )
+    .bind(world_id.as_uuid())
+    .bind(&zero)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO cancer_research_requests (
+            request_id,world_id,resident_id,selected_tick,deadline_tick,ordinal,
+            stage,inference_tier,request_payload,request_checksum
+        ) VALUES ($1,$2,$3,1,2,0,'blind_discovery','exploration','{}'::JSONB,$4)
+        "#,
+    )
+    .bind(request_id)
+    .bind(world_id.as_uuid())
+    .bind(resident_id)
+    .bind(&zero)
+    .execute(&pool)
+    .await?;
+    let billing_month: chrono::NaiveDate =
+        sqlx::query_scalar("SELECT date_trunc('month',CURRENT_DATE)::DATE")
+            .fetch_one(&pool)
+            .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO cognition_cost_accounts (
+            billing_scope,billing_month,target_micro_usd,hard_stop_micro_usd,
+            reserved_micro_usd,spent_micro_usd
+        ) VALUES ('cancer_research',$1,2500000,2850000,15000,0)
+        "#,
+    )
+    .bind(billing_month)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO cancer_research_cost_reservations (
+            request_id,billing_scope,billing_month,reserved_micro_usd,status
+        ) VALUES ($1,'cancer_research',$2,15000,'reserved')
+        "#,
+    )
+    .bind(request_id)
+    .bind(billing_month)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO cancer_research_route_dispatches (
+            request_id,route_index,provider_slug,requested_model,billing_class,
+            route_payload,route_checksum
+        ) VALUES ($1,0,'fireworks_cancer','accounts/fireworks/models/gpt-oss-20b',
+                  'paid_approved','{}'::JSONB,$2)
+        "#,
+    )
+    .bind(request_id)
+    .bind(&zero)
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        "UPDATE cancer_research_cost_reservations SET status='indeterminate',resolved_at=NOW() WHERE request_id=$1",
+    )
+    .bind(request_id)
+    .execute(&pool)
+    .await?;
+
+    let candidates = store
+        .list_indeterminate_cancer_fireworks_dispatches(billing_month)
+        .await?;
+    let [candidate] = candidates.as_slice() else {
+        panic!("one reconciliation candidate expected");
+    };
+    let reconciliation = CancerResearchFireworksCostReconciliation::from_export_row(
+        candidate,
+        Digest::sha256(b"authoritative Fireworks monthly export"),
+        125,
+        Digest::sha256(b"exact Fireworks CSV row\n"),
+        100,
+        25,
+        candidate.dispatched_at + chrono::Duration::seconds(1),
+        100,
+        10,
+    )?;
+    assert_eq!(reconciliation.actual_micro_usd, 10);
+    assert_eq!(reconciliation.released_micro_usd, 14_990);
+    store
+        .record_cancer_fireworks_cost_reconciliations(std::slice::from_ref(&reconciliation))
+        .await?;
+    let account: (i64, i64) = sqlx::query_as(
+        "SELECT reserved_micro_usd,spent_micro_usd FROM cognition_cost_accounts WHERE billing_scope='cancer_research' AND billing_month=$1",
+    )
+    .bind(billing_month)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(account, (0, 10));
+    let original: (String, Option<i64>) = sqlx::query_as(
+        "SELECT status,actual_micro_usd FROM cancer_research_cost_reservations WHERE request_id=$1",
+    )
+    .bind(request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(original, ("indeterminate".to_owned(), None));
+    assert!(
+        store
+            .list_indeterminate_cancer_fireworks_dispatches(billing_month)
+            .await?
+            .is_empty()
+    );
+
+    // An exact retry is a read-only success and cannot double-adjust the account.
+    store
+        .record_cancer_fireworks_cost_reconciliations(std::slice::from_ref(&reconciliation))
+        .await?;
+    let retried_account: (i64, i64) = sqlx::query_as(
+        "SELECT reserved_micro_usd,spent_micro_usd FROM cognition_cost_accounts WHERE billing_scope='cancer_research' AND billing_month=$1",
+    )
+    .bind(billing_month)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(retried_account, account);
+
+    let mut conflicting = reconciliation;
+    conflicting.export_hash = Digest::sha256(b"different export");
+    assert!(
+        store
+            .record_cancer_fireworks_cost_reconciliations(std::slice::from_ref(&conflicting))
+            .await
+            .is_err()
+    );
+    let deletion = sqlx::query(
+        "DELETE FROM cancer_research_fireworks_cost_reconciliations WHERE request_id=$1",
+    )
+    .bind(request_id)
+    .execute(&pool)
+    .await;
+    assert!(deletion.is_err(), "reconciliation evidence is immutable");
     Ok(())
 }
 

@@ -152,6 +152,7 @@ type ResearchArtifact = {
   virtual_experiment: VirtualExperiment | null;
   nci60_qualification: Nci60Qualification | null;
   patient_derived_qualification?: PatientDerivedMolecularQualification | null;
+  tcga_target_context_qualification?: TcgaGbmTargetContextQualification | null;
   created_at: string;
   duplicates: ResearchDuplicate[];
 };
@@ -212,6 +213,26 @@ type PatientDerivedMolecularQualification = {
   target_observations?: PatientDerivedTargetObservation[];
   targets?: PatientDerivedTargetObservation[];
   limitations?: string[];
+};
+
+type TcgaGbmTargetContextObservation = {
+  target?: { gene_symbol?: string };
+  status?: "evaluated" | "outside_calibration_feature_set" | string;
+  calibration_prevalence_parts_per_million?: number | null;
+  held_out_prevalence_parts_per_million?: number | null;
+  absolute_error_parts_per_million?: number | null;
+};
+
+type TcgaGbmTargetContextQualification = {
+  method_version?: number;
+  baseline_id?: string;
+  data_release?: string;
+  calibration_profiled_patient_count?: number;
+  held_out_profiled_patient_count?: number;
+  feature_selection?: string;
+  target_observations?: TcgaGbmTargetContextObservation[];
+  limitations?: string[];
+  source?: { content_hash?: string; source_id?: string };
 };
 
 type Nci60BenchmarkPartition = {
@@ -566,6 +587,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
       {artifact.virtual_experiment && <span className="virtual-run">MODEL TEST RUN</span>}
       {artifact.nci60_qualification && <span className="virtual-run">NCI BENCHMARK OPENED</span>}
       {artifact.patient_derived_qualification && <span className="patient-check">PATIENT-DERIVED TARGET CHECK</span>}
+      {artifact.tcga_target_context_qualification && <span className="tcga-check">PATIENT-TUMOR CONTEXT</span>}
       <span className={artifact.memory_state === "accepted" ? "accepted" : "queued"}>{artifact.memory_state === "accepted" ? "MEMORY CONNECTED" : "MEMORY QUEUED"}</span>
     </div>
     <h3>{contribution.title}</h3>
@@ -596,6 +618,7 @@ function ArtifactCard({ artifact }: { artifact: ResearchArtifact }) {
     {contribution.virtual_experiment_plan && <VirtualExperimentPanel artifact={artifact} />}
     {contribution.nci60_response_prediction && <Nci60QualificationPanel artifact={artifact} />}
     {artifact.patient_derived_qualification && <PatientDerivedQualificationPanel qualification={artifact.patient_derived_qualification} />}
+    {artifact.tcga_target_context_qualification && <TcgaTargetContextPanel qualification={artifact.tcga_target_context_qualification} />}
     {contribution.claims.map((claim, index) => <details key={`${artifact.request_id}-${index}`}>
       <summary>CLAIM {index + 1} · {claim.statement}</summary>
       <dl>
@@ -666,6 +689,45 @@ function patientTargetStatus(status: string) {
     case "unresolved": return "Unresolved";
     default: return humanize(status);
   }
+}
+
+function TcgaTargetContextPanel({ qualification }: { qualification: TcgaGbmTargetContextQualification }) {
+  const targets = qualification.target_observations ?? [];
+  const evaluated = targets.filter((target) => target.status === "evaluated").length;
+  const sourceHash = qualification.source?.content_hash;
+  return <section className="cancer-tcga-check" aria-label="Patient-tumor mutation context">
+    <header>
+      <div>
+        <span>PATIENT-TUMOR MUTATION CONTEXT</span>
+        <strong>{evaluated} of {targets.length} target{targets.length === 1 ? "" : "s"} in the preselected feature set</strong>
+      </div>
+      <small>{qualification.calibration_profiled_patient_count ?? "—"} CALIBRATION · {qualification.held_out_profiled_patient_count ?? "—"} HELD OUT</small>
+    </header>
+    <p className="cancer-tcga-boundary">SOMATIC-VARIANT PREVALENCE ONLY — NOT EXPRESSION, DEPENDENCY, TREATMENT RESPONSE, OR CLINICAL EVIDENCE</p>
+    <div className="cancer-tcga-targets">
+      {targets.map((target, index) => {
+        const symbol = target.target?.gene_symbol ?? `TARGET ${index + 1}`;
+        const hasContext = target.status === "evaluated";
+        return <article data-status={target.status ?? "outside_calibration_feature_set"} key={`${symbol}-${index}`}>
+          <div><strong>{symbol}</strong><span>{hasContext ? "Evaluated" : "Outside feature set"}</span></div>
+          {hasContext ? <dl>
+            <div><dt>CALIBRATION</dt><dd>{formatOptionalParts(target.calibration_prevalence_parts_per_million)}</dd></div>
+            <div><dt>HELD OUT</dt><dd>{formatOptionalParts(target.held_out_prevalence_parts_per_million)}</dd></div>
+            <div><dt>DIFFERENCE</dt><dd>{formatOptionalParts(target.absolute_error_parts_per_million)}</dd></div>
+          </dl> : <p>Not among the 25 genes selected using calibration patients. This is unresolved—not zero.</p>}
+        </article>;
+      })}
+    </div>
+    <details className="cancer-tcga-notes">
+      <summary>PROVENANCE + LIMITATIONS · {qualification.limitations?.length ?? 0} NOTES</summary>
+      <div>
+        <p>{qualification.baseline_id ?? "TCGA-GBM aggregate"}{sourceHash ? ` · ${shortHash(sourceHash)}` : ""}</p>
+        <p>{qualification.feature_selection}</p>
+        {(qualification.limitations ?? []).map((limitation) => <p key={limitation}>{limitation}</p>)}
+        <small>METHOD V{qualification.method_version ?? "—"} · {qualification.data_release ?? "FROZEN RELEASE"}</small>
+      </div>
+    </details>
+  </section>;
 }
 
 function Nci60QualificationPanel({ artifact }: { artifact: ResearchArtifact }) {
@@ -879,4 +941,10 @@ function formatParts(partsPerMillion: number) {
 function formatSignedParts(partsPerMillion: number) {
   const value = partsPerMillion / 10_000;
   return `${value > 0 ? "+" : ""}${value.toFixed(1)}%`;
+}
+
+function formatOptionalParts(partsPerMillion: number | null | undefined) {
+  return partsPerMillion === null || partsPerMillion === undefined
+    ? "—"
+    : formatParts(partsPerMillion);
 }

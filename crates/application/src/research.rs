@@ -45,6 +45,7 @@ impl CancerResearchPriorResult {
 }
 
 use crate::{
+    CancerResearchFireworksCostReconciliation, CancerResearchFireworksDispatchCandidate,
     CognitionBillingClass, CognitionContractError, CognitionModelRoute, CognitionProviderId,
     CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
     CognitionRouteRegistry, ModelTokenUsage, StoreError,
@@ -1235,6 +1236,27 @@ pub trait CancerResearchJobStore: Send + Sync {
         Ok(())
     }
 
+    /// Loads explicit molecular targets not yet checked against the current
+    /// patient-disjoint TCGA-GBM aggregate method.
+    async fn load_unqualified_cancer_tcga_gbm_target_context(
+        &self,
+        _world_id: world_domain::WorldId,
+        _method_version: u16,
+        _limit: usize,
+    ) -> Result<Vec<crate::CancerTcgaGbmTargetContextCandidate>, StoreError> {
+        Ok(Vec::new())
+    }
+
+    /// Appends one immutable target-level somatic-variant prevalence context.
+    /// This observer result never enters model memory or campaign scoring.
+    async fn store_cancer_tcga_gbm_target_context_qualification(
+        &self,
+        _qualification: &world_domain::CancerTcgaGbmTargetContextQualification,
+        _contribution: &CancerResearchContribution,
+    ) -> Result<(), StoreError> {
+        Ok(())
+    }
+
     /// Inserts one exact content-addressed request. Repeating the identical
     /// request is idempotent; the same ID with different bytes is corruption.
     async fn enqueue_cancer_research_request(
@@ -1376,6 +1398,22 @@ pub trait CancerResearchJobStore: Send + Sync {
         worker_id: &str,
         entry: &CancerResearchJobEntry,
         authorization: &CancerResearchPaidAuthorization,
+    ) -> Result<(), StoreError>;
+
+    /// Lists every unresolved Fireworks dispatch eligible for offline matching
+    /// against one authoritative `firectl billing export-metrics` CSV. The
+    /// import path must refuse zero or multiple timestamp matches.
+    async fn list_indeterminate_cancer_fireworks_dispatches(
+        &self,
+        billing_month: NaiveDate,
+    ) -> Result<Vec<CancerResearchFireworksDispatchCandidate>, StoreError>;
+
+    /// Appends verified provider-billing evidence. Original reservations and
+    /// dispatches remain immutable; only the verified reserved-minus-actual
+    /// amount becomes available to future paid calls.
+    async fn record_cancer_fireworks_cost_reconciliations(
+        &self,
+        reconciliations: &[CancerResearchFireworksCostReconciliation],
     ) -> Result<(), StoreError>;
 }
 

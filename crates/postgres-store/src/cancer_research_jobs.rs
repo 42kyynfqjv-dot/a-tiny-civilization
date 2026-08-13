@@ -1,27 +1,30 @@
 use application::{
     CancerNci60QualificationCandidate, CancerPatientDerivedMolecularCandidate,
     CancerResearchAttemptPersistenceState, CancerResearchCampaignCandidate,
-    CancerResearchCampaignFollowup, CancerResearchCatalogItem, CancerResearchJobEntry,
-    CancerResearchJobStore, CancerResearchLadderResult, CancerResearchLiteratureSnapshot,
-    CancerResearchMemoryInput, CancerResearchModelReceipt, CancerResearchModelRequest,
-    CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
+    CancerResearchCampaignFollowup, CancerResearchCatalogItem,
+    CancerResearchFireworksCostReconciliation, CancerResearchFireworksDispatchCandidate,
+    CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
+    CancerResearchLiteratureSnapshot, CancerResearchMemoryInput, CancerResearchModelReceipt,
+    CancerResearchModelRequest, CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
     CancerResearchPaidReservationDecision, CancerResearchPriorResult,
-    CancerResearchRouteAttemptRecord, CancerVirtualExperimentCandidate,
-    CancerVirtualExperimentCatalogSummary, CognitionBillingClass, CognitionBillingScope,
-    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchRouteAttemptRecord, CancerTcgaGbmTargetContextCandidate,
+    CancerVirtualExperimentCandidate, CancerVirtualExperimentCatalogSummary, CognitionBillingClass,
+    CognitionBillingScope, CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_MEMORY_INPUTS,
     MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain, StoreError,
     cancer_research_collective_id, cancer_research_contributions_duplicate,
+    validate_fireworks_reconciliation_batch,
 };
 use async_trait::async_trait;
-use chrono::{DateTime, NaiveDate, Utc};
+use chrono::{DateTime, Datelike, NaiveDate, Utc};
 use serde_json::Value;
 use sqlx::{FromRow, Postgres, Transaction};
 use uuid::Uuid;
 use world_domain::{
     CancerNci60ResponseQualification, CancerPatientDerivedMolecularQualification,
     CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchNoveltyStatus,
-    CancerResearchStage, CancerVirtualExperimentResult, Digest, EventSequence,
+    CancerResearchStage, CancerTcgaGbmTargetContextQualification, CancerVirtualExperimentResult,
+    Digest, EventSequence,
 };
 
 use crate::PostgresStore;
@@ -96,6 +99,28 @@ struct ResearchCostReservationRow {
     reserved_micro_usd: i64,
     status: String,
     actual_micro_usd: Option<i64>,
+}
+
+#[derive(FromRow)]
+struct ResearchFireworksReconciliationRow {
+    schema_version: i32,
+    reconciliation_id: Uuid,
+    route_index: i32,
+    billing_month: NaiveDate,
+    source_format: String,
+    export_sha256: Vec<u8>,
+    export_byte_length: i64,
+    row_sha256: Vec<u8>,
+    row_start_offset: i64,
+    row_byte_length: i64,
+    provider_started_at: DateTime<Utc>,
+    matched_dispatch_at: DateTime<Utc>,
+    requested_model: String,
+    prompt_tokens: i64,
+    completion_tokens: i64,
+    actual_micro_usd: i64,
+    reserved_micro_usd: i64,
+    released_micro_usd: i64,
 }
 
 #[derive(FromRow)]
@@ -839,6 +864,149 @@ impl CancerResearchJobStore for PostgresStore {
             None => Err(StoreError::Conflict(
                 "patient-derived molecular qualification disappeared during idempotency check"
                     .to_owned(),
+            )),
+        }
+    }
+
+    async fn load_unqualified_cancer_tcga_gbm_target_context(
+        &self,
+        world_id: world_domain::WorldId,
+        method_version: u16,
+        limit: usize,
+    ) -> Result<Vec<CancerTcgaGbmTargetContextCandidate>, StoreError> {
+        if method_version == 0 {
+            return Err(StoreError::Conflict(
+                "TCGA-GBM target-context method version must be nonzero".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, PriorResearchResultRow>(
+            r#"
+            SELECT request.request_payload, request.request_checksum,
+                   result.result_payload, result.result_checksum
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            LEFT JOIN cancer_tcga_gbm_target_context_qualifications AS qualification
+              ON qualification.request_id=request.request_id
+             AND qualification.method_version=$2
+            WHERE request.world_id=$1
+              AND result.result_payload->'receipt' <> 'null'::JSONB
+              AND JSONB_TYPEOF(
+                  result.result_payload->'receipt'->'contribution'->'molecular_targets'
+              )='array'
+              AND JSONB_ARRAY_LENGTH(
+                  result.result_payload->'receipt'->'contribution'->'molecular_targets'
+              ) > 0
+              AND qualification.qualification_id IS NULL
+            ORDER BY request.ordinal,request.request_id
+            LIMIT $3
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(method_version))
+        .bind(i64::try_from(limit.clamp(1, 64)).map_err(corrupt)?)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let mut candidates = Vec::with_capacity(rows.len());
+        for row in rows {
+            let (request, result) = parse_historical_research_result(row, world_id)?;
+            let contribution = result
+                .receipt
+                .ok_or_else(|| corrupt("TCGA target-context candidate omitted its receipt"))?
+                .contribution;
+            if contribution.molecular_targets.is_empty() {
+                return Err(corrupt(
+                    "TCGA target-context candidate omitted structured targets",
+                ));
+            }
+            let artifact_hash = contribution.canonical_hash().map_err(corrupt)?;
+            candidates.push(CancerTcgaGbmTargetContextCandidate {
+                world_id,
+                request_id: request.request_id,
+                artifact_hash,
+                contribution,
+            });
+        }
+        Ok(candidates)
+    }
+
+    async fn store_cancer_tcga_gbm_target_context_qualification(
+        &self,
+        qualification: &CancerTcgaGbmTargetContextQualification,
+        contribution: &world_domain::CancerResearchContribution,
+    ) -> Result<(), StoreError> {
+        qualification
+            .validate_against(contribution)
+            .map_err(corrupt)?;
+        let payload = serde_json::to_value(qualification).map_err(corrupt)?;
+        let checksum = qualification
+            .canonical_hash(contribution)
+            .map_err(corrupt)?;
+        let stored_result_payload: Value = sqlx::query_scalar(
+            "SELECT result_payload FROM cancer_research_results WHERE request_id=$1",
+        )
+        .bind(qualification.request_id)
+        .fetch_one(self.pool())
+        .await
+        .map_err(operation_error)?;
+        let stored_result: CancerResearchLadderResult =
+            serde_json::from_value(stored_result_payload).map_err(corrupt)?;
+        let stored_contribution = &stored_result
+            .receipt
+            .ok_or_else(|| corrupt("TCGA target-context source omitted its receipt"))?
+            .contribution;
+        if stored_contribution != contribution {
+            return Err(StoreError::Corrupt(
+                "TCGA target-context contribution differs from immutable research result"
+                    .to_owned(),
+            ));
+        }
+        let inserted = sqlx::query(
+            r#"
+            INSERT INTO cancer_tcga_gbm_target_context_qualifications (
+                qualification_id,world_id,request_id,method_version,artifact_hash,
+                source_artifact_hash,result_payload,result_checksum
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            ON CONFLICT (request_id,method_version) DO NOTHING
+            "#,
+        )
+        .bind(qualification.qualification_id)
+        .bind(qualification.world_id.as_uuid())
+        .bind(qualification.request_id)
+        .bind(i32::from(qualification.method_version))
+        .bind(qualification.artifact_hash.as_bytes().as_slice())
+        .bind(qualification.source.content_hash.as_bytes().as_slice())
+        .bind(&payload)
+        .bind(checksum.as_bytes().as_slice())
+        .execute(self.pool())
+        .await
+        .map_err(operation_error)?;
+        if inserted.rows_affected() == 1 {
+            return Ok(());
+        }
+        let existing = sqlx::query_as::<_, (Uuid, Value, Vec<u8>)>(
+            "SELECT qualification_id,result_payload,result_checksum FROM cancer_tcga_gbm_target_context_qualifications WHERE request_id=$1 AND method_version=$2",
+        )
+        .bind(qualification.request_id)
+        .bind(i32::from(qualification.method_version))
+        .fetch_optional(self.pool())
+        .await
+        .map_err(operation_error)?;
+        match existing {
+            Some((qualification_id, stored_payload, stored_checksum))
+                if qualification_id == qualification.qualification_id
+                    && stored_payload == payload
+                    && digest_from_db(&stored_checksum, "TCGA target-context checksum")?
+                        == checksum =>
+            {
+                Ok(())
+            }
+            Some(_) => Err(StoreError::Corrupt(format!(
+                "TCGA target-context qualification {} conflicts with its durable result",
+                qualification.qualification_id
+            ))),
+            None => Err(StoreError::Conflict(
+                "TCGA target-context qualification disappeared during idempotency check".to_owned(),
             )),
         }
     }
@@ -1917,6 +2085,248 @@ impl CancerResearchJobStore for PostgresStore {
         .await?;
         transaction.commit().await.map_err(operation_error)
     }
+
+    async fn list_indeterminate_cancer_fireworks_dispatches(
+        &self,
+        billing_month: NaiveDate,
+    ) -> Result<Vec<CancerResearchFireworksDispatchCandidate>, StoreError> {
+        if billing_month.day() != 1 {
+            return Err(StoreError::Conflict(
+                "Fireworks reconciliation billing month must be its first day".to_owned(),
+            ));
+        }
+        let rows = sqlx::query_as::<_, (Uuid, i32, String, DateTime<Utc>, NaiveDate, i64)>(
+            r#"
+            SELECT dispatch.request_id,dispatch.route_index,dispatch.requested_model,
+                   dispatch.dispatched_at,reservation.billing_month,
+                   reservation.reserved_micro_usd
+            FROM cancer_research_route_dispatches AS dispatch
+            JOIN cancer_research_cost_reservations AS reservation
+              ON reservation.request_id=dispatch.request_id
+            LEFT JOIN cancer_research_fireworks_cost_reconciliations AS reconciliation
+              ON reconciliation.request_id=dispatch.request_id
+            WHERE reservation.billing_month=$1
+              AND reservation.status='indeterminate'
+              AND reservation.actual_micro_usd IS NULL
+              AND dispatch.provider_slug='fireworks_cancer'
+              AND dispatch.billing_class='paid_approved'
+              AND dispatch.requested_model='accounts/fireworks/models/gpt-oss-20b'
+              AND reconciliation.request_id IS NULL
+            ORDER BY dispatch.dispatched_at,dispatch.request_id,dispatch.route_index
+            "#,
+        )
+        .bind(billing_month)
+        .fetch_all(self.pool())
+        .await
+        .map_err(operation_error)?;
+        rows.into_iter()
+            .map(
+                |(
+                    request_id,
+                    route_index,
+                    requested_model,
+                    dispatched_at,
+                    billing_month,
+                    reserved_micro_usd,
+                )| {
+                    let candidate = CancerResearchFireworksDispatchCandidate {
+                        request_id,
+                        route_index: u16::try_from(route_index).map_err(|_| {
+                            StoreError::Corrupt(
+                                "negative Fireworks reconciliation route index".to_owned(),
+                            )
+                        })?,
+                        requested_model,
+                        dispatched_at,
+                        billing_month,
+                        reserved_micro_usd: u64::try_from(reserved_micro_usd).map_err(|_| {
+                            StoreError::Corrupt(
+                                "negative Fireworks reconciliation reservation".to_owned(),
+                            )
+                        })?,
+                    };
+                    candidate.validate().map_err(corrupt)?;
+                    Ok(candidate)
+                },
+            )
+            .collect()
+    }
+
+    async fn record_cancer_fireworks_cost_reconciliations(
+        &self,
+        reconciliations: &[CancerResearchFireworksCostReconciliation],
+    ) -> Result<(), StoreError> {
+        if reconciliations.is_empty() {
+            return Err(StoreError::Conflict(
+                "Fireworks reconciliation batch is empty".to_owned(),
+            ));
+        }
+        validate_fireworks_reconciliation_batch(reconciliations).map_err(corrupt)?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        // Serialize every importer, including batches whose timestamp windows
+        // overlap but whose request rows differ. This keeps the trigger's
+        // exactly-one unresolved match stable from pre-read through append.
+        sqlx::query("SELECT pg_advisory_xact_lock($1)")
+            .bind(0x4154_4657_4249_4C4Ci64)
+            .execute(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+        for reconciliation in reconciliations {
+            let candidate = fetch_indeterminate_fireworks_candidate(
+                &mut transaction,
+                reconciliation.request_id,
+                true,
+            )
+            .await?;
+            let Some(candidate) = candidate else {
+                let existing = sqlx::query_as::<_, ResearchFireworksReconciliationRow>(
+                    r#"
+                    SELECT schema_version,reconciliation_id,route_index,billing_month,
+                           source_format,export_sha256,export_byte_length,row_sha256,row_start_offset,row_byte_length,
+                           provider_started_at,
+                           matched_dispatch_at,requested_model,prompt_tokens,completion_tokens,
+                           actual_micro_usd,reserved_micro_usd,released_micro_usd
+                    FROM cancer_research_fireworks_cost_reconciliations
+                    WHERE request_id=$1
+                    FOR SHARE
+                    "#,
+                )
+                .bind(reconciliation.request_id)
+                .fetch_optional(&mut *transaction)
+                .await
+                .map_err(operation_error)?;
+                if existing.as_ref().is_some_and(|row| {
+                    row.schema_version == i32::from(reconciliation.schema_version)
+                        && row.reconciliation_id == reconciliation.reconciliation_id
+                        && row.route_index == i32::from(reconciliation.route_index)
+                        && row.billing_month == reconciliation.billing_month
+                        && row.source_format == reconciliation.source_format
+                        && row.export_sha256.as_slice() == reconciliation.export_hash.as_bytes()
+                        && u64::try_from(row.export_byte_length).ok()
+                            == Some(reconciliation.export_byte_length)
+                        && row.row_sha256.as_slice() == reconciliation.row_hash.as_bytes()
+                        && u64::try_from(row.row_start_offset).ok()
+                            == Some(reconciliation.row_start_offset)
+                        && u64::try_from(row.row_byte_length).ok()
+                            == Some(reconciliation.row_byte_length)
+                        && row.provider_started_at == reconciliation.provider_started_at
+                        && row.matched_dispatch_at == reconciliation.matched_dispatch_at
+                        && row.requested_model == reconciliation.requested_model
+                        && row.prompt_tokens == i64::from(reconciliation.prompt_tokens)
+                        && row.completion_tokens == i64::from(reconciliation.completion_tokens)
+                        && u64::try_from(row.actual_micro_usd).ok()
+                            == Some(reconciliation.actual_micro_usd)
+                        && u64::try_from(row.reserved_micro_usd).ok()
+                            == Some(reconciliation.reserved_micro_usd)
+                        && u64::try_from(row.released_micro_usd).ok()
+                            == Some(reconciliation.released_micro_usd)
+                }) {
+                    continue;
+                }
+                return Err(StoreError::Conflict(
+                    "Fireworks reconciliation has no unique indeterminate dispatch or differs from its prior append"
+                        .to_owned(),
+                ));
+            };
+            reconciliation
+                .validate_against(&candidate)
+                .map_err(corrupt)?;
+            sqlx::query(
+                r#"
+                INSERT INTO cancer_research_fireworks_reconciliation_exports (
+                    export_sha256,export_byte_length,source_format
+                ) VALUES ($1,$2,$3)
+                ON CONFLICT (export_sha256) DO NOTHING
+                "#,
+            )
+            .bind(reconciliation.export_hash.as_bytes().as_slice())
+            .bind(to_i64(
+                reconciliation.export_byte_length,
+                "Fireworks export byte length",
+            )?)
+            .bind(&reconciliation.source_format)
+            .execute(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+            let export_matches: bool = sqlx::query_scalar(
+                r#"
+                SELECT EXISTS (
+                    SELECT 1 FROM cancer_research_fireworks_reconciliation_exports
+                    WHERE export_sha256=$1 AND export_byte_length=$2 AND source_format=$3
+                )
+                "#,
+            )
+            .bind(reconciliation.export_hash.as_bytes().as_slice())
+            .bind(to_i64(
+                reconciliation.export_byte_length,
+                "Fireworks export byte length",
+            )?)
+            .bind(&reconciliation.source_format)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+            if !export_matches {
+                return Err(StoreError::Conflict(
+                    "Fireworks export hash already has different provenance".to_owned(),
+                ));
+            }
+            let inserted = sqlx::query(
+                r#"
+                INSERT INTO cancer_research_fireworks_cost_reconciliations (
+                    reconciliation_id,schema_version,request_id,route_index,billing_month,
+                    source_format,export_sha256,export_byte_length,row_sha256,row_start_offset,row_byte_length,
+                    provider_started_at,matched_dispatch_at,requested_model,prompt_tokens,completion_tokens,
+                    actual_micro_usd,reserved_micro_usd,released_micro_usd
+                ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+                "#,
+            )
+            .bind(reconciliation.reconciliation_id)
+            .bind(i32::from(reconciliation.schema_version))
+            .bind(reconciliation.request_id)
+            .bind(i32::from(reconciliation.route_index))
+            .bind(reconciliation.billing_month)
+            .bind(&reconciliation.source_format)
+            .bind(reconciliation.export_hash.as_bytes().as_slice())
+            .bind(to_i64(
+                reconciliation.export_byte_length,
+                "Fireworks export byte length",
+            )?)
+            .bind(reconciliation.row_hash.as_bytes().as_slice())
+            .bind(to_i64(
+                reconciliation.row_start_offset,
+                "Fireworks export row offset",
+            )?)
+            .bind(to_i64(
+                reconciliation.row_byte_length,
+                "Fireworks export row length",
+            )?)
+            .bind(reconciliation.provider_started_at)
+            .bind(reconciliation.matched_dispatch_at)
+            .bind(&reconciliation.requested_model)
+            .bind(i64::from(reconciliation.prompt_tokens))
+            .bind(i64::from(reconciliation.completion_tokens))
+            .bind(to_i64(
+                reconciliation.actual_micro_usd,
+                "reconciled Fireworks cost",
+            )?)
+            .bind(to_i64(
+                reconciliation.reserved_micro_usd,
+                "reconciled Fireworks reservation",
+            )?)
+            .bind(to_i64(
+                reconciliation.released_micro_usd,
+                "released Fireworks reservation",
+            )?)
+            .execute(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+            require_one(
+                inserted.rows_affected(),
+                "Fireworks reconciliation lost its append race",
+            )?;
+        }
+        transaction.commit().await.map_err(operation_error)
+    }
 }
 
 fn parse_historical_research_result(
@@ -2123,6 +2533,80 @@ async fn fetch_research_reservation(
         .fetch_optional(&mut **transaction)
         .await
         .map_err(operation_error)
+}
+
+async fn fetch_indeterminate_fireworks_candidate(
+    transaction: &mut Transaction<'_, Postgres>,
+    request_id: Uuid,
+    for_update: bool,
+) -> Result<Option<CancerResearchFireworksDispatchCandidate>, StoreError> {
+    let query = if for_update {
+        r#"
+        SELECT dispatch.request_id,dispatch.route_index,dispatch.requested_model,
+               dispatch.dispatched_at,reservation.billing_month,reservation.reserved_micro_usd
+        FROM cancer_research_route_dispatches AS dispatch
+        JOIN cancer_research_cost_reservations AS reservation
+          ON reservation.request_id=dispatch.request_id
+        LEFT JOIN cancer_research_fireworks_cost_reconciliations AS reconciliation
+          ON reconciliation.request_id=dispatch.request_id
+        WHERE dispatch.request_id=$1
+          AND reservation.status='indeterminate'
+          AND reservation.actual_micro_usd IS NULL
+          AND dispatch.provider_slug='fireworks_cancer'
+          AND dispatch.billing_class='paid_approved'
+          AND dispatch.requested_model='accounts/fireworks/models/gpt-oss-20b'
+          AND reconciliation.request_id IS NULL
+        FOR UPDATE OF reservation,dispatch
+        "#
+    } else {
+        r#"
+        SELECT dispatch.request_id,dispatch.route_index,dispatch.requested_model,
+               dispatch.dispatched_at,reservation.billing_month,reservation.reserved_micro_usd
+        FROM cancer_research_route_dispatches AS dispatch
+        JOIN cancer_research_cost_reservations AS reservation
+          ON reservation.request_id=dispatch.request_id
+        LEFT JOIN cancer_research_fireworks_cost_reconciliations AS reconciliation
+          ON reconciliation.request_id=dispatch.request_id
+        WHERE dispatch.request_id=$1
+          AND reservation.status='indeterminate'
+          AND reservation.actual_micro_usd IS NULL
+          AND dispatch.provider_slug='fireworks_cancer'
+          AND dispatch.billing_class='paid_approved'
+          AND dispatch.requested_model='accounts/fireworks/models/gpt-oss-20b'
+          AND reconciliation.request_id IS NULL
+        "#
+    };
+    let row = sqlx::query_as::<_, (Uuid, i32, String, DateTime<Utc>, NaiveDate, i64)>(query)
+        .bind(request_id)
+        .fetch_optional(&mut **transaction)
+        .await
+        .map_err(operation_error)?;
+    row.map(
+        |(
+            request_id,
+            route_index,
+            requested_model,
+            dispatched_at,
+            billing_month,
+            reserved_micro_usd,
+        )| {
+            let candidate = CancerResearchFireworksDispatchCandidate {
+                request_id,
+                route_index: u16::try_from(route_index).map_err(|_| {
+                    StoreError::Corrupt("negative Fireworks reconciliation route index".to_owned())
+                })?,
+                requested_model,
+                dispatched_at,
+                billing_month,
+                reserved_micro_usd: u64::try_from(reserved_micro_usd).map_err(|_| {
+                    StoreError::Corrupt("negative Fireworks reconciliation reservation".to_owned())
+                })?,
+            };
+            candidate.validate().map_err(corrupt)?;
+            Ok(candidate)
+        },
+    )
+    .transpose()
 }
 
 enum ResearchReservationResolution {

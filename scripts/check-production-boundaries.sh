@@ -69,6 +69,9 @@ container_path = (
 source_suffix = f"/runtime-qualification/nci60/{answer_hash}/{answer_name}"
 pdc_proteome_name = "pdc000711-gbm-proteome.tsv"
 pdc_metadata_name = "pdc000711-gbm-proteome.metadata.json"
+tcga_name = "tcga-gbm-dr46-patient-baseline-v1.json"
+tcga_hash = "f523989c2bec5ee14c0ff2c6dc30d193fb324e1dd234aba524bef179553294da"
+tcga_container_path = f"/app/qualification/tcga-gbm/sha256/{tcga_hash}/{tcga_name}"
 pdc_container_pattern = re.compile(
     r"^/app/qualification/pdc000711/sha256/"
     r"([0-9a-f]{64})/([0-9a-f]{64})/"
@@ -137,6 +140,25 @@ else:
         if not source.endswith(expected_source_suffix):
             failures.append(f"{expected_name} source is not the matching content-addressed path")
 
+    if environment.get("CANCER_TCGA_GBM_TARGET_CONTEXT_PATH") != tcga_container_path:
+        failures.append("evidence worker does not consume the pinned TCGA-GBM aggregate path")
+    tcga_mounts = [
+        volume
+        for volume in (worker.get("volumes") or [])
+        if volume.get("target") == tcga_container_path
+    ]
+    if len(tcga_mounts) != 1:
+        failures.append("evidence worker must receive exactly one TCGA-GBM aggregate bind")
+    else:
+        volume = tcga_mounts[0]
+        if volume.get("type") != "bind" or volume.get("read_only") is not True:
+            failures.append("TCGA-GBM aggregate mount must be a read-only bind")
+        if (volume.get("bind") or {}).get("create_host_path") is not False:
+            failures.append("TCGA-GBM aggregate bind must refuse to create a missing host path")
+        expected_suffix = f"/runtime-qualification/tcga-gbm/sha256/{tcga_hash}/{tcga_name}"
+        if not (volume.get("source") or "").endswith(expected_suffix):
+            failures.append("TCGA-GBM aggregate source is not content-addressed")
+
 for name, service in services.items():
     for volume in service.get("volumes") or []:
         source = volume.get("source") or ""
@@ -150,6 +172,8 @@ for name, service in services.items():
             or pdc_metadata_name in target
         ) and name != worker_name:
             failures.append(f"{name} can mount PDC000711 patient-derived evidence")
+        if (tcga_name in source or tcga_name in target) and name != worker_name:
+            failures.append(f"{name} can mount TCGA-GBM held-out context")
     for key, value in (service.get("environment") or {}).items():
         rendered = "" if value is None else str(value)
         if (key == "CANCER_NCI60_ANSWER_KEY_PATH" or answer_name in rendered) and name != worker_name:
@@ -163,6 +187,8 @@ for name, service in services.items():
             or pdc_metadata_name in rendered
         ) and name != worker_name:
             failures.append(f"{name} can address PDC000711 patient-derived evidence")
+        if (key == "CANCER_TCGA_GBM_TARGET_CONTEXT_PATH" or tcga_name in rendered) and name != worker_name:
+            failures.append(f"{name} can address TCGA-GBM held-out context")
 
 if failures:
     raise SystemExit(
@@ -205,6 +231,12 @@ if ! rg -q --fixed-strings \
   exit 1
 fi
 if ! rg -q --fixed-strings \
+  'ExecStartPre=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/stage-cancer-tcga-gbm-target-context.sh' \
+  ops/systemd/atiny-cancer-evidence.service; then
+  echo "Production boundary violation: the host evidence worker does not stage TCGA-GBM context." >&2
+  exit 1
+fi
+if ! rg -q --fixed-strings \
   'ExecStart=/usr/bin/env bash /home/shmuel/codex/emergent-civilization/scripts/run-cancer-evidence-with-pdc000711.sh' \
   ops/systemd/atiny-cancer-evidence.service; then
   echo "Production boundary violation: the host evidence worker does not resolve exact PDC000711 paths at exec." >&2
@@ -224,15 +256,29 @@ if [[ -n "$other_systemd_label_access" ]]; then
   exit 1
 fi
 if ! rg -q --fixed-strings \
-  'InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/run/atiny-cancer-evidence' \
+  'InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json -/run/atiny-cancer-evidence' \
   ops/systemd/atiny-cancer-research.service; then
   echo "Production boundary violation: the host research worker can see qualification inputs." >&2
   exit 1
 fi
 if ! rg -q --fixed-strings \
-  'UnsetEnvironment=CANCER_PDC000711_PROTEOME_PATH CANCER_PDC000711_PROTEOME_METADATA_PATH' \
+  'UnsetEnvironment=CANCER_PDC000711_PROTEOME_PATH CANCER_PDC000711_PROTEOME_METADATA_PATH CANCER_TCGA_GBM_TARGET_CONTEXT_PATH' \
   ops/systemd/atiny-cancer-research.service; then
   echo "Production boundary violation: the host research worker can inherit PDC000711 paths." >&2
+  exit 1
+fi
+
+other_systemd_tcga_access="$(
+  rg --line-number \
+    'CANCER_TCGA_GBM_TARGET_CONTEXT_PATH|tcga-gbm-dr46-patient-baseline-v1.json' \
+    ops/systemd --glob '*.service' \
+    | rg -v '^ops/systemd/atiny-cancer-evidence\.service:' \
+    | rg -v '^ops/systemd/atiny-cancer-research\.service:.*(InaccessiblePaths|UnsetEnvironment)=' \
+    || true
+)"
+if [[ -n "$other_systemd_tcga_access" ]]; then
+  printf '%s\n' "$other_systemd_tcga_access" >&2
+  echo "Production boundary violation: another systemd service can address TCGA-GBM context." >&2
   exit 1
 fi
 

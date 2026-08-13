@@ -45,7 +45,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 10;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 11;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -895,6 +895,10 @@ pub struct PublicCancerResearchArtifact {
     /// PDC000711 patient-derived GBM model proteome. This is molecular
     /// corroboration only, never treatment-response or efficacy evidence.
     pub patient_derived_qualification: Option<PublicCancerPatientDerivedMolecularQualification>,
+    /// Patient-disjoint TCGA-GBM somatic-variant prevalence context for the
+    /// calibration-selected feature set. This is observational context only,
+    /// never intervention response or clinical evidence.
+    pub tcga_target_context_qualification: Option<PublicCancerTcgaGbmTargetContextQualification>,
     pub created_at: DateTime<Utc>,
     /// Later artifacts deterministically classified as the same line of work.
     /// They remain immutable and auditable but are collapsed into this original
@@ -979,6 +983,14 @@ pub struct PublicCancerNci60ResponseQualification {
 pub struct PublicCancerPatientDerivedMolecularQualification {
     #[serde(flatten)]
     pub result: world_domain::CancerPatientDerivedMolecularQualification,
+    pub result_hash: Digest,
+    pub created_at: DateTime<Utc>,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerTcgaGbmTargetContextQualification {
+    #[serde(flatten)]
+    pub result: world_domain::CancerTcgaGbmTargetContextQualification,
     pub result_hash: Digest,
     pub created_at: DateTime<Utc>,
 }
