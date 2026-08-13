@@ -55,11 +55,23 @@ type LanguageConvention = {
   latest_tick: string | number;
 };
 
+type EmergingLanguagePattern = {
+  pattern: LanguageConvention;
+  thresholds_met: number;
+  thresholds_required: number;
+  earlier_half_evidence_events: number;
+  recent_half_evidence_events: number;
+  earlier_half_dominance_percent: number;
+  recent_half_dominance_percent: number;
+  trend: "strengthening" | "stable" | "weakening";
+};
+
 type LanguageArchive = {
   detector_version: number;
   stage: "undetected" | "proto_lexicon" | "rudimentary_language_candidate";
-  threshold: { minimum_evidence_events: number; minimum_learners: number; minimum_signal_sources: number; minimum_tick_span: number; minimum_dominance_percent: number; minimum_baseline_margin_percent: number; minimum_baseline_lift_percent: number; conventions_for_language_candidate: number };
+  threshold: { evidence_window_ticks: number; minimum_evidence_events: number; minimum_learners: number; minimum_signal_sources: number; minimum_tick_span: number; minimum_dominance_percent: number; minimum_baseline_margin_percent: number; minimum_baseline_lift_percent: number; minimum_half_evidence_events: number; minimum_half_dominance_percent: number; conventions_for_language_candidate: number };
   conventions: LanguageConvention[];
+  emerging_patterns: EmergingLanguagePattern[];
 };
 
 type WikiState =
@@ -151,7 +163,8 @@ export function WikiIndex() {
         <article id="language-archive">
           <h3>Language archive and translation</h3>
           <p>{languageStage(wiki.language.stage)}</p>
-          {wiki.language.conventions.length === 0 ? <p>Signal emissions alone do not qualify. Detector v{wiki.language.detector_version} tests person-to-person signals for a durable association with a distinct later behavior. It requires at least {wiki.language.threshold.minimum_evidence_events} evidence events, {wiki.language.threshold.minimum_learners} independent learners, {wiki.language.threshold.minimum_signal_sources} signal sources, a {wiki.language.threshold.minimum_tick_span}-tick span, {wiki.language.threshold.minimum_dominance_percent}% meaning dominance, and a signal-specific rate at least {wiki.language.threshold.minimum_baseline_lift_percent}% of the behavior’s ordinary background rate.</p> : <ol>{wiki.language.conventions.map((convention) => <li key={`${convention.signal_form}:${convention.tentative_gloss}`}><strong>Signal form {convention.signal_form} · “{convention.tentative_gloss}”</strong><span>Tentative observer gloss · {convention.dominance_percent}% after this form versus {convention.baseline_percent}% ordinarily · {convention.baseline_lift_percent}% lift</span><small>{convention.evidence_events} events · {convention.learners} learners · {convention.signal_sources} sources</small><small>First evidence event {convention.first_sequence}, tick {convention.first_tick} · latest event {convention.latest_sequence}, tick {convention.latest_tick}</small></li>)}</ol>}
+          {wiki.language.conventions.length === 0 ? <p>Signal emissions alone do not qualify. Detector v{wiki.language.detector_version} examines the latest {wiki.language.threshold.evidence_window_ticks} ticks, so early babbling cannot dilute a later convention forever. A convention needs repeated person-to-person grounding, social spread, distinctiveness from background behavior, and persistence across both halves of that window.</p> : <ol>{wiki.language.conventions.map((convention) => <li key={`${convention.signal_form}:${convention.tentative_gloss}`}><strong>Signal form {convention.signal_form} · “{convention.tentative_gloss}”</strong><span>Tentative observer gloss · {convention.dominance_percent}% after this form versus {convention.baseline_percent}% ordinarily · {convention.baseline_lift_percent}% lift</span><small>{convention.evidence_events} events · {convention.learners} learners · {convention.signal_sources} sources</small><small>First evidence event {convention.first_sequence}, tick {convention.first_tick} · latest event {convention.latest_sequence}, tick {convention.latest_tick}</small></li>)}</ol>}
+          {wiki.language.emerging_patterns.length > 0 ? <div className="language-emerging"><h4>Patterns taking shape</h4><p>These are repeated learned mappings, not words. The meter shows how many conservative gates they currently pass.</p><ol>{wiki.language.emerging_patterns.map(({ pattern, thresholds_met, thresholds_required, earlier_half_dominance_percent, recent_half_dominance_percent, trend }) => <li key={`${pattern.signal_form}:${pattern.tentative_gloss}`}><strong>Signal form {pattern.signal_form} may precede {pattern.tentative_gloss}</strong><span>{thresholds_met}/{thresholds_required} evidence gates · {trend}</span><small>{pattern.evidence_events} observations · {pattern.learners} learners · {pattern.signal_sources} sources</small><small>Earlier / recent consistency: {earlier_half_dominance_percent}% / {recent_half_dominance_percent}%</small></li>)}</ol></div> : null}
           <p>Dictionary entries are observer research over committed evidence. They never teach, steer, or reveal a translation to the inhabitants.</p>
         </article>
       </div>

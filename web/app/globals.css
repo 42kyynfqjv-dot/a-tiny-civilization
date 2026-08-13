@@ -727,6 +727,7 @@ select {
 .wiki-live-grid { display: grid; gap: 32px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin-top: 25px; }
 .wiki-live-grid article { border-top: 1px solid var(--line); padding-top: 14px; }
 .wiki-live-grid h3 { font-size: 12px; margin: 0 0 12px; }
+.wiki-live-grid h4 { color: var(--ink); font-size: 10px; letter-spacing: .08em; margin: 18px 0 8px; text-transform: uppercase; }
 .wiki-live-grid p { color: var(--ink-soft); font-size: 12px; line-height: 1.55; margin: 0; }
 .wiki-live-grid ol, .wiki-live-grid ul { display: grid; gap: 12px; list-style: none; margin: 0; padding: 0; }
 .wiki-live-grid li { display: grid; font-size: 11px; gap: 3px; }
@@ -734,6 +735,8 @@ select {
 .wiki-live-grid li a { text-decoration: underline; text-decoration-color: rgba(24, 63, 49, .3); text-underline-offset: 3px; }
 .wiki-live-grid li span { color: var(--ink-soft); line-height: 1.45; }
 .wiki-live-grid li small { color: #788178; font-family: var(--font-geist-mono), monospace; font-size: 9px; }
+.language-emerging { border-left: 1px solid rgba(112, 146, 128, .45); margin-top: 16px; padding-left: 12px; }
+.language-emerging ol { margin-top: 10px; }
 .wiki-future { border-top: 1px solid var(--line); margin-top: 72px; padding: 32px 24px 76px; }
 .wiki-future h2 { font-size: clamp(25px, 3vw, 42px); letter-spacing: -.055em; line-height: 1.02; margin: 13px 0; max-width: 850px; }
 

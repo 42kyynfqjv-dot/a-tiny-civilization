@@ -222,6 +222,7 @@ impl ObserverFindingStore for PostgresStore {
                 | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
+                | DomainEvent::OrganismSignalEmitted { .. }
                 | DomainEvent::OrganismActed { .. }
                 | DomainEvent::OrganismAgeAdvanced { .. }
                 | DomainEvent::OrganismNeedsChanged { .. }
@@ -460,6 +461,7 @@ async fn apply_finding_events(
             | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::OrganismPerceived { .. }
+            | DomainEvent::OrganismSignalEmitted { .. }
             | DomainEvent::OrganismActed { .. }
             | DomainEvent::OrganismAgeAdvanced { .. }
             | DomainEvent::OrganismNeedsChanged { .. }

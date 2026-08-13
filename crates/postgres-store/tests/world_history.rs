@@ -1128,7 +1128,11 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     }
     for (form_offset, signal_form) in [7_i16, 8, 9].into_iter().enumerate() {
         for index in 0..12_i64 {
-            let tick = if index == 11 { 300 } else { index + 1 };
+            let tick = if index < 6 {
+                900 + index
+            } else {
+                1_600 + (index - 6)
+            };
             sqlx::query(
                 r#"
                 INSERT INTO observer_language_evidence (
@@ -1148,6 +1152,26 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
             .await?;
         }
     }
+    // Exploratory use from outside the rolling evidence window must not dilute
+    // a later convention forever.
+    for index in 0..40_i64 {
+        sqlx::query(
+            r#"
+            INSERT INTO observer_language_evidence (
+                projection_version,world_id,source_event_id,source_sequence,source_tick,
+                source_event_index,observer_id,actor_id,signal_form,action,movement_direction
+            ) VALUES (1,$1,$2,$3,$4,0,$5,$6,7,'orient',NULL)
+            "#,
+        )
+        .bind(manifest.world_id.as_uuid())
+        .bind(Uuid::new_v4())
+        .bind(500 + index)
+        .bind(index + 1)
+        .bind(learners[usize::try_from(index % 4)?])
+        .bind(sources[usize::try_from(index % 3)?])
+        .execute(&pool)
+        .await?;
+    }
     // Repeated emission is circular evidence, not a meaning. It must not dilute
     // the behavioral denominator or promote the archive's stage.
     for index in 0..12_i64 {
@@ -1162,7 +1186,7 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
         .bind(manifest.world_id.as_uuid())
         .bind(Uuid::new_v4())
         .bind(100 + index)
-        .bind(index + 1)
+        .bind(500 + index)
         .bind(learners[usize::try_from(index % 4)?])
         .bind(sources[usize::try_from(index % 3)?])
         .execute(&pool)
@@ -1182,7 +1206,7 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
         .bind(manifest.world_id.as_uuid())
         .bind(Uuid::new_v4())
         .bind(200 + index)
-        .bind(index + 1)
+        .bind(500 + index)
         .bind(learners[usize::try_from(index % 4)?])
         .bind(sources[usize::try_from(index % 3)?])
         .execute(&pool)
@@ -1190,7 +1214,7 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     }
 
     let archive = store.public_language_archive(manifest.world_id).await?;
-    assert_eq!(archive.detector_version, 3);
+    assert_eq!(archive.detector_version, 4);
     assert_eq!(archive.stage, PublicLanguageStage::ProtoLexicon);
     assert_eq!(archive.conventions.len(), 3);
     let convention = &archive.conventions[0];
@@ -1202,8 +1226,14 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     assert_eq!(convention.dominance_percent, 100);
     assert_eq!(convention.baseline_percent, 26);
     assert_eq!(convention.baseline_lift_percent, 377);
-    assert_eq!(convention.first_tick, SimTick::new(1));
-    assert_eq!(convention.latest_tick, SimTick::new(300));
+    assert_eq!(convention.first_tick, SimTick::new(900));
+    assert_eq!(convention.latest_tick, SimTick::new(1_605));
+    assert!(
+        archive
+            .emerging_patterns
+            .iter()
+            .all(|candidate| !matches!(candidate.pattern.signal_form, 7 | 8 | 9))
+    );
     assert!(
         archive
             .conventions

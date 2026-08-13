@@ -170,6 +170,7 @@ pub fn project_public_timeline(batch: &EventBatch) -> Vec<PublicTimelineItem> {
                 | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
                 | DomainEvent::TickAdvanced { .. }
                 | DomainEvent::OrganismPerceived { .. }
+                | DomainEvent::OrganismSignalEmitted { .. }
                 | DomainEvent::OrganismActed { .. }
                 | DomainEvent::OrganismMoved { .. }
                 | DomainEvent::OrganismAgeAdvanced { .. }
@@ -715,6 +716,9 @@ pub enum PublicLanguageStage {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublicLanguageThreshold {
+    /// Only this many most-recent simulated ticks contribute to the detector,
+    /// so early exploratory calls cannot dilute a later convention forever.
+    pub evidence_window_ticks: u64,
     pub minimum_evidence_events: u32,
     pub minimum_learners: u32,
     pub minimum_signal_sources: u32,
@@ -722,6 +726,8 @@ pub struct PublicLanguageThreshold {
     pub minimum_dominance_percent: u16,
     pub minimum_baseline_margin_percent: u16,
     pub minimum_baseline_lift_percent: u16,
+    pub minimum_half_evidence_events: u32,
+    pub minimum_half_dominance_percent: u16,
     pub conventions_for_language_candidate: u16,
 }
 
@@ -746,6 +752,28 @@ pub struct PublicLanguageConvention {
     pub latest_tick: SimTick,
 }
 
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PublicLanguagePatternTrend {
+    Strengthening,
+    Stable,
+    Weakening,
+}
+
+/// A repeated recent mapping that has not crossed the conservative convention
+/// boundary. It makes live learning legible without calling noise a word.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicLanguageEmergingPattern {
+    pub pattern: PublicLanguageConvention,
+    pub thresholds_met: u8,
+    pub thresholds_required: u8,
+    pub earlier_half_evidence_events: u32,
+    pub recent_half_evidence_events: u32,
+    pub earlier_half_dominance_percent: u16,
+    pub recent_half_dominance_percent: u16,
+    pub trend: PublicLanguagePatternTrend,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublicLanguageArchive {
     pub projection_version: u16,
@@ -755,6 +783,7 @@ pub struct PublicLanguageArchive {
     pub stage: PublicLanguageStage,
     pub threshold: PublicLanguageThreshold,
     pub conventions: Vec<PublicLanguageConvention>,
+    pub emerging_patterns: Vec<PublicLanguageEmergingPattern>,
 }
 
 #[async_trait]
@@ -1099,6 +1128,7 @@ pub fn project_public_organisms(batch: &EventBatch) -> Vec<PublicOrganism> {
             | DomainEvent::MaterialReservoirOralPortionTransferred { .. }
             | DomainEvent::TickAdvanced { .. }
             | DomainEvent::OrganismPerceived { .. }
+            | DomainEvent::OrganismSignalEmitted { .. }
             | DomainEvent::OrganismActed { .. }
             | DomainEvent::OrganismMoved { .. }
             | DomainEvent::OrganismAgeAdvanced { .. }

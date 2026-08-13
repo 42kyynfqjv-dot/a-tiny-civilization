@@ -2,7 +2,8 @@ use async_trait::async_trait;
 use observer_projection::{
     ObserverLanguageStore, ObserverProjectionStoreError, PUBLIC_LANGUAGE_PROJECTION_NAME,
     PUBLIC_LANGUAGE_PROJECTION_VERSION, PUBLIC_ORGANISM_PROJECTION_VERSION, PublicLanguageArchive,
-    PublicLanguageConvention, PublicLanguageStage, PublicLanguageThreshold,
+    PublicLanguageConvention, PublicLanguageEmergingPattern, PublicLanguagePatternTrend,
+    PublicLanguageStage, PublicLanguageThreshold,
 };
 use sqlx::FromRow;
 use world_domain::{DomainEvent, EventId, EventSequence, PrimitiveActionKind, SimTick, WorldId};
@@ -11,7 +12,8 @@ use crate::{
     PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
 };
 
-const DETECTOR_VERSION: u16 = 3;
+const DETECTOR_VERSION: u16 = 4;
+const EVIDENCE_WINDOW_TICKS: u64 = 1_152;
 const MINIMUM_EVIDENCE_EVENTS: u32 = 12;
 const MINIMUM_LEARNERS: u32 = 4;
 const MINIMUM_SIGNAL_SOURCES: u32 = 3;
@@ -19,6 +21,14 @@ const MINIMUM_TICK_SPAN: u64 = 288;
 const MINIMUM_DOMINANCE_PERCENT: u16 = 60;
 const MINIMUM_BASELINE_MARGIN_PERCENT: u16 = 15;
 const MINIMUM_BASELINE_LIFT_PERCENT: u16 = 150;
+const MINIMUM_HALF_EVIDENCE_EVENTS: u32 = 4;
+const MINIMUM_HALF_DOMINANCE_PERCENT: u16 = 55;
+const MINIMUM_EMERGING_PATTERN_EVENTS: u32 = 4;
+const MINIMUM_EMERGING_PATTERN_LEARNERS: u32 = 2;
+const MINIMUM_EMERGING_PATTERN_SOURCES: u32 = 2;
+const MAXIMUM_EMERGING_PATTERNS: usize = 5;
+const TREND_CHANGE_PERCENT: u16 = 10;
+const THRESHOLDS_REQUIRED: u8 = 8;
 const CONVENTIONS_FOR_LANGUAGE_CANDIDATE: u16 = 3;
 
 #[derive(FromRow)]
@@ -32,6 +42,8 @@ struct ConventionRow {
     form_events: i64,
     baseline_events: i64,
     eligible_events: i64,
+    recent_evidence_events: i64,
+    recent_form_events: i64,
     first_event_id: uuid::Uuid,
     first_sequence: i64,
     first_tick: i64,
@@ -140,9 +152,19 @@ impl ObserverLanguageStore for PostgresStore {
         let through_sequence = self.public_language_cursor(world_id).await?;
         let rows = sqlx::query_as::<_, ConventionRow>(
             r#"
-            WITH eligible_evidence AS (
+            WITH window_boundary AS (
+                SELECT
+                    COALESCE(MAX(source_tick),0)::BIGINT AS latest_tick,
+                    GREATEST(
+                        0,
+                        COALESCE(MAX(source_tick),0)::BIGINT - ($4::BIGINT / 2) + 1
+                    ) AS recent_half_start
+                FROM observer_language_evidence
+                WHERE projection_version=$1 AND world_id=$2
+            ), eligible_evidence AS (
                 SELECT evidence.*
                 FROM observer_language_evidence evidence
+                CROSS JOIN window_boundary boundary
                 JOIN observer_organisms learner
                   ON learner.projection_version=$3
                  AND learner.world_id=evidence.world_id
@@ -156,9 +178,16 @@ impl ObserverLanguageStore for PostgresStore {
                 WHERE evidence.projection_version=$1
                   AND evidence.world_id=$2
                   AND evidence.action NOT IN ('bite','emit_signal')
+                  AND evidence.source_tick >= GREATEST(
+                      0,
+                      boundary.latest_tick - $4::BIGINT + 1
+                  )
             ), meanings AS (
                 SELECT signal_form,action,movement_direction,
                     COUNT(*)::BIGINT AS evidence_events,
+                    COUNT(*) FILTER (
+                        WHERE source_tick >= (SELECT recent_half_start FROM window_boundary)
+                    )::BIGINT AS recent_evidence_events,
                     COUNT(DISTINCT observer_id)::BIGINT AS learners,
                     COUNT(DISTINCT actor_id)::BIGINT AS signal_sources,
                     (ARRAY_AGG(source_event_id ORDER BY source_sequence,source_event_index))[1] AS first_event_id,
@@ -170,7 +199,10 @@ impl ObserverLanguageStore for PostgresStore {
                 FROM eligible_evidence
                 GROUP BY signal_form,action,movement_direction
             ), form_totals AS (
-                SELECT signal_form,COUNT(*)::BIGINT AS form_events
+                SELECT signal_form,COUNT(*)::BIGINT AS form_events,
+                    COUNT(*) FILTER (
+                        WHERE source_tick >= (SELECT recent_half_start FROM window_boundary)
+                    )::BIGINT AS recent_form_events
                 FROM eligible_evidence
                 GROUP BY signal_form
             ), meaning_baselines AS (
@@ -180,8 +212,8 @@ impl ObserverLanguageStore for PostgresStore {
             ), eligible_total AS (
                 SELECT COUNT(*)::BIGINT AS eligible_events FROM eligible_evidence
             )
-            SELECT meanings.*,form_totals.form_events,meaning_baselines.baseline_events,
-                eligible_total.eligible_events
+            SELECT meanings.*,form_totals.form_events,form_totals.recent_form_events,
+                meaning_baselines.baseline_events,eligible_total.eligible_events
             FROM meanings
             JOIN form_totals USING (signal_form)
             JOIN meaning_baselines
@@ -194,11 +226,14 @@ impl ObserverLanguageStore for PostgresStore {
         .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
         .bind(world_id.as_uuid())
         .bind(i32::from(PUBLIC_ORGANISM_PROJECTION_VERSION))
+        .bind(to_i64(EVIDENCE_WINDOW_TICKS, "language evidence window")?)
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
 
         let mut conventions = Vec::new();
+        let mut emerging_patterns = Vec::new();
+        let mut strongest_meaning_seen = std::collections::BTreeSet::new();
         for row in rows {
             let evidence_events = to_u32(row.evidence_events, "language evidence count")?;
             let learners = to_u32(row.learners, "language learner count")?;
@@ -223,24 +258,55 @@ impl ObserverLanguageStore for PostgresStore {
                 row.baseline_events,
                 "language baseline lift",
             )?;
-            if evidence_events < MINIMUM_EVIDENCE_EVENTS
-                || learners < MINIMUM_LEARNERS
-                || signal_sources < MINIMUM_SIGNAL_SOURCES
-                || latest_tick.saturating_sub(first_tick) < MINIMUM_TICK_SPAN
-                || dominance_percent < MINIMUM_DOMINANCE_PERCENT
-                || dominance_percent
-                    < baseline_percent.saturating_add(MINIMUM_BASELINE_MARGIN_PERCENT)
-                || baseline_lift_percent < MINIMUM_BASELINE_LIFT_PERCENT
-            {
-                continue;
-            }
+            let recent_evidence_events = to_u32(
+                row.recent_evidence_events,
+                "recent-half language evidence count",
+            )?;
+            let earlier_evidence_events = to_u32(
+                row.evidence_events
+                    .checked_sub(row.recent_evidence_events)
+                    .ok_or_else(|| corrupt("earlier-half language evidence count"))?,
+                "earlier-half language evidence count",
+            )?;
+            let recent_half_dominance_percent = ratio_percent(
+                row.recent_evidence_events,
+                row.recent_form_events,
+                "recent-half language dominance",
+            )?;
+            let earlier_half_dominance_percent = ratio_percent(
+                row.evidence_events
+                    .checked_sub(row.recent_evidence_events)
+                    .ok_or_else(|| corrupt("earlier-half language evidence count"))?,
+                row.form_events
+                    .checked_sub(row.recent_form_events)
+                    .ok_or_else(|| corrupt("earlier-half language form count"))?,
+                "earlier-half language dominance",
+            )?;
+            let half_persistence = earlier_evidence_events >= MINIMUM_HALF_EVIDENCE_EVENTS
+                && recent_evidence_events >= MINIMUM_HALF_EVIDENCE_EVENTS
+                && earlier_half_dominance_percent >= MINIMUM_HALF_DOMINANCE_PERCENT
+                && recent_half_dominance_percent >= MINIMUM_HALF_DOMINANCE_PERCENT;
+            let gates = [
+                evidence_events >= MINIMUM_EVIDENCE_EVENTS,
+                learners >= MINIMUM_LEARNERS,
+                signal_sources >= MINIMUM_SIGNAL_SOURCES,
+                latest_tick.saturating_sub(first_tick) >= MINIMUM_TICK_SPAN,
+                dominance_percent >= MINIMUM_DOMINANCE_PERCENT,
+                dominance_percent
+                    >= baseline_percent.saturating_add(MINIMUM_BASELINE_MARGIN_PERCENT),
+                baseline_lift_percent >= MINIMUM_BASELINE_LIFT_PERCENT,
+                half_persistence,
+            ];
+            let thresholds_met = u8::try_from(gates.into_iter().filter(|met| *met).count())
+                .map_err(|_| corrupt("language threshold count"))?;
             let action = parse_action(&row.action)?;
             let movement_direction = row
                 .movement_direction
                 .map(|value| u8::try_from(value).map_err(|_| corrupt("movement direction")))
                 .transpose()?;
-            conventions.push(PublicLanguageConvention {
-                signal_form: u8::try_from(row.signal_form).map_err(|_| corrupt("signal form"))?,
+            let signal_form = u8::try_from(row.signal_form).map_err(|_| corrupt("signal form"))?;
+            let pattern = PublicLanguageConvention {
+                signal_form,
                 tentative_gloss: tentative_gloss(action, movement_direction),
                 associated_action: action,
                 movement_direction,
@@ -259,7 +325,37 @@ impl ObserverLanguageStore for PostgresStore {
                     "latest sequence",
                 )?),
                 latest_tick: SimTick::new(latest_tick),
-            });
+            };
+            let strongest_for_form = strongest_meaning_seen.insert(signal_form);
+            if thresholds_met == THRESHOLDS_REQUIRED {
+                conventions.push(pattern);
+            } else if strongest_for_form
+                && evidence_events >= MINIMUM_EMERGING_PATTERN_EVENTS
+                && learners >= MINIMUM_EMERGING_PATTERN_LEARNERS
+                && signal_sources >= MINIMUM_EMERGING_PATTERN_SOURCES
+            {
+                let trend = if recent_half_dominance_percent
+                    >= earlier_half_dominance_percent.saturating_add(TREND_CHANGE_PERCENT)
+                {
+                    PublicLanguagePatternTrend::Strengthening
+                } else if earlier_half_dominance_percent
+                    >= recent_half_dominance_percent.saturating_add(TREND_CHANGE_PERCENT)
+                {
+                    PublicLanguagePatternTrend::Weakening
+                } else {
+                    PublicLanguagePatternTrend::Stable
+                };
+                emerging_patterns.push(PublicLanguageEmergingPattern {
+                    pattern,
+                    thresholds_met,
+                    thresholds_required: THRESHOLDS_REQUIRED,
+                    earlier_half_evidence_events: earlier_evidence_events,
+                    recent_half_evidence_events: recent_evidence_events,
+                    earlier_half_dominance_percent,
+                    recent_half_dominance_percent,
+                    trend,
+                });
+            }
         }
         conventions.sort_by_key(|item| {
             (
@@ -268,6 +364,19 @@ impl ObserverLanguageStore for PostgresStore {
                 item.movement_direction,
             )
         });
+        emerging_patterns.sort_by(|left, right| {
+            right
+                .thresholds_met
+                .cmp(&left.thresholds_met)
+                .then_with(|| {
+                    right
+                        .pattern
+                        .evidence_events
+                        .cmp(&left.pattern.evidence_events)
+                })
+                .then_with(|| left.pattern.signal_form.cmp(&right.pattern.signal_form))
+        });
+        emerging_patterns.truncate(MAXIMUM_EMERGING_PATTERNS);
         let distinct_meanings = conventions
             .iter()
             .map(|item| (item.associated_action, item.movement_direction))
@@ -288,12 +397,14 @@ impl ObserverLanguageStore for PostgresStore {
             stage,
             threshold: threshold(),
             conventions,
+            emerging_patterns,
         })
     }
 }
 
 const fn threshold() -> PublicLanguageThreshold {
     PublicLanguageThreshold {
+        evidence_window_ticks: EVIDENCE_WINDOW_TICKS,
         minimum_evidence_events: MINIMUM_EVIDENCE_EVENTS,
         minimum_learners: MINIMUM_LEARNERS,
         minimum_signal_sources: MINIMUM_SIGNAL_SOURCES,
@@ -301,6 +412,8 @@ const fn threshold() -> PublicLanguageThreshold {
         minimum_dominance_percent: MINIMUM_DOMINANCE_PERCENT,
         minimum_baseline_margin_percent: MINIMUM_BASELINE_MARGIN_PERCENT,
         minimum_baseline_lift_percent: MINIMUM_BASELINE_LIFT_PERCENT,
+        minimum_half_evidence_events: MINIMUM_HALF_EVIDENCE_EVENTS,
+        minimum_half_dominance_percent: MINIMUM_HALF_DOMINANCE_PERCENT,
         conventions_for_language_candidate: CONVENTIONS_FOR_LANGUAGE_CANDIDATE,
     }
 }
@@ -430,6 +543,9 @@ mod tests {
         assert!(threshold.minimum_dominance_percent > 50);
         assert!(threshold.minimum_baseline_margin_percent > 0);
         assert!(threshold.minimum_baseline_lift_percent > 100);
+        assert!(threshold.evidence_window_ticks > threshold.minimum_tick_span);
+        assert!(threshold.minimum_half_evidence_events > 1);
+        assert!(threshold.minimum_half_dominance_percent > 50);
         assert!(threshold.conventions_for_language_candidate > 1);
     }
 }
