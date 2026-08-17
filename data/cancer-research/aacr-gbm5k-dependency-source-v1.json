@@ -35,8 +35,8 @@
     ],
     "minimum_byte_length": 1024,
     "maximum_byte_length": 16777216,
-    "identity_resolution": "Resolve only article 28183566 version 1 through its exact public Figshare API URL. Require exact article ID, version, title, dataset DOI, related article DOI, CC BY 4.0 license, exactly one non-link file, a safe XLSX file name, a bounded positive byte length, an HTTPS Figshare download URL, and equal nonzero supplied/computed MD5 values before downloading.",
-    "checksum_policy": "The create-only source snapshot records the API response hash, exact file ID, name, byte length, MD5, downloaded SHA-256, and source-set SHA-256. Existing bytes are accepted only when all recorded identities revalidate; acquisition never replaces a path."
+    "identity_resolution": "Resolve only article 28183566 version 1 through its exact public Figshare API URL. Require exact article ID, version, title, dataset DOI, related article DOI, CC BY 4.0 license, exactly one non-link file, a safe XLSX file name, a bounded positive byte length, and an HTTPS Figshare download URL bound to the resolved file ID before downloading.",
+    "checksum_policy": "Figshare's public file representation does not expose the private upload MD5 fields. The create-only source snapshot therefore records the exact immutable-version API response hash, file ID, name, byte length, downloaded SHA-256, and source-set SHA-256. Existing bytes are accepted only when all recorded identities and the retained SHA-256 revalidate; acquisition never replaces a path."
   },
   "evidence": {
     "assay": "Focused CRISPR-Cas9 fitness screening with the GBM5K guide library, with TKOv3 screens retained in the published supplement.",
@@ -59,6 +59,6 @@
     "Patient-derived cultures omit much of the immune system, blood-brain barrier, vasculature, spatial infiltration, pharmacokinetics, and clinical toxicity.",
     "A Bayes Factor or essentiality call is method- and screen-context-dependent and is not a universal biological constant.",
     "The supplement may include GBM5K and TKOv3 columns with different library and processing semantics; acquisition preserves them and later normalization must not silently merge them.",
-    "This manifest intentionally does not guess the file name, byte length, file ID, or checksum from rounded webpage labels; the exact immutable-version API must resolve and freeze them before any bytes are admitted."
+    "This manifest intentionally does not guess the file name, byte length, or file ID from rounded webpage labels; the exact immutable-version API must resolve and freeze them before any bytes are admitted. The public API supplies no provider checksum, so first acquisition relies on HTTPS plus exact version/file identity and records a local SHA-256 for every later verification."
   ]
 }

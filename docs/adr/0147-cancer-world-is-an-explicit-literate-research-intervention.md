@@ -40,13 +40,14 @@ Cancer World begins with:
   available only to a scheduled literature-audit turn; temporary source failure
   leaves the last durable corpus in place and never stalls the simulation;
 - a pinned `openai/gpt-oss-20b:free` OpenRouter exploration route using the
-  dedicated Cancer World key, followed by an explicit bounded `openrouter/free`
-  attempt and then the treasury-capped Fireworks GPT-OSS overflow. The pinned model
-  remains first; the dynamic route contributes only its available zero-cost quota
-  when the pinned shared pool is unavailable. Nonzero reported cost is rejected,
-  every attempted route is recorded, and no endpoint failure can silently trigger
-  unapproved paid work. Route policy v8 added this second free attempt while the
-  exact v7 ladder remains supported for historical receipt verification; and
+  dedicated Cancer World key, followed by the bounded `openrouter/free` router,
+  pinned free GPT-OSS 120B, and the ordinary world's configured local, Cloudflare,
+  Groq, and Cerebras free routes before treasury-capped Fireworks GPT-OSS overflow.
+  An unconfigured provider is recorded and skipped without preventing later routes
+  from running. Nonzero reported cost is rejected, every attempted route is
+  recorded, and no endpoint failure can silently trigger unapproved paid work.
+  Route policy v9 added the shared free-first ladder while the exact v7 and v8
+  ladders remain supported for historical receipt verification; and
 - a distinct DeepSeek V4 Pro escalation route, with V4 Flash failure fallback,
   a $2.85 internal monthly stop, and the provider key's $3 monthly hard stop.
   Earth Genesis retains its unrelated free-first ladder.

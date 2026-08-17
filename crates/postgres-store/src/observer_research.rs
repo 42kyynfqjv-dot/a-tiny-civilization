@@ -14,8 +14,8 @@ use observer_projection::{
     PublicCancerResearchCampaign, PublicCancerResearchCampaignOutcome,
     PublicCancerResearchDuplicate, PublicCancerResearchEvidence, PublicCancerResearchNoveltyAudit,
     PublicCancerResearchProgramSummary, PublicCancerResearchView,
-    PublicCancerTcgaGbmTargetContextQualification, PublicCancerVirtualExperimentResult,
-    PublicResearchMemoryState,
+    PublicCancerTcgaGbmTargetContextQualification, PublicCancerTissueRefinement,
+    PublicCancerVirtualExperimentResult, PublicResearchMemoryState,
 };
 use serde_json::Value;
 use sqlx::FromRow;
@@ -25,13 +25,17 @@ use world_domain::{
     CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
     CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
     CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION,
-    CANCER_VIRTUAL_LAB_METHOD_VERSION, CancerNci60ResponseQualification,
-    CancerPatientDerivedMolecularQualification, CancerResearchNoveltyAudit, CancerResearchProgram,
-    CancerTcgaGbmTargetContextQualification, CancerVirtualExperimentInterpretation,
-    CancerVirtualExperimentResult, Digest, WorldId,
+    CANCER_TISSUE_REFINEMENT_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
+    CancerNci60ResponseQualification, CancerPatientDerivedMolecularQualification,
+    CancerResearchNoveltyAudit, CancerResearchProgram, CancerTcgaGbmTargetContextQualification,
+    CancerTissueRefinementProtocol, CancerTissueRefinementResult,
+    CancerVirtualExperimentInterpretation, CancerVirtualExperimentResult, Digest, WorldId,
 };
 
 use crate::PostgresStore;
+
+const MAX_PUBLIC_TISSUE_REFINEMENTS: i64 = 12;
+const MAX_PUBLIC_TISSUE_PAYLOAD_BYTES: i32 = 262_144;
 
 #[derive(FromRow)]
 struct ResearchProjectionRow {
@@ -92,6 +96,25 @@ struct Nci60BenchmarkStatsRow {
     most_responsive_line_correct: i64,
     least_responsive_line_evaluated: i64,
     least_responsive_line_correct: i64,
+}
+
+#[derive(FromRow)]
+struct TissueRefinementProjectionRow {
+    job_refinement_id: Uuid,
+    job_world_id: Uuid,
+    job_campaign_id: Uuid,
+    job_root_request_id: Uuid,
+    job_root_artifact_hash: Vec<u8>,
+    job_method_version: i32,
+    protocol_payload: Value,
+    protocol_checksum: Vec<u8>,
+    result_refinement_id: Uuid,
+    result_world_id: Uuid,
+    result_method_version: i32,
+    result_protocol_checksum: Vec<u8>,
+    result_payload: Value,
+    result_checksum: Vec<u8>,
+    created_at: DateTime<Utc>,
 }
 
 #[async_trait]
@@ -200,6 +223,74 @@ impl ObserverCancerResearchStore for PostgresStore {
         .await
         .map_err(unavailable)?;
         let nci60_benchmark = summarize_nci60_benchmark(&nci60_benchmark_rows)?;
+
+        let oversized_tissue_payload_exists = sqlx::query_scalar::<_, bool>(
+            r#"
+            SELECT EXISTS (
+                SELECT 1
+                FROM cancer_tissue_refinement_jobs AS job
+                JOIN cancer_tissue_refinement_results AS result USING (refinement_id)
+                WHERE job.world_id=$1
+                  AND job.method_version=$2
+                  AND result.method_version=$2
+                  AND (
+                      pg_column_size(job.protocol_payload) > $3
+                      OR pg_column_size(result.result_payload) > $3
+                  )
+            )
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(CANCER_TISSUE_REFINEMENT_METHOD_VERSION))
+        .bind(MAX_PUBLIC_TISSUE_PAYLOAD_BYTES)
+        .fetch_one(self.pool())
+        .await
+        .map_err(unavailable)?;
+        if oversized_tissue_payload_exists {
+            return Err(corrupt(
+                "Cancer World tissue refinement exceeds the public payload ceiling",
+            ));
+        }
+        let tissue_rows = sqlx::query_as::<_, TissueRefinementProjectionRow>(
+            r#"
+            SELECT
+                job.refinement_id AS job_refinement_id,
+                job.world_id AS job_world_id,
+                job.campaign_id AS job_campaign_id,
+                job.root_request_id AS job_root_request_id,
+                job.root_artifact_hash AS job_root_artifact_hash,
+                job.method_version AS job_method_version,
+                job.protocol_payload,
+                job.protocol_checksum,
+                result.refinement_id AS result_refinement_id,
+                result.world_id AS result_world_id,
+                result.method_version AS result_method_version,
+                result.protocol_checksum AS result_protocol_checksum,
+                result.result_payload,
+                result.result_checksum,
+                result.created_at
+            FROM cancer_tissue_refinement_jobs AS job
+            JOIN cancer_tissue_refinement_results AS result USING (refinement_id)
+            WHERE job.world_id=$1
+              AND job.method_version=$2
+              AND result.method_version=$2
+              AND pg_column_size(job.protocol_payload) <= $3
+              AND pg_column_size(result.result_payload) <= $3
+            ORDER BY result.created_at DESC,result.refinement_id
+            LIMIT $4
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(i32::from(CANCER_TISSUE_REFINEMENT_METHOD_VERSION))
+        .bind(MAX_PUBLIC_TISSUE_PAYLOAD_BYTES)
+        .bind(MAX_PUBLIC_TISSUE_REFINEMENTS)
+        .fetch_all(self.pool())
+        .await
+        .map_err(unavailable)?;
+        let tissue_refinements = tissue_rows
+            .into_iter()
+            .map(|row| reconstruct_tissue_refinement(row, world_id))
+            .collect::<Result<Vec<_>, _>>()?;
 
         let rows = sqlx::query_as::<_, ResearchProjectionRow>(
             r#"
@@ -605,10 +696,90 @@ impl ObserverCancerResearchStore for PostgresStore {
             campaigns,
             lab_capabilities: cancer_lab_capabilities(),
             nci60_benchmark,
+            tissue_refinements,
             artifacts,
             evidence,
         }))
     }
+}
+
+fn reconstruct_tissue_refinement(
+    row: TissueRefinementProjectionRow,
+    expected_world_id: WorldId,
+) -> Result<PublicCancerTissueRefinement, ObserverProjectionStoreError> {
+    let protocol_bytes = serde_json::to_vec(&row.protocol_payload)
+        .map_err(|error| corrupt(format!("invalid tissue protocol JSON: {error}")))?;
+    let result_bytes = serde_json::to_vec(&row.result_payload)
+        .map_err(|error| corrupt(format!("invalid tissue result JSON: {error}")))?;
+    if protocol_bytes.len()
+        > usize::try_from(MAX_PUBLIC_TISSUE_PAYLOAD_BYTES)
+            .map_err(|_| corrupt("invalid tissue payload ceiling"))?
+        || result_bytes.len()
+            > usize::try_from(MAX_PUBLIC_TISSUE_PAYLOAD_BYTES)
+                .map_err(|_| corrupt("invalid tissue payload ceiling"))?
+    {
+        return Err(corrupt(
+            "Cancer World tissue refinement exceeds the public payload ceiling",
+        ));
+    }
+
+    let protocol: CancerTissueRefinementProtocol = serde_json::from_value(row.protocol_payload)
+        .map_err(|error| corrupt(format!("invalid tissue-refinement protocol: {error}")))?;
+    let result: CancerTissueRefinementResult = serde_json::from_value(row.result_payload)
+        .map_err(|error| corrupt(format!("invalid tissue-refinement result: {error}")))?;
+    protocol.validate().map_err(contract_error)?;
+    result.validate_against(&protocol).map_err(contract_error)?;
+
+    let expected_method = i32::from(CANCER_TISSUE_REFINEMENT_METHOD_VERSION);
+    let protocol_hash = digest_from_db(&row.protocol_checksum, "tissue protocol checksum")?;
+    let result_protocol_hash = digest_from_db(
+        &row.result_protocol_checksum,
+        "tissue result protocol checksum",
+    )?;
+    let result_hash = digest_from_db(&row.result_checksum, "tissue result checksum")?;
+    let root_artifact_hash =
+        digest_from_db(&row.job_root_artifact_hash, "tissue root artifact hash")?;
+    if row.job_world_id != expected_world_id.as_uuid()
+        || row.result_world_id != expected_world_id.as_uuid()
+        || row.job_method_version != expected_method
+        || row.result_method_version != expected_method
+        || row.job_refinement_id != row.result_refinement_id
+        || protocol.world_id != expected_world_id
+        || protocol.refinement_id != row.job_refinement_id
+        || protocol.campaign_id != row.job_campaign_id
+        || protocol.root_request_id != row.job_root_request_id
+        || protocol.root_artifact_hash != root_artifact_hash
+        || protocol.canonical_hash().map_err(contract_error)? != protocol_hash
+        || result_protocol_hash != protocol_hash
+        || result.canonical_hash(&protocol).map_err(contract_error)? != result_hash
+    {
+        return Err(corrupt(
+            "Cancer World tissue refinement crossed its immutable protocol provenance",
+        ));
+    }
+
+    Ok(PublicCancerTissueRefinement {
+        refinement_id: protocol.refinement_id,
+        campaign_id: protocol.campaign_id,
+        root_request_id: protocol.root_request_id,
+        root_artifact_hash: protocol.root_artifact_hash,
+        survival_synthesis_request_id: protocol.survival_synthesis_request_id,
+        method_version: protocol.method_version,
+        protocol_hash,
+        result_hash,
+        field_model: protocol.field_model,
+        lattice_width: protocol.lattice_width,
+        lattice_height: protocol.lattice_height,
+        initial_cell_count: protocol.initial_cell_count,
+        cell_capacity: protocol.cell_capacity,
+        modeled_exposure_hours: protocol.modeled_exposure_hours,
+        horizon_truncated: protocol.horizon_truncated,
+        scenario_summaries: result.scenario_summaries,
+        uncertainty: result.uncertainty,
+        evidence_class: result.evidence_class,
+        caveats: result.caveats,
+        created_at: row.created_at,
+    })
 }
 
 fn reconstruct_campaigns(
@@ -749,8 +920,8 @@ fn cancer_lab_capabilities() -> Vec<PublicCancerLabCapability> {
         ),
         (
             "Spatial microenvironment and immune dynamics",
-            Missing,
-            "Spatial tissue structure, stromal interactions, immune populations, and cytokine dynamics are not represented.",
+            Abstracted,
+            "Surviving campaigns can enter a bounded two-dimensional tissue projection with oxygen, nutrient, intervention-field, hypoxia, invasive-front, and three clone-compartment proxies. Stromal interactions, immune populations, cytokines, and calibrated tissue biology remain absent.",
         ),
         (
             "Combination therapy interactions",
@@ -1032,6 +1203,136 @@ fn corrupt(message: impl Into<String>) -> ObserverProjectionStoreError {
 mod tests {
     use super::*;
 
+    fn tissue_digest(byte: u8) -> Digest {
+        Digest::from_bytes([byte; 32])
+    }
+
+    fn tissue_projection_row() -> TissueRefinementProjectionRow {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x701));
+        let campaign_id = Uuid::from_u128(0x702);
+        let protocol = CancerTissueRefinementProtocol {
+            schema_version: world_domain::CANCER_TISSUE_REFINEMENT_PROTOCOL_SCHEMA_VERSION,
+            method_version: CANCER_TISSUE_REFINEMENT_METHOD_VERSION,
+            refinement_id: CancerTissueRefinementProtocol::deterministic_id(
+                campaign_id,
+                CANCER_TISSUE_REFINEMENT_METHOD_VERSION,
+            ),
+            world_id,
+            campaign_id,
+            root_request_id: Uuid::from_u128(0x703),
+            root_artifact_hash: tissue_digest(1),
+            root_plan_hash: tissue_digest(2),
+            root_result_hash: tissue_digest(3),
+            survival_synthesis_request_id: Uuid::from_u128(0x704),
+            survival_synthesis_request_hash: tissue_digest(4),
+            survival_synthesis_result_hash: tissue_digest(5),
+            campaign_result_hashes: vec![tissue_digest(6), tissue_digest(7), tissue_digest(8)],
+            field_model: world_domain::CancerTissueRefinementFieldModel::DiffusiveExposure,
+            lattice_width: 16,
+            lattice_height: 16,
+            initial_cell_count: 100,
+            cell_capacity: 200,
+            maximum_steps: 1,
+            snapshot_every_steps: 1,
+            requested_exposure_hours: 24,
+            modeled_exposure_hours: 24,
+            horizon_truncated: false,
+            scenarios: world_domain::CancerTissueRefinementScenario::ALL.to_vec(),
+        };
+        protocol.validate().expect("valid fixture protocol");
+        let final_counts = [90_u32, 100, 110];
+        let scenario_summaries = world_domain::CancerTissueRefinementScenario::ALL
+            .into_iter()
+            .zip(final_counts)
+            .map(|(scenario, final_viable_cells)| {
+                world_domain::CancerTissueRefinementScenarioSummary {
+                    scenario,
+                    termination:
+                        world_domain::CancerTissueRefinementTermination::CompletedBoundedHorizon,
+                    completed_steps: 1,
+                    initial_viable_cells: 100,
+                    final_viable_cells,
+                    final_treatment_sensitive_cells: final_viable_cells,
+                    final_drug_tolerant_cells: 0,
+                    final_resistant_cells: 0,
+                    final_mean_oxygen_parts_per_million: 500_000,
+                    final_mean_nutrient_parts_per_million: 500_000,
+                    final_mean_intervention_field_parts_per_million: 500_000,
+                    final_hypoxic_cell_fraction_parts_per_million: 100_000,
+                    final_invasive_front_fraction_parts_per_million: 100_000,
+                    lattice_site_updates: 256,
+                }
+            })
+            .collect::<Vec<_>>();
+        let snapshots = scenario_summaries
+            .iter()
+            .map(|summary| world_domain::CancerTissueRefinementSnapshot {
+                scenario: summary.scenario,
+                step: summary.completed_steps,
+                viable_cells: summary.final_viable_cells,
+                treatment_sensitive_cells: summary.final_treatment_sensitive_cells,
+                drug_tolerant_cells: summary.final_drug_tolerant_cells,
+                resistant_cells: summary.final_resistant_cells,
+                mean_oxygen_parts_per_million: summary.final_mean_oxygen_parts_per_million,
+                mean_nutrient_parts_per_million: summary.final_mean_nutrient_parts_per_million,
+                mean_intervention_field_parts_per_million: summary
+                    .final_mean_intervention_field_parts_per_million,
+                hypoxic_cell_fraction_parts_per_million: summary
+                    .final_hypoxic_cell_fraction_parts_per_million,
+                invasive_front_fraction_parts_per_million: summary
+                    .final_invasive_front_fraction_parts_per_million,
+            })
+            .collect();
+        let result = CancerTissueRefinementResult {
+            schema_version: world_domain::CANCER_TISSUE_REFINEMENT_RESULT_SCHEMA_VERSION,
+            method_version: protocol.method_version,
+            refinement_id: protocol.refinement_id,
+            world_id,
+            protocol_hash: protocol.canonical_hash().expect("protocol hash"),
+            scenario_summaries,
+            snapshots,
+            uncertainty: world_domain::CancerTissueRefinementUncertaintyEnvelope {
+                minimum_final_viable_cells: 90,
+                maximum_final_viable_cells: 110,
+                final_viable_spread_parts_per_million_of_initial: 200_000,
+                all_scenarios_completed: true,
+            },
+            evidence_class: "uncalibrated_deterministic_tissue_projection".to_owned(),
+            caveats: world_domain::CANCER_TISSUE_REFINEMENT_CAVEATS
+                .into_iter()
+                .map(str::to_owned)
+                .collect(),
+        };
+        result
+            .validate_against(&protocol)
+            .expect("valid fixture result");
+        TissueRefinementProjectionRow {
+            job_refinement_id: protocol.refinement_id,
+            job_world_id: world_id.as_uuid(),
+            job_campaign_id: protocol.campaign_id,
+            job_root_request_id: protocol.root_request_id,
+            job_root_artifact_hash: protocol.root_artifact_hash.as_bytes().to_vec(),
+            job_method_version: i32::from(protocol.method_version),
+            protocol_payload: serde_json::to_value(&protocol).expect("protocol JSON"),
+            protocol_checksum: protocol
+                .canonical_hash()
+                .expect("protocol hash")
+                .as_bytes()
+                .to_vec(),
+            result_refinement_id: result.refinement_id,
+            result_world_id: world_id.as_uuid(),
+            result_method_version: i32::from(result.method_version),
+            result_protocol_checksum: result.protocol_hash.as_bytes().to_vec(),
+            result_payload: serde_json::to_value(&result).expect("result JSON"),
+            result_checksum: result
+                .canonical_hash(&protocol)
+                .expect("result hash")
+                .as_bytes()
+                .to_vec(),
+            created_at: DateTime::from_timestamp(1_700_000_000, 0).expect("fixture timestamp"),
+        }
+    }
+
     #[test]
     fn campaign_outcomes_are_computed_not_awarded_by_the_model() {
         assert_eq!(
@@ -1049,6 +1350,48 @@ mod tests {
         assert_eq!(
             campaign_outcome(2, 0, 3),
             PublicCancerResearchCampaignOutcome::Inconclusive
+        );
+    }
+
+    #[test]
+    fn tissue_projection_revalidates_and_emits_only_compact_observer_fields() {
+        let row = tissue_projection_row();
+        let world_id = WorldId::from_uuid(row.job_world_id);
+        let projected = reconstruct_tissue_refinement(row, world_id).expect("valid projection");
+
+        assert_eq!(
+            projected.refinement_id,
+            CancerTissueRefinementProtocol::deterministic_id(
+                projected.campaign_id,
+                projected.method_version,
+            )
+        );
+        assert_eq!(
+            projected.evidence_class,
+            "uncalibrated_deterministic_tissue_projection"
+        );
+        assert_eq!(projected.scenario_summaries.len(), 3);
+        assert_eq!(projected.caveats.len(), 4);
+        let public_json = serde_json::to_value(projected).expect("public JSON");
+        assert!(public_json.get("snapshots").is_none());
+        assert!(public_json.get("protocol_hash").is_some());
+        assert!(public_json.get("result_hash").is_some());
+    }
+
+    #[test]
+    fn tissue_projection_fails_closed_on_checksum_or_world_drift() {
+        let mut checksum_drift = tissue_projection_row();
+        let world_id = WorldId::from_uuid(checksum_drift.job_world_id);
+        checksum_drift.result_checksum = tissue_digest(99).as_bytes().to_vec();
+        assert!(reconstruct_tissue_refinement(checksum_drift, world_id).is_err());
+
+        let crossed_world = tissue_projection_row();
+        assert!(
+            reconstruct_tissue_refinement(
+                crossed_world,
+                WorldId::from_uuid(Uuid::from_u128(0x799)),
+            )
+            .is_err()
         );
     }
 

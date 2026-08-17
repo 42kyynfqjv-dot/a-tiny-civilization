@@ -56,7 +56,7 @@ pub const MAX_CANCER_RESEARCH_EVIDENCE_DOCUMENT_BYTES: usize = 128 * 1024;
 pub const MAX_CANCER_RESEARCH_TOTAL_EVIDENCE_BYTES: usize = 512 * 1024;
 pub const MAX_CANCER_RESEARCH_MEMORY_INPUTS: usize = 16;
 pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
-pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 4;
+pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 16;
 pub const MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS: usize = 8;
 pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
 /// Covers the maximum accepted Fireworks GPT-OSS prompt plus 4,096 output
@@ -878,9 +878,9 @@ impl CancerResearchModelRequest {
         route.validate()?;
         let approved = match self.selection.inference_tier {
             CancerResearchInferenceTier::Exploration => {
-                route == &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()
-                    || route == &CognitionModelRoute::openrouter_cancer_free()
-                    || route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b()
+                CognitionRouteRegistry::cancer_research_exploration()
+                    .routes
+                    .contains(route)
             }
             CancerResearchInferenceTier::Escalation => {
                 route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()

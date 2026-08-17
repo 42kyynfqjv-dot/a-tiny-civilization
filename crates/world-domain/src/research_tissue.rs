@@ -63,6 +63,9 @@ pub struct CancerTissueRefinementProtocol {
     pub root_artifact_hash: Digest,
     pub root_plan_hash: Digest,
     pub root_result_hash: Digest,
+    pub survival_synthesis_request_id: Uuid,
+    pub survival_synthesis_request_hash: Digest,
+    pub survival_synthesis_result_hash: Digest,
     pub campaign_result_hashes: Vec<Digest>,
     pub field_model: CancerTissueRefinementFieldModel,
     pub lattice_width: u16,
@@ -100,6 +103,9 @@ impl CancerTissueRefinementProtocol {
             || self.root_artifact_hash == Digest::ZERO
             || self.root_plan_hash == Digest::ZERO
             || self.root_result_hash == Digest::ZERO
+            || self.survival_synthesis_request_id.is_nil()
+            || self.survival_synthesis_request_hash == Digest::ZERO
+            || self.survival_synthesis_result_hash == Digest::ZERO
             || !(3..=5).contains(&self.campaign_result_hashes.len())
             || self
                 .campaign_result_hashes

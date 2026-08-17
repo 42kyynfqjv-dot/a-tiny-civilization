@@ -10,6 +10,7 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use world_domain::{EventBatch, WorldId};
 
 mod cancer_research_jobs;
+mod cancer_tissue_refinement;
 mod cognition_jobs;
 mod memory_outbox;
 mod oauth_attempts;
@@ -48,6 +49,7 @@ impl PostgresStore {
     }
 
     pub async fn migrate(&self) -> Result<(), StoreError> {
+        // Embedded migrations include optional-provider-aware Cancer routing.
         sqlx::migrate!("../../db/migrations")
             .run(&self.pool)
             .await

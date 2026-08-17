@@ -56,10 +56,9 @@ limitations. It may not claim treatment efficacy, safety, cure, an animal result
 or clinical meaning.
 
 Execution is asynchronous and one job at a time. The application work-slot state
-machine rejects a second active job. A durable worker must add an atomic database
-claim and run in a separate process with explicit CPU, memory, wall-time, and
-output-size limits before this tier may be enabled in production. The canonical
-runner must never execute it.
+machine rejects a second active job. ADR 0161 supplies the durable atomic database
+claim and separate resource-bounded process required before this tier is enabled
+on a host. The canonical runner process never executes it.
 
 ## Capability boundary
 
@@ -92,6 +91,6 @@ Those remain missing or require separate source-qualified methods under ADR 0153
 
 The new tier can reveal spatial failure modes that the scalar screen cannot, but
 it remains a hypothesis-prioritization instrument. Its added detail is not a
-percentage of tumor realism and must not be presented as one. Production wiring,
-durable claims, scheduling, observer presentation, and source calibration are
-separate changes and are intentionally outside this implementation.
+percentage of tumor realism and must not be presented as one. Durable claims,
+bounded scheduling, and compact observer presentation are supplied by ADR 0161;
+source calibration remains separate and absent.

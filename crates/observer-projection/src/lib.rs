@@ -12,10 +12,11 @@ use uuid::Uuid;
 use world_domain::{
     BirthCategory, CancerResearchContribution, CancerResearchEvidenceReference,
     CancerResearchInferenceTier, CancerResearchNoveltyAudit, CancerResearchProgram,
-    CancerResearchTarget, CancerResearchTask, CancerVirtualExperimentResult, Digest, DomainEvent,
-    EntityId, EventBatch, EventId, EventSequence, MaterialIdentity, OrganismRole,
-    PerceptionChannel, PrimitiveActionKind, S2CellId, SimTick, SpeciesIdentity, WorldId,
-    WorldStatus,
+    CancerResearchTarget, CancerResearchTask, CancerTissueRefinementFieldModel,
+    CancerTissueRefinementScenarioSummary, CancerTissueRefinementUncertaintyEnvelope,
+    CancerVirtualExperimentResult, Digest, DomainEvent, EntityId, EventBatch, EventId,
+    EventSequence, MaterialIdentity, OrganismRole, PerceptionChannel, PrimitiveActionKind,
+    S2CellId, SimTick, SpeciesIdentity, WorldId, WorldStatus,
 };
 
 pub const OBSERVER_LABEL_POLICY_VERSION: u16 = 1;
@@ -45,7 +46,7 @@ pub const PUBLIC_HABITAT_PROJECTION_NAME: &str = "public-habitat-v1";
 pub const PUBLIC_LANGUAGE_PROJECTION_VERSION: u16 = 1;
 pub const PUBLIC_LANGUAGE_PROJECTION_NAME: &str = "public-language-v1";
 pub const PUBLIC_MEMORY_PROJECTION_VERSION: u16 = 1;
-pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 11;
+pub const PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION: u16 = 12;
 pub const PUBLIC_WIKI_INDEX_VERSION: u16 = 1;
 
 /// Observer-facing provenance classes. They never create knowledge inside a world.
@@ -995,6 +996,36 @@ pub struct PublicCancerTcgaGbmTargetContextQualification {
     pub created_at: DateTime<Utc>,
 }
 
+/// Compact observer-only view of one completed deterministic tissue refinement.
+///
+/// The durable protocol and full result (including bounded snapshots) are
+/// revalidated before this DTO is built. Snapshots are deliberately omitted
+/// here to keep the public response bounded. This projection is not research
+/// memory and has no authority over artifact, campaign, or evidence status.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+pub struct PublicCancerTissueRefinement {
+    pub refinement_id: Uuid,
+    pub campaign_id: Uuid,
+    pub root_request_id: Uuid,
+    pub root_artifact_hash: Digest,
+    pub survival_synthesis_request_id: Uuid,
+    pub method_version: u16,
+    pub protocol_hash: Digest,
+    pub result_hash: Digest,
+    pub field_model: CancerTissueRefinementFieldModel,
+    pub lattice_width: u16,
+    pub lattice_height: u16,
+    pub initial_cell_count: u32,
+    pub cell_capacity: u32,
+    pub modeled_exposure_hours: u16,
+    pub horizon_truncated: bool,
+    pub scenario_summaries: Vec<CancerTissueRefinementScenarioSummary>,
+    pub uncertainty: CancerTissueRefinementUncertaintyEnvelope,
+    pub evidence_class: String,
+    pub caveats: Vec<String>,
+    pub created_at: DateTime<Utc>,
+}
+
 /// Pooled observer-side statistics for one NCI response-benchmark partition.
 /// Pairwise concordance is computed from the pooled pair counts, never by
 /// averaging per-challenge percentages with unequal denominators.
@@ -1071,6 +1102,10 @@ pub struct PublicCancerResearchView {
     pub campaigns: Vec<PublicCancerResearchCampaign>,
     pub lab_capabilities: Vec<PublicCancerLabCapability>,
     pub nci60_benchmark: PublicCancerNci60BenchmarkSummary,
+    /// Completed, revalidated tissue projections. These are a separate
+    /// observer finding aid and never enter the research memory or scorecards.
+    #[serde(default)]
+    pub tissue_refinements: Vec<PublicCancerTissueRefinement>,
     pub artifacts: Vec<PublicCancerResearchArtifact>,
     pub evidence: Vec<PublicCancerResearchEvidence>,
 }

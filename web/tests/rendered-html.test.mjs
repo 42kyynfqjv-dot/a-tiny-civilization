@@ -164,6 +164,9 @@ test("keeps the Cancer World console unlinked and available only through its con
   const html = await hidden.text();
   assert.match(html, /CANCER WORLD/);
   assert.match(html, /00000000-0000-0000-0000-000000000037/);
+  assert.match(html, /UNCALIBRATED DETERMINISTIC TISSUE PROJECTIONS/);
+  assert.match(html, /never enter research memory, change campaign status/i);
+  assert.match(html, /No campaign has completed this bounded tissue projection yet/);
 });
 
 test("server-renders an individual life route", async () => {

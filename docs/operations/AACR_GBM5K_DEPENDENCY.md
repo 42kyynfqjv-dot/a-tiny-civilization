@@ -28,12 +28,13 @@ On a new acquisition, the command requires:
 - the exact article ID, version, title, dataset DOI, related paper DOI, public
   dataset status, and CC BY 4.0 license;
 - exactly one non-link XLSX with a safe filename and a bounded exact length;
-- matching nonzero provider-supplied and provider-computed MD5 values; and
 - an HTTPS Figshare download route bound to the exact discovered file ID.
 
 The output directory contains the exact API response, the source workbook, and
 `source-snapshot.json`. The snapshot binds the manifest hash, API-response hash,
-file identity, exact length, MD5, SHA-256, and aggregate source-set hash.
+file identity, exact length, SHA-256, and aggregate source-set hash. Figshare's
+public-file response does not contain the private upload MD5 fields; the tool
+does not manufacture or imply a provider checksum that is not publicly exposed.
 
 Acquisition is create-only. A partial workbook can resume only when the server
 honors the exact requested byte range and remaining length. An existing complete

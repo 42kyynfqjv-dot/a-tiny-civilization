@@ -11,7 +11,9 @@ WorkingDirectory=/home/shmuel/codex/emergent-civilization
 EnvironmentFile=/etc/a-tiny-civilization-production.env
 Environment=CANCER_RESEARCH_WORKER_ID=host-cancer-research-worker-1
 Environment=CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS=30
-ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-research-worker
+Environment=CANCER_RESEARCH_CLAIM_LEASE_SECONDS=900
+Environment=CANCER_RESEARCH_LOCAL_COGNITION_BASE_URL=http://127.0.0.1:11434/v1
+ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-research-worker --local-cognition-base-url http://127.0.0.1:11434/v1
 Restart=on-failure
 RestartSec=15s
 NoNewPrivileges=true
@@ -24,7 +26,7 @@ ProtectControlGroups=true
 # Defense in depth: this host worker shares the project owner account for
 # outbound HTTPS, but its mount namespace cannot see the ignored labels, the
 # patient-derived qualification matrix, or the evidence worker's staging tree.
-InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json -/run/atiny-cancer-evidence
+InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/source-cache/aacr-gbm5k-dependency-v1 -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json -/run/atiny-cancer-evidence
 UnsetEnvironment=CANCER_PDC000711_PROTEOME_PATH CANCER_PDC000711_PROTEOME_METADATA_PATH CANCER_TCGA_GBM_TARGET_CONTEXT_PATH
 RestrictSUIDSGID=true
 LockPersonality=true

@@ -18,6 +18,10 @@ services:
       start_period: 15s
     volumes:
       - local-cognition-models:/root/.ollama
+    ports:
+      # The host-run Cancer World worker reuses this free route. Keep it
+      # loopback-only; the model service is never a public endpoint.
+      - "127.0.0.1:11434:11434"
     networks:
       - backend
     # Local cognition is a deterministic fallback, not a reason to starve the
@@ -182,7 +186,7 @@ services:
       CANCER_RESEARCH_PAID_ENABLED: ${CANCER_RESEARCH_PAID_ENABLED:-false}
       # Any metered overflow reserves $0.015, which covers the maximum accepted
       # GPT-OSS request at the pinned tariff; the durable monthly account still
-      # enforces the independent $2.85 hard stop.
+      # enforces the independent $3.00 hard stop.
       CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: ${CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD:-15000}
     depends_on:
       migrate:

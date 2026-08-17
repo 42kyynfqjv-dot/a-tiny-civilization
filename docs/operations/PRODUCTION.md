@@ -69,9 +69,12 @@ sudo install -o root -g root -m 0644 \
   ops/systemd/atiny-cancer-evidence.service /etc/systemd/system/
 sudo install -o root -g root -m 0644 \
   ops/systemd/atiny-cancer-research.service /etc/systemd/system/
+sudo install -o root -g root -m 0644 \
+  ops/systemd/atiny-cancer-tissue-refinement.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable --now \
-  atiny-cancer-evidence.service atiny-cancer-research.service
+  atiny-cancer-evidence.service atiny-cancer-research.service \
+  atiny-cancer-tissue-refinement.service
 ```
 
 Both units load the root-protected production environment through systemd, run as the
@@ -103,15 +106,38 @@ aggregate, and the evidence worker's
 `/run` staging tree inaccessible inside its own mount namespace and explicitly drops
 all evidence-only path variables.
 
+The tissue-refinement unit is a third, local-only worker. It has no model,
+Hindsight, or evidence-dataset access; systemd permits only loopback IP traffic
+for the host PostgreSQL listener and blocks every non-loopback destination. It is
+limited to one CPU, 1.5 GiB resident memory, no swap, 32 tasks, and the domain-level
+32×32/4,096-cell/256-step/48-checkpoint envelope. A 30-minute process cap plus a
+30-second termination grace bounds a wedged calculation; an uncommitted lease
+expires and can be retried. PostgreSQL also permits only one live tissue job lease
+globally. Verify a one-shot pass without leaving a daemon:
+
+```bash
+target/release/civilization-runner cancer-tissue-refinement-worker --once
+```
+
+An idle exit means no complete survived adversarial campaign is eligible. A
+completed result remains an uncalibrated deterministic projection and is never
+copied into research prompts, Hindsight memory, campaign outcomes, or canonical
+world history.
+
 The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
-records from Europe PMC every six hours. The model worker uses dedicated Cancer World
-OpenRouter and optional Fireworks keys. Exploration tries pinned free GPT-OSS first,
-then the bounded OpenRouter dynamic-free route, and only then the metered Fireworks
-GPT-OSS overflow; literature audits retain their separate DeepSeek ladder. Each free
-attempt is bounded to 30 seconds while the treasury-capped Fireworks attempt retains
-the normal 120-second timeout, so one congested shared pool does not consume the whole
-research window. All paid calls share the independent durable $2.85 monthly circuit
-breaker. Their Compose
+records from Europe PMC every six hours. The model worker uses a dedicated Cancer World
+OpenRouter key, reuses any configured local, Cloudflare, Groq, and Cerebras free
+adapters from the ordinary-world ladder, and retains optional Fireworks overflow.
+Exploration tries pinned free GPT-OSS first, then the bounded OpenRouter dynamic-free
+route and pinned 120B route, then each configured shared free provider, and only then
+the metered Fireworks GPT-OSS overflow; promoted work retains its separate DeepSeek
+ladder. Missing credentials produce a durable skip and never truncate the remaining
+ladder. The small loopback model is capped at ten seconds because Cancer World's
+research context can exceed its practical CPU capacity. Each remote free attempt is
+bounded to 30 seconds while the treasury-capped Fireworks
+attempt retains the normal 120-second timeout, so one congested shared pool does not
+consume the whole research window. All paid calls share the independent durable $2.85
+monthly circuit breaker. Their Compose
 equivalents are behind the `container-research` profile for development hosts whose
 Docker bridges already have outbound HTTPS; do not run both copies concurrently.
 

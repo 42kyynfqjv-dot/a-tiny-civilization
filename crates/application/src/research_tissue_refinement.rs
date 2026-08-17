@@ -34,6 +34,21 @@ pub struct CancerTissueRefinementCampaignExperiment {
     pub result: CancerVirtualExperimentResult,
 }
 
+/// Provenance of the successful synthesis that closed the immutable campaign.
+/// The PostgreSQL adapter derives these hashes from validated durable request
+/// and result bytes; callers cannot substitute prose for the computed outcome.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CancerTissueRefinementSurvivalEvidence {
+    pub synthesis_request_id: Uuid,
+    pub synthesis_request_hash: Digest,
+    pub synthesis_result_hash: Digest,
+    pub campaign_id: Uuid,
+    pub root_artifact_hash: Digest,
+    pub supporting_tests: u8,
+    pub falsifying_tests: u8,
+    pub inconclusive_tests: u8,
+}
+
 /// Complete, closed campaign evidence supplied to the refinement selector.
 /// The caller must include every campaign experiment; omitting an adverse test
 /// is invalid persistence behavior and the durable selector must enforce that
@@ -44,6 +59,7 @@ pub struct CancerTissueRefinementCandidate {
     pub root: CancerVirtualExperimentCandidate,
     pub root_result: CancerVirtualExperimentResult,
     pub campaign_experiments: Vec<CancerTissueRefinementCampaignExperiment>,
+    pub survival_evidence: CancerTissueRefinementSurvivalEvidence,
 }
 
 impl CancerTissueRefinementCandidate {
@@ -71,6 +87,7 @@ impl CancerTissueRefinementCandidate {
         let mut plan_hashes = BTreeSet::from([root_plan_hash]);
         let mut result_hashes = BTreeSet::new();
         let mut supporting = 0_usize;
+        let mut inconclusive = 0_usize;
 
         for experiment in &self.campaign_experiments {
             validate_current_result(&experiment.result, &experiment.candidate)?;
@@ -98,13 +115,27 @@ impl CancerTissueRefinementCandidate {
             }
             match cancer_research_campaign_test_assessment(&experiment.result) {
                 CancerResearchCampaignTestAssessment::Supports => supporting += 1,
-                CancerResearchCampaignTestAssessment::Inconclusive => {}
+                CancerResearchCampaignTestAssessment::Inconclusive => inconclusive += 1,
                 CancerResearchCampaignTestAssessment::Falsifies => {
                     return Err(CancerTissueRefinementError::IneligibleCampaign);
                 }
             }
         }
         if supporting < REQUIRED_SUPPORTING_TESTS {
+            return Err(CancerTissueRefinementError::IneligibleCampaign);
+        }
+        if self.survival_evidence.synthesis_request_id.is_nil()
+            || self.survival_evidence.synthesis_request_hash == Digest::ZERO
+            || self.survival_evidence.synthesis_result_hash == Digest::ZERO
+            || self.survival_evidence.campaign_id != self.campaign_id
+            || self.survival_evidence.root_artifact_hash != root_hash
+            || usize::from(self.survival_evidence.supporting_tests) != supporting
+            || self.survival_evidence.falsifying_tests != 0
+            || usize::from(self.survival_evidence.inconclusive_tests) != inconclusive
+            || usize::from(self.survival_evidence.supporting_tests)
+                + usize::from(self.survival_evidence.inconclusive_tests)
+                != self.campaign_experiments.len()
+        {
             return Err(CancerTissueRefinementError::IneligibleCampaign);
         }
         Ok(())
@@ -173,6 +204,9 @@ pub fn prepare_cancer_tissue_refinement_protocol(
         root_result_hash: candidate
             .root_result
             .canonical_hash(&candidate.root.contribution)?,
+        survival_synthesis_request_id: candidate.survival_evidence.synthesis_request_id,
+        survival_synthesis_request_hash: candidate.survival_evidence.synthesis_request_hash,
+        survival_synthesis_result_hash: candidate.survival_evidence.synthesis_result_hash,
         campaign_result_hashes,
         field_model: field_model(plan.intervention_modality),
         lattice_width: edge,
@@ -1118,6 +1152,7 @@ mod tests {
             CancerVirtualExperimentInterpretation::ModelSupportsPrediction
         );
         let root_hash = root.artifact_hash;
+        let campaign_id = CancerResearchCampaignDirective::campaign_id(root.request_id);
         let campaign_experiments = [96_u16, 120, 144]
             .into_iter()
             .enumerate()
@@ -1142,7 +1177,17 @@ mod tests {
             })
             .collect();
         CancerTissueRefinementCandidate {
-            campaign_id: CancerResearchCampaignDirective::campaign_id(root.request_id),
+            campaign_id,
+            survival_evidence: CancerTissueRefinementSurvivalEvidence {
+                synthesis_request_id: Uuid::from_u128(0x5155_ffff),
+                synthesis_request_hash: Digest::sha256(b"synthesis request"),
+                synthesis_result_hash: Digest::sha256(b"synthesis result"),
+                campaign_id,
+                root_artifact_hash: root_hash,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 0,
+            },
             root,
             root_result,
             campaign_experiments,
@@ -1396,6 +1441,8 @@ mod tests {
             CancerVirtualEndpoint::DetectionSensitivity,
         );
         let root_result = execute_cancer_virtual_experiment(&root).expect("root result");
+        let root_hash = root.artifact_hash;
+        let campaign_id = CancerResearchCampaignDirective::campaign_id(root.request_id);
         let followups = [2_u32, 3, 4]
             .into_iter()
             .map(|ordinal| {
@@ -1410,14 +1457,24 @@ mod tests {
                 );
                 let result = execute_cancer_virtual_experiment(&candidate).expect("result");
                 CancerTissueRefinementCampaignExperiment {
-                    frozen_root_artifact_hash: root.artifact_hash,
+                    frozen_root_artifact_hash: root_hash,
                     candidate,
                     result,
                 }
             })
             .collect();
         let candidate = CancerTissueRefinementCandidate {
-            campaign_id: CancerResearchCampaignDirective::campaign_id(root.request_id),
+            campaign_id,
+            survival_evidence: CancerTissueRefinementSurvivalEvidence {
+                synthesis_request_id: Uuid::from_u128(0x5156_ffff),
+                synthesis_request_hash: Digest::sha256(b"long synthesis request"),
+                synthesis_result_hash: Digest::sha256(b"long synthesis result"),
+                campaign_id,
+                root_artifact_hash: root_hash,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 0,
+            },
             root,
             root_result,
             campaign_experiments: followups,

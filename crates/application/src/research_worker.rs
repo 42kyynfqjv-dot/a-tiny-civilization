@@ -22,7 +22,7 @@ pub struct CancerResearchWorkerConfiguration {
 impl Default for CancerResearchWorkerConfiguration {
     fn default() -> Self {
         Self {
-            claim_lease_seconds: 300,
+            claim_lease_seconds: 900,
             retry_after_seconds: 30,
             paid_reservation_micro_usd: DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
             paid_enabled: false,
@@ -81,7 +81,21 @@ pub async fn process_next_cancer_research_job<S: CancerResearchJobStore + ?Sized
     else {
         return Ok(CancerResearchWorkerOutcome::Idle);
     };
-    process_claimed_job(store, adapters, worker_id, configuration, &entry).await
+    match process_claimed_job(store, adapters, worker_id, configuration, &entry).await {
+        Ok(outcome) => Ok(outcome),
+        Err(error @ CancerResearchWorkerError::Store(_)) => {
+            store
+                .reschedule_cancer_research_request(
+                    worker_id,
+                    &entry,
+                    &error.to_string(),
+                    configuration.retry_after_seconds,
+                )
+                .await?;
+            Err(error)
+        }
+        Err(error) => Err(error),
+    }
 }
 
 async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
@@ -169,21 +183,14 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
             CancerResearchWorkerError::Corrupt("research route index exceeds u16".to_owned())
         })?;
         let Some(adapter) = adapters.get(&route.provider) else {
-            for (remaining_position, remaining) in registry.routes.iter().enumerate().skip(position)
-            {
-                attempts.push(CognitionRouteAttempt {
-                    route_index: u16::try_from(remaining_position).map_err(|_| {
-                        CancerResearchWorkerError::Corrupt(
-                            "research route index exceeds u16".to_owned(),
-                        )
-                    })?,
-                    provider: remaining.provider.clone(),
-                    requested_model: remaining.requested_model.clone(),
-                    billing_class: remaining.billing_class,
-                    status: CognitionRouteAttemptStatus::SkippedUnconfigured,
-                });
-            }
-            return finalize_result(store, worker_id, entry, &registry, attempts, None).await;
+            attempts.push(CognitionRouteAttempt {
+                route_index,
+                provider: route.provider.clone(),
+                requested_model: route.requested_model.clone(),
+                billing_class: route.billing_class,
+                status: CognitionRouteAttemptStatus::SkippedUnconfigured,
+            });
+            continue;
         };
 
         if route.billing_class == CognitionBillingClass::PaidApproved && !configuration.paid_enabled

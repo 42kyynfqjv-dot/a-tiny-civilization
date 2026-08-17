@@ -53,6 +53,7 @@ services:
       - postgres-data:/var/lib/postgresql/data
     networks:
       - backend
+      - tissue-db
     restart: unless-stopped
     logging: *local-logging
     stop_grace_period: 60s
@@ -139,6 +140,34 @@ services:
       - ${ATINY_RUNTIME_ARTIFACT_ROOT:-./runtime-artifacts}:/runtime:ro
     restart: unless-stopped
 
+  cancer-tissue-worker:
+    <<: *rust-service
+    profiles: ["cancer-tissue"]
+    # A process lifetime cap also bounds a wedged job. SIGTERM lets an ordinary
+    # bounded run commit atomically; SIGKILL follows after 30 seconds and the
+    # durable lease makes the uncommitted job retryable.
+    command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=30s", "30m", "/app/civilization-runner", "cancer-tissue-refinement-worker"]
+    environment:
+      APP_ENV: ${APP_ENV:-development}
+      RUST_LOG: ${RUST_LOG:-info}
+      DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
+      # The command validates this when the optional profile is enabled. A
+      # default compose config must remain renderable without Cancer World.
+      CANCER_WORLD_ID: ${CANCER_WORLD_ID:-}
+      CANCER_TISSUE_WORKER_ID: ${CANCER_TISSUE_WORKER_ID:-compose-cancer-tissue-worker-1}
+      CANCER_TISSUE_POLL_MILLISECONDS: ${CANCER_TISSUE_POLL_MILLISECONDS:-5000}
+      CANCER_TISSUE_CLAIM_LEASE_SECONDS: ${CANCER_TISSUE_CLAIM_LEASE_SECONDS:-900}
+    depends_on:
+      migrate:
+        condition: service_healthy
+    networks:
+      - tissue-db
+    cpus: 1.0
+    mem_limit: 1536m
+    memswap_limit: 1536m
+    pids_limit: 32
+    restart: unless-stopped
+
   projector:
     <<: *rust-service
     command: ["/app/civilization-projector", "serve"]
@@ -203,5 +232,8 @@ networks:
   edge:
     driver: bridge
   web-api:
+    driver: bridge
+    internal: true
+  tissue-db:
     driver: bridge
     internal: true

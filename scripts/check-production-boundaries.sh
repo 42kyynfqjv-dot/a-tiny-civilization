@@ -248,6 +248,7 @@ other_systemd_label_access="$(
     ops/systemd --glob '*.service' \
     | rg -v '^ops/systemd/atiny-cancer-evidence\.service:' \
     | rg -v '^ops/systemd/atiny-cancer-research\.service:.*InaccessiblePaths=' \
+    | rg -v '^ops/systemd/atiny-cancer-tissue-refinement\.service:.*InaccessiblePaths=' \
     || true
 )"
 if [[ -n "$other_systemd_label_access" ]]; then
@@ -256,9 +257,15 @@ if [[ -n "$other_systemd_label_access" ]]; then
   exit 1
 fi
 if ! rg -q --fixed-strings \
-  'InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json -/run/atiny-cancer-evidence' \
+  'InaccessiblePaths=-/home/shmuel/codex/emergent-civilization/data/source-cache/nci-cellminer-2026-08-12/nci-cellminer-2-15-cns-challenge-answer-key-v1.json -/home/shmuel/codex/emergent-civilization/data/source-cache/aacr-gbm5k-dependency-v1 -/home/shmuel/codex/emergent-civilization/data/derived-cache/pdc000711-hcmi-gbm-proteome -/home/shmuel/codex/emergent-civilization/data/cancer-research/tcga-gbm-dr46-patient-baseline-v1.json -/run/atiny-cancer-evidence' \
   ops/systemd/atiny-cancer-research.service; then
   echo "Production boundary violation: the host research worker can see qualification inputs." >&2
+  exit 1
+fi
+if ! rg -q --fixed-strings \
+  'data/source-cache/aacr-gbm5k-dependency-v1' \
+  ops/systemd/atiny-cancer-research.service; then
+  echo "Production boundary violation: the host research worker can see the GBM5K answer key." >&2
   exit 1
 fi
 if ! rg -q --fixed-strings \
@@ -274,6 +281,7 @@ other_systemd_tcga_access="$(
     ops/systemd --glob '*.service' \
     | rg -v '^ops/systemd/atiny-cancer-evidence\.service:' \
     | rg -v '^ops/systemd/atiny-cancer-research\.service:.*(InaccessiblePaths|UnsetEnvironment)=' \
+    | rg -v '^ops/systemd/atiny-cancer-tissue-refinement\.service:.*(InaccessiblePaths|UnsetEnvironment)=' \
     || true
 )"
 if [[ -n "$other_systemd_tcga_access" ]]; then
@@ -288,11 +296,52 @@ other_systemd_pdc_access="$(
     ops/systemd --glob '*.service' \
     | rg -v '^ops/systemd/atiny-cancer-evidence\.service:' \
     | rg -v '^ops/systemd/atiny-cancer-research\.service:.*(InaccessiblePaths|UnsetEnvironment)=' \
+    | rg -v '^ops/systemd/atiny-cancer-tissue-refinement\.service:.*(InaccessiblePaths|UnsetEnvironment)=' \
     || true
 )"
 if [[ -n "$other_systemd_pdc_access" ]]; then
   printf '%s\n' "$other_systemd_pdc_access" >&2
   echo "Production boundary violation: another systemd service can address PDC000711 evidence." >&2
+  exit 1
+fi
+
+tissue_unit=ops/systemd/atiny-cancer-tissue-refinement.service
+for tissue_boundary in \
+  'CPUQuota=100%' \
+  'MemoryMax=1536M' \
+  'MemorySwapMax=0' \
+  'TasksMax=32' \
+  'RuntimeMaxSec=30m' \
+  'IPAddressAllow=localhost' \
+  'IPAddressDeny=any' \
+  'ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-tissue-refinement-worker' \
+  'UnsetEnvironment=CANCER_OPENROUTER_API_KEY CANCER_FIREWORKS_API_KEY OPENROUTER_API_KEY HINDSIGHT_API_KEY' \
+  'CLOUDFLARE_WORKERS_AI_API_KEY' \
+  'GROQ_API_KEY' \
+  'CEREBRAS_API_KEY' \
+  'CANCER_CONSOLE_TOKEN' \
+  'CLOUDFLARE_TUNNEL_TOKEN' \
+  'R2_SECRET_ACCESS_KEY' \
+  'WALG_LIBSODIUM_KEY' \
+  'STRIPE_SECRET_KEY' \
+  'STRIPE_WEBHOOK_SECRET' \
+  'GOOGLE_OAUTH_CLIENT_SECRET' \
+  'APPLE_PRIVATE_KEY'; do
+  if ! rg -q --fixed-strings "$tissue_boundary" "$tissue_unit"; then
+    echo "Production boundary violation: tissue worker is missing ${tissue_boundary}." >&2
+    exit 1
+  fi
+done
+if ! rg -q --fixed-strings \
+  'command: ["/usr/bin/timeout", "--signal=TERM", "--kill-after=30s", "30m", "/app/civilization-runner", "cancer-tissue-refinement-worker"]' \
+  compose.yaml; then
+  echo "Production boundary violation: Compose tissue execution has no hard process lifetime cap." >&2
+  exit 1
+fi
+if rg -n 'OpenAiCompatibleCognition|HindsightMemory|CancerResearchModelAdapters|dyn CancerResearchModel' \
+  crates/application/src/research_tissue_worker.rs \
+  crates/postgres-store/src/cancer_tissue_refinement.rs; then
+  echo "Production boundary violation: tissue worker imports model or memory capabilities." >&2
   exit 1
 fi
 

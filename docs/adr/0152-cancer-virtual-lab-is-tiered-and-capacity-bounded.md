@@ -38,8 +38,9 @@ Cancer World uses a fidelity ladder:
    0151 remain authoritative.
 3. **Tissue-scale refinement.** Only campaign survivors may enter the separately
    versioned structural lattice method specified in ADR 0158. Production remains
-   disabled until an asynchronous one-job-at-a-time worker has
-   explicit CPU, memory, wall-time, and output-size limits and cannot run in the
+   disabled until the migration and dedicated service in ADR 0161 are installed.
+   That implementation uses an asynchronous one-job-at-a-time worker with
+   explicit CPU, memory, execution, and output-size bounds and cannot run in the
    canonical runner process.
 4. **Source-calibrated qualification.** A finalist can advance only after its
    compound, device, subject, and endpoint parameters are bound to cited datasets,
@@ -53,7 +54,7 @@ Source admission and the university-ready qualification gate are specified in
 no aggregate “tumor realism percentage” can substitute for patient-disjoint,
 out-of-sample validation against a declared intended use.
 
-Method 1 results remain immutable and readable. Method 2 writes parallel
+Virtual-lab method 1 results remain immutable and readable. Method 2 writes parallel
 content-addressed result rows and the observer projection reads only the current
 method. Compact summaries are retained; large per-cell trajectories are
 reproducible from frozen inputs and code versions rather than duplicated into
@@ -66,10 +67,10 @@ World throughput.
 
 ## Current capability boundary
 
-Method 2 adds structural clone selection and a structural PK/BBB screen. ADR 0158
-adds a separate, still-uncalibrated spatial lattice refinement for complete
-campaign survivors, although its production worker is not yet wired. Neither
-method implements source-calibrated intervention response, mutation, genomic
+Method 2 adds structural clone selection and a structural PK/BBB screen. ADRs
+0158 and 0161 add a separate, still-uncalibrated spatial lattice refinement and
+durable bounded worker for complete campaign survivors. Neither method
+implements source-calibrated intervention response, mutation, genomic
 lineages, reversible plasticity, longitudinal relapse, compound-specific ADME
 and transporters, immune and stromal populations, combination scheduling,
 multi-organ toxicity, or detailed device physics. The public capability manifest

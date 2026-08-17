@@ -6,7 +6,6 @@ use std::{
 };
 
 use anyhow::{Context, Result, bail};
-use md5::Md5;
 use reqwest::{
     Client, Response, StatusCode, Url,
     header::{ACCEPT_ENCODING, CONTENT_LENGTH, CONTENT_RANGE, RANGE},
@@ -15,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest as _, Sha256};
 
 const MANIFEST_ID: &str = "aacr-gbm5k-dependency-source-v1";
+const MANIFEST_SHA256: &str = "567a12c7e76945f231c8470781bd370f67be1ba662f358bc56b0c110c0eff726";
 const ARTICLE_ID: u64 = 28_183_566;
 const ARTICLE_VERSION: u16 = 1;
 const TITLE: &str =
@@ -125,8 +125,6 @@ struct FigshareFile {
     size: u64,
     is_link_only: bool,
     download_url: String,
-    supplied_md5: String,
-    computed_md5: String,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -134,7 +132,6 @@ struct DiscoveredFile {
     file_id: u64,
     file_name: String,
     byte_length: u64,
-    md5: String,
     download_url: String,
 }
 
@@ -163,13 +160,11 @@ struct SnapshotSourceFile {
     file_id: u64,
     file_name: String,
     byte_length: u64,
-    md5: String,
     sha256: String,
 }
 
 struct FileDigests {
     byte_length: u64,
-    md5: String,
     sha256: String,
 }
 
@@ -216,6 +211,9 @@ pub async fn acquire(manifest_path: &Path, output_directory: &Path) -> Result<()
 
 fn read_manifest(path: &Path) -> Result<(SourceManifest, Vec<u8>)> {
     let bytes = fs::read(path).with_context(|| format!("read {}", path.display()))?;
+    if sha256_bytes(&bytes) != MANIFEST_SHA256 {
+        bail!("AACR GBM5K trust manifest bytes changed without a method revision");
+    }
     let manifest: SourceManifest =
         serde_json::from_slice(&bytes).with_context(|| format!("decode {}", path.display()))?;
     validate_manifest(&manifest)?;
@@ -345,17 +343,14 @@ fn validate_article(
         || !is_safe_xlsx_name(&file.name)
         || file.size < manifest.artifact.minimum_byte_length
         || file.size > manifest.artifact.maximum_byte_length
-        || !is_lower_hex_md5(&file.supplied_md5)
-        || file.supplied_md5 != file.computed_md5
     {
-        bail!("AACR Figshare file identity or checksum metadata is invalid");
+        bail!("AACR Figshare file identity metadata is invalid");
     }
     require_figshare_download_url(&file.download_url, file.id)?;
     Ok(DiscoveredFile {
         file_id: file.id,
         file_name: file.name.clone(),
         byte_length: file.size,
-        md5: file.supplied_md5.clone(),
         download_url: file.download_url.clone(),
     })
 }
@@ -377,7 +372,8 @@ async fn acquire_file(client: &Client, source: &DiscoveredFile, directory: &Path
         return Ok(());
     }
     let part_path = directory.join(format!("{}.part", source.file_name));
-    let offset = if part_path.exists() {
+    let part_exists = part_path.exists();
+    let offset = if part_exists {
         reject_symlink(&part_path)?;
         fs::metadata(&part_path)
             .with_context(|| format!("inspect {}", part_path.display()))?
@@ -389,7 +385,7 @@ async fn acquire_file(client: &Client, source: &DiscoveredFile, directory: &Path
         bail!("partial AACR GBM5K file exceeds the exact source length");
     }
     if offset < source.byte_length {
-        download_remaining(client, source, &part_path, offset).await?;
+        download_remaining(client, source, &part_path, offset, part_exists).await?;
     }
     verify_file(&part_path, source)?;
     fs::hard_link(&part_path, &final_path).with_context(|| {
@@ -408,6 +404,7 @@ async fn download_remaining(
     source: &DiscoveredFile,
     part_path: &Path,
     offset: u64,
+    part_exists: bool,
 ) -> Result<()> {
     require_figshare_download_url(&source.download_url, source.file_id)?;
     let mut request = client
@@ -418,15 +415,7 @@ async fn download_remaining(
     }
     let mut response = request.send().await.context("download AACR GBM5K file")?;
     validate_download_response(&response, source, offset)?;
-    let mut file = if offset == 0 {
-        OpenOptions::new()
-            .create_new(true)
-            .write(true)
-            .open(part_path)
-    } else {
-        OpenOptions::new().append(true).open(part_path)
-    }
-    .with_context(|| format!("open partial file {}", part_path.display()))?;
+    let mut file = open_partial_file(part_path, offset, part_exists)?;
     let mut written = offset;
     while let Some(chunk) = response.chunk().await.context("stream AACR GBM5K file")? {
         written = written
@@ -445,6 +434,23 @@ async fn download_remaining(
         );
     }
     Ok(())
+}
+
+fn open_partial_file(path: &Path, offset: u64, already_exists: bool) -> Result<File> {
+    if already_exists {
+        let actual = fs::metadata(path)
+            .with_context(|| format!("inspect partial file {}", path.display()))?
+            .len();
+        if actual != offset {
+            bail!("AACR GBM5K partial file changed after its resume offset was frozen");
+        }
+        OpenOptions::new().append(true).open(path)
+    } else if offset == 0 {
+        OpenOptions::new().create_new(true).write(true).open(path)
+    } else {
+        bail!("AACR GBM5K nonzero resume offset has no partial file");
+    }
+    .with_context(|| format!("open partial file {}", path.display()))
 }
 
 fn validate_download_response(
@@ -534,7 +540,6 @@ fn build_snapshot(
             file_id: source.file_id,
             file_name: source.file_name.clone(),
             byte_length: file_digests.byte_length,
-            md5: file_digests.md5,
             sha256: file_digests.sha256,
         },
         source_set_sha256,
@@ -564,7 +569,7 @@ fn verify_source_directory(
 fn verify_file(path: &Path, source: &DiscoveredFile) -> Result<FileDigests> {
     reject_symlink(path)?;
     let digests = file_digests(path)?;
-    if digests.byte_length != source.byte_length || digests.md5 != source.md5 {
+    if digests.byte_length != source.byte_length {
         bail!("AACR GBM5K file differs from its exact API identity");
     }
     Ok(digests)
@@ -572,7 +577,6 @@ fn verify_file(path: &Path, source: &DiscoveredFile) -> Result<FileDigests> {
 
 fn file_digests(path: &Path) -> Result<FileDigests> {
     let mut file = File::open(path).with_context(|| format!("open {}", path.display()))?;
-    let mut md5 = Md5::new();
     let mut sha256 = Sha256::new();
     let mut byte_length = 0_u64;
     let mut buffer = [0_u8; 64 * 1024];
@@ -586,12 +590,10 @@ fn file_digests(path: &Path) -> Result<FileDigests> {
         byte_length = byte_length
             .checked_add(u64::try_from(count)?)
             .context("AACR GBM5K byte length overflow")?;
-        md5.update(&buffer[..count]);
         sha256.update(&buffer[..count]);
     }
     Ok(FileDigests {
         byte_length,
-        md5: hex::encode(md5.finalize()),
         sha256: hex::encode(sha256.finalize()),
     })
 }
@@ -692,14 +694,6 @@ fn is_safe_xlsx_name(value: &str) -> bool {
         && !value.chars().any(char::is_control)
 }
 
-fn is_lower_hex_md5(value: &str) -> bool {
-    value.len() == 32
-        && value
-            .bytes()
-            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        && value != "00000000000000000000000000000000"
-}
-
 fn reject_symlink(path: &Path) -> Result<()> {
     let metadata = fs::symlink_metadata(path)
         .with_context(|| format!("inspect source artifact {}", path.display()))?;
@@ -788,14 +782,13 @@ mod tests {
                 size: 277_800,
                 is_link_only: false,
                 download_url: "https://aacr.figshare.com/ndownloader/files/42424242".to_owned(),
-                supplied_md5: "0123456789abcdef0123456789abcdef".to_owned(),
-                computed_md5: "0123456789abcdef0123456789abcdef".to_owned(),
             }],
         }
     }
 
     #[test]
     fn checked_in_manifest_pins_commercial_license_and_closed_leakage() {
+        assert_eq!(sha256_bytes(MANIFEST), MANIFEST_SHA256);
         let manifest = manifest();
         assert_eq!(manifest.source.article_id, ARTICLE_ID);
         assert_eq!(manifest.source.article_version, 1);
@@ -828,7 +821,7 @@ mod tests {
     }
 
     #[test]
-    fn link_only_unsafe_or_checksum_disagreement_fails_closed() {
+    fn link_only_unsafe_or_oversized_file_fails_closed() {
         let manifest = manifest();
         let mut changed = article();
         changed.files[0].is_link_only = true;
@@ -837,7 +830,7 @@ mod tests {
         changed.files[0].name = "../Table_S4.xlsx".to_owned();
         assert!(validate_article(&changed, &manifest).is_err());
         changed = article();
-        changed.files[0].computed_md5 = "fedcba9876543210fedcba9876543210".to_owned();
+        changed.files[0].size = manifest.artifact.maximum_byte_length + 1;
         assert!(validate_article(&changed, &manifest).is_err());
     }
 
@@ -868,5 +861,20 @@ mod tests {
         assert!(validate_content_range("bytes 100-999/1000", 100, 1_000).is_ok());
         assert!(validate_content_range("bytes 100-998/1000", 100, 1_000).is_err());
         assert!(validate_content_range("bytes 99-999/1000", 100, 1_000).is_err());
+    }
+
+    #[test]
+    fn an_existing_zero_byte_partial_is_resumable_without_recreation() {
+        let directory =
+            std::env::temp_dir().join(format!("atiny-gbm5k-zero-partial-{}", std::process::id()));
+        fs::create_dir_all(&directory).expect("create test directory");
+        let path = directory.join("Table_S4.xlsx.part");
+        File::create(&path).expect("create zero-byte partial");
+        let mut file = open_partial_file(&path, 0, true).expect("open existing partial");
+        file.write_all(b"resume").expect("append resumed bytes");
+        drop(file);
+        assert_eq!(fs::read(&path).expect("read resumed bytes"), b"resume");
+        fs::remove_file(path).expect("remove test file");
+        fs::remove_dir(directory).expect("remove test directory");
     }
 }

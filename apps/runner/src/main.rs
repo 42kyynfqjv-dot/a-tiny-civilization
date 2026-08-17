@@ -13,15 +13,17 @@ use application::{
     CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchLiteratureSnapshot,
     CancerResearchModel, CancerResearchModelAdapters, CancerResearchNoveltySource,
     CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
-    CancerTcgaGbmTargetContextQualifier, CognitionModel, CognitionModelRoute, CognitionProviderId,
-    CognitionWorkerConfiguration, CognitionWorkerStep, FoundationStore, MemoryOutboxStore,
-    ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError, WorldSession, WorldStore,
-    advance_world, advance_world_with_celestial, advance_world_with_celestial_and_cognition,
-    calculate_cancer_research_novelty, construct_configured_genesis_with_materials,
-    execute_cancer_virtual_experiment, initialize_or_resume_configured_world_with_materials,
-    initialize_or_resume_world, process_next_cancer_research_job, process_next_cognition_job,
-    reconcile_fireworks_billing_export, resume_world, resume_world_from_snapshot,
-    retire_world_for_successor, schedule_due_cancer_research_turn, schedule_world_cognition,
+    CancerTcgaGbmTargetContextQualifier, CancerTissueRefinementWorkerStep, CognitionModel,
+    CognitionModelRoute, CognitionProviderId, CognitionWorkerConfiguration, CognitionWorkerStep,
+    FoundationStore, MemoryOutboxStore, ModelCognitionRequest, ServiceHeartbeat, WorldRuntimeError,
+    WorldSession, WorldStore, advance_world, advance_world_with_celestial,
+    advance_world_with_celestial_and_cognition, calculate_cancer_research_novelty,
+    construct_configured_genesis_with_materials, execute_cancer_virtual_experiment,
+    initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
+    process_next_cancer_research_job, process_next_cancer_tissue_refinement,
+    process_next_cognition_job, reconcile_fireworks_billing_export, resume_world,
+    resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
+    schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -465,7 +467,7 @@ enum Command {
         #[arg(
             long,
             env = "CANCER_RESEARCH_CLAIM_LEASE_SECONDS",
-            default_value_t = 300
+            default_value_t = 900
         )]
         claim_lease_seconds: u32,
 
@@ -488,6 +490,25 @@ enum Command {
 
         #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
         cancer_openrouter_api_key: String,
+
+        /// Reuse the ordinary world's private local free route when configured.
+        #[arg(long, env = "LOCAL_COGNITION_BASE_URL")]
+        local_cognition_base_url: Option<String>,
+
+        /// Reuse the ordinary world's direct Cloudflare free allocation.
+        #[arg(long, env = "CLOUDFLARE_WORKERS_AI_BASE_URL")]
+        cloudflare_workers_ai_base_url: Option<String>,
+
+        #[arg(long, env = "CLOUDFLARE_WORKERS_AI_API_KEY", hide_env_values = true)]
+        cloudflare_workers_ai_api_key: Option<String>,
+
+        /// Reuse the ordinary world's direct Groq free allocation.
+        #[arg(long, env = "GROQ_API_KEY", hide_env_values = true)]
+        groq_api_key: Option<String>,
+
+        /// Reuse the ordinary world's direct Cerebras free allocation.
+        #[arg(long, env = "CEREBRAS_API_KEY", hide_env_values = true)]
+        cerebras_api_key: Option<String>,
 
         /// Metered overflow for exploration after the OpenRouter free quota.
         #[arg(long, env = "CANCER_FIREWORKS_API_KEY", hide_env_values = true)]
@@ -513,6 +534,29 @@ enum Command {
         /// Drain every currently ready research turn and exit.
         #[arg(long, default_value_t = false)]
         drain: bool,
+    },
+    /// Execute preregistered tissue refinements for complete adversarial-campaign
+    /// survivors. This local deterministic worker makes no model or memory calls.
+    CancerTissueRefinementWorker {
+        #[arg(long, env = "CANCER_WORLD_ID")]
+        world_id: WorldId,
+
+        #[arg(
+            long,
+            env = "CANCER_TISSUE_WORKER_ID",
+            default_value = "local-cancer-tissue-worker"
+        )]
+        worker_id: String,
+
+        #[arg(long, env = "CANCER_TISSUE_POLL_MILLISECONDS", default_value_t = 5_000)]
+        poll_milliseconds: u64,
+
+        #[arg(long, env = "CANCER_TISSUE_CLAIM_LEASE_SECONDS", default_value_t = 900)]
+        claim_lease_seconds: u32,
+
+        /// Claim and execute at most one eligible refinement, then exit.
+        #[arg(long, default_value_t = false)]
+        once: bool,
     },
     /// Reconcile indeterminate Cancer World Fireworks reservations against one
     /// exact authoritative `firectl billing export-metrics` CSV.
@@ -883,6 +927,11 @@ async fn main() -> Result<()> {
             request_timeout_seconds,
             free_request_timeout_seconds,
             cancer_openrouter_api_key,
+            local_cognition_base_url,
+            cloudflare_workers_ai_base_url,
+            cloudflare_workers_ai_api_key,
+            groq_api_key,
+            cerebras_api_key,
             cancer_fireworks_api_key,
             external_export_approved,
             paid_enabled,
@@ -894,31 +943,21 @@ async fn main() -> Result<()> {
                     "Cancer World research export requires CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED=true"
                 );
             }
-            let provider = CognitionProviderId::openrouter_cancer();
-            let adapter = OpenAiCompatibleCognition::new(
-                provider.clone(),
-                "https://openrouter.ai/api/v1",
+            let adapters = cancer_research_adapters(
                 cancer_openrouter_api_key,
+                local_cognition_base_url,
+                cloudflare_workers_ai_base_url,
+                cloudflare_workers_ai_api_key,
+                groq_api_key,
+                cerebras_api_key,
+                cancer_fireworks_api_key,
                 Duration::from_secs(
                     free_request_timeout_seconds
                         .max(1)
                         .min(request_timeout_seconds.max(1)),
                 ),
-            )
-            .context("configure dedicated Cancer World OpenRouter adapter")?;
-            let mut adapters: CancerResearchModelAdapters = BTreeMap::new();
-            adapters.insert(provider, Arc::new(adapter) as Arc<dyn CancerResearchModel>);
-            if let Some(api_key) = nonempty(cancer_fireworks_api_key) {
-                let provider = CognitionProviderId::fireworks_cancer();
-                let adapter = OpenAiCompatibleCognition::new(
-                    provider.clone(),
-                    "https://api.fireworks.ai/inference/v1",
-                    api_key,
-                    Duration::from_secs(request_timeout_seconds.max(1)),
-                )
-                .context("configure dedicated Cancer World Fireworks adapter")?;
-                adapters.insert(provider, Arc::new(adapter) as Arc<dyn CancerResearchModel>);
-            }
+                Duration::from_secs(request_timeout_seconds.max(1)),
+            )?;
             let configuration = CancerResearchWorkerConfiguration {
                 claim_lease_seconds,
                 paid_reservation_micro_usd,
@@ -932,6 +971,23 @@ async fn main() -> Result<()> {
                 poll_milliseconds,
                 &configuration,
                 drain,
+            )
+            .await
+        }
+        Command::CancerTissueRefinementWorker {
+            world_id,
+            worker_id,
+            poll_milliseconds,
+            claim_lease_seconds,
+            once,
+        } => {
+            serve_cancer_tissue_refinement_worker(
+                &store,
+                world_id,
+                &worker_id,
+                poll_milliseconds,
+                claim_lease_seconds,
+                once,
             )
             .await
         }
@@ -3521,6 +3577,95 @@ fn insert_cognition_adapter(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)] // One explicit option per independently configured provider.
+fn cancer_research_adapters(
+    cancer_openrouter_api_key: String,
+    local_base_url: Option<String>,
+    cloudflare_base_url: Option<String>,
+    cloudflare_api_key: Option<String>,
+    groq_api_key: Option<String>,
+    cerebras_api_key: Option<String>,
+    cancer_fireworks_api_key: Option<String>,
+    free_timeout: Duration,
+    paid_timeout: Duration,
+) -> Result<CancerResearchModelAdapters> {
+    let mut adapters = CancerResearchModelAdapters::new();
+    insert_cancer_research_adapter(
+        &mut adapters,
+        CognitionProviderId::openrouter_cancer(),
+        "https://openrouter.ai/api/v1",
+        cancer_openrouter_api_key,
+        free_timeout,
+    )?;
+    if let Some(base_url) = nonempty(local_base_url) {
+        validate_local_cognition_base_url(&base_url)?;
+        insert_cancer_research_adapter(
+            &mut adapters,
+            CognitionProviderId::local_openai(),
+            &base_url,
+            "loopback-only".to_owned(),
+            // The CPU-only 1.5B fallback commonly needs more than ten seconds
+            // for the first completion after its model is unloaded. Give it the
+            // same bounded free-route window; it cannot incur provider spend.
+            free_timeout,
+        )?;
+    }
+    match (nonempty(cloudflare_base_url), nonempty(cloudflare_api_key)) {
+        (Some(base_url), Some(api_key)) => insert_cancer_research_adapter(
+            &mut adapters,
+            CognitionProviderId::cloudflare_workers_ai(),
+            &base_url,
+            api_key,
+            free_timeout,
+        )?,
+        (None, None) => {}
+        _ => anyhow::bail!(
+            "Cloudflare Workers AI requires both its account-scoped base URL and API key"
+        ),
+    }
+    if let Some(api_key) = nonempty(groq_api_key) {
+        insert_cancer_research_adapter(
+            &mut adapters,
+            CognitionProviderId::groq(),
+            "https://api.groq.com/openai/v1",
+            api_key,
+            free_timeout,
+        )?;
+    }
+    if let Some(api_key) = nonempty(cerebras_api_key) {
+        insert_cancer_research_adapter(
+            &mut adapters,
+            CognitionProviderId::cerebras(),
+            "https://api.cerebras.ai/v1",
+            api_key,
+            free_timeout,
+        )?;
+    }
+    if let Some(api_key) = nonempty(cancer_fireworks_api_key) {
+        insert_cancer_research_adapter(
+            &mut adapters,
+            CognitionProviderId::fireworks_cancer(),
+            "https://api.fireworks.ai/inference/v1",
+            api_key,
+            paid_timeout,
+        )?;
+    }
+    Ok(adapters)
+}
+
+fn insert_cancer_research_adapter(
+    adapters: &mut CancerResearchModelAdapters,
+    provider: CognitionProviderId,
+    base_url: &str,
+    api_key: String,
+    timeout: Duration,
+) -> Result<()> {
+    let adapter = OpenAiCompatibleCognition::new(provider.clone(), base_url, api_key, timeout)
+        .with_context(|| format!("configure {} Cancer World adapter", provider.as_str()))?;
+    adapters.insert(provider, Arc::new(adapter) as Arc<dyn CancerResearchModel>);
+    Ok(())
+}
+
 fn nonempty(value: Option<String>) -> Option<String> {
     value.filter(|value| !value.trim().is_empty())
 }
@@ -3687,6 +3832,111 @@ async fn serve_cancer_research_worker(
                     tracing::warn!(worker_id, "Cancer World research shutdown listener ended unexpectedly");
                 }
                 tracing::info!(worker_id, "Cancer World research worker stopping");
+                break;
+            }
+        }
+    }
+    if let Some(listener) = shutdown_listener {
+        listener.abort();
+    }
+    Ok(())
+}
+
+async fn serve_cancer_tissue_refinement_worker(
+    store: &PostgresStore,
+    world_id: WorldId,
+    worker_id: &str,
+    poll_milliseconds: u64,
+    claim_lease_seconds: u32,
+    once: bool,
+) -> Result<()> {
+    application::validate_tissue_worker_id(worker_id)
+        .context("validate Cancer World tissue-refinement worker identifier")?;
+    if !(application::MIN_CANCER_TISSUE_REFINEMENT_LEASE_SECONDS
+        ..=application::MAX_CANCER_TISSUE_REFINEMENT_LEASE_SECONDS)
+        .contains(&claim_lease_seconds)
+    {
+        anyhow::bail!("Cancer World tissue-refinement claim lease is outside the approved range");
+    }
+    let heartbeat = ServiceHeartbeat {
+        service_name: "cancer-tissue-refinement-worker".to_owned(),
+        instance_id: Uuid::new_v4(),
+        metadata: json!({
+            "worker_id": worker_id,
+            "worker_version": env!("CARGO_PKG_VERSION"),
+            "world_id": world_id,
+            "method_version": world_domain::CANCER_TISSUE_REFINEMENT_METHOD_VERSION,
+            "mode": "bounded-deterministic-no-model-no-memory",
+        }),
+    };
+    let poll = Duration::from_millis(poll_milliseconds.clamp(100, 60_000));
+    let mut interval = tokio::time::interval(poll);
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    // Retain SIGTERM even while one bounded synchronous refinement is running.
+    // The selected job is allowed to finish its atomic completion, then the
+    // worker exits before it can claim another protocol.
+    let (shutdown_sender, mut shutdown_receiver) = tokio::sync::watch::channel(false);
+    let shutdown_listener = (!once).then(|| {
+        tokio::spawn(async move {
+            shutdown_signal().await;
+            let _ = shutdown_sender.send(true);
+        })
+    });
+    tracing::info!(
+        worker_id,
+        %world_id,
+        once,
+        claim_lease_seconds,
+        "bounded Cancer World tissue-refinement worker started"
+    );
+    loop {
+        if !once && *shutdown_receiver.borrow() {
+            tracing::info!(worker_id, "Cancer tissue-refinement worker stopping");
+            break;
+        }
+        tokio::select! {
+            _ = heartbeat_interval.tick(), if !once => {
+                if let Err(error) = store.record_heartbeat(&heartbeat).await {
+                    tracing::warn!(%error, "Cancer tissue-refinement heartbeat failed; will retry");
+                }
+            }
+            _ = interval.tick() => {
+                match process_next_cancer_tissue_refinement(
+                    store,
+                    world_id,
+                    worker_id,
+                    claim_lease_seconds,
+                ).await {
+                    Ok(CancerTissueRefinementWorkerStep::Idle) if once => break,
+                    Ok(CancerTissueRefinementWorkerStep::Idle) => {}
+                    Ok(CancerTissueRefinementWorkerStep::Completed {
+                        refinement_id,
+                        result_hash,
+                    }) => {
+                        tracing::info!(
+                            %refinement_id,
+                            %result_hash,
+                            "bounded Cancer World tissue refinement completed"
+                        );
+                        if once {
+                            break;
+                        }
+                    }
+                    Err(error) if once => {
+                        return Err(error).context("execute one Cancer World tissue refinement");
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "Cancer tissue refinement failed; durable job remains retryable");
+                    }
+                }
+            }
+            changed = shutdown_receiver.changed(), if !once => {
+                if changed.is_err() {
+                    tracing::warn!(worker_id, "Cancer tissue-refinement shutdown listener ended unexpectedly");
+                }
+                tracing::info!(worker_id, "Cancer tissue-refinement worker stopping");
                 break;
             }
         }

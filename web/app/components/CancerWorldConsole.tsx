@@ -254,6 +254,51 @@ type Nci60BenchmarkSummary = {
   caveats: string[];
 };
 
+type TissueRefinementScenario = {
+  scenario: "lower_field_bound" | "nominal_assumptions" | "upper_field_bound";
+  termination: "completed_bounded_horizon" | "cell_capacity_reached" | "numerical_invariant_rejected";
+  completed_steps: number;
+  initial_viable_cells: number;
+  final_viable_cells: number;
+  final_treatment_sensitive_cells: number;
+  final_drug_tolerant_cells: number;
+  final_resistant_cells: number;
+  final_mean_oxygen_parts_per_million: number;
+  final_mean_nutrient_parts_per_million: number;
+  final_mean_intervention_field_parts_per_million: number;
+  final_hypoxic_cell_fraction_parts_per_million: number;
+  final_invasive_front_fraction_parts_per_million: number;
+  lattice_site_updates: number;
+};
+
+type TissueRefinement = {
+  refinement_id: string;
+  campaign_id: string;
+  root_request_id: string;
+  root_artifact_hash: string;
+  survival_synthesis_request_id: string;
+  method_version: number;
+  protocol_hash: string;
+  result_hash: string;
+  field_model: "diffusive_exposure" | "device_field" | "resection_mask";
+  lattice_width: number;
+  lattice_height: number;
+  initial_cell_count: number;
+  cell_capacity: number;
+  modeled_exposure_hours: number;
+  horizon_truncated: boolean;
+  scenario_summaries: TissueRefinementScenario[];
+  uncertainty: {
+    minimum_final_viable_cells: number;
+    maximum_final_viable_cells: number;
+    final_viable_spread_parts_per_million_of_initial: number;
+    all_scenarios_completed: boolean;
+  };
+  evidence_class: "uncalibrated_deterministic_tissue_projection";
+  caveats: string[];
+  created_at: string;
+};
+
 type ResearchCampaign = {
   campaign_id: string;
   program: ResearchProgram;
@@ -311,6 +356,7 @@ type ResearchView = {
   campaigns?: ResearchCampaign[];
   lab_capabilities?: LabCapability[];
   nci60_benchmark?: Nci60BenchmarkSummary;
+  tissue_refinements?: TissueRefinement[];
   artifacts: ResearchArtifact[];
   evidence: ResearchEvidence[];
 };
@@ -429,6 +475,8 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
 
     {research?.nci60_benchmark && <Nci60BenchmarkSummaryPanel summary={research.nci60_benchmark} />}
 
+    <TissueRefinementPanel refinements={research?.tissue_refinements ?? []} />
+
     <nav className="cancer-program-switcher" aria-label="Research programs">
       {(["devices", "treatments"] as ResearchProgram[]).map((item) => {
         const itemSummary = research?.programs?.find((candidate) => candidate.program === item);
@@ -526,6 +574,59 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       </dl>
     </details>
   </main>;
+}
+
+function TissueRefinementPanel({ refinements }: { refinements: TissueRefinement[] }) {
+  return <section className="cancer-tissue-refinements" aria-label="Deterministic tissue refinements">
+    <header>
+      <div>
+        <span>UNCALIBRATED DETERMINISTIC TISSUE PROJECTIONS</span>
+        <strong>Surviving campaigns, tested one layer deeper</strong>
+      </div>
+      <p>Observer finding aid only. These projections never enter research memory, change campaign status, or count as biological or clinical evidence.</p>
+    </header>
+    {refinements.length ? <div className="cancer-tissue-list">
+      {refinements.map((refinement) => <TissueRefinementCard key={refinement.refinement_id} refinement={refinement} />)}
+    </div> : <p className="cancer-tissue-empty">No campaign has completed this bounded tissue projection yet.</p>}
+  </section>;
+}
+
+function TissueRefinementCard({ refinement }: { refinement: TissueRefinement }) {
+  return <details className="cancer-tissue-card">
+    <summary>
+      <div>
+        <span>{humanize(refinement.field_model)} · {refinement.lattice_width}×{refinement.lattice_height} GRID · {refinement.modeled_exposure_hours}H MODELED</span>
+        <strong>Campaign {shortHash(refinement.campaign_id)}</strong>
+      </div>
+      <small>{refinement.uncertainty.all_scenarios_completed ? "3 BOUNDS COMPLETED" : "BOUNDED RUN STOPPED"}</small>
+    </summary>
+    <div className="cancer-tissue-body">
+      <p className="cancer-model-only">UNCALIBRATED 2D POPULATION PROJECTION — NOT AN EXACT TUMOR, ORGANOID, ANIMAL, PERSON, SAFETY RESULT, OR EFFICACY RESULT</p>
+      <div className="cancer-tissue-scenarios">
+        {refinement.scenario_summaries.map((scenario) => <article key={scenario.scenario}>
+          <span>{humanize(scenario.scenario)}</span>
+          <strong>{scenario.final_viable_cells.toLocaleString()}</strong>
+          <small>final modeled population units · began {scenario.initial_viable_cells.toLocaleString()}</small>
+          <dl>
+            <div><dt>SENSITIVE</dt><dd>{scenario.final_treatment_sensitive_cells.toLocaleString()}</dd></div>
+            <div><dt>TOLERANT</dt><dd>{scenario.final_drug_tolerant_cells.toLocaleString()}</dd></div>
+            <div><dt>RESISTANT</dt><dd>{scenario.final_resistant_cells.toLocaleString()}</dd></div>
+          </dl>
+        </article>)}
+      </div>
+      <div className="cancer-tissue-provenance">
+        <span>REFINEMENT<code title={refinement.refinement_id}>{shortHash(refinement.refinement_id)}</code></span>
+        <span>ROOT ARTIFACT<code title={refinement.root_artifact_hash}>{shortHash(refinement.root_artifact_hash)}</code></span>
+        <span>PROTOCOL V{refinement.method_version}<code title={refinement.protocol_hash}>{shortHash(refinement.protocol_hash)}</code></span>
+        <span>RESULT<code title={refinement.result_hash}>{shortHash(refinement.result_hash)}</code></span>
+      </div>
+      <details className="cancer-tissue-caveats">
+        <summary>LIMITS + EXACT LINEAGE</summary>
+        <p>Campaign {refinement.campaign_id} · root request {refinement.root_request_id} · survival synthesis {refinement.survival_synthesis_request_id}</p>
+        {refinement.caveats.map((caveat) => <p key={caveat}>{caveat}</p>)}
+      </details>
+    </div>
+  </details>;
 }
 
 function Nci60BenchmarkSummaryPanel({ summary }: { summary: Nci60BenchmarkSummary }) {

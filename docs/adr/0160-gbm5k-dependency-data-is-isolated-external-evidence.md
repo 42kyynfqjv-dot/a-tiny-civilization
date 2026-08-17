@@ -31,13 +31,20 @@ version from Figshare's public API and require:
 - the exact article, version, title, dataset DOI, related article DOI, and CC BY
   4.0 license;
 - exactly one non-link XLSX file with a safe name and bounded positive length;
-- equal, nonzero provider-supplied and provider-computed MD5 values; and
-- a Figshare HTTPS download URL whose bytes match the API length and MD5.
+- a Figshare HTTPS download URL bound to that exact file ID whose bytes match
+  the API length.
 
 The local acquisition snapshot is create-only and binds the exact API response,
-file ID, file name, length, MD5, downloaded SHA-256, and source-set SHA-256.
+file ID, file name, length, downloaded SHA-256, and source-set SHA-256.
 Existing paths are verified, never refreshed in place. A different AACR item or
 version requires a new manifest and method decision.
+
+Figshare's documented public-file representation does not expose the
+`supplied_md5` and `computed_md5` fields available on private-file endpoints. We
+therefore do not pretend to possess a provider checksum: first acquisition is
+bound by HTTPS, exact immutable-version metadata, file identity, and byte length;
+the create-only snapshot's SHA-256 is authoritative for every later local
+verification.
 
 The admitted bytes are qualification-worker-only. They never enter Cancer World
 prompts, Hindsight memory, cumulative research pages, campaign selection, or the
@@ -67,11 +74,13 @@ patients unless source metadata proves their donor relationships.
 
 - Manifest tests require the exact article/version, DOI pair, license, one-file
   policy, bounded XLSX constraint, and closed leakage flags.
-- API fixtures must reject changed identity, permissive/missing license metadata,
-  link-only files, multiple files, unsafe names, checksum disagreement, and
-  non-HTTPS download URLs.
-- Download fixtures must reject changed length or MD5 and must prove create-only
-  resume behavior.
+- Offline schema tests must reject changed identity, permissive/missing license
+  metadata, link-only files, multiple files, unsafe names, bounds violations,
+  and non-HTTPS download URLs. The first live acquisition additionally retains
+  and hashes the exact API response; it must not be described as fixture-tested
+  until those provider bytes have actually been acquired.
+- Download fixtures must reject changed length or file identity and must prove
+  create-only resume behavior and retained SHA-256 verification.
 - No research-worker or memory boundary may address the acquired source path.
 
 ## Primary references
