@@ -155,8 +155,13 @@ impl ObserverCancerResearchStore for PostgresStore {
                       AND payload->>'context'='Cancer World research artifact'
                       AND completed_at IS NOT NULL
                 ) AS memory_accepted,
-                (ARRAY_AGG(request.request_payload ORDER BY request.ordinal, request.request_id))[1]
-                    AS first_request_payload
+                (
+                    SELECT first_request.request_payload
+                    FROM cancer_research_requests AS first_request
+                    WHERE first_request.world_id=$1
+                    ORDER BY first_request.ordinal, first_request.request_id
+                    LIMIT 1
+                ) AS first_request_payload
             FROM cancer_research_requests AS request
             LEFT JOIN cancer_research_results AS result USING (request_id)
             WHERE request.world_id=$1
