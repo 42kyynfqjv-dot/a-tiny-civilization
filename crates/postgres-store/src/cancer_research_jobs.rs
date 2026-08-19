@@ -1521,12 +1521,62 @@ impl CancerResearchJobStore for PostgresStore {
     ) -> Result<Option<CancerResearchCampaignCandidate>, StoreError> {
         let row = sqlx::query_as::<_, CampaignRootRow>(
             r#"
+            WITH selected_candidate AS MATERIALIZED (
+                SELECT request.request_id
+                FROM cancer_research_requests AS request
+                JOIN cancer_research_results AS result USING (request_id)
+                JOIN cancer_virtual_experiment_results AS experiment
+                  ON experiment.request_id=request.request_id
+                 AND experiment.method_version=$4
+                JOIN cancer_research_novelty_audits AS audit
+                  ON audit.request_id=request.request_id
+                 AND audit.method_version=$5
+                WHERE request.world_id=$1
+                  AND request.ordinal < $2
+                  AND MOD(request.ordinal, 2) = $3
+                  AND request.stage='blind_discovery'
+                  AND result.result_payload->'receipt' <> 'null'::JSONB
+                  AND result.result_payload->'receipt'->'contribution'->'virtual_experiment_plan' IS NOT NULL
+                  AND experiment.result_payload->>'interpretation' IN (
+                      'model_supports_prediction',
+                      'model_inconclusive'
+                  )
+                  AND audit.normalized_status IN ('new_combination','no_close_match_found')
+                  AND NOT EXISTS (
+                      SELECT 1
+                      FROM cancer_research_requests AS child
+                      JOIN cancer_research_results AS child_result USING (request_id)
+                      WHERE child.world_id=request.world_id
+                        AND child.ordinal < $2
+                        AND child.stage='independent_replication'
+                        AND child.request_payload->'selection'->>'frozen_candidate_hash'
+                            = ENCODE(experiment.artifact_hash, 'hex')
+                        AND child.request_payload->'selection'->>'task'
+                            = 'interpret_replication_result'
+                        AND child_result.result_payload->'receipt' <> 'null'::JSONB
+                  )
+                ORDER BY
+                    EXISTS (
+                        SELECT 1
+                        FROM cancer_research_requests AS existing_child
+                        WHERE existing_child.world_id=request.world_id
+                          AND existing_child.ordinal < $2
+                          AND existing_child.stage='independent_replication'
+                          AND existing_child.request_payload->'selection'->>'frozen_candidate_hash'
+                              = ENCODE(experiment.artifact_hash, 'hex')
+                    ) DESC,
+                    (experiment.result_payload->>'interpretation'='model_supports_prediction') DESC,
+                    request.ordinal,
+                    request.request_id
+                LIMIT 1
+            )
             SELECT request.request_payload, request.request_checksum,
                    result.result_payload, result.result_checksum,
                    experiment.result_payload AS experiment_payload,
                    experiment.result_checksum AS experiment_checksum,
                    audit.audit_payload, audit.audit_checksum
-            FROM cancer_research_requests AS request
+            FROM selected_candidate AS selected
+            JOIN cancer_research_requests AS request USING (request_id)
             JOIN cancer_research_results AS result USING (request_id)
             JOIN cancer_virtual_experiment_results AS experiment
               ON experiment.request_id=request.request_id
@@ -1534,42 +1584,6 @@ impl CancerResearchJobStore for PostgresStore {
             JOIN cancer_research_novelty_audits AS audit
               ON audit.request_id=request.request_id
              AND audit.method_version=$5
-            WHERE request.world_id=$1
-              AND request.ordinal < $2
-              AND MOD(request.ordinal, 2) = $3
-              AND request.stage='blind_discovery'
-              AND result.result_payload->'receipt' <> 'null'::JSONB
-              AND result.result_payload->'receipt'->'contribution'->'virtual_experiment_plan' IS NOT NULL
-              AND experiment.result_payload->>'interpretation' IN (
-                  'model_supports_prediction',
-                  'model_inconclusive'
-              )
-              AND audit.normalized_status IN ('new_combination','no_close_match_found')
-              AND NOT EXISTS (
-                  SELECT 1
-                  FROM cancer_research_requests AS child
-                  JOIN cancer_research_results AS child_result USING (request_id)
-                  WHERE child.world_id=request.world_id
-                    AND child.ordinal < $2
-                    AND child.request_payload->'selection'->>'frozen_candidate_hash'
-                        = ENCODE(experiment.artifact_hash, 'hex')
-                    AND child.request_payload->'selection'->>'task'
-                        = 'interpret_replication_result'
-                    AND child_result.result_payload->'receipt' <> 'null'::JSONB
-              )
-            ORDER BY
-                EXISTS (
-                    SELECT 1
-                    FROM cancer_research_requests AS existing_child
-                    WHERE existing_child.world_id=request.world_id
-                      AND existing_child.ordinal < $2
-                      AND existing_child.request_payload->'selection'->>'frozen_candidate_hash'
-                          = ENCODE(experiment.artifact_hash, 'hex')
-                ) DESC,
-                (experiment.result_payload->>'interpretation'='model_supports_prediction') DESC,
-                request.ordinal,
-                request.request_id
-            LIMIT 1
             "#,
         )
         .bind(world_id.as_uuid())
