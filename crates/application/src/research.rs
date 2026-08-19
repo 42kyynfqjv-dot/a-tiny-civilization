@@ -65,8 +65,14 @@ pub const DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 15_000;
 pub const MAX_CANCER_RESEARCH_CATALOG_ENTRIES: usize = 256;
 pub const CANCER_RESEARCH_CATALOG_PAGE_SIZE: usize = 24;
 pub const CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS: usize = 3;
-pub const CANCER_RESEARCH_CAMPAIGN_MAX_TESTS: usize = 5;
-pub const CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION: u16 = 1;
+/// The first five tests use the free exploration ladder. A campaign that remains
+/// unresolved then receives five stronger escalation tests before it may close as
+/// inconclusive.
+pub const CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS: usize = 5;
+pub const CANCER_RESEARCH_CAMPAIGN_MAX_TESTS: usize = 10;
+pub const CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION: u16 = 2;
+const LEGACY_CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION: u16 = 1;
+const LEGACY_CANCER_RESEARCH_CAMPAIGN_MAX_TESTS: usize = 5;
 pub const CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SOURCE_PREFIX: &str =
     "cancer-world://campaign-directive/";
 const MAX_PROVIDER_RESPONSE_ID_BYTES: usize = 256;
@@ -209,8 +215,8 @@ pub struct CancerResearchCampaignFollowup {
 }
 
 /// Read model used by the scheduler to continue exactly one deterministic
-/// campaign. The root already survived one virtual projection and passed the
-/// observer-side overlap gate before it can enter this structure.
+/// campaign. The root produced a non-falsifying virtual projection and passed
+/// the observer-side overlap gate before it can enter this structure.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CancerResearchCampaignCandidate {
     pub root: CancerResearchPriorResult,
@@ -312,6 +318,15 @@ impl CancerResearchCampaignDirective {
     }
 
     pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
+        let schema_test_limit = |schema_version: u16| match schema_version {
+            LEGACY_CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION => {
+                Some(LEGACY_CANCER_RESEARCH_CAMPAIGN_MAX_TESTS)
+            }
+            CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION => {
+                Some(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS)
+            }
+            _ => None,
+        };
         match self {
             Self::AdversarialTest {
                 schema_version,
@@ -322,12 +337,14 @@ impl CancerResearchCampaignDirective {
                 prior_plan_hashes,
                 ..
             } => {
-                if *schema_version != CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION
-                    || campaign_id.is_nil()
+                let Some(maximum_tests) = schema_test_limit(*schema_version) else {
+                    return Err(CancerResearchModelContractError::InvalidMemoryInputs);
+                };
+                if campaign_id.is_nil()
                     || *root_artifact_hash == Digest::ZERO
-                    || usize::from(*test_index) >= CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    || usize::from(*test_index) >= maximum_tests
                     || prior_plan_hashes.is_empty()
-                    || prior_plan_hashes.len() > CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    || prior_plan_hashes.len() > maximum_tests
                     || prior_plan_hashes.windows(2).any(|pair| pair[0] >= pair[1])
                     || prior_plan_hashes.contains(&Digest::ZERO)
                     || required_plan.validate().is_err()
@@ -348,6 +365,9 @@ impl CancerResearchCampaignDirective {
                 falsifying_tests,
                 inconclusive_tests,
             } => {
+                let Some(maximum_tests) = schema_test_limit(*schema_version) else {
+                    return Err(CancerResearchModelContractError::InvalidMemoryInputs);
+                };
                 let total = usize::from(*supporting_tests)
                     .saturating_add(usize::from(*falsifying_tests))
                     .saturating_add(usize::from(*inconclusive_tests));
@@ -362,14 +382,13 @@ impl CancerResearchCampaignDirective {
                         *falsifying_tests == 0
                             && usize::from(*supporting_tests)
                                 < CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS
-                            && total == CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                            && total == maximum_tests
                     }
                 };
-                if *schema_version != CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION
-                    || campaign_id.is_nil()
+                if campaign_id.is_nil()
                     || *root_artifact_hash == Digest::ZERO
                     || total == 0
-                    || total > CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+                    || total > maximum_tests
                     || !outcome_matches
                 {
                     return Err(CancerResearchModelContractError::InvalidMemoryInputs);

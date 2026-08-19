@@ -845,7 +845,12 @@ fn reconstruct_campaigns(
                 }
             }
         }
-        let outcome = campaign_outcome(supporting_tests, falsifying_tests, inconclusive_tests);
+        let outcome = campaign_outcome(
+            supporting_tests,
+            falsifying_tests,
+            inconclusive_tests,
+            synthesis_complete,
+        );
         campaigns.push(PublicCancerResearchCampaign {
             campaign_id: application::CancerResearchCampaignDirective::campaign_id(root.request_id),
             program: root.program,
@@ -873,6 +878,7 @@ fn campaign_outcome(
     supporting_tests: u8,
     falsifying_tests: u8,
     inconclusive_tests: u8,
+    synthesis_complete: bool,
 ) -> PublicCancerResearchCampaignOutcome {
     let test_count = usize::from(supporting_tests)
         .saturating_add(usize::from(falsifying_tests))
@@ -883,7 +889,10 @@ fn campaign_outcome(
         >= application::CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS
     {
         PublicCancerResearchCampaignOutcome::SurvivedReplicationRound
-    } else if test_count >= application::CANCER_RESEARCH_CAMPAIGN_MAX_TESTS {
+    } else if test_count >= application::CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+        || (synthesis_complete
+            && test_count >= application::CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS)
+    {
         PublicCancerResearchCampaignOutcome::Inconclusive
     } else {
         PublicCancerResearchCampaignOutcome::Testing
@@ -901,7 +910,7 @@ fn cancer_lab_capabilities() -> Vec<PublicCancerLabCapability> {
         (
             "Adversarial replication campaigns",
             Available,
-            "Promoted roots receive up to five distinct tests and survive only after three supporting results with no falsifying result.",
+            "Promoted roots receive five exploration tests and, when still unresolved, up to five escalation tests; they survive only after three supporting results with no falsifying result.",
         ),
         (
             "Cell culture, organoid, and mouse subjects",
@@ -959,22 +968,26 @@ fn collapse_duplicate_research(
     let mut canonical: Vec<PublicCancerResearchArtifact> = Vec::new();
     let mut duplicate_count = 0_u64;
     for artifact in artifacts {
-        let duplicate_of = canonical.iter_mut().find(|existing| {
+        let duplicate_of = canonical.iter().position(|existing| {
             existing.program == artifact.program
                 && cancer_research_contributions_duplicate(
                     &existing.contribution,
                     &artifact.contribution,
                 )
         });
-        if let Some(original) = duplicate_of {
-            original.duplicates.push(PublicCancerResearchDuplicate {
-                request_id: artifact.request_id,
-                ordinal: artifact.ordinal,
-                title: artifact.contribution.title,
-                artifact_hash: artifact.artifact_hash,
-                result_hash: artifact.result_hash,
-                created_at: artifact.created_at,
-            });
+        if let Some(index) = duplicate_of {
+            if research_evidence_rank(&artifact) > research_evidence_rank(&canonical[index]) {
+                let mut previous = std::mem::replace(&mut canonical[index], artifact);
+                let mut inherited_duplicates = std::mem::take(&mut previous.duplicates);
+                inherited_duplicates.push(research_duplicate(previous));
+                inherited_duplicates
+                    .sort_by_key(|duplicate| (duplicate.created_at, duplicate.request_id));
+                canonical[index].duplicates = inherited_duplicates;
+            } else {
+                canonical[index]
+                    .duplicates
+                    .push(research_duplicate(artifact));
+            }
             duplicate_count = duplicate_count.saturating_add(1);
         } else {
             canonical.push(artifact);
@@ -994,6 +1007,29 @@ fn collapse_duplicate_research(
             .then_with(|| right.ordinal.cmp(&left.ordinal))
     });
     (canonical, duplicate_count)
+}
+
+fn research_duplicate(artifact: PublicCancerResearchArtifact) -> PublicCancerResearchDuplicate {
+    PublicCancerResearchDuplicate {
+        request_id: artifact.request_id,
+        ordinal: artifact.ordinal,
+        title: artifact.contribution.title,
+        artifact_hash: artifact.artifact_hash,
+        result_hash: artifact.result_hash,
+        created_at: artifact.created_at,
+    }
+}
+
+fn research_evidence_rank(artifact: &PublicCancerResearchArtifact) -> u8 {
+    artifact
+        .virtual_experiment
+        .as_ref()
+        .map_or(0, |experiment| match experiment.result.interpretation {
+            CancerVirtualExperimentInterpretation::ModelSupportsPrediction => 3,
+            CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
+            | CancerVirtualExperimentInterpretation::ModelShowsConcerningTradeoff => 2,
+            CancerVirtualExperimentInterpretation::ModelInconclusive => 1,
+        })
 }
 
 fn summarize_program(
@@ -1341,19 +1377,19 @@ mod tests {
     #[test]
     fn campaign_outcomes_are_computed_not_awarded_by_the_model() {
         assert_eq!(
-            campaign_outcome(2, 0, 1),
+            campaign_outcome(2, 0, 1, false),
             PublicCancerResearchCampaignOutcome::Testing
         );
         assert_eq!(
-            campaign_outcome(3, 0, 0),
+            campaign_outcome(3, 0, 0, true),
             PublicCancerResearchCampaignOutcome::SurvivedReplicationRound
         );
         assert_eq!(
-            campaign_outcome(4, 1, 0),
+            campaign_outcome(4, 1, 0, true),
             PublicCancerResearchCampaignOutcome::Falsified
         );
         assert_eq!(
-            campaign_outcome(2, 0, 3),
+            campaign_outcome(2, 0, 3, true),
             PublicCancerResearchCampaignOutcome::Inconclusive
         );
     }

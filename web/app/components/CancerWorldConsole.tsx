@@ -504,7 +504,7 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
       <div className="cancer-campaigns">
         <div className="cancer-campaigns-heading">
           <span>THEORY CAMPAIGNS</span>
-          <p>Only model-supported, low-overlap ideas enter. One adverse result kills a campaign; three distinct supporting model tests are required to survive a round.</p>
+          <p>Low-overlap ideas that are supported or still unresolved enter testing. One adverse result kills a campaign; three distinct supporting model tests are required to survive. Unresolved ideas escalate after five tests and can receive five stronger follow-ups.</p>
         </div>
         {programCampaigns.length ? programCampaigns.map((campaign) => <CampaignCard campaign={campaign} key={campaign.campaign_id} />) : <EmptyState text="No idea in this program has earned an adversarial replication campaign yet." />}
       </div>

@@ -32,11 +32,11 @@ use postgres_store::PostgresStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
-    ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
-    CANCER_BIOLOGY_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION,
-    InitialMaterialInstance, InitialOrganism, LOCAL_WEATHER_RULESET_VERSION,
-    MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
+    ACTION_GROUNDED_SIGNAL_RULESET_VERSION, ADULT_BODY_MASS_STATE_RULESET_VERSION,
+    BODILY_REGULATION_RULESET_VERSION, CANCER_BIOLOGY_RULESET_VERSION,
+    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
+    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
+    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
     run_partition_capacity_probe,
 };
@@ -66,7 +66,7 @@ use world_domain::{
 
 /// New ordinary full-Earth worlds start with the grounded language repair layered
 /// over every earlier physical driver. Older worlds retain their genesis ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = ACTION_GROUNDED_SIGNAL_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
@@ -4698,7 +4698,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION);
+        assert_eq!(ruleset_version, ACTION_GROUNDED_SIGNAL_RULESET_VERSION);
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -4825,7 +4825,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION);
+        assert_eq!(ruleset_version, ACTION_GROUNDED_SIGNAL_RULESET_VERSION);
     }
 
     #[test]

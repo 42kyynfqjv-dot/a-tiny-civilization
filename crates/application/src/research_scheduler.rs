@@ -11,13 +11,13 @@ use world_domain::{
 };
 
 use crate::{
-    CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION, CANCER_RESEARCH_CAMPAIGN_MAX_TESTS,
-    CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS, CancerResearchCampaignCandidate,
-    CancerResearchCampaignDirective, CancerResearchCampaignOutcome,
-    CancerResearchCampaignTestAssessment, CancerResearchCampaignVariation,
-    CancerResearchEvidenceDocument, CancerResearchJobStore, CancerResearchMemoryInput,
-    CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES, StoreError,
-    cancer_research_campaign_test_assessment,
+    CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION, CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS,
+    CANCER_RESEARCH_CAMPAIGN_MAX_TESTS, CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS,
+    CancerResearchCampaignCandidate, CancerResearchCampaignDirective,
+    CancerResearchCampaignOutcome, CancerResearchCampaignTestAssessment,
+    CancerResearchCampaignVariation, CancerResearchEvidenceDocument, CancerResearchJobStore,
+    CancerResearchMemoryInput, CancerResearchModelRequest, MAX_CANCER_RESEARCH_CATALOG_ENTRIES,
+    StoreError, cancer_research_campaign_test_assessment,
 };
 
 pub const CANCER_RESEARCH_SCHEDULER_VERSION: u16 = 1;
@@ -342,9 +342,7 @@ fn prepare_campaign_turn(
     candidate
         .root_experiment
         .validate_against(root_contribution)?;
-    if candidate.root_experiment.interpretation
-        != world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
-    {
+    if !campaign_root_interpretation_is_eligible(candidate.root_experiment.interpretation) {
         return Err(CancerResearchSchedulerError::InvalidCampaign);
     }
     let root_plan = root_contribution
@@ -486,7 +484,7 @@ fn prepare_campaign_turn(
             varied_campaign_plan(root_plan, test_index, &prior_plan_hashes)?;
         (
             CancerResearchTask::DesignIndependentReplication,
-            CancerResearchInferenceTier::Exploration,
+            campaign_test_inference_tier(test_count),
             CancerResearchCampaignDirective::AdversarialTest {
                 schema_version: CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
                 campaign_id,
@@ -515,6 +513,24 @@ fn prepare_campaign_turn(
     }))
 }
 
+const fn campaign_test_inference_tier(test_count: usize) -> CancerResearchInferenceTier {
+    if test_count >= CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS {
+        CancerResearchInferenceTier::Escalation
+    } else {
+        CancerResearchInferenceTier::Exploration
+    }
+}
+
+const fn campaign_root_interpretation_is_eligible(
+    interpretation: world_domain::CancerVirtualExperimentInterpretation,
+) -> bool {
+    matches!(
+        interpretation,
+        world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+            | world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive
+    )
+}
+
 fn campaign_evidence_document(
     kind: CancerResearchEvidenceKind,
     source_id: String,
@@ -539,13 +555,13 @@ fn varied_campaign_plan(
     (CancerResearchCampaignVariation, CancerVirtualExperimentPlan),
     CancerResearchSchedulerError,
 > {
-    let variation = match test_index {
+    let variation = match usize::from(test_index) % CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS {
         0 => CancerResearchCampaignVariation::SubjectModel,
         1 => CancerResearchCampaignVariation::Intensity,
         2 => CancerResearchCampaignVariation::Exposure,
         3 => CancerResearchCampaignVariation::EndpointOrTarget,
         4 => CancerResearchCampaignVariation::ModalityOrTarget,
-        _ => return Err(CancerResearchSchedulerError::InvalidCampaign),
+        _ => unreachable!("the fixed campaign cycle has five variations"),
     };
     let mut plan = root.clone();
     match variation {
@@ -1406,7 +1422,7 @@ mod tests {
     }
 
     #[test]
-    fn campaign_variations_are_distinct_preregistered_plans() {
+    fn campaign_variations_are_distinct_preregistered_plans_across_escalation() {
         let root = CancerVirtualExperimentPlan {
             schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
             subject_model: CancerVirtualSubjectModel::CellCulture,
@@ -1420,6 +1436,7 @@ mod tests {
         };
         let mut prior_hashes = vec![Digest::canonical(&root).expect("root hash")];
         let mut variations = Vec::new();
+        let mut plan_hashes = Vec::new();
         for test_index in 0..u8::try_from(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS).expect("test count") {
             prior_hashes.sort_unstable();
             let (variation, plan) =
@@ -1428,10 +1445,18 @@ mod tests {
             let plan_hash = Digest::canonical(&plan).expect("plan hash");
             assert!(!prior_hashes.contains(&plan_hash));
             prior_hashes.push(plan_hash);
-            assert!(!variations.contains(&variation));
+            plan_hashes.push(plan_hash);
             variations.push(variation);
         }
         assert_eq!(variations.len(), CANCER_RESEARCH_CAMPAIGN_MAX_TESTS);
+        assert_eq!(
+            variations[..CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS],
+            variations[CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS..]
+        );
+        assert_eq!(
+            plan_hashes.iter().copied().collect::<BTreeSet<_>>().len(),
+            CANCER_RESEARCH_CAMPAIGN_MAX_TESTS
+        );
 
         let diagnostic = CancerVirtualExperimentPlan {
             intervention_modality: CancerVirtualInterventionModality::DiagnosticSensing,
@@ -1453,6 +1478,28 @@ mod tests {
             );
             diagnostic_hashes.push(Digest::canonical(&plan).expect("diagnostic plan hash"));
         }
+    }
+
+    #[test]
+    fn unresolved_campaigns_enter_escalation_after_five_tests() {
+        assert_eq!(
+            campaign_test_inference_tier(CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS - 1),
+            CancerResearchInferenceTier::Exploration
+        );
+        assert_eq!(
+            campaign_test_inference_tier(CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS),
+            CancerResearchInferenceTier::Escalation
+        );
+        assert_eq!(
+            campaign_test_inference_tier(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS - 1),
+            CancerResearchInferenceTier::Escalation
+        );
+        assert!(campaign_root_interpretation_is_eligible(
+            world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive
+        ));
+        assert!(!campaign_root_interpretation_is_eligible(
+            world_domain::CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect
+        ));
     }
 
     #[test]

@@ -1540,7 +1540,10 @@ impl CancerResearchJobStore for PostgresStore {
               AND request.stage='blind_discovery'
               AND result.result_payload->'receipt' <> 'null'::JSONB
               AND result.result_payload->'receipt'->'contribution'->'virtual_experiment_plan' IS NOT NULL
-              AND experiment.result_payload->>'interpretation'='model_supports_prediction'
+              AND experiment.result_payload->>'interpretation' IN (
+                  'model_supports_prediction',
+                  'model_inconclusive'
+              )
               AND audit.normalized_status IN ('new_combination','no_close_match_found')
               AND NOT EXISTS (
                   SELECT 1
@@ -1554,7 +1557,18 @@ impl CancerResearchJobStore for PostgresStore {
                         = 'interpret_replication_result'
                     AND child_result.result_payload->'receipt' <> 'null'::JSONB
               )
-            ORDER BY request.ordinal, request.request_id
+            ORDER BY
+                EXISTS (
+                    SELECT 1
+                    FROM cancer_research_requests AS existing_child
+                    WHERE existing_child.world_id=request.world_id
+                      AND existing_child.ordinal < $2
+                      AND existing_child.request_payload->'selection'->>'frozen_candidate_hash'
+                          = ENCODE(experiment.artifact_hash, 'hex')
+                ) DESC,
+                (experiment.result_payload->>'interpretation'='model_supports_prediction') DESC,
+                request.ordinal,
+                request.request_id
             LIMIT 1
             "#,
         )
@@ -1600,8 +1614,11 @@ impl CancerResearchJobStore for PostgresStore {
             .validate_against(root.contribution())
             .map_err(corrupt)?;
         if root_experiment.artifact_hash != root_artifact_hash
-            || root_experiment.interpretation
-                != world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+            || !matches!(
+                root_experiment.interpretation,
+                world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+                    | world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive
+            )
             || root_experiment
                 .canonical_hash(root.contribution())
                 .map_err(corrupt)?

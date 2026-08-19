@@ -192,6 +192,10 @@ pub const CANCER_BIOLOGY_RULESET_VERSION: u32 = 38;
 /// It is an ordinary-world driver; explicit experiment worlds retain their exact
 /// ruleset-thirty-eight behavior.
 pub const GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION: u32 = 39;
+/// Ruleset forty conditions acoustic-form selection on the motor action that was
+/// actually resolved for the same tick. This removes a prediction/action mismatch
+/// without adding words, meanings, referents, or observer-authored vocabulary.
+pub const ACTION_GROUNDED_SIGNAL_RULESET_VERSION: u32 = 40;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -204,6 +208,10 @@ pub const RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK: u64 = 65_000;
 /// driver at this disclosed boundary. Earlier transitions remain byte-for-byte
 /// replayable under their original exact-cell behavior.
 pub const RULESET_33_LOCAL_INTERACTION_ACTIVATION_TICK: u64 = 75_000;
+/// The running public ruleset-39 world receives the action-grounded signal fix at
+/// this disclosed deterministic boundary. Earlier transitions retain the exact
+/// policy draw that conditioned a form on the most-weighted prospective action.
+pub const RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK: u64 = 2_845;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -250,6 +258,8 @@ const COGNITION_REQUEST_ORDINAL: u32 = 0;
 const COGNITION_ACTION_WEIGHT_BONUS: u32 = 2;
 const SIGNAL_IMITATION_WEIGHT_BONUS: u32 = 16;
 const SIGNAL_CONTEXT_REUSE_MAX_BONUS: u32 = 24;
+const ACTION_GROUNDED_IMITATION_WEIGHT_BONUS: u32 = 64;
+const ACTION_GROUNDED_CONVENTION_MAX_BONUS: u32 = 128;
 const SIGNAL_PREDICTION_REINFORCEMENT: i16 = 4;
 const SIGNAL_COORDINATION_REINFORCEMENT: i16 = 8;
 const SIGNAL_PREDICTION_INHIBITION: i16 = 2;
@@ -736,6 +746,24 @@ fn competitive_signal_convention_candidate_weight(
     )
 }
 
+fn action_grounded_signal_candidate_weight(
+    base: u32,
+    signal_form: u8,
+    recent_signal: Option<u8>,
+    distinctive_strength: Option<u32>,
+) -> u32 {
+    let imitation = if recent_signal == Some(signal_form) {
+        ACTION_GROUNDED_IMITATION_WEIGHT_BONUS
+    } else {
+        0
+    };
+    base.saturating_add(imitation).saturating_add(
+        distinctive_strength
+            .unwrap_or(0)
+            .min(ACTION_GROUNDED_CONVENTION_MAX_BONUS),
+    )
+}
+
 fn normalized_signal_family_weight(signal_candidates: &[PolicyCandidate]) -> u64 {
     let total = signal_candidates.iter().fold(0_u64, |sum, candidate| {
         sum.saturating_add(u64::from(candidate.weight))
@@ -747,6 +775,12 @@ fn signal_convention_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= SIGNAL_CONVENTION_REUSE_RULESET_VERSION
         || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
             && tick.get() >= RULESET_33_SIGNAL_CONVENTION_ACTIVATION_TICK)
+}
+
+fn action_grounded_signal_selection_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= ACTION_GROUNDED_SIGNAL_RULESET_VERSION
+        || (ruleset_version == GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION
+            && tick.get() >= RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK)
 }
 
 fn local_interaction_active(ruleset_version: u32, tick: SimTick) -> bool {
@@ -3070,7 +3104,9 @@ impl EngineState {
             }
         }
 
-        if self.uses_signal_convention_reuse_driver() {
+        if self.uses_signal_convention_reuse_driver()
+            && !self.uses_action_grounded_signal_selection_driver()
+        {
             let recent_signal = organism.recent_signal(self.tick);
             let context = candidates
                 .iter()
@@ -3230,6 +3266,7 @@ impl EngineState {
         organism: &OrganismState,
         age_ticks: u64,
         cognition_preference: Option<CognitionMotorPreference>,
+        grounded_action: &PrimitiveAction,
     ) -> Result<Option<u8>, EngineError> {
         if !self.uses_contemporaneous_signal_driver() {
             return Ok(None);
@@ -3247,16 +3284,37 @@ impl EngineState {
                     .checked_add(u64::from(candidate.weight))
                     .ok_or(EngineError::TooManyEvents)
             })?;
-        let signal_candidates = candidates
+        let mut signal_candidates = candidates
             .into_iter()
             .filter(|candidate| candidate.action.kind == PrimitiveActionKind::EmitSignal)
             .collect::<Vec<_>>();
+        if self.uses_action_grounded_signal_selection_driver() {
+            let recent_signal = organism.recent_signal(self.tick);
+            for candidate in &mut signal_candidates {
+                let signal_form = u8::try_from(candidate.action.intensity)
+                    .expect("signal-form domain is bounded to an unsigned byte");
+                candidate.weight = action_grounded_signal_candidate_weight(
+                    candidate.weight,
+                    signal_form,
+                    recent_signal,
+                    organism.signal_convention_strength(
+                        signal_form,
+                        grounded_action.kind,
+                        grounded_action.movement_direction,
+                    ),
+                );
+            }
+        }
         let normalized_signal_weight = normalized_signal_family_weight(&signal_candidates);
         let total_family_weight = motor_weight
             .checked_add(normalized_signal_weight)
             .ok_or(EngineError::TooManyEvents)?;
         let occurrence_digest = Digest::canonical(&PolicySignalOccurrenceDraw {
-            policy_version: 1,
+            policy_version: if self.uses_action_grounded_signal_selection_driver() {
+                2
+            } else {
+                1
+            },
             world_seed: self.manifest.seed.get(),
             organism_id: organism.organism_id,
             tick: self.tick.checked_next()?,
@@ -3270,7 +3328,11 @@ impl EngineState {
         }
 
         let form_digest = Digest::canonical(&PolicySignalFormDraw {
-            policy_version: 1,
+            policy_version: if self.uses_action_grounded_signal_selection_driver() {
+                2
+            } else {
+                1
+            },
             world_seed: self.manifest.seed.get(),
             organism_id: organism.organism_id,
             tick: self.tick.checked_next()?,
@@ -4774,11 +4836,6 @@ impl EngineState {
                                             movement_direction: input.movement_direction(),
                                         })
                                     });
-                                let signal_form = self.deterministic_policy_signal_with_cognition(
-                                    organism,
-                                    to_age_ticks,
-                                    cognition_preference,
-                                )?;
                                 let action = self.deterministic_policy_action_with_cognition(
                                     organism,
                                     to_age_ticks,
@@ -4790,6 +4847,19 @@ impl EngineState {
                                     organism.organism_id,
                                     action,
                                     local_index.as_ref(),
+                                )?;
+                                let grounded_action = resolved_action
+                                    .iter()
+                                    .find_map(|event| match event {
+                                        DomainEvent::OrganismActed { action, .. } => Some(action),
+                                        _ => None,
+                                    })
+                                    .expect("a resolved policy action records its physical action");
+                                let signal_form = self.deterministic_policy_signal_with_cognition(
+                                    organism,
+                                    to_age_ticks,
+                                    cognition_preference,
+                                    grounded_action,
                                 )?;
                                 for (offset, event) in resolved_action.into_iter().enumerate() {
                                     let offset = u32::try_from(offset)
@@ -5352,6 +5422,11 @@ impl EngineState {
     fn uses_contemporaneous_signal_driver(&self) -> bool {
         self.manifest.ruleset_version >= GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION
             && !self.uses_world_experiment_bootstrap()
+    }
+
+    fn uses_action_grounded_signal_selection_driver(&self) -> bool {
+        action_grounded_signal_selection_active(self.manifest.ruleset_version, self.tick)
+            && self.uses_contemporaneous_signal_driver()
     }
 
     fn uses_person_only_cognition(&self) -> bool {
@@ -9999,6 +10074,18 @@ mod tests {
             SIGNAL_CONVENTION_REUSE_RULESET_VERSION,
             SimTick::ZERO,
         ));
+        assert!(!action_grounded_signal_selection_active(
+            GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION,
+            SimTick::new(RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK - 1),
+        ));
+        assert!(action_grounded_signal_selection_active(
+            GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION,
+            SimTick::new(RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK),
+        ));
+        assert!(action_grounded_signal_selection_active(
+            ACTION_GROUNDED_SIGNAL_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
 
         let association = SignalActionAssociationState {
             association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
@@ -10024,6 +10111,15 @@ mod tests {
         assert_eq!(
             signal_convention_candidate_weight(2, 8, Some(7), 6, Some(association)),
             2
+        );
+        assert_eq!(action_grounded_signal_candidate_weight(2, 7, None, None), 2);
+        assert_eq!(
+            action_grounded_signal_candidate_weight(2, 7, Some(7), None),
+            2 + ACTION_GROUNDED_IMITATION_WEIGHT_BONUS
+        );
+        assert_eq!(
+            action_grounded_signal_candidate_weight(2, 7, Some(7), Some(256)),
+            2 + ACTION_GROUNDED_IMITATION_WEIGHT_BONUS + ACTION_GROUNDED_CONVENTION_MAX_BONUS
         );
 
         assert!(!local_interaction_active(
