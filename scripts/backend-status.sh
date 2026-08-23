@@ -130,9 +130,10 @@ check_once() {
   [[ "$synchronous_commit" == "on" ]] || return 1
   [[ "$full_page_writes" == "on" ]] || return 1
   [[ "$heartbeat_count" == "4" ]] || return 1
-  [[ "$active_world_count" == "0" || "$active_world_count" == "1" ]] || return 1
-  if [[ "$active_world_count" == "1" ]]; then
-    [[ "$projection_count" == "5" ]] || return 1
+  [[ "$active_world_count" =~ ^[0-9]+$ ]] || return 1
+  if ((active_world_count > 0)); then
+    [[ "$projection_count" =~ ^[0-9]+$ ]] || return 1
+    ((projection_count == active_world_count * 5)) || return 1
     ((projection_lag <= maximum_projection_lag)) || return 1
     [[ "$stale_memory_count" == "0" ]] || return 1
     [[ "$stuck_cognition_count" == "0" ]] || return 1
@@ -148,4 +149,4 @@ while ! check_once; do
   sleep 1
 done
 
-echo "Backend ready: disk capacity and services are healthy, and the active world's projections, memory, and cognition are within bounds."
+echo "Backend ready: disk capacity and services are healthy, and active worlds' projections, memory, and cognition are within bounds."
