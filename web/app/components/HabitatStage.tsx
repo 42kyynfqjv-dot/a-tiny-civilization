@@ -34,6 +34,7 @@ type HabitatCommunication = {
   associated_action?: Action;
 };
 type HabitatView = { through_sequence: string | number; detail: Detail; entities: HabitatEntity[]; clusters: HabitatCluster[]; activity: HabitatActivity[]; communication?: HabitatCommunication[]; truncated: boolean; maximum_entities: number };
+type LanguageStage = "undetected" | "proto_lexicon" | "rudimentary_language_candidate";
 type CommunicationStory = { key: string; tick: string | number; kind: "heard" | "learned"; sentence: string };
 type Point = { id: string; x: number; y: number; radius: number; entity?: HabitatEntity; cluster?: HabitatCluster };
 type Bounds = { west: number; south: number; east: number; north: number };
@@ -79,6 +80,7 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
   const [selectedId, setSelectedId] = useState<string | null>(() => typeof window === "undefined" ? null : window.localStorage.getItem("atiny.followed-organism"));
   const [status, setStatus] = useState<"loading" | "live" | "error">("loading");
   const [interacting, setInteracting] = useState(false);
+  const [languageStage, setLanguageStage] = useState<LanguageStage>("undetected");
 
   useEffect(() => { cameraRef.current = center; }, [center]);
   useEffect(() => { zoomRef.current = localZoom; }, [localZoom]);
@@ -144,6 +146,23 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     const timer = window.setInterval(refresh, 3_000);
     return () => { active = false; window.clearInterval(timer); };
   }, [center, detail, fetchView, localZoom, status]);
+
+  useEffect(() => {
+    let active = true;
+    async function refreshLanguageStage() {
+      try {
+        const response = await fetch(`/api/v1/worlds/${encodeURIComponent(worldId)}/language`, { cache: "no-store" });
+        if (!response.ok) return;
+        const language = await response.json() as { stage: LanguageStage };
+        if (active) setLanguageStage(language.stage);
+      } catch {
+        // Habitat data remains useful during a transient language-projection error.
+      }
+    }
+    void refreshLanguageStage();
+    const timer = window.setInterval(refreshLanguageStage, 15_000);
+    return () => { active = false; window.clearInterval(timer); };
+  }, [worldId]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -435,13 +454,13 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     </header>
     <div className="habitat-key"><span className="person" /> People <span className="animal" /> Animals <i /> paths</div>
     <aside className={`habitat-activity ${communication.length > 0 ? "has-contact" : ""}`} aria-live="polite">
-      <div className="habitat-contact-heading"><p>Signs of connection</p><span>Pre-language</span></div>
+      <div className="habitat-contact-heading"><p>Signs of connection</p><span>{languageStageLabel(languageStage)}</span></div>
       {communication.length > 0
         ? <ol>{communication.map((story) => <li className={story.kind} key={story.key}><time>{formatNumber(story.tick)}</time><span>{story.sentence}</span></li>)}</ol>
         : activity.length === 0
           ? <span>Listening for one life to notice another.</span>
           : <ol>{activity.slice(0, 4).map((item) => <li key={item.source_event_id}><time>{formatNumber(item.source_tick)}</time><span>{activitySentence(item, labels)}</span></li>)}</ol>}
-      <small>Calls are physical signals. A connection means a directly observed pattern—not a word or meaning yet.</small>
+      <small>{languageStageDescription(languageStage)}</small>
     </aside>
     <MemoryTelemetry worldId={worldId} labels={labels} />
     <div className={`habitat-selection ${selected ? "has-selection" : "is-hint"}`}>
@@ -451,6 +470,18 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
     </div>
     <div className="habitat-observatory-frame" aria-hidden="true"><span>ATC · DEEP-SPACE OBSERVATORY</span><i /><i /></div>
   </section>;
+}
+
+function languageStageLabel(stage: LanguageStage) {
+  if (stage === "rudimentary_language_candidate") return "Language candidate";
+  if (stage === "proto_lexicon") return "Proto-lexicon";
+  return "Pre-language";
+}
+
+function languageStageDescription(stage: LanguageStage) {
+  if (stage === "rudimentary_language_candidate") return "Several socially learned call conventions now qualify as a rudimentary language candidate; grammar has not been established.";
+  if (stage === "proto_lexicon") return "At least one socially learned call convention now persists across the population; this is not compositional language yet.";
+  return "Calls are physical signals. A connection means a directly observed pattern—not a word or meaning yet.";
 }
 
 function drawHabitat(context: CanvasRenderingContext2D, width: number, height: number, view: HabitatView | null, detail: Detail, center: Camera, localZoom: number, progress: number, selectedId: string | null, labels: Map<string, string>): Point[] {
