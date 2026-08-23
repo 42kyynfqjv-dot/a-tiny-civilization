@@ -177,11 +177,15 @@ services:
       RUST_LOG: ${RUST_LOG:-info}
       CANCER_OPENROUTER_API_KEY: ${CANCER_OPENROUTER_API_KEY:-}
       CANCER_FIREWORKS_API_KEY: ${CANCER_FIREWORKS_API_KEY:-}
+      LOCAL_COGNITION_BASE_URL: ${LOCAL_COGNITION_BASE_URL:-http://local-cognition:11434/v1}
       CANCER_RESEARCH_WORKER_ID: ${CANCER_RESEARCH_WORKER_ID:-cancer-research-worker-1}
       CANCER_RESEARCH_POLL_MILLISECONDS: ${CANCER_RESEARCH_POLL_MILLISECONDS:-1000}
       CANCER_RESEARCH_CLAIM_LEASE_SECONDS: ${CANCER_RESEARCH_CLAIM_LEASE_SECONDS:-300}
       CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS: ${CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS:-120}
-      CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS: ${CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS:-30}
+      # Local CPU inference needs enough time to prefill the bounded research
+      # packet and emit strict JSON. OpenRouter quota failures return quickly,
+      # so this longer ceiling does not slow exhausted remote routes.
+      CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS: ${CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS:-120}
       CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED: ${CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED:-false}
       CANCER_RESEARCH_PAID_ENABLED: ${CANCER_RESEARCH_PAID_ENABLED:-false}
       # Any metered overflow reserves $0.015, which covers the maximum accepted
@@ -191,12 +195,44 @@ services:
     depends_on:
       migrate:
         condition: service_healthy
+      local-cognition:
+        condition: service_healthy
+    networks:
+      backend: {}
+      research-egress:
+        # Cancer research is the only service permitted to export its bounded
+        # research prompts to configured external model providers.
+        gw_priority: 1
+    init: true
+    restart: unless-stopped
+    logging: *local-logging
+    stop_grace_period: 60s
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=16m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+  cancer-virtual-lab-worker:
+    profiles: ["container-research"]
+    image: a-tiny-civilization-app:local
+    command: ["/app/civilization-runner", "cancer-virtual-lab-worker"]
+    environment:
+      DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
+      RUST_LOG: ${RUST_LOG:-info}
+      CANCER_WORLD_ID: ${CANCER_WORLD_ID:-}
+      CANCER_VIRTUAL_LAB_POLL_MILLISECONDS: ${CANCER_VIRTUAL_LAB_POLL_MILLISECONDS:-5000}
+    depends_on:
+      migrate:
+        condition: service_healthy
     networks:
       - backend
     init: true
     restart: unless-stopped
     logging: *local-logging
-    stop_grace_period: 60s
+    stop_grace_period: 30s
     read_only: true
     tmpfs:
       - /tmp:rw,noexec,nosuid,size=16m,mode=1777
@@ -290,3 +326,9 @@ networks:
       # A stable host interface lets nftables grant HTTPS egress to this one
       # service network without opening the shared backend bridge.
       com.docker.network.bridge.name: br-atiny-cog
+  research-egress:
+    driver: bridge
+    driver_opts:
+      # Keep Cancer World provider traffic on the narrow HTTPS-only bridge
+      # installed by the production egress firewall.
+      com.docker.network.bridge.name: br-atiny-rsch

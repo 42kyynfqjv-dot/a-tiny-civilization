@@ -1214,10 +1214,11 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
     }
 
     let archive = store.public_language_archive(manifest.world_id).await?;
-    assert_eq!(archive.detector_version, 4);
+    assert_eq!(archive.detector_version, 5);
     assert_eq!(archive.stage, PublicLanguageStage::ProtoLexicon);
     assert_eq!(archive.conventions.len(), 3);
     let convention = &archive.conventions[0];
+    assert_eq!(convention.signal_sequence, vec![7]);
     assert_eq!(convention.signal_form, 7);
     assert_eq!(convention.tentative_gloss, "resting");
     assert_eq!(convention.evidence_events, 12);

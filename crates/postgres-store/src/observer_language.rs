@@ -12,7 +12,7 @@ use crate::{
     PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
 };
 
-const DETECTOR_VERSION: u16 = 4;
+const DETECTOR_VERSION: u16 = 5;
 const EVIDENCE_WINDOW_TICKS: u64 = 1_152;
 const MINIMUM_EVIDENCE_EVENTS: u32 = 12;
 const MINIMUM_LEARNERS: u32 = 4;
@@ -33,6 +33,7 @@ const CONVENTIONS_FOR_LANGUAGE_CANDIDATE: u16 = 3;
 
 #[derive(FromRow)]
 struct ConventionRow {
+    preceding_signal: Option<i16>,
     signal_form: i16,
     action: String,
     movement_direction: Option<i16>,
@@ -96,8 +97,9 @@ impl ObserverLanguageStore for PostgresStore {
                     r#"
                     INSERT INTO observer_language_evidence (
                         projection_version,world_id,source_event_id,source_sequence,source_tick,
-                        source_event_index,observer_id,actor_id,signal_form,action,movement_direction
-                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+                        source_event_index,observer_id,actor_id,preceding_signal,signal_form,
+                        action,movement_direction
+                    ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
                     ON CONFLICT (projection_version,world_id,source_event_id) DO NOTHING
                     "#,
                 )
@@ -109,6 +111,7 @@ impl ObserverLanguageStore for PostgresStore {
                 .bind(i32::try_from(record.index).map_err(|_| corrupt("source event index"))?)
                 .bind(observer_id.as_uuid())
                 .bind(actor_id.as_uuid())
+                .bind(to.preceding_signal.map(i16::from))
                 .bind(i16::from(to.signal_intensity))
                 .bind(action_code(to.action_kind))
                 .bind(to.movement_direction.map(i16::from))
@@ -183,7 +186,7 @@ impl ObserverLanguageStore for PostgresStore {
                       boundary.latest_tick - $4::BIGINT + 1
                   )
             ), meanings AS (
-                SELECT signal_form,action,movement_direction,
+                SELECT preceding_signal,signal_form,action,movement_direction,
                     COUNT(*)::BIGINT AS evidence_events,
                     COUNT(*) FILTER (
                         WHERE source_tick >= (SELECT recent_half_start FROM window_boundary)
@@ -197,14 +200,14 @@ impl ObserverLanguageStore for PostgresStore {
                     MAX(source_sequence)::BIGINT AS latest_sequence,
                     MAX(source_tick)::BIGINT AS latest_tick
                 FROM eligible_evidence
-                GROUP BY signal_form,action,movement_direction
+                GROUP BY preceding_signal,signal_form,action,movement_direction
             ), form_totals AS (
-                SELECT signal_form,COUNT(*)::BIGINT AS form_events,
+                SELECT preceding_signal,signal_form,COUNT(*)::BIGINT AS form_events,
                     COUNT(*) FILTER (
                         WHERE source_tick >= (SELECT recent_half_start FROM window_boundary)
                     )::BIGINT AS recent_form_events
                 FROM eligible_evidence
-                GROUP BY signal_form
+                GROUP BY preceding_signal,signal_form
             ), meaning_baselines AS (
                 SELECT action,movement_direction,COUNT(*)::BIGINT AS baseline_events
                 FROM eligible_evidence
@@ -215,12 +218,15 @@ impl ObserverLanguageStore for PostgresStore {
             SELECT meanings.*,form_totals.form_events,form_totals.recent_form_events,
                 meaning_baselines.baseline_events,eligible_total.eligible_events
             FROM meanings
-            JOIN form_totals USING (signal_form)
+            JOIN form_totals
+              ON form_totals.preceding_signal IS NOT DISTINCT FROM meanings.preceding_signal
+             AND form_totals.signal_form=meanings.signal_form
             JOIN meaning_baselines
               ON meaning_baselines.action=meanings.action
              AND meaning_baselines.movement_direction IS NOT DISTINCT FROM meanings.movement_direction
             CROSS JOIN eligible_total
-            ORDER BY signal_form, evidence_events DESC, action, movement_direction NULLS FIRST
+            ORDER BY preceding_signal NULLS FIRST, signal_form, evidence_events DESC,
+                action, movement_direction NULLS FIRST
             "#,
         )
         .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
@@ -305,7 +311,16 @@ impl ObserverLanguageStore for PostgresStore {
                 .map(|value| u8::try_from(value).map_err(|_| corrupt("movement direction")))
                 .transpose()?;
             let signal_form = u8::try_from(row.signal_form).map_err(|_| corrupt("signal form"))?;
+            let preceding_signal = row
+                .preceding_signal
+                .map(|value| u8::try_from(value).map_err(|_| corrupt("preceding signal")))
+                .transpose()?;
+            let signal_sequence = preceding_signal
+                .into_iter()
+                .chain(std::iter::once(signal_form))
+                .collect::<Vec<_>>();
             let pattern = PublicLanguageConvention {
+                signal_sequence: signal_sequence.clone(),
                 signal_form,
                 tentative_gloss: tentative_gloss(action, movement_direction),
                 associated_action: action,
@@ -326,7 +341,7 @@ impl ObserverLanguageStore for PostgresStore {
                 )?),
                 latest_tick: SimTick::new(latest_tick),
             };
-            let strongest_for_form = strongest_meaning_seen.insert(signal_form);
+            let strongest_for_form = strongest_meaning_seen.insert(signal_sequence);
             if thresholds_met == THRESHOLDS_REQUIRED {
                 conventions.push(pattern);
             } else if strongest_for_form
@@ -359,6 +374,7 @@ impl ObserverLanguageStore for PostgresStore {
         }
         conventions.sort_by_key(|item| {
             (
+                item.signal_sequence.clone(),
                 item.signal_form,
                 item.associated_action,
                 item.movement_direction,

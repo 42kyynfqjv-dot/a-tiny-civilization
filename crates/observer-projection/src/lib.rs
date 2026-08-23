@@ -734,6 +734,9 @@ pub struct PublicLanguageThreshold {
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub struct PublicLanguageConvention {
+    /// Original ordered physical elements. A one-element vector is a historical
+    /// atomic call; longer vectors are inhabitant-produced compositions.
+    pub signal_sequence: Vec<u8>,
     pub signal_form: u8,
     pub tentative_gloss: String,
     pub associated_action: PrimitiveActionKind,

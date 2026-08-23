@@ -118,6 +118,9 @@ pub const WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION: u16 = 37;
 /// contemporaneous motor action. This permits grounded co-observation without
 /// turning one of 32 forms into 32 separate chances to replace bodily behavior.
 pub const CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION: u16 = 38;
+/// Schema thirty-nine permits private associations over ordered pairs of
+/// physical calls. Existing atomic signal events and associations remain valid.
+pub const COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION: u16 = 39;
 
 /// Engine-level participation tier. This is never exposed as an agent concept.
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -608,6 +611,7 @@ fn validate_schema_version(event_schema_version: u16) -> Result<(), EventBatchEr
             | CANCER_BURDEN_EVENT_SCHEMA_VERSION
             | WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
             | CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
+            | COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION
     ) {
         return Err(EventBatchError::UnsupportedSchema(event_schema_version));
     }
@@ -1125,15 +1129,24 @@ fn validate_event_for_schema(
             to.validate()
                 .map_err(|error| EventBatchError::InvalidEmbodiedEvent(error.to_string()))?;
             let expected_schema =
-                if event_schema_version >= COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION {
+                if event_schema_version >= COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION {
+                    crate::COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                } else if event_schema_version >= COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION {
                     crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
                 } else if event_schema_version >= SIGNAL_MOTOR_ASSOCIATION_EVENT_SCHEMA_VERSION {
                     crate::SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
                 } else {
                     crate::SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
                 };
+            let compositional_upgrade =
+                event_schema_version >= COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION;
+            let valid_source_schema = |schema| {
+                schema == expected_schema
+                    || (compositional_upgrade
+                        && schema == crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION)
+            };
             if to.association_schema_version != expected_schema
-                || from.is_some_and(|from| from.association_schema_version != expected_schema)
+                || from.is_some_and(|from| !valid_source_schema(from.association_schema_version))
             {
                 return Err(EventBatchError::InvalidEmbodiedEvent(
                     "signal association value schema disagrees with event schema".to_owned(),
@@ -1149,7 +1162,8 @@ fn validate_event_for_schema(
                     from.validate().map_err(|error| {
                         EventBatchError::InvalidEmbodiedEvent(error.to_string())
                     })?;
-                    if from.signal_intensity != to.signal_intensity
+                    if from.preceding_signal != to.preceding_signal
+                        || from.signal_intensity != to.signal_intensity
                         || from.action_kind != to.action_kind
                         || from.movement_direction != to.movement_direction
                     {
@@ -1196,21 +1210,29 @@ fn validate_event_for_schema(
                         inhibited_to.validate().map_err(|error| {
                             EventBatchError::InvalidEmbodiedEvent(error.to_string())
                         })?;
-                        let reinforced_key =
-                            (to.signal_intensity, to.action_kind, to.movement_direction);
+                        let reinforced_key = (
+                            to.preceding_signal,
+                            to.signal_intensity,
+                            to.action_kind,
+                            to.movement_direction,
+                        );
                         let inhibited_key = (
+                            inhibited_to.preceding_signal,
                             inhibited_to.signal_intensity,
                             inhibited_to.action_kind,
                             inhibited_to.movement_direction,
                         );
-                        let competes = (reinforced_key.0 == inhibited_key.0
-                            && (reinforced_key.1, reinforced_key.2)
-                                != (inhibited_key.1, inhibited_key.2))
-                            || ((reinforced_key.1, reinforced_key.2)
-                                == (inhibited_key.1, inhibited_key.2)
-                                && reinforced_key.0 != inhibited_key.0);
-                        if inhibited_from.association_schema_version != expected_schema
+                        let competes = ((reinforced_key.0, reinforced_key.1)
+                            == (inhibited_key.0, inhibited_key.1)
+                            && (reinforced_key.2, reinforced_key.3)
+                                != (inhibited_key.2, inhibited_key.3))
+                            || ((reinforced_key.2, reinforced_key.3)
+                                == (inhibited_key.2, inhibited_key.3)
+                                && (reinforced_key.0, reinforced_key.1)
+                                    != (inhibited_key.0, inhibited_key.1));
+                        if !valid_source_schema(inhibited_from.association_schema_version)
                             || inhibited_to.association_schema_version != expected_schema
+                            || inhibited_from.preceding_signal != inhibited_to.preceding_signal
                             || inhibited_from.signal_intensity != inhibited_to.signal_intensity
                             || inhibited_from.action_kind != inhibited_to.action_kind
                             || inhibited_from.movement_direction != inhibited_to.movement_direction
@@ -2248,6 +2270,7 @@ mod tests {
         let manifest = manifest();
         let reinforced_from = SignalActionAssociationState {
             association_schema_version: crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: 7,
             action_kind: crate::PrimitiveActionKind::Move,
             movement_direction: Some(2),
@@ -2256,6 +2279,7 @@ mod tests {
         };
         let inhibited_from = SignalActionAssociationState {
             association_schema_version: crate::COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: 7,
             action_kind: crate::PrimitiveActionKind::Rest,
             movement_direction: None,

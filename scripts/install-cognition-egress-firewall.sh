@@ -30,6 +30,14 @@ if ! grep -Fq 'a-tiny-civilization-cognition-dns-https' <<<"$forward_chain"; the
   nft insert rule inet filter forward iifname 'br-atiny-cog' tcp dport '{ 53, 443 }' accept \
     comment 'a-tiny-civilization-cognition-dns-https'
 fi
+if ! grep -Fq 'a-tiny-civilization-research-dns-udp' <<<"$forward_chain"; then
+  nft insert rule inet filter forward iifname 'br-atiny-rsch' udp dport 53 accept \
+    comment 'a-tiny-civilization-research-dns-udp'
+fi
+if ! grep -Fq 'a-tiny-civilization-research-dns-https' <<<"$forward_chain"; then
+  nft insert rule inet filter forward iifname 'br-atiny-rsch' tcp dport '{ 53, 443 }' accept \
+    comment 'a-tiny-civilization-research-dns-https'
+fi
 
 systemctl enable nftables.service >/dev/null
-echo "installed persistent DNS/HTTPS egress for br-atiny-cog"
+echo "installed persistent DNS/HTTPS egress for br-atiny-cog and br-atiny-rsch"

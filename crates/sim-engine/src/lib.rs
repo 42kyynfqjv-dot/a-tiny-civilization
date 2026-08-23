@@ -26,16 +26,17 @@ use world_domain::{
     CANCER_RESEARCH_INITIAL_AFFECTED_RESIDENTS, CANCER_RESEARCH_INITIAL_RESIDENTS,
     CELESTIAL_STATE_EVENT_SCHEMA_VERSION, COGNITION_EVENT_SCHEMA_VERSION,
     COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
-    COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION, CONFIGURED_EVENT_SCHEMA_VERSION,
-    CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION, CancerBurdenState, CancerBurdenTransition,
-    CanonicalHashError, CelestialState, CognitionDeadlineInput, CognitionInputOutcome,
-    CognitionReading, CognitionRequestSelection, CognitionUnavailableReason,
-    DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest, DomainEvent,
-    EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId, EventBatch,
-    EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError, HERITABLE_ACTION_KINDS,
-    HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION, HERITABLE_DISPOSITION_SCHEMA_VERSION,
-    HERITABLE_PROBABILITY_SCALE, HeritableActionWeight, HeritableDisposition,
-    HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
+    COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION,
+    COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION, COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION,
+    CONFIGURED_EVENT_SCHEMA_VERSION, CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION,
+    CancerBurdenState, CancerBurdenTransition, CanonicalHashError, CelestialState,
+    CognitionDeadlineInput, CognitionInputOutcome, CognitionReading, CognitionRequestSelection,
+    CognitionUnavailableReason, DETERMINISTIC_POLICY_EVENT_SCHEMA_VERSION, DeathCause, Digest,
+    DomainEvent, EMBODIED_POSITION_EVENT_SCHEMA_VERSION, EVENT_SCHEMA_VERSION, EntityId,
+    EventBatch, EventBatchError, EventSequence, ExecutionScale, GeographicRoutingError,
+    HERITABLE_ACTION_KINDS, HERITABLE_DISPOSITION_EVENT_SCHEMA_VERSION,
+    HERITABLE_DISPOSITION_SCHEMA_VERSION, HERITABLE_PROBABILITY_SCALE, HeritableActionWeight,
+    HeritableDisposition, HeritableDispositionProfile, LEGACY_EVENT_SCHEMA_VERSION,
     LOCAL_ATMOSPHERIC_FLUX_EVENT_SCHEMA_VERSION, LOCAL_WEATHER_EVENT_SCHEMA_VERSION,
     MASS_SCALED_METABOLISM_EVENT_SCHEMA_VERSION, MATERIAL_HANDLING_EVENT_SCHEMA_VERSION,
     MATERIAL_INGESTION_EVENT_SCHEMA_VERSION, MATERIAL_INSTANCE_EVENT_SCHEMA_VERSION,
@@ -196,6 +197,9 @@ pub const GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION: u32 = 39;
 /// actually resolved for the same tick. This removes a prediction/action mismatch
 /// without adding words, meanings, referents, or observer-authored vocabulary.
 pub const ACTION_GROUNDED_SIGNAL_RULESET_VERSION: u32 = 40;
+/// Ruleset forty-one lets successive physical calls become learned ordered
+/// compositions. It adds no words, slots, referents, or language objective.
+pub const COMPOSITIONAL_SIGNAL_RULESET_VERSION: u32 = 41;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -212,6 +216,9 @@ pub const RULESET_33_LOCAL_INTERACTION_ACTIVATION_TICK: u64 = 75_000;
 /// this disclosed deterministic boundary. Earlier transitions retain the exact
 /// policy draw that conditioned a form on the most-weighted prospective action.
 pub const RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK: u64 = 2_845;
+/// The running ruleset-39 world activates ordered-call learning only after the
+/// versioned implementation and observer projection are deployed together.
+pub const RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK: u64 = 9_200;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -249,6 +256,7 @@ pub const CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION: u16 = 34;
 pub const CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION: u16 = 35;
 /// A terminal cache for a populated world explicitly retired for a successor.
 pub const WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 36;
+pub const COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION: u16 = 37;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -305,12 +313,15 @@ const ADULT_BODY_MASS_STATE_HASH_SCHEMA_VERSION: u16 = 32;
 const CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION: u16 = 34;
 const CANCER_BURDEN_STATE_HASH_SCHEMA_VERSION: u16 = 35;
 const WORLD_SUCCESSOR_RETIREMENT_STATE_HASH_SCHEMA_VERSION: u16 = 36;
+const COMPOSITIONAL_SIGNAL_STATE_HASH_SCHEMA_VERSION: u16 = 37;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = world_domain::SIGNAL_FORM_VARIANT_COUNT as u16;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize =
     world_domain::SIGNAL_FORM_VARIANT_COUNT as usize * HERITABLE_ACTION_KINDS.len();
 const MAX_SIGNAL_MOTOR_ASSOCIATIONS: usize =
     world_domain::SIGNAL_FORM_VARIANT_COUNT as usize * (HERITABLE_ACTION_KINDS.len() + 3);
+const MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS: usize = 4_096;
+const COMPOSITIONAL_SIGNAL_MAX_GAP_TICKS: u64 = 32;
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 const CANCER_RESEARCH_MAX_PERCEPTION_MEMORY_ENTRIES: usize = 2_048;
@@ -783,6 +794,12 @@ fn action_grounded_signal_selection_active(ruleset_version: u32, tick: SimTick) 
             && tick.get() >= RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK)
 }
 
+fn compositional_signal_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= COMPOSITIONAL_SIGNAL_RULESET_VERSION
+        || (ruleset_version == GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION
+            && tick.get() >= RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK)
+}
+
 fn local_interaction_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= LOCAL_INTERACTION_RULESET_VERSION
         || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
@@ -954,6 +971,10 @@ pub struct OrganismState {
     signal_action_associations: Vec<SignalActionAssociationState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     signal_action_associations_updated_at: Option<SimTick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_produced_signal: Option<u8>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    last_produced_signal_at: Option<SimTick>,
     death: Option<DeathRecord>,
 }
 
@@ -1166,15 +1187,22 @@ impl OrganismState {
 
     fn signal_action_association(
         &self,
+        preceding_signal: Option<u8>,
         signal_intensity: u8,
         action_kind: PrimitiveActionKind,
         movement_direction: Option<u8>,
     ) -> Option<SignalActionAssociationState> {
         self.signal_action_associations
             .binary_search_by_key(
-                &(signal_intensity, action_kind, movement_direction),
+                &(
+                    preceding_signal,
+                    signal_intensity,
+                    action_kind,
+                    movement_direction,
+                ),
                 |entry| {
                     (
+                        entry.preceding_signal,
                         entry.signal_intensity,
                         entry.action_kind,
                         entry.movement_direction,
@@ -1190,17 +1218,23 @@ impl OrganismState {
     /// having accumulated alongside every incompatible behavior.
     fn distinctive_signal_prediction(
         &self,
+        preceding_signal: Option<u8>,
         signal_intensity: u8,
         action_kind: PrimitiveActionKind,
         movement_direction: Option<u8>,
     ) -> Option<SignalActionAssociationState> {
-        let association =
-            self.signal_action_association(signal_intensity, action_kind, movement_direction)?;
+        let association = self.signal_action_association(
+            preceding_signal,
+            signal_intensity,
+            action_kind,
+            movement_direction,
+        )?;
         let competing_maximum = self
             .signal_action_associations
             .iter()
             .filter(|entry| {
-                entry.signal_intensity == signal_intensity
+                entry.preceding_signal == preceding_signal
+                    && entry.signal_intensity == signal_intensity
                     && (entry.action_kind, entry.movement_direction)
                         != (action_kind, movement_direction)
             })
@@ -1216,17 +1250,24 @@ impl OrganismState {
     /// form from receiving the same saturated production bonus.
     fn signal_convention_strength(
         &self,
+        preceding_signal: Option<u8>,
         signal_intensity: u8,
         action_kind: PrimitiveActionKind,
         movement_direction: Option<u8>,
     ) -> Option<u32> {
-        let association =
-            self.distinctive_signal_prediction(signal_intensity, action_kind, movement_direction)?;
+        let association = self.distinctive_signal_prediction(
+            preceding_signal,
+            signal_intensity,
+            action_kind,
+            movement_direction,
+        )?;
         let alternative_form_maximum = self
             .signal_action_associations
             .iter()
             .filter(|entry| {
-                entry.signal_intensity != signal_intensity
+                (entry.preceding_signal, entry.signal_intensity)
+                    != (preceding_signal, signal_intensity)
+                    && entry.preceding_signal.is_some() == preceding_signal.is_some()
                     && (entry.action_kind, entry.movement_direction)
                         == (action_kind, movement_direction)
             })
@@ -1237,7 +1278,8 @@ impl OrganismState {
             self.signal_action_associations
                 .iter()
                 .filter(|entry| {
-                    entry.signal_intensity == signal_intensity
+                    entry.preceding_signal == preceding_signal
+                        && entry.signal_intensity == signal_intensity
                         && (entry.action_kind, entry.movement_direction)
                             != (action_kind, movement_direction)
                 })
@@ -1262,6 +1304,32 @@ impl OrganismState {
             })
             .and_then(|entry| u8::try_from(entry.quantized_value).ok())
             .filter(|intensity| (1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(intensity))
+    }
+
+    fn preceding_signal_from(&self, actor_id: EntityId, at_tick: SimTick) -> Option<u8> {
+        self.perception_memory
+            .iter()
+            .find(|entry| {
+                entry.subject_id == Some(actor_id)
+                    && entry.channel == PerceptionChannel::Sound
+                    && entry.property_code == "signal_amplitude"
+                    && entry.observed_at < at_tick
+                    && at_tick.get().saturating_sub(entry.observed_at.get())
+                        <= COMPOSITIONAL_SIGNAL_MAX_GAP_TICKS
+            })
+            .and_then(|entry| u8::try_from(entry.quantized_value).ok())
+            .filter(|intensity| (1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(intensity))
+    }
+
+    fn preceding_produced_signal(&self, at_tick: SimTick) -> Option<u8> {
+        self.last_produced_signal
+            .zip(self.last_produced_signal_at)
+            .and_then(|(signal, observed_at)| {
+                (observed_at < at_tick
+                    && at_tick.get().saturating_sub(observed_at.get())
+                        <= COMPOSITIONAL_SIGNAL_MAX_GAP_TICKS)
+                    .then_some(signal)
+            })
     }
 
     fn recent_signal(&self, at_tick: SimTick) -> Option<u8> {
@@ -3087,12 +3155,14 @@ impl EngineState {
             for candidate in &mut candidates {
                 let association = if self.uses_competitive_signal_learning_driver() {
                     organism.distinctive_signal_prediction(
+                        None,
                         signal_intensity,
                         candidate.action.kind,
                         candidate.action.movement_direction,
                     )
                 } else {
                     organism.signal_action_association(
+                        None,
                         signal_intensity,
                         candidate.action.kind,
                         self.uses_signal_motor_association_driver()
@@ -3126,6 +3196,7 @@ impl EngineState {
                             signal_intensity,
                             recent_signal,
                             organism.signal_convention_strength(
+                                None,
                                 signal_intensity,
                                 context_action.kind,
                                 context_action.movement_direction,
@@ -3138,6 +3209,7 @@ impl EngineState {
                             recent_signal,
                             *context_weight,
                             organism.signal_action_association(
+                                None,
                                 signal_intensity,
                                 context_action.kind,
                                 context_action.movement_direction,
@@ -3290,6 +3362,10 @@ impl EngineState {
             .collect::<Vec<_>>();
         if self.uses_action_grounded_signal_selection_driver() {
             let recent_signal = organism.recent_signal(self.tick);
+            let preceding_signal = self
+                .plans_compositional_signal_driver()
+                .then(|| organism.preceding_produced_signal(self.tick.checked_next().ok()?))
+                .flatten();
             for candidate in &mut signal_candidates {
                 let signal_form = u8::try_from(candidate.action.intensity)
                     .expect("signal-form domain is bounded to an unsigned byte");
@@ -3298,6 +3374,7 @@ impl EngineState {
                     signal_form,
                     recent_signal,
                     organism.signal_convention_strength(
+                        preceding_signal,
                         signal_form,
                         grounded_action.kind,
                         grounded_action.movement_direction,
@@ -3309,12 +3386,15 @@ impl EngineState {
         let total_family_weight = motor_weight
             .checked_add(normalized_signal_weight)
             .ok_or(EngineError::TooManyEvents)?;
+        let policy_version = if self.plans_compositional_signal_driver() {
+            3
+        } else if self.uses_action_grounded_signal_selection_driver() {
+            2
+        } else {
+            1
+        };
         let occurrence_digest = Digest::canonical(&PolicySignalOccurrenceDraw {
-            policy_version: if self.uses_action_grounded_signal_selection_driver() {
-                2
-            } else {
-                1
-            },
+            policy_version,
             world_seed: self.manifest.seed.get(),
             organism_id: organism.organism_id,
             tick: self.tick.checked_next()?,
@@ -3328,11 +3408,7 @@ impl EngineState {
         }
 
         let form_digest = Digest::canonical(&PolicySignalFormDraw {
-            policy_version: if self.uses_action_grounded_signal_selection_driver() {
-                2
-            } else {
-                1
-            },
+            policy_version,
             world_seed: self.manifest.seed.get(),
             organism_id: organism.organism_id,
             tick: self.tick.checked_next()?,
@@ -3455,6 +3531,7 @@ impl EngineState {
     fn next_signal_action_association(
         &self,
         organism: &OrganismState,
+        preceding_signal: Option<u8>,
         signal_intensity: u8,
         action: &PrimitiveAction,
         coordinated: bool,
@@ -3471,8 +3548,12 @@ impl EngineState {
             .uses_signal_motor_association_driver()
             .then_some(action.movement_direction)
             .flatten();
-        let prior =
-            organism.signal_action_association(signal_intensity, action.kind, movement_direction);
+        let prior = organism.signal_action_association(
+            preceding_signal,
+            signal_intensity,
+            action.kind,
+            movement_direction,
+        );
         let observations =
             prior.map_or(Ok(1), |prior| {
                 prior.observations.checked_add(1).ok_or(
@@ -3496,7 +3577,9 @@ impl EngineState {
                 .map_or(1_i16, |prior| prior.value.saturating_add(1))
                 .min(ACTION_VALUE_MAX)
         };
-        let association_schema_version = if competitive {
+        let association_schema_version = if self.plans_compositional_signal_driver() {
+            COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+        } else if competitive {
             COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
         } else if self.uses_signal_motor_association_driver() {
             SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
@@ -3510,20 +3593,24 @@ impl EngineState {
                     .iter()
                     .copied()
                     .filter(|entry| {
-                        let same_form_competing_meaning = entry.signal_intensity
-                            == signal_intensity
+                        let same_form_competing_meaning = entry.preceding_signal
+                            == preceding_signal
+                            && entry.signal_intensity == signal_intensity
                             && (entry.action_kind, entry.movement_direction)
                                 != (action.kind, movement_direction);
-                        let same_meaning_competing_form = entry.signal_intensity
-                            != signal_intensity
-                            && (entry.action_kind, entry.movement_direction)
-                                == (action.kind, movement_direction);
+                        let same_meaning_competing_form =
+                            (entry.preceding_signal, entry.signal_intensity)
+                                != (preceding_signal, signal_intensity)
+                                && entry.preceding_signal.is_some() == preceding_signal.is_some()
+                                && (entry.action_kind, entry.movement_direction)
+                                    == (action.kind, movement_direction);
                         same_form_competing_meaning || same_meaning_competing_form
                     })
                     .max_by_key(|entry| {
                         (
                             entry.value,
                             entry.observations,
+                            entry.preceding_signal,
                             entry.signal_intensity,
                             entry.action_kind,
                             entry.movement_direction,
@@ -3532,6 +3619,7 @@ impl EngineState {
             })
             .flatten();
         let inhibited_to = inhibited_from.map(|from| SignalActionAssociationState {
+            association_schema_version,
             observations: from.observations.saturating_add(1),
             value: from
                 .value
@@ -3543,6 +3631,7 @@ impl EngineState {
             prior,
             SignalActionAssociationState {
                 association_schema_version,
+                preceding_signal,
                 signal_intensity,
                 action_kind: action.kind,
                 movement_direction,
@@ -5179,6 +5268,7 @@ impl EngineState {
                         let (from, to, inhibited_from, inhibited_to) = self
                             .next_signal_action_association(
                                 observer,
+                                None,
                                 signal_intensity,
                                 action,
                                 coordinated,
@@ -5209,21 +5299,31 @@ impl EngineState {
                             .expect("grounded signal observer has a scheduled motor action");
                         let coordinated = observer_action.kind == action.kind
                             && observer_action.movement_direction == action.movement_direction;
-                        let (from, to, inhibited_from, inhibited_to) = self
-                            .next_signal_action_association(
-                                observer,
-                                signal_form,
-                                action,
-                                coordinated,
-                            )?;
-                        events.push(DomainEvent::OrganismSignalActionAssociationChanged {
-                            observer_id,
-                            actor_id,
-                            from,
-                            to,
-                            inhibited_from,
-                            inhibited_to,
-                        });
+                        let mut prefixes = vec![None];
+                        if self.plans_compositional_signal_driver()
+                            && let Some(preceding_signal) =
+                                observer.preceding_signal_from(actor_id, self.tick.checked_next()?)
+                        {
+                            prefixes.push(Some(preceding_signal));
+                        }
+                        for preceding_signal in prefixes {
+                            let (from, to, inhibited_from, inhibited_to) = self
+                                .next_signal_action_association(
+                                    observer,
+                                    preceding_signal,
+                                    signal_form,
+                                    action,
+                                    coordinated,
+                                )?;
+                            events.push(DomainEvent::OrganismSignalActionAssociationChanged {
+                                observer_id,
+                                actor_id,
+                                from,
+                                to,
+                                inhibited_from,
+                                inhibited_to,
+                            });
+                        }
                     }
                 }
             }
@@ -5427,6 +5527,18 @@ impl EngineState {
     fn uses_action_grounded_signal_selection_driver(&self) -> bool {
         action_grounded_signal_selection_active(self.manifest.ruleset_version, self.tick)
             && self.uses_contemporaneous_signal_driver()
+    }
+
+    fn uses_compositional_signal_driver(&self) -> bool {
+        compositional_signal_active(self.manifest.ruleset_version, self.tick)
+            && self.uses_action_grounded_signal_selection_driver()
+    }
+
+    fn plans_compositional_signal_driver(&self) -> bool {
+        self.tick
+            .checked_next()
+            .is_ok_and(|tick| compositional_signal_active(self.manifest.ruleset_version, tick))
+            && self.uses_action_grounded_signal_selection_driver()
     }
 
     fn uses_person_only_cognition(&self) -> bool {
@@ -6342,32 +6454,46 @@ impl EngineState {
                         _ => None,
                     })
                     .collect::<Vec<_>>();
-                match (expected, matches.as_slice()) {
-                    (None, []) => {}
-                    (
-                        Some((actor_id, intensity)),
-                        [(actual_actor, from, to, inhibited_from, inhibited_to)],
-                    ) if actor_id == *actual_actor => {
+                match expected {
+                    None if matches.is_empty() => {}
+                    Some((actor_id, intensity)) => {
                         let action = actions.get(&actor_id).expect("selected action exists");
                         let observer_action = actions
                             .get(&observer.organism_id)
                             .expect("social observer has a scheduled action");
                         let coordinated = observer_action.kind == action.kind
                             && observer_action.movement_direction == action.movement_direction;
-                        let expected = self.next_signal_action_association(
-                            observer,
-                            intensity,
-                            action,
-                            coordinated,
-                        )?;
-                        if expected.0 != *from
-                            || expected.1 != *to
-                            || expected.2 != *inhibited_from
-                            || expected.3 != *inhibited_to
+                        let mut prefixes = vec![None];
+                        if self.plans_compositional_signal_driver()
+                            && let Some(preceding_signal) =
+                                observer.preceding_signal_from(actor_id, self.tick.checked_next()?)
                         {
+                            prefixes.push(Some(preceding_signal));
+                        }
+                        if matches.len() != prefixes.len() {
                             return Err(EngineError::InvalidSignalActionAssociation(
                                 observer.organism_id,
                             ));
+                        }
+                        for (actual, preceding_signal) in matches.iter().zip(prefixes) {
+                            let (actual_actor, from, to, inhibited_from, inhibited_to) = actual;
+                            let expected = self.next_signal_action_association(
+                                observer,
+                                preceding_signal,
+                                intensity,
+                                action,
+                                coordinated,
+                            )?;
+                            if *actual_actor != actor_id
+                                || expected.0 != *from
+                                || expected.1 != *to
+                                || expected.2 != *inhibited_from
+                                || expected.3 != *inhibited_to
+                            {
+                                return Err(EngineError::InvalidSignalActionAssociation(
+                                    observer.organism_id,
+                                ));
+                            }
                         }
                     }
                     _ => {
@@ -6557,6 +6683,8 @@ impl EngineState {
     fn event_schema_version(&self) -> u16 {
         if self.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_EVENT_SCHEMA_VERSION
+        } else if self.uses_compositional_signal_driver() {
+            COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION
         } else if self.uses_contemporaneous_signal_driver() {
             CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
         } else if self.uses_cancer_biology_driver() {
@@ -6660,6 +6788,8 @@ impl EngineState {
     fn state_hash_schema_version(&self) -> u16 {
         if self.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_compositional_signal_driver() {
+            COMPOSITIONAL_SIGNAL_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_cancer_biology_driver() {
             CANCER_BURDEN_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_world_experiment_bootstrap() {
@@ -6890,6 +7020,8 @@ impl EngineState {
                     social_action_values_updated_at: None,
                     signal_action_associations: Vec::new(),
                     signal_action_associations_updated_at: None,
+                    last_produced_signal: None,
+                    last_produced_signal_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -7584,6 +7716,8 @@ impl EngineState {
                     social_action_values_updated_at: None,
                     signal_action_associations: Vec::new(),
                     signal_action_associations_updated_at: None,
+                    last_produced_signal: None,
+                    last_produced_signal_at: None,
                     death: None,
                 })?;
                 self.refresh_partition_schedule()?;
@@ -7674,6 +7808,14 @@ impl EngineState {
                     return Err(EngineError::InvalidContemporaneousSignalEventSet);
                 }
                 self.require_living_organism(*organism_id)?;
+                if self.uses_compositional_signal_driver() {
+                    let organism = self
+                        .organisms
+                        .get_mut(organism_id)
+                        .expect("living signal producer presence checked");
+                    organism.last_produced_signal = Some(*signal_form);
+                    organism.last_produced_signal_at = Some(self.tick);
+                }
             }
             DomainEvent::OrganismMoved {
                 organism_id,
@@ -7885,7 +8027,10 @@ impl EngineState {
                 self.require_living_organism(*actor_id)?;
                 to.validate()
                     .map_err(|_| EngineError::InvalidSignalActionAssociation(*observer_id))?;
-                let maximum = if self.uses_signal_motor_association_driver() {
+                let compositional_signal = self.uses_compositional_signal_driver();
+                let maximum = if compositional_signal {
+                    MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS
+                } else if self.uses_signal_motor_association_driver() {
                     MAX_SIGNAL_MOTOR_ASSOCIATIONS
                 } else {
                     MAX_SIGNAL_ACTION_ASSOCIATIONS
@@ -7900,8 +8045,10 @@ impl EngineState {
                         .checked_add(1)
                         .ok_or(EngineError::ActionValueObservationOverflow(*observer_id))
                 })?;
-                if observer.signal_action_associations_updated_at == Some(self.tick)
+                if (!compositional_signal
+                    && observer.signal_action_associations_updated_at == Some(self.tick))
                     || observer.signal_action_association(
+                        to.preceding_signal,
                         to.signal_intensity,
                         to.action_kind,
                         to.movement_direction,
@@ -7931,23 +8078,25 @@ impl EngineState {
                                         .min(ACTION_VALUE_MAX)
                         },
                     );
-                    if to.association_schema_version
-                        != COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
-                        || !valid_reinforcement
-                    {
+                    let expected_schema = if compositional_signal {
+                        COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                    } else {
+                        COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                    };
+                    if to.association_schema_version != expected_schema || !valid_reinforcement {
                         return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
                     }
                     match (inhibited_from, inhibited_to) {
                         (None, None) => {}
                         (Some(inhibited_from), Some(inhibited_to)) => {
                             let current = observer.signal_action_association(
+                                inhibited_from.preceding_signal,
                                 inhibited_from.signal_intensity,
                                 inhibited_from.action_kind,
                                 inhibited_from.movement_direction,
                             );
                             if current != Some(*inhibited_from)
-                                || inhibited_to.association_schema_version
-                                    != COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                                || inhibited_to.association_schema_version != expected_schema
                                 || inhibited_to.observations
                                     != inhibited_from.observations.saturating_add(1)
                                 || inhibited_to.value
@@ -7976,11 +8125,17 @@ impl EngineState {
                         return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
                     }
                 }
-                let key = (to.signal_intensity, to.action_kind, to.movement_direction);
+                let key = (
+                    to.preceding_signal,
+                    to.signal_intensity,
+                    to.action_kind,
+                    to.movement_direction,
+                );
                 match observer
                     .signal_action_associations
                     .binary_search_by_key(&key, |entry| {
                         (
+                            entry.preceding_signal,
                             entry.signal_intensity,
                             entry.action_kind,
                             entry.movement_direction,
@@ -7996,6 +8151,7 @@ impl EngineState {
                 }
                 if let Some(inhibited_to) = inhibited_to {
                     let inhibited_key = (
+                        inhibited_to.preceding_signal,
                         inhibited_to.signal_intensity,
                         inhibited_to.action_kind,
                         inhibited_to.movement_direction,
@@ -8004,6 +8160,7 @@ impl EngineState {
                         .signal_action_associations
                         .binary_search_by_key(&inhibited_key, |entry| {
                             (
+                                entry.preceding_signal,
                                 entry.signal_intensity,
                                 entry.action_kind,
                                 entry.movement_direction,
@@ -8860,12 +9017,16 @@ impl EngineState {
                 return Err(EngineError::SocialLearningUnsupported);
             }
             if self.uses_signal_action_association_driver() {
-                let maximum = if self.uses_signal_motor_association_driver() {
+                let maximum = if self.uses_compositional_signal_driver() {
+                    MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS
+                } else if self.uses_signal_motor_association_driver() {
                     MAX_SIGNAL_MOTOR_ASSOCIATIONS
                 } else {
                     MAX_SIGNAL_ACTION_ASSOCIATIONS
                 };
-                let expected_schema = if self.uses_competitive_signal_learning_driver() {
+                let expected_schema = if self.uses_compositional_signal_driver() {
+                    COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                } else if self.uses_competitive_signal_learning_driver() {
                     COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
                 } else if self.uses_signal_motor_association_driver() {
                     SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
@@ -8875,10 +9036,12 @@ impl EngineState {
                 if organism.signal_action_associations.len() > maximum
                     || organism.signal_action_associations.windows(2).any(|pair| {
                         (
+                            pair[0].preceding_signal,
                             pair[0].signal_intensity,
                             pair[0].action_kind,
                             pair[0].movement_direction,
                         ) >= (
+                            pair[1].preceding_signal,
                             pair[1].signal_intensity,
                             pair[1].action_kind,
                             pair[1].movement_direction,
@@ -8886,7 +9049,11 @@ impl EngineState {
                     })
                     || organism.signal_action_associations.iter().any(|entry| {
                         entry.validate().is_err()
-                            || entry.association_schema_version != expected_schema
+                            || (entry.association_schema_version != expected_schema
+                                && !(self.uses_compositional_signal_driver()
+                                    && entry.association_schema_version
+                                        == COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                                    && entry.preceding_signal.is_none()))
                     })
                     || organism
                         .signal_action_associations_updated_at
@@ -8896,8 +9063,29 @@ impl EngineState {
                         organism.organism_id,
                     ));
                 }
+                if self.uses_compositional_signal_driver() {
+                    if organism.last_produced_signal.is_some()
+                        != organism.last_produced_signal_at.is_some()
+                        || organism.last_produced_signal.is_some_and(|signal| {
+                            !(1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(&signal)
+                        })
+                        || organism
+                            .last_produced_signal_at
+                            .is_some_and(|at| at > self.tick)
+                    {
+                        return Err(EngineError::InvalidSignalActionAssociation(
+                            organism.organism_id,
+                        ));
+                    }
+                } else if organism.last_produced_signal.is_some()
+                    || organism.last_produced_signal_at.is_some()
+                {
+                    return Err(EngineError::SignalActionAssociationUnsupported);
+                }
             } else if !organism.signal_action_associations.is_empty()
                 || organism.signal_action_associations_updated_at.is_some()
+                || organism.last_produced_signal.is_some()
+                || organism.last_produced_signal_at.is_some()
             {
                 return Err(EngineError::SignalActionAssociationUnsupported);
             }
@@ -9223,6 +9411,8 @@ impl Snapshot {
         let state_hash = state.state_hash()?;
         let snapshot_schema_version = if state.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_compositional_signal_driver() {
+            COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_cancer_biology_driver() {
             CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_world_experiment_bootstrap() {
@@ -9350,6 +9540,7 @@ impl Snapshot {
                 | CANCER_RESEARCH_COHORT_SNAPSHOT_SCHEMA_VERSION
                 | CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
                 | WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+                | COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
@@ -9357,6 +9548,8 @@ impl Snapshot {
         }
         let expected_schema_version = if self.state.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_compositional_signal_driver() {
+            COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_cancer_biology_driver() {
             CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_world_experiment_bootstrap() {
@@ -9503,7 +9696,9 @@ pub fn replay_from_snapshot(
 }
 
 fn latest_ruleset_event_schema_for_replay(state: &EngineState) -> Option<u16> {
-    if state.uses_contemporaneous_signal_driver() {
+    if state.uses_compositional_signal_driver() {
+        Some(COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION)
+    } else if state.uses_contemporaneous_signal_driver() {
         Some(CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION)
     } else if state.uses_cancer_biology_driver() {
         Some(CANCER_BURDEN_EVENT_SCHEMA_VERSION)
@@ -9598,7 +9793,11 @@ fn replay_from_cursor(
                     | DomainEvent::MaterialInstanceReleased { .. }
             )
         });
-        let expected_schema = if let Some(schema) = latest_ruleset_event_schema_for_replay(&state) {
+        let expected_schema = if compositional_signal_active(state.ruleset_version(), batch.tick)
+            && state.uses_action_grounded_signal_selection_driver()
+        {
+            COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION
+        } else if let Some(schema) = latest_ruleset_event_schema_for_replay(&state) {
             schema
         } else if state.uses_local_weather_driver() {
             LOCAL_WEATHER_EVENT_SCHEMA_VERSION
@@ -10086,9 +10285,22 @@ mod tests {
             ACTION_GROUNDED_SIGNAL_RULESET_VERSION,
             SimTick::ZERO,
         ));
+        assert!(!compositional_signal_active(
+            GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION,
+            SimTick::new(RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK - 1),
+        ));
+        assert!(compositional_signal_active(
+            GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION,
+            SimTick::new(RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK),
+        ));
+        assert!(compositional_signal_active(
+            COMPOSITIONAL_SIGNAL_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
 
         let association = SignalActionAssociationState {
             association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: 7,
             action_kind: PrimitiveActionKind::Move,
             movement_direction: Some(2),
@@ -10471,12 +10683,9 @@ mod tests {
     fn grounded_language_fixture(
         world_id: WorldId,
         person_count: u32,
+        ruleset_version: u32,
     ) -> (WorldManifest, EngineState, EventBatch) {
-        let manifest = WorldManifest::new(
-            world_id,
-            WorldSeed::new(0x39_1a_6e),
-            GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION,
-        );
+        let manifest = WorldManifest::new(world_id, WorldSeed::new(0x39_1a_6e), ruleset_version);
         let mut template =
             regulated_full_earth_person(world_id, 0x3900, 10_000_000_000, 10_000_000);
         template.initial_age_ticks = 0;
@@ -14149,6 +14358,7 @@ mod tests {
         let mut motor_associated = signalled.clone();
         motor_associated.signal_action_associations = vec![SignalActionAssociationState {
             association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: heard_intensity,
             action_kind: PrimitiveActionKind::Move,
             movement_direction: Some(2),
@@ -16173,9 +16383,40 @@ mod tests {
     }
 
     #[test]
+    fn compositional_ruleset_has_distinct_replay_schemas() {
+        let state = EngineState::new(WorldManifest::new(
+            WorldId::from_uuid(Uuid::from_u128(0x4100)),
+            WorldSeed::new(0x4100),
+            COMPOSITIONAL_SIGNAL_RULESET_VERSION,
+        ));
+        assert_eq!(
+            state.event_schema_version(),
+            COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION
+        );
+        assert_eq!(
+            state.state_hash_schema_version(),
+            COMPOSITIONAL_SIGNAL_STATE_HASH_SCHEMA_VERSION
+        );
+        assert_eq!(
+            latest_ruleset_event_schema_for_replay(&state),
+            Some(COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION)
+        );
+        let snapshot = Snapshot::new(state, EventSequence::ZERO, Digest::ZERO)
+            .expect("compositional signal snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
+        );
+        snapshot
+            .verify_integrity()
+            .expect("compositional signal snapshot integrity");
+    }
+
+    #[test]
     fn ruleset_thirty_nine_signals_are_adjunct_grounded_and_replayable() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x391a6e));
-        let (manifest, mut running, genesis) = grounded_language_fixture(world_id, 10);
+        let (manifest, mut running, genesis) =
+            grounded_language_fixture(world_id, 10, GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION);
         assert_eq!(
             genesis.event_schema_version,
             CONTEMPORANEOUS_SIGNAL_EVENT_SCHEMA_VERSION
@@ -16300,9 +16541,80 @@ mod tests {
     }
 
     #[test]
+    fn compositional_signals_learn_ordered_pairs_without_a_vocabulary_ceiling() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4100_1a6e));
+        let (manifest, mut running, genesis) =
+            grounded_language_fixture(world_id, 12, COMPOSITIONAL_SIGNAL_RULESET_VERSION);
+        assert_eq!(
+            genesis.event_schema_version,
+            COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION
+        );
+
+        let mut batches = vec![genesis];
+        let mut learned_pair = None;
+        for _ in 0..512 {
+            let next_tick = running.tick.checked_next().expect("bounded fixture tick");
+            let events = running
+                .plan_next_tick_with_celestial_and_cognition(
+                    CelestialState::new(
+                        TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+                        CartesianMillimetres::new(i128::from(next_tick.get()), 2, 3),
+                        CartesianMillimetres::new(4, i128::from(next_tick.get()) + 5, 6),
+                    ),
+                    &[],
+                )
+                .expect("compositional language tick");
+            learned_pair = events.iter().find_map(|event| match event {
+                DomainEvent::OrganismSignalActionAssociationChanged {
+                    observer_id,
+                    actor_id,
+                    to,
+                    ..
+                } => to
+                    .preceding_signal
+                    .map(|preceding| (*observer_id, *actor_id, preceding, to.signal_intensity)),
+                _ => None,
+            });
+            let (next, batch) = running
+                .commit(
+                    EventSequence::new(u64::try_from(batches.len()).expect("bounded history") + 1),
+                    batches.last().expect("history tail").batch_hash,
+                    events,
+                )
+                .expect("compositional language tick commit");
+            running = next;
+            batches.push(batch);
+            if learned_pair.is_some() {
+                break;
+            }
+        }
+
+        let (observer_id, _actor_id, preceding, signal_form) =
+            learned_pair.expect("fixed fixture produces and socially learns an ordered call pair");
+        assert!(
+            running.organisms[&observer_id]
+                .signal_action_associations
+                .iter()
+                .any(|association| {
+                    association.association_schema_version
+                        == COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                        && association.preceding_signal == Some(preceding)
+                        && association.signal_intensity == signal_form
+                })
+        );
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("compositional signal replay")
+                .state,
+            running
+        );
+    }
+
+    #[test]
     fn ruleset_thirty_nine_rotates_the_bounded_recipient_window() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x391a6f));
-        let (_, mut running, _) = grounded_language_fixture(world_id, 12);
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 12, GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION);
         let source_id = *running.organisms.keys().next().expect("signal source");
         let mut all_recipients = BTreeSet::new();
         let mut observed_orders = BTreeSet::new();

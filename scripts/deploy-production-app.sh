@@ -169,6 +169,13 @@ done
 
 "${compose_command[@]}" "${compose_args[@]}" up -d \
   api projector runner memory-worker cognition-worker
+if grep -qE '^CANCER_WORLD_ID=[0-9a-fA-F-]{36}$' "$environment_file"; then
+  # The deterministic virtual lab is a core Cancer World consumer, not part of
+  # the optional patient-derived qualification worker. Keep both model turns
+  # and experiment execution alive across every ordinary production deploy.
+  "${compose_command[@]}" "${compose_args[@]}" --profile container-research up -d \
+    cancer-research-worker cancer-virtual-lab-worker
+fi
 # Avoid recreating API dependencies with accidental Compose defaults while updating the
 # public web container. Never use --remove-orphans: the application and any separately
 # managed tunnel may span more than one Compose profile.

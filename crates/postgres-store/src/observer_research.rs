@@ -6,7 +6,7 @@ use application::{
 use async_trait::async_trait;
 use chrono::{DateTime, NaiveDate, Utc};
 use observer_projection::{
-    ObserverCancerResearchStore, ObserverProjectionStoreError,
+    ObserverCancerResearchStore, ObserverProjectionStoreError, ObserverWorldStore,
     PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION, PublicCancerLabCapability,
     PublicCancerLabCapabilityStatus, PublicCancerNci60BenchmarkPartition,
     PublicCancerNci60BenchmarkSummary, PublicCancerNci60ResponseQualification,
@@ -27,9 +27,10 @@ use world_domain::{
     CANCER_RESEARCH_NOVELTY_METHOD_VERSION, CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION,
     CANCER_TISSUE_REFINEMENT_METHOD_VERSION, CANCER_VIRTUAL_LAB_METHOD_VERSION,
     CancerNci60ResponseQualification, CancerPatientDerivedMolecularQualification,
-    CancerResearchNoveltyAudit, CancerResearchProgram, CancerTcgaGbmTargetContextQualification,
-    CancerTissueRefinementProtocol, CancerTissueRefinementResult,
-    CancerVirtualExperimentInterpretation, CancerVirtualExperimentResult, Digest, WorldId,
+    CancerResearchNoveltyAudit, CancerResearchProgram, CancerResearchTarget,
+    CancerTcgaGbmTargetContextQualification, CancerTissueRefinementProtocol,
+    CancerTissueRefinementResult, CancerVirtualExperimentInterpretation,
+    CancerVirtualExperimentResult, Digest, WorldId,
 };
 
 use crate::PostgresStore;
@@ -125,6 +126,25 @@ impl ObserverCancerResearchStore for PostgresStore {
         limit: u16,
     ) -> Result<Option<PublicCancerResearchView>, ObserverProjectionStoreError> {
         let collective_id = cancer_research_collective_id(world_id);
+        if self.public_world_telemetry(world_id).await?.is_none() {
+            return Ok(None);
+        }
+        let target = sqlx::query_scalar::<_, Option<String>>(
+            r#"
+            SELECT worlds.manifest -> 'experiment' -> 'commitment' ->> 'target'
+            FROM worlds
+            WHERE worlds.id=$1
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .fetch_optional(self.pool())
+        .await
+        .map_err(unavailable)?
+        .flatten()
+        .map(parse_cancer_target_from_manifest)
+        .transpose()?
+        .ok_or_else(|| corrupt("requested world is not a cancer-research world"))?;
+
         let stats = sqlx::query_as::<_, ResearchStatsRow>(
             r#"
             SELECT
@@ -173,7 +193,34 @@ impl ObserverCancerResearchStore for PostgresStore {
         .await
         .map_err(unavailable)?;
         if stats.total_requests == 0 {
-            return Ok(None);
+            let programs = [
+                CancerResearchProgram::Devices,
+                CancerResearchProgram::Treatments,
+            ]
+            .into_iter()
+            .map(|program| summarize_program(program, &[]))
+            .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Some(PublicCancerResearchView {
+                projection_version: PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION,
+                world_id,
+                memory_bank_id: cancer_research_memory_bank_id(world_id),
+                target,
+                total_requests: 0,
+                pending_requests: 0,
+                successful_requests: 0,
+                unsuccessful_requests: 0,
+                distinct_artifacts: 0,
+                duplicate_artifacts: 0,
+                memory_queued: 0,
+                memory_accepted: 0,
+                programs,
+                campaigns: Vec::new(),
+                lab_capabilities: cancer_lab_capabilities(),
+                nci60_benchmark: summarize_nci60_benchmark(&[])?,
+                tissue_refinements: Vec::new(),
+                artifacts: Vec::new(),
+                evidence: Vec::new(),
+            }));
         }
         let first_request: CancerResearchModelRequest = serde_json::from_value(
             stats
@@ -184,8 +231,11 @@ impl ObserverCancerResearchStore for PostgresStore {
         first_request
             .validate()
             .map_err(|error| corrupt(format!("invalid first research request: {error}")))?;
-        if first_request.selection.world_id != world_id {
-            return Err(corrupt("first research request crossed its world boundary"));
+        if first_request.selection.world_id != world_id || first_request.selection.target != target
+        {
+            return Err(corrupt(
+                "first research request crossed its world boundary or target boundary",
+            ));
         }
 
         let nci60_benchmark_rows = sqlx::query_as::<_, Nci60BenchmarkStatsRow>(
@@ -705,6 +755,23 @@ impl ObserverCancerResearchStore for PostgresStore {
             artifacts,
             evidence,
         }))
+    }
+}
+
+fn parse_cancer_target_from_manifest(
+    raw: String,
+) -> Result<CancerResearchTarget, ObserverProjectionStoreError> {
+    match raw.as_str() {
+        "adult_glioblastoma" => Ok(CancerResearchTarget::AdultGlioblastoma),
+        "pancreatic_ductal_adenocarcinoma" => {
+            Ok(CancerResearchTarget::PancreaticDuctalAdenocarcinoma)
+        }
+        "extensive_stage_small_cell_lung_cancer" => {
+            Ok(CancerResearchTarget::ExtensiveStageSmallCellLungCancer)
+        }
+        _ => Err(corrupt(format!(
+            "unsupported cancer research target in world manifest: {raw}"
+        ))),
     }
 }
 

@@ -32,11 +32,11 @@ use postgres_store::PostgresStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sim_engine::{
-    ACTION_GROUNDED_SIGNAL_RULESET_VERSION, ADULT_BODY_MASS_STATE_RULESET_VERSION,
-    BODILY_REGULATION_RULESET_VERSION, CANCER_BIOLOGY_RULESET_VERSION,
-    CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
+    ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
+    CANCER_BIOLOGY_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
+    COMPOSITIONAL_SIGNAL_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION,
+    InitialMaterialInstance, InitialOrganism, LOCAL_WEATHER_RULESET_VERSION,
+    MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_snapshot,
     run_partition_capacity_probe,
 };
@@ -64,9 +64,9 @@ use world_domain::{
     WorldSeed, WorldStatus,
 };
 
-/// New ordinary full-Earth worlds start with the grounded language repair layered
+/// New ordinary full-Earth worlds start with productive compositional signals layered
 /// over every earlier physical driver. Older worlds retain their genesis ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = ACTION_GROUNDED_SIGNAL_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = COMPOSITIONAL_SIGNAL_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
@@ -535,6 +535,24 @@ enum Command {
         #[arg(long, default_value_t = false)]
         drain: bool,
     },
+    /// Execute queued Cancer World virtual experiment plans. This deterministic
+    /// worker has no network access and is deliberately independent from the
+    /// optional literature and patient-derived qualification pipeline.
+    CancerVirtualLabWorker {
+        #[arg(long, env = "CANCER_WORLD_ID")]
+        world_id: WorldId,
+
+        #[arg(
+            long,
+            env = "CANCER_VIRTUAL_LAB_POLL_MILLISECONDS",
+            default_value_t = 5_000
+        )]
+        poll_milliseconds: u64,
+
+        /// Drain one bounded batch and exit.
+        #[arg(long, default_value_t = false)]
+        once: bool,
+    },
     /// Execute preregistered tissue refinements for complete adversarial-campaign
     /// survivors. This local deterministic worker makes no model or memory calls.
     CancerTissueRefinementWorker {
@@ -974,6 +992,11 @@ async fn main() -> Result<()> {
             )
             .await
         }
+        Command::CancerVirtualLabWorker {
+            world_id,
+            poll_milliseconds,
+            once,
+        } => serve_cancer_virtual_lab_worker(&store, world_id, poll_milliseconds, once).await,
         Command::CancerTissueRefinementWorker {
             world_id,
             worker_id,
@@ -1386,6 +1409,58 @@ async fn execute_pending_cancer_virtual_experiments(
         stored += 1;
     }
     Ok(stored)
+}
+
+async fn serve_cancer_virtual_lab_worker(
+    store: &PostgresStore,
+    world_id: WorldId,
+    poll_milliseconds: u64,
+    once: bool,
+) -> Result<()> {
+    let heartbeat = ServiceHeartbeat {
+        service_name: "cancer-virtual-lab-worker".to_owned(),
+        instance_id: Uuid::new_v4(),
+        metadata: json!({
+            "world_id": world_id,
+            "worker_version": env!("CARGO_PKG_VERSION"),
+            "method_version": CANCER_VIRTUAL_LAB_METHOD_VERSION,
+            "mode": "deterministic-virtual-lab",
+        }),
+    };
+    let mut interval = tokio::time::interval(Duration::from_millis(poll_milliseconds.max(100)));
+    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
+    heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    tracing::info!(%world_id, once, "Cancer World deterministic virtual lab started");
+    loop {
+        tokio::select! {
+            _ = heartbeat_interval.tick(), if !once => {
+                if let Err(error) = store.record_heartbeat(&heartbeat).await {
+                    tracing::warn!(%world_id, %error, "Cancer World virtual-lab heartbeat failed; will retry");
+                }
+            }
+            _ = interval.tick() => {
+                match execute_pending_cancer_virtual_experiments(store, world_id).await {
+                    Ok(count) if count > 0 => {
+                        tracing::info!(%world_id, experiment_count = count, "Cancer World virtual experiment batch completed");
+                    }
+                    Ok(_) => {}
+                    Err(error) if !once => {
+                        tracing::error!(%world_id, %error, "Cancer World virtual experiment batch failed; planned experiments remain queued");
+                    }
+                    Err(error) => return Err(error),
+                }
+                if once {
+                    break;
+                }
+            }
+            _ = shutdown_signal(), if !once => {
+                tracing::info!(%world_id, "Cancer World deterministic virtual lab stopping");
+                break;
+            }
+        }
+    }
+    Ok(())
 }
 
 async fn refresh_cancer_novelty_audits(
@@ -4672,7 +4747,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_grounded_language_ruleset() {
+    fn provisional_full_earth_defaults_to_the_compositional_language_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -4698,7 +4773,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, ACTION_GROUNDED_SIGNAL_RULESET_VERSION);
+        assert_eq!(ruleset_version, COMPOSITIONAL_SIGNAL_RULESET_VERSION);
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -4825,7 +4900,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, ACTION_GROUNDED_SIGNAL_RULESET_VERSION);
+        assert_eq!(ruleset_version, COMPOSITIONAL_SIGNAL_RULESET_VERSION);
     }
 
     #[test]

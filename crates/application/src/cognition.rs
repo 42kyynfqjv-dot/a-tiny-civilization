@@ -15,6 +15,10 @@ pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 2;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 7;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V8: u16 = 8;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V9: u16 = 9;
+pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V6: u16 = 6;
+pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V5: u16 = 5;
+pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V4: u16 = 4;
+pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V3: u16 = 3;
 pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 10;
 pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
@@ -288,6 +292,15 @@ impl CognitionModelRoute {
     }
 
     #[must_use]
+    pub fn openrouter_cancer_nemotron_3_ultra_550b_free() -> Self {
+        Self {
+            provider: CognitionProviderId::openrouter_cancer(),
+            requested_model: "nvidia/nemotron-3-ultra-550b-a55b:free".to_owned(),
+            billing_class: CognitionBillingClass::FreeAllocation,
+        }
+    }
+
+    #[must_use]
     pub fn openrouter_cancer_free() -> Self {
         Self {
             provider: CognitionProviderId::openrouter_cancer(),
@@ -410,6 +423,7 @@ impl CognitionModelRoute {
                     self.requested_model.as_str(),
                     "openai/gpt-oss-20b:free"
                         | "openai/gpt-oss-120b:free"
+                        | "nvidia/nemotron-3-ultra-550b-a55b:free"
                         | "nvidia/nemotron-3-super-120b-a12b:free"
                         | "liquid/lfm-2.5-2.6b:free"
                         | "openrouter/free"
@@ -528,6 +542,38 @@ impl CognitionRouteRegistry {
         }
     }
 
+    #[must_use]
+    pub fn cancer_research_exploration_legacy_v6() -> Self {
+        Self {
+            policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V6,
+            routes: vec![CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()],
+        }
+    }
+
+    #[must_use]
+    pub fn cancer_research_exploration_legacy_v5() -> Self {
+        Self {
+            policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V5,
+            routes: vec![CognitionModelRoute::openrouter_cancer_free()],
+        }
+    }
+
+    #[must_use]
+    pub fn cancer_research_exploration_legacy_v4() -> Self {
+        Self {
+            policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V4,
+            routes: vec![CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()],
+        }
+    }
+
+    #[must_use]
+    pub fn cancer_research_exploration_legacy_v3() -> Self {
+        Self {
+            policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V3,
+            routes: vec![CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_550b_free()],
+        }
+    }
+
     pub fn cancer_research_for_policy(
         purpose: CognitionRoutePurpose,
         policy_version: u16,
@@ -537,6 +583,22 @@ impl CognitionRouteRegistry {
                 CognitionRoutePurpose::CancerResearchExploration,
                 CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
             ) => Ok(Self::cancer_research_exploration()),
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V3,
+            ) => Ok(Self::cancer_research_exploration_legacy_v3()),
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V4,
+            ) => Ok(Self::cancer_research_exploration_legacy_v4()),
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V5,
+            ) => Ok(Self::cancer_research_exploration_legacy_v5()),
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V6,
+            ) => Ok(Self::cancer_research_exploration_legacy_v6()),
             (
                 CognitionRoutePurpose::CancerResearchExploration,
                 LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
@@ -574,7 +636,11 @@ impl CognitionRouteRegistry {
         let supported_policy_version = match purpose {
             CognitionRoutePurpose::CancerResearchExploration => matches!(
                 self.policy_version,
-                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V3
+                    | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V4
+                    | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V5
+                    | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V6
+                    | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
                     | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V8
                     | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V9
                     | CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
@@ -641,6 +707,18 @@ impl CognitionRouteRegistry {
             }
             CognitionRoutePurpose::CancerResearchExploration => {
                 let expected = match self.policy_version {
+                    LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V3 => {
+                        vec![CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_550b_free()]
+                    }
+                    LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V4 => {
+                        vec![CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()]
+                    }
+                    LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V5 => {
+                        Self::cancer_research_exploration_legacy_v5().routes
+                    }
+                    LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V6 => {
+                        Self::cancer_research_exploration_legacy_v6().routes
+                    }
                     LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION => vec![
                         CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
                         CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
@@ -1426,6 +1504,7 @@ mod tests {
             CognitionModelRoute::openrouter_cancer_gpt_oss_120b_free(),
             CognitionModelRoute::openrouter_cancer_nemotron_3_super_free(),
             CognitionModelRoute::openrouter_cancer_lfm_2_5_2_6b_free(),
+            CognitionModelRoute::openrouter_cancer_nemotron_3_ultra_550b_free(),
             CognitionModelRoute::openrouter_cancer_free(),
             CognitionModelRoute::fireworks_cancer_gpt_oss_20b(),
             CognitionModelRoute::cerebras_gpt_oss_120b(),
@@ -1535,17 +1614,65 @@ mod tests {
             ),
             Ok(legacy_v8)
         );
-        let legacy = CognitionRouteRegistry::cancer_research_exploration_legacy_v7();
+        let legacy_v7 = CognitionRouteRegistry::cancer_research_exploration_legacy_v7();
         assert_eq!(
-            legacy.validate(CognitionRoutePurpose::CancerResearchExploration),
+            legacy_v7.validate(CognitionRoutePurpose::CancerResearchExploration),
             Ok(())
         );
         assert_eq!(
             CognitionRouteRegistry::cancer_research_for_policy(
                 CognitionRoutePurpose::CancerResearchExploration,
-                legacy.policy_version,
+                legacy_v7.policy_version,
             ),
-            Ok(legacy)
+            Ok(legacy_v7)
+        );
+        let legacy_v6 = CognitionRouteRegistry::cancer_research_exploration_legacy_v6();
+        assert_eq!(
+            legacy_v6.validate(CognitionRoutePurpose::CancerResearchExploration),
+            Ok(())
+        );
+        assert_eq!(
+            CognitionRouteRegistry::cancer_research_for_policy(
+                CognitionRoutePurpose::CancerResearchExploration,
+                legacy_v6.policy_version,
+            ),
+            Ok(legacy_v6)
+        );
+        let legacy_v5 = CognitionRouteRegistry::cancer_research_exploration_legacy_v5();
+        assert_eq!(
+            legacy_v5.validate(CognitionRoutePurpose::CancerResearchExploration),
+            Ok(())
+        );
+        assert_eq!(
+            CognitionRouteRegistry::cancer_research_for_policy(
+                CognitionRoutePurpose::CancerResearchExploration,
+                legacy_v5.policy_version,
+            ),
+            Ok(legacy_v5)
+        );
+        let legacy_v4 = CognitionRouteRegistry::cancer_research_exploration_legacy_v4();
+        assert_eq!(
+            legacy_v4.validate(CognitionRoutePurpose::CancerResearchExploration),
+            Ok(())
+        );
+        assert_eq!(
+            CognitionRouteRegistry::cancer_research_for_policy(
+                CognitionRoutePurpose::CancerResearchExploration,
+                legacy_v4.policy_version,
+            ),
+            Ok(legacy_v4)
+        );
+        let legacy_v3 = CognitionRouteRegistry::cancer_research_exploration_legacy_v3();
+        assert_eq!(
+            legacy_v3.validate(CognitionRoutePurpose::CancerResearchExploration),
+            Ok(())
+        );
+        assert_eq!(
+            CognitionRouteRegistry::cancer_research_for_policy(
+                CognitionRoutePurpose::CancerResearchExploration,
+                legacy_v3.policy_version,
+            ),
+            Ok(legacy_v3)
         );
         let registry = CognitionRouteRegistry::cancer_research_escalation();
         assert_eq!(

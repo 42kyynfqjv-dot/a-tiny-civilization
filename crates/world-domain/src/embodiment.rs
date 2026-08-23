@@ -412,6 +412,9 @@ pub const SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION: u16 = 2;
 /// and direct competition. It remains a private sensorimotor association, not a
 /// word, referent, belief, or observer-supplied meaning.
 pub const COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION: u16 = 3;
+/// Schema four can address an ordered transition between two physical calls.
+/// Chained transitions permit longer utterances without a fixed vocabulary.
+pub const COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION: u16 = 4;
 /// The bounded physical signal-form space. These values have no built-in meaning;
 /// learned conventions, if any, must arise from situated repetition.
 pub const SIGNAL_FORM_VARIANT_COUNT: u8 = 32;
@@ -422,6 +425,8 @@ pub const SIGNAL_FORM_VARIANT_COUNT: u8 = 32;
 #[derive(Clone, Copy, Debug, Deserialize, Eq, Ord, PartialEq, PartialOrd, Serialize)]
 pub struct SignalActionAssociationState {
     pub association_schema_version: u16,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub preceding_signal: Option<u8>,
     pub signal_intensity: u8,
     pub action_kind: PrimitiveActionKind,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -437,10 +442,16 @@ impl SignalActionAssociationState {
             SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
                 | SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION
                 | COMPETITIVE_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                | COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
         ) {
             return Err(EmbodimentError::UnsupportedSignalActionAssociationSchema);
         }
         if !(1..=SIGNAL_FORM_VARIANT_COUNT).contains(&self.signal_intensity)
+            || self
+                .preceding_signal
+                .is_some_and(|signal| !(1..=SIGNAL_FORM_VARIANT_COUNT).contains(&signal))
+            || (self.association_schema_version < COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION
+                && self.preceding_signal.is_some())
             || self.observations == 0
             || !(1..=ACTION_VALUE_MAX).contains(&self.value)
             || (self.association_schema_version == SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
@@ -682,6 +693,7 @@ mod tests {
     fn signal_associations_add_motor_coordinates_without_rewriting_legacy_values() {
         let legacy = SignalActionAssociationState {
             association_schema_version: SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: 2,
             action_kind: PrimitiveActionKind::Move,
             movement_direction: None,
@@ -694,9 +706,15 @@ mod tests {
                 .expect("legacy association json")
                 .contains("movement_direction")
         );
+        assert!(
+            !serde_json::to_string(&legacy)
+                .expect("legacy association json")
+                .contains("preceding_signal")
+        );
 
         SignalActionAssociationState {
             association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: 2,
             action_kind: PrimitiveActionKind::Move,
             movement_direction: Some(3),
@@ -707,6 +725,7 @@ mod tests {
         .expect("direction-specific signal association");
         SignalActionAssociationState {
             association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
             signal_intensity: SIGNAL_FORM_VARIANT_COUNT,
             action_kind: PrimitiveActionKind::Move,
             movement_direction: Some(0),
@@ -715,9 +734,21 @@ mod tests {
         }
         .validate()
         .expect("the last semantically blank signal form remains learnable");
+        SignalActionAssociationState {
+            association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: Some(11),
+            signal_intensity: 26,
+            action_kind: PrimitiveActionKind::Rest,
+            movement_direction: None,
+            observations: 3,
+            value: 8,
+        }
+        .validate()
+        .expect("an ordered pair remains a physical association without supplied meaning");
         assert!(matches!(
             SignalActionAssociationState {
                 association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
                 signal_intensity: SIGNAL_FORM_VARIANT_COUNT + 1,
                 action_kind: PrimitiveActionKind::Move,
                 movement_direction: Some(0),
@@ -730,6 +761,7 @@ mod tests {
         assert!(matches!(
             SignalActionAssociationState {
                 association_schema_version: SIGNAL_MOTOR_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
                 signal_intensity: 2,
                 action_kind: PrimitiveActionKind::Move,
                 movement_direction: None,
