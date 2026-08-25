@@ -1150,11 +1150,27 @@ fn parse_research_response(
                 "completion omitted research content or tool arguments".to_owned(),
             )
         })?;
-    let mut output: ResearchModelOutput = serde_json::from_str(content).map_err(|error| {
-        CancerResearchModelError::InvalidResponse(format!(
-            "completion was not a bounded research contribution: {error}"
-        ))
-    })?;
+    let mut output: ResearchModelOutput = match serde_json::from_str(content) {
+        Ok(output) => output,
+        Err(initial_error) if provider == &CognitionProviderId::hetzner_experiments() => {
+            // Hetzner's Qwen/vLLM stack occasionally emits a literal newline,
+            // tab, or other JSON control character inside a schema-constrained
+            // string. Repair only that transport-level violation and then run
+            // the exact same closed deserializer and receipt validation. This
+            // does not add fields, coerce types, or relax the research schema.
+            let repaired = escape_unescaped_json_string_controls(content);
+            serde_json::from_str(&repaired).map_err(|error| {
+                CancerResearchModelError::InvalidResponse(format!(
+                    "completion was not a bounded research contribution: {initial_error}; control-character repair also failed: {error}"
+                ))
+            })?
+        }
+        Err(error) => {
+            return Err(CancerResearchModelError::InvalidResponse(format!(
+                "completion was not a bounded research contribution: {error}"
+            )));
+        }
+    };
     normalize_research_output(&request.selection, &mut output);
     validate_campaign_output(request, &output)?;
     let allowed_citations = request
@@ -1215,6 +1231,35 @@ fn parse_research_response(
         .validate_against(route, request)
         .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
     Ok(receipt)
+}
+
+fn escape_unescaped_json_string_controls(content: &str) -> String {
+    let mut repaired = String::with_capacity(content.len());
+    let mut in_string = false;
+    let mut escaped = false;
+    for character in content.chars() {
+        if in_string && !escaped && character < '\u{20}' {
+            use std::fmt::Write as _;
+            write!(repaired, "\\u{:04x}", u32::from(character))
+                .expect("writing to a String cannot fail");
+            continue;
+        }
+        repaired.push(character);
+        if !in_string {
+            if character == '"' {
+                in_string = true;
+            }
+            continue;
+        }
+        if escaped {
+            escaped = false;
+        } else if character == '\\' {
+            escaped = true;
+        } else if character == '"' {
+            in_string = false;
+        }
+    }
+    repaired
 }
 
 /// Normalize redundant presentation fields before enforcing the canonical
@@ -2288,6 +2333,18 @@ mod tests {
         assert_eq!(payload["response_format"]["json_schema"]["strict"], true);
         assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
         assert!(!payload.to_string().contains("\"uniqueItems\""));
+    }
+
+    #[test]
+    fn hetzner_control_character_repair_only_escapes_characters_inside_strings() {
+        let malformed = "{\n\"title\":\"line one\nline two\",\"escaped\":\"keeps\\nescape\"\n}";
+        let repaired = escape_unescaped_json_string_controls(malformed);
+        let parsed: Value = serde_json::from_str(&repaired).expect("repaired JSON");
+
+        assert_eq!(parsed["title"], "line one\nline two");
+        assert_eq!(parsed["escaped"], "keeps\nescape");
+        assert!(repaired.starts_with("{\n"));
+        assert!(repaired.ends_with("\n}"));
     }
 
     #[tokio::test]
