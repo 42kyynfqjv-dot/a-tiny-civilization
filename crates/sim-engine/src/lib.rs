@@ -8215,6 +8215,8 @@ impl EngineState {
                     MAX_SIGNAL_ACTION_ASSOCIATIONS
                 };
                 let competitive_signal_learning = self.uses_competitive_signal_learning_driver();
+                let social_language_consolidation =
+                    self.uses_social_language_consolidation_driver();
                 let observer = self
                     .organisms
                     .get_mut(observer_id)
@@ -8237,24 +8239,25 @@ impl EngineState {
                     return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
                 }
                 if competitive_signal_learning {
+                    // Event-set coupling validates the exact deterministic social
+                    // bonus against the pre-transition state. Application sees
+                    // current-tick perceptions already applied, so it validates
+                    // only the bounded reinforcement family here.
+                    let valid_reinforcements: &[i16] = if social_language_consolidation {
+                        &[4, 6, 8, 10, 12, 14, 16]
+                    } else {
+                        &[4, 8]
+                    };
                     let valid_reinforcement = from.map_or_else(
-                        || {
-                            matches!(
-                                to.value,
-                                SIGNAL_PREDICTION_REINFORCEMENT | SIGNAL_COORDINATION_REINFORCEMENT
-                            )
-                        },
+                        || valid_reinforcements.contains(&to.value),
                         |from| {
-                            to.value
-                                == from
-                                    .value
-                                    .saturating_add(SIGNAL_PREDICTION_REINFORCEMENT)
-                                    .min(ACTION_VALUE_MAX)
-                                || to.value
+                            valid_reinforcements.iter().any(|reinforcement| {
+                                to.value
                                     == from
                                         .value
-                                        .saturating_add(SIGNAL_COORDINATION_REINFORCEMENT)
+                                        .saturating_add(*reinforcement)
                                         .min(ACTION_VALUE_MAX)
+                            })
                         },
                     );
                     let expected_schema = if compositional_signal {
@@ -16678,6 +16681,44 @@ mod tests {
             ];
         }
         assert!(running.shared_grounded_language_is_present());
+    }
+
+    #[test]
+    fn ruleset_forty_two_social_reinforcement_commits_and_replays() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4200_5afe));
+        let (manifest, mut running, genesis) =
+            grounded_language_fixture(world_id, 24, SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION);
+        let mut batches = vec![genesis];
+
+        for _ in 0..16 {
+            let next_tick = running.tick.checked_next().expect("bounded fixture tick");
+            let events = running
+                .plan_next_tick_with_celestial_and_cognition(
+                    CelestialState::new(
+                        TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+                        CartesianMillimetres::new(i128::from(next_tick.get()), 2, 3),
+                        CartesianMillimetres::new(4, i128::from(next_tick.get()) + 5, 6),
+                    ),
+                    &[],
+                )
+                .expect("ruleset-forty-two tick");
+            let (next, batch) = running
+                .commit(
+                    EventSequence::new(u64::try_from(batches.len()).expect("bounded history") + 1),
+                    batches.last().expect("history tail").batch_hash,
+                    events,
+                )
+                .expect("ruleset-forty-two transition commits");
+            running = next;
+            batches.push(batch);
+        }
+
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("ruleset-forty-two replay")
+                .state,
+            running
+        );
     }
 
     #[test]

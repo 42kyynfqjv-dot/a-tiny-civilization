@@ -1181,9 +1181,17 @@ fn validate_event_for_schema(
             };
             let valid_value =
                 if event_schema_version >= COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION {
-                    from.map_or(matches!(to.value, 4 | 8), |from| {
-                        to.value == from.value.saturating_add(4).min(crate::ACTION_VALUE_MAX)
-                            || to.value == from.value.saturating_add(8).min(crate::ACTION_VALUE_MAX)
+                    let valid_reinforcement = |value: i16, prior: i16| {
+                        let increment = value.saturating_sub(prior);
+                        if event_schema_version >= COMPOSITIONAL_SIGNAL_EVENT_SCHEMA_VERSION {
+                            (value == crate::ACTION_VALUE_MAX && increment <= 16)
+                                || matches!(increment, 4 | 6 | 8 | 10 | 12 | 14 | 16)
+                        } else {
+                            matches!(increment, 4 | 8)
+                        }
+                    };
+                    from.map_or(valid_reinforcement(to.value, 0), |from| {
+                        valid_reinforcement(to.value, from.value)
                     })
                 } else {
                     let expected_value = from
