@@ -13,7 +13,7 @@
 - Ruleset: 42
 - Source checkpoints: `7111ebb062d8ca181e0f108ddeb10c66fbd5598e` (engine),
   `5752908` (genesis wrapper)
-- Production application image: `sha256:a9ce2cc2182d329f48ae8a63af4a8dd66680cbaeff401982da002ae49119222a`
+- Production application image: `sha256:4ed546f13c08e3aca808070cd700659de76d0c2ee52f0b8a0e86eaac0aa10da0`
 
 The predecessor was canonically retired for the disclosed successor. No organism
 was reported dead and no extinction was fabricated. Its final state remains
@@ -68,3 +68,15 @@ At tick 5, sequence 7:
   convention;
 - PostgreSQL durability, service heartbeats, public security headers, HTTPS routes,
   and public observer status were healthy.
+
+The first ruleset-42 process then refused the tick-6 transition because event
+application recomputed social reinforcement after current-tick perceptions had
+already been applied, while deterministic planning correctly calculated it from
+the pre-transition state. The rejected transition never entered canonical history.
+Source checkpoint `c9aa3b6` moves exact bonus validation to event-set coupling and
+limits state application to the declared bounded reinforcement family. A 16-tick
+commit-and-replay regression covers the failure. After deploying the replacement
+image above, the live verification gate passed through tick 8, sequence 10: genesis
+replay, snapshot plus tail, and the committed cursor matched; Hindsight delivery
+was drained; projections were current; and no history rewrite or second reset was
+required.
