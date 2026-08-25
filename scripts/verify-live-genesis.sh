@@ -60,8 +60,7 @@ query_state() {
              (SELECT COUNT(*)::text FROM memory_outbox memory
               WHERE memory.world_id=world.id AND memory.last_error IS NOT NULL)
       FROM worlds world
-      WHERE world.id='${world_id}'::UUID
-        AND (SELECT COUNT(*) FROM worlds)=1\""
+      WHERE world.id='${world_id}'::UUID\""
 }
 
 deadline=$((SECONDS + wait_seconds))

@@ -4767,7 +4767,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_compositional_language_ruleset() {
+    fn provisional_full_earth_defaults_to_the_social_language_consolidation_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
