@@ -684,7 +684,7 @@ sudo ./scripts/public-genesis-preflight.sh \
   `QUALITY_WORLD_ADMISSION_RULESET32_2026-08-09.json`; that experimental quality admission does not
   by itself authorize deployment or claim scientific admission;
 - the exact reviewed web and policy trees admitted by
-  `PUBLIC_OBSERVATORY_ADMISSION_RULESET32_2026-08-09.json`; that review also cannot authorize deployment;
+  `PUBLIC_OBSERVATORY_ADMISSION_RULESET33_2026-08-25.json`; that review also cannot authorize deployment;
 - accelerated replay, restart, cognition-deadline, provider-failure,
   partition-equivalence, reproduction, and load evidence;
 - local PostgreSQL durability and restart/replay evidence. The offsite restore drill is

@@ -21,7 +21,17 @@ DIMENSIONS = {
     "public_policies",
     "supporter_isolation",
 }
-ROUTES = ["/", "/lives", "/presentation-policy", "/privacy", "/supporter-policy", "/terms", "/wiki"]
+ROUTES = [
+    "/",
+    "/cancer-console",
+    "/lives",
+    "/memory",
+    "/presentation-policy",
+    "/privacy",
+    "/supporter-policy",
+    "/terms",
+    "/wiki",
+]
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 GIT_COMMIT = re.compile(r"^[0-9a-f]{40}$")
 

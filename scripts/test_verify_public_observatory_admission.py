@@ -9,7 +9,7 @@ import unittest
 
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 VERIFIER = ROOT / "scripts/verify-public-observatory-admission.py"
-ADMISSION = ROOT / "docs/operations/PUBLIC_OBSERVATORY_ADMISSION_RULESET32_V4_2026-08-09.json"
+ADMISSION = ROOT / "docs/operations/PUBLIC_OBSERVATORY_ADMISSION_RULESET33_2026-08-25.json"
 WORLD_ID = "b3ea736d-7a5a-5161-a74b-fa8c4302d333"
 
 
