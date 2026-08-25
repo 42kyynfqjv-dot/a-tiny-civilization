@@ -61,7 +61,8 @@ if grep -qF 'full-earth-breadth-first-0.1.1.json' \
   exit 1
 fi
 
-grep -q -- '--ruleset-version 39' scripts/initialize-provisional-world.sh
+grep -q -- '--ruleset-version "${ruleset_version}"' scripts/initialize-provisional-world.sh
+grep -q -- 'ATINY_LAUNCH_RULESET_VERSION:-42' scripts/initialize-provisional-world.sh
 grep -qF 'ATINY_LOCAL_OCCURRENCE_SOURCE_DIRECTORY' scripts/prepare-canonical-genesis.sh
 grep -qF 'ATINY_REQUIRE_LOCAL_OCCURRENCE_EVIDENCE=1' scripts/prepare-canonical-genesis.sh
 grep -qF 'derive corroborated-fauna-candidates' scripts/initialize-provisional-world.sh
@@ -94,4 +95,4 @@ grep -qF 'verify_portable_genesis_manifest(genesis_directory)' apps/runner/src/m
 grep -qF 'construct_configured_genesis_with_materials' \
   apps/runner/src/main.rs crates/application/src/lib.rs
 grep -qF 'complete != from_snapshot' apps/runner/src/main.rs
-echo "Ruleset-33 provisional genesis pins one verified composition and artifact revision."
+echo "Current provisional genesis pins one verified composition and artifact revision."

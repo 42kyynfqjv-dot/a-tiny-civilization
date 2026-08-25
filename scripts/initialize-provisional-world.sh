@@ -21,9 +21,14 @@ project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 runner_executable="${ATINY_CIVILIZATION_RUNNER_EXECUTABLE:-${project_root}/target/release/civilization-runner}"
 migration_executable="${ATINY_CIVILIZATION_MIGRATION_EXECUTABLE:-${project_root}/target/release/civilization-api}"
 data_executable="${ATINY_CIVILIZATION_DATA_EXECUTABLE:-${project_root}/target/release/civilization-data}"
+ruleset_version="${ATINY_LAUNCH_RULESET_VERSION:-42}"
 
 if [[ ! "${world_seed}" =~ ^[0-9]+$ ]]; then
   echo "WORLD_SEED must be an unsigned decimal integer" >&2
+  exit 2
+fi
+if [[ ! "${ruleset_version}" =~ ^[1-9][0-9]*$ ]]; then
+  echo "ATINY_LAUNCH_RULESET_VERSION must be a positive decimal integer" >&2
   exit 2
 fi
 if [[ ! -x "${runner_executable}" ]]; then
@@ -133,7 +138,7 @@ arguments=(
   --provisional-material-resource-plan "${genesis_directory}/material-resource-plan.json"
   --tick-duration-seconds 300
   --max-events-per-partition-transition 10000
-  --ruleset-version 39
+  --ruleset-version "${ruleset_version}"
 )
 if [[ "${ATINY_REFUSE_OTHER_WORLDS:-0}" == "1" ]]; then
   arguments+=(--refuse-other-worlds)
