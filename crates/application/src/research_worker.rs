@@ -126,11 +126,6 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
         .map_err(|error| CancerResearchWorkerError::Corrupt(error.to_string()))?;
 
     let mut records = store.list_cancer_research_route_attempts(entry).await?;
-    if records.len() > registry.routes.len() {
-        return Err(CancerResearchWorkerError::Corrupt(
-            "durable research attempts exceed the route registry".to_owned(),
-        ));
-    }
     if let Some(in_flight) = records.iter().find(|record| {
         record.persistence_state == CancerResearchAttemptPersistenceState::Dispatched
     }) {
@@ -166,16 +161,8 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
         return finalize_from_records(store, worker_id, entry, &registry, &records).await;
     }
 
-    let mut attempts = records
-        .iter()
-        .map(|record| {
-            record.attempt.clone().ok_or_else(|| {
-                CancerResearchWorkerError::Corrupt(
-                    "completed research route omitted its attempt".to_owned(),
-                )
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let recovered_attempts = attempts_from_records(&registry, &records)?;
+    let mut attempts = recovered_attempts;
     let mut paid_authorization = store.load_paid_cancer_research_authorization(entry).await?;
 
     for (position, route) in registry.routes.iter().enumerate().skip(attempts.len()) {
@@ -358,18 +345,49 @@ async fn finalize_from_records<S: CancerResearchJobStore + ?Sized>(
     registry: &CognitionRouteRegistry,
     records: &[crate::CancerResearchRouteAttemptRecord],
 ) -> Result<CancerResearchWorkerOutcome, CancerResearchWorkerError> {
-    let attempts = records
-        .iter()
-        .map(|record| {
-            record.attempt.clone().ok_or_else(|| {
-                CancerResearchWorkerError::Corrupt(
-                    "terminal research attempt omitted its payload".to_owned(),
-                )
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
+    let attempts = attempts_from_records(registry, records)?;
     let receipt = records.iter().find_map(|record| record.receipt.clone());
     finalize_result(store, worker_id, entry, registry, attempts, receipt).await
+}
+
+fn attempts_from_records(
+    registry: &CognitionRouteRegistry,
+    records: &[crate::CancerResearchRouteAttemptRecord],
+) -> Result<Vec<CognitionRouteAttempt>, CancerResearchWorkerError> {
+    let mut attempts = Vec::new();
+    for record in records {
+        let position = usize::from(record.route_index);
+        let Some(expected_route) = registry.routes.get(position) else {
+            return Err(CancerResearchWorkerError::Corrupt(
+                "durable research attempt exceeds the route registry".to_owned(),
+            ));
+        };
+        if &record.route != expected_route || position < attempts.len() {
+            return Err(CancerResearchWorkerError::Corrupt(
+                "durable research attempt differs from its registry position".to_owned(),
+            ));
+        }
+        while attempts.len() < position {
+            let skipped = &registry.routes[attempts.len()];
+            attempts.push(CognitionRouteAttempt {
+                route_index: u16::try_from(attempts.len()).map_err(|_| {
+                    CancerResearchWorkerError::Corrupt(
+                        "research route index exceeds u16".to_owned(),
+                    )
+                })?,
+                provider: skipped.provider.clone(),
+                requested_model: skipped.requested_model.clone(),
+                billing_class: skipped.billing_class,
+                status: CognitionRouteAttemptStatus::SkippedUnconfigured,
+            });
+        }
+        attempts.push(record.attempt.clone().ok_or_else(|| {
+            CancerResearchWorkerError::Corrupt(
+                "completed research route omitted its attempt".to_owned(),
+            )
+        })?);
+    }
+    Ok(attempts)
 }
 
 async fn finalize_result<S: CancerResearchJobStore + ?Sized>(
@@ -406,6 +424,35 @@ async fn finalize_result<S: CancerResearchJobStore + ?Sized>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn durable_route_gaps_reconstruct_unconfigured_skips_by_registry_position() {
+        let registry = CognitionRouteRegistry::cancer_research_exploration();
+        let route = registry.routes[1].clone();
+        let records = vec![crate::CancerResearchRouteAttemptRecord {
+            route_index: 1,
+            route: route.clone(),
+            persistence_state: CancerResearchAttemptPersistenceState::Completed,
+            attempt: Some(CognitionRouteAttempt {
+                route_index: 1,
+                provider: route.provider,
+                requested_model: route.requested_model,
+                billing_class: route.billing_class,
+                status: CognitionRouteAttemptStatus::Rejected,
+            }),
+            receipt: None,
+        }];
+
+        let attempts = attempts_from_records(&registry, &records).expect("recover route gap");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0].route_index, 0);
+        assert_eq!(
+            attempts[0].status,
+            CognitionRouteAttemptStatus::SkippedUnconfigured
+        );
+        assert_eq!(attempts[1].route_index, 1);
+        assert_eq!(attempts[1].status, CognitionRouteAttemptStatus::Rejected);
+    }
 
     #[test]
     fn paid_research_is_an_explicit_worker_switch() {
