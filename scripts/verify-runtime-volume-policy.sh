@@ -12,7 +12,7 @@ document = json.load(sys.stdin)
 if document.get("name") != "a-tiny-civilization":
     raise SystemExit("Compose project identity is not stable")
 expected = {
-    "postgres-data": "a-tiny-civilization-postgres-v1",
+    "postgres-data": "a-tiny-civilization-postgres-ruleset33-v1",
     "hindsight-data": "a-tiny-civilization-hindsight-v1",
     "hindsight-model-cache": "a-tiny-civilization-hindsight-model-cache-v1",
 }
