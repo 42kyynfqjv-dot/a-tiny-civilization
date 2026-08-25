@@ -315,7 +315,7 @@ for tissue_boundary in \
   'IPAddressAllow=localhost' \
   'IPAddressDeny=any' \
   'ExecStart=/home/shmuel/codex/emergent-civilization/target/release/civilization-runner cancer-tissue-refinement-worker' \
-  'UnsetEnvironment=CANCER_OPENROUTER_API_KEY CANCER_FIREWORKS_API_KEY OPENROUTER_API_KEY HINDSIGHT_API_KEY' \
+  'UnsetEnvironment=CANCER_OPENROUTER_API_KEY CANCER_FIREWORKS_API_KEY HETZNER_VLLM_API_KEY OPENROUTER_API_KEY HINDSIGHT_API_KEY' \
   'CLOUDFLARE_WORKERS_AI_API_KEY' \
   'GROQ_API_KEY' \
   'CEREBRAS_API_KEY' \

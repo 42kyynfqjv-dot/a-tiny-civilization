@@ -27,7 +27,7 @@ use application::{
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
-use model_adapter::OpenAiCompatibleCognition;
+use model_adapter::{DeterministicCancerResearch, OpenAiCompatibleCognition};
 use postgres_store::PostgresStore;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -491,6 +491,10 @@ enum Command {
         #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
         cancer_openrouter_api_key: String,
 
+        /// Free experimental Hetzner Inference route used first for Cancer World.
+        #[arg(long, env = "HETZNER_VLLM_API_KEY", hide_env_values = true)]
+        hetzner_vllm_api_key: Option<String>,
+
         /// Reuse the ordinary world's private local free route when configured.
         #[arg(long, env = "LOCAL_COGNITION_BASE_URL")]
         local_cognition_base_url: Option<String>,
@@ -945,6 +949,7 @@ async fn main() -> Result<()> {
             request_timeout_seconds,
             free_request_timeout_seconds,
             cancer_openrouter_api_key,
+            hetzner_vllm_api_key,
             local_cognition_base_url,
             cloudflare_workers_ai_base_url,
             cloudflare_workers_ai_api_key,
@@ -963,6 +968,7 @@ async fn main() -> Result<()> {
             }
             let adapters = cancer_research_adapters(
                 cancer_openrouter_api_key,
+                hetzner_vllm_api_key,
                 local_cognition_base_url,
                 cloudflare_workers_ai_base_url,
                 cloudflare_workers_ai_api_key,
@@ -3655,6 +3661,7 @@ fn insert_cognition_adapter(
 #[allow(clippy::too_many_arguments)] // One explicit option per independently configured provider.
 fn cancer_research_adapters(
     cancer_openrouter_api_key: String,
+    hetzner_vllm_api_key: Option<String>,
     local_base_url: Option<String>,
     cloudflare_base_url: Option<String>,
     cloudflare_api_key: Option<String>,
@@ -3665,6 +3672,19 @@ fn cancer_research_adapters(
     paid_timeout: Duration,
 ) -> Result<CancerResearchModelAdapters> {
     let mut adapters = CancerResearchModelAdapters::new();
+    adapters.insert(
+        CognitionProviderId::deterministic_research(),
+        Arc::new(DeterministicCancerResearch) as Arc<dyn CancerResearchModel>,
+    );
+    if let Some(api_key) = nonempty(hetzner_vllm_api_key) {
+        insert_cancer_research_adapter(
+            &mut adapters,
+            CognitionProviderId::hetzner_experiments(),
+            "https://inference.hetzner.com/api/v1",
+            api_key,
+            free_timeout,
+        )?;
+    }
     insert_cancer_research_adapter(
         &mut adapters,
         CognitionProviderId::openrouter_cancer(),

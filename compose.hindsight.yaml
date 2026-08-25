@@ -176,6 +176,7 @@ services:
       DATABASE_URL: postgres://${POSTGRES_USER:-civilization}:${POSTGRES_PASSWORD:-local-development-only}@db:5432/${POSTGRES_DB:-civilization}
       RUST_LOG: ${RUST_LOG:-info}
       CANCER_OPENROUTER_API_KEY: ${CANCER_OPENROUTER_API_KEY:-}
+      HETZNER_VLLM_API_KEY: ${HETZNER_VLLM_API_KEY:-}
       CANCER_FIREWORKS_API_KEY: ${CANCER_FIREWORKS_API_KEY:-}
       LOCAL_COGNITION_BASE_URL: ${LOCAL_COGNITION_BASE_URL:-http://local-cognition:11434/v1}
       CANCER_RESEARCH_WORKER_ID: ${CANCER_RESEARCH_WORKER_ID:-cancer-research-worker-1}

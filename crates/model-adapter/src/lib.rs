@@ -16,10 +16,13 @@ use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use serde_json::{Value, json};
 use world_domain::{
-    CancerMolecularTarget, CancerNci60ResponsePrediction, CancerNciInterventionIdentity,
-    CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContribution,
-    CancerResearchEvidenceKind, CancerResearchProgram, CancerResearchStage, CancerResearchTask,
-    CancerVirtualExperimentPlan, Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
+    CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION, CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+    CancerMolecularTarget, CancerNci60CnsLine, CancerNci60ResponsePrediction,
+    CancerNciInterventionIdentity, CancerResearchArtifactKind, CancerResearchClaim,
+    CancerResearchContribution, CancerResearchEvidenceKind, CancerResearchProgram,
+    CancerResearchStage, CancerResearchTask, CancerVirtualEndpoint, CancerVirtualExperimentPlan,
+    CancerVirtualInterventionModality, CancerVirtualMechanismTarget, CancerVirtualSubjectModel,
+    Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
 pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v15";
@@ -352,6 +355,267 @@ impl CancerResearchModel for OpenAiCompatibleCognition {
             .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
         parse_research_response(&self.provider, route, request, raw)
     }
+}
+
+/// Provider-independent systematic research fallback. It cannot form an
+/// open-ended biological insight; it exhaustively varies the virtual lab's
+/// closed dimensions so controls, screens, and replications continue while
+/// external inference is unavailable.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DeterministicCancerResearch;
+
+#[async_trait]
+impl CancerResearchModel for DeterministicCancerResearch {
+    async fn infer_research(
+        &self,
+        route: &CognitionModelRoute,
+        request: &CancerResearchModelRequest,
+    ) -> Result<CancerResearchModelReceipt, CancerResearchModelError> {
+        if route != &CognitionModelRoute::deterministic_systematic_screen_v1() {
+            return Err(CancerResearchModelError::Rejected(
+                "deterministic research adapter received a different route".to_owned(),
+            ));
+        }
+        request
+            .validate_route(route)
+            .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
+        let contribution = deterministic_research_contribution(request)?;
+        let response_hash = Digest::canonical(&contribution)
+            .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+        let receipt = CancerResearchModelReceipt {
+            contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+            request_id: request.request_id,
+            request_hash: request
+                .canonical_hash()
+                .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?,
+            provider: route.provider.clone(),
+            requested_model: route.requested_model.clone(),
+            resolved_model: route.requested_model.clone(),
+            provider_response_id: format!("systematic-screen-{}", request.request_id),
+            usage: ModelTokenUsage {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+            },
+            billed_micro_usd: 0,
+            contribution,
+            provider_response_hash: response_hash,
+            adapter_version: "deterministic-systematic-research-v1".to_owned(),
+        };
+        receipt
+            .validate_against(route, request)
+            .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
+        Ok(receipt)
+    }
+}
+
+fn deterministic_research_contribution(
+    request: &CancerResearchModelRequest,
+) -> Result<CancerResearchContribution, CancerResearchModelError> {
+    let selection = &request.selection;
+    let ordinal = selection.ordinal;
+    let target = systematic_target(ordinal);
+    let plan = match selection.task {
+        CancerResearchTask::ProposeDiscriminatingExperiment
+        | CancerResearchTask::DesignDiagnosticInstrument
+        | CancerResearchTask::DesignTreatmentMachine => {
+            Some(systematic_plan(selection.task, ordinal))
+        }
+        CancerResearchTask::DesignIndependentReplication => {
+            match cancer_research_campaign_directive(request)
+                .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?
+            {
+                Some(CancerResearchCampaignDirective::AdversarialTest {
+                    required_plan, ..
+                }) => Some(required_plan),
+                _ => {
+                    return Err(CancerResearchModelError::Rejected(
+                        "systematic replication omitted its frozen campaign plan".to_owned(),
+                    ));
+                }
+            }
+        }
+        _ => None,
+    };
+    let artifact_kind = match selection.task {
+        CancerResearchTask::GenerateMechanisticHypothesis => CancerResearchArtifactKind::Hypothesis,
+        CancerResearchTask::ProposeDiscriminatingExperiment
+        | CancerResearchTask::DesignIndependentReplication => {
+            CancerResearchArtifactKind::ExperimentProposal
+        }
+        CancerResearchTask::DesignDiagnosticInstrument => {
+            CancerResearchArtifactKind::DiagnosticInstrumentDesign
+        }
+        CancerResearchTask::DesignTreatmentMachine => {
+            CancerResearchArtifactKind::TreatmentMachineDesign
+        }
+        CancerResearchTask::ChallengeFrozenHypothesis
+        | CancerResearchTask::AuditAgainstLiterature => CancerResearchArtifactKind::LiteratureAudit,
+        CancerResearchTask::InterpretReplicationResult => {
+            CancerResearchArtifactKind::ReplicationResult
+        }
+    };
+    let label = format!("{:?}", target).to_lowercase();
+    let title = format!("Systematic {label} screen {:06}", ordinal);
+    let abstract_text = format!(
+        "A deterministic, hypothesis-neutral screen varies one closed virtual-lab configuration for {label}. This artifact is a systematic computational projection, not biological or clinical evidence."
+    );
+    let mut citation_hashes = if selection.stage == CancerResearchStage::BlindDiscovery {
+        Vec::new()
+    } else {
+        request
+            .evidence_documents
+            .iter()
+            .map(|document| document.reference.content_hash)
+            .collect::<Vec<_>>()
+    };
+    citation_hashes.sort_unstable();
+    citation_hashes.dedup();
+    let claims = vec![CancerResearchClaim {
+        statement: format!(
+            "Configuration {ordinal} tests whether perturbing {label} changes its preregistered virtual endpoint."
+        ),
+        testable_prediction: "The deterministic virtual assay will return a bounded effect estimate and uncertainty interval for the frozen configuration.".to_owned(),
+        falsification_test: "Reject this configuration when replication shows no material effect, a concerning tradeoff, or an interval inconsistent with the predicted direction.".to_owned(),
+        citation_hashes,
+    }];
+    let prediction = deterministic_nci60_prediction(request)?;
+    CancerResearchContribution::new_with_structured_evidence_targets(
+        selection,
+        artifact_kind,
+        title,
+        abstract_text,
+        claims,
+        Vec::new(),
+        plan,
+        prediction,
+    )
+    .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))
+}
+
+fn systematic_plan(task: CancerResearchTask, ordinal: u32) -> CancerVirtualExperimentPlan {
+    let diagnostic = task == CancerResearchTask::DesignDiagnosticInstrument;
+    let modalities = [
+        CancerVirtualInterventionModality::MolecularInhibition,
+        CancerVirtualInterventionModality::Radiation,
+        CancerVirtualInterventionModality::Thermal,
+        CancerVirtualInterventionModality::ElectricField,
+        CancerVirtualInterventionModality::TargetedDelivery,
+        CancerVirtualInterventionModality::SurgicalResection,
+    ];
+    let subjects = [
+        CancerVirtualSubjectModel::CellCulture,
+        CancerVirtualSubjectModel::TumorOrganoid,
+        CancerVirtualSubjectModel::OrthotopicMouse,
+    ];
+    let endpoints = [
+        CancerVirtualEndpoint::RelativeTumorBurden,
+        CancerVirtualEndpoint::ViableTumorFraction,
+        CancerVirtualEndpoint::InvasiveCellFraction,
+        CancerVirtualEndpoint::HypoxicCellFraction,
+        CancerVirtualEndpoint::OffTargetHealthyCellLoss,
+    ];
+    let exposures = [6_u16, 12, 24, 48, 72, 168];
+    CancerVirtualExperimentPlan {
+        schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+        subject_model: subjects[ordinal as usize % subjects.len()],
+        intervention_modality: if diagnostic {
+            CancerVirtualInterventionModality::DiagnosticSensing
+        } else {
+            modalities[(ordinal as usize / subjects.len()) % modalities.len()]
+        },
+        primary_target: systematic_target(ordinal),
+        secondary_target: None,
+        primary_endpoint: if diagnostic {
+            CancerVirtualEndpoint::DetectionSensitivity
+        } else {
+            endpoints[(ordinal as usize / 7) % endpoints.len()]
+        },
+        intensity_parts_per_million: 100_000 + (ordinal % 9) * 100_000,
+        exposure_hours: exposures[(ordinal as usize / 11) % exposures.len()],
+        cohort_size: 32 + u16::try_from(ordinal % 32).unwrap_or(0) * 8,
+    }
+}
+
+const fn systematic_target(ordinal: u32) -> CancerVirtualMechanismTarget {
+    match ordinal % 7 {
+        0 => CancerVirtualMechanismTarget::CellDivision,
+        1 => CancerVirtualMechanismTarget::DnaRepair,
+        2 => CancerVirtualMechanismTarget::ApoptosisResistance,
+        3 => CancerVirtualMechanismTarget::HypoxiaAdaptation,
+        4 => CancerVirtualMechanismTarget::Angiogenesis,
+        5 => CancerVirtualMechanismTarget::ImmuneEvasion,
+        _ => CancerVirtualMechanismTarget::Invasion,
+    }
+}
+
+fn deterministic_nci60_prediction(
+    request: &CancerResearchModelRequest,
+) -> Result<Option<CancerNci60ResponsePrediction>, CancerResearchModelError> {
+    let Some(reference) = request
+        .selection
+        .evidence
+        .iter()
+        .find(|reference| reference.kind == CancerResearchEvidenceKind::ResponseChallenge)
+    else {
+        return Ok(None);
+    };
+    let fields = reference.source_id.split('/').collect::<Vec<_>>();
+    if fields.len() != 6 {
+        return Err(CancerResearchModelError::Rejected(
+            "systematic screen could not parse the response challenge identity".to_owned(),
+        ));
+    }
+    let challenge_id = fields[3]
+        .parse::<uuid::Uuid>()
+        .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
+    let intervention = match fields[4] {
+        "single-agent" => CancerNciInterventionIdentity::SingleAgent {
+            nsc: fields[5]
+                .parse()
+                .map_err(|error: std::num::ParseIntError| {
+                    CancerResearchModelError::Rejected(error.to_string())
+                })?,
+        },
+        "combination" => {
+            let pair = fields[5].split('-').collect::<Vec<_>>();
+            if pair.len() != 2 {
+                return Err(CancerResearchModelError::Rejected(
+                    "invalid combination challenge".to_owned(),
+                ));
+            }
+            CancerNciInterventionIdentity::Combination {
+                nsc_1: pair[0].parse().map_err(|error: std::num::ParseIntError| {
+                    CancerResearchModelError::Rejected(error.to_string())
+                })?,
+                nsc_2: pair[1].parse().map_err(|error: std::num::ParseIntError| {
+                    CancerResearchModelError::Rejected(error.to_string())
+                })?,
+            }
+        }
+        _ => {
+            return Err(CancerResearchModelError::Rejected(
+                "unknown response challenge class".to_owned(),
+            ));
+        }
+    };
+    let mut predicted_response_order = vec![
+        CancerNci60CnsLine::Sf268,
+        CancerNci60CnsLine::Sf295,
+        CancerNci60CnsLine::Sf539,
+        CancerNci60CnsLine::Snb19,
+        CancerNci60CnsLine::Snb75,
+        CancerNci60CnsLine::U251,
+    ];
+    predicted_response_order.rotate_left(usize::from(request.request_id.as_bytes()[0]) % 6);
+    if request.request_id.as_bytes()[1] % 2 == 1 {
+        predicted_response_order.reverse();
+    }
+    Ok(Some(CancerNci60ResponsePrediction {
+        schema_version: CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION,
+        challenge_id,
+        intervention,
+        predicted_response_order,
+    }))
 }
 
 fn validate_research_route(
@@ -1965,6 +2229,56 @@ mod tests {
 
         assert_eq!(payload["reasoning_effort"], "low");
         assert_eq!(payload["response_format"]["type"], "json_schema");
+    }
+
+    #[tokio::test]
+    async fn deterministic_research_keeps_basic_screening_alive_without_inference() {
+        let adapter = DeterministicCancerResearch;
+        let route = CognitionModelRoute::deterministic_systematic_screen_v1();
+
+        let hypothesis = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let receipt = adapter
+            .infer_research(&route, &hypothesis)
+            .await
+            .expect("systematic hypothesis");
+        assert_eq!(receipt.billed_micro_usd, 0);
+        assert_eq!(
+            receipt.contribution.artifact_kind,
+            CancerResearchArtifactKind::Hypothesis
+        );
+
+        let challenge = response_challenge_request();
+        let receipt = adapter
+            .infer_research(&route, &challenge)
+            .await
+            .expect("systematic held-out screen");
+        assert!(receipt.contribution.virtual_experiment_plan.is_some());
+        assert!(receipt.contribution.nci60_response_prediction.is_some());
+
+        let required_plan = CancerVirtualExperimentPlan {
+            schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+            subject_model: CancerVirtualSubjectModel::TumorOrganoid,
+            intervention_modality: CancerVirtualInterventionModality::Radiation,
+            primary_target: CancerVirtualMechanismTarget::DnaRepair,
+            secondary_target: None,
+            primary_endpoint: CancerVirtualEndpoint::RelativeTumorBurden,
+            intensity_parts_per_million: 500_000,
+            exposure_hours: 24,
+            cohort_size: 64,
+        };
+        let campaign = campaign_request(required_plan.clone());
+        let receipt = adapter
+            .infer_research(&route, &campaign)
+            .await
+            .expect("systematic preregistered replication");
+        assert_eq!(
+            receipt.contribution.virtual_experiment_plan,
+            Some(required_plan)
+        );
     }
 
     #[test]
