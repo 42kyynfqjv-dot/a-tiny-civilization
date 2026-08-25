@@ -758,6 +758,12 @@ fn research_api_request(
             .expect("research request payload is an object")
             .remove("response_format");
     }
+    if provider == &CognitionProviderId::hetzner_experiments() {
+        // Qwen 3.6 otherwise spends the bounded completion entirely in its
+        // `reasoning` field and returns null content. Hetzner's vLLM endpoint
+        // accepts this model-native switch and then emits the constrained JSON.
+        payload["chat_template_kwargs"] = json!({"enable_thinking": false});
+    }
     if route == &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()
         || route == &CognitionModelRoute::openrouter_cancer_gpt_oss_120b_free()
     {
@@ -2280,6 +2286,7 @@ mod tests {
 
         assert_eq!(payload["response_format"]["type"], "json_schema");
         assert_eq!(payload["response_format"]["json_schema"]["strict"], true);
+        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
         assert!(!payload.to_string().contains("\"uniqueItems\""));
     }
 
