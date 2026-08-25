@@ -3405,51 +3405,32 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
     .bind(entry.selection.request_id)
     .fetch_all(&pool)
     .await?;
-    assert_eq!(attempts.len(), 5);
+    assert_eq!(attempts.len(), 8);
+    let skipped_providers = [
+        "openrouter",
+        "openrouter",
+        "openrouter",
+        "local_openai",
+        "local_openai",
+        "cloudflare_workers_ai",
+        "cloudflare_workers_ai",
+    ];
+    for (index, provider) in skipped_providers.into_iter().enumerate() {
+        assert_eq!(
+            attempts[index],
+            (
+                i32::try_from(index).expect("bounded route index"),
+                provider.to_owned(),
+                "skipped".to_owned(),
+                false,
+                Some("skipped_unconfigured".to_owned()),
+            )
+        );
+    }
     assert_eq!(
-        attempts[0],
+        attempts[7],
         (
-            0,
-            "local_openai".to_owned(),
-            "skipped".to_owned(),
-            false,
-            Some("skipped_unconfigured".to_owned()),
-        )
-    );
-    assert_eq!(
-        attempts[1],
-        (
-            1,
-            "local_openai".to_owned(),
-            "skipped".to_owned(),
-            false,
-            Some("skipped_unconfigured".to_owned()),
-        )
-    );
-    assert_eq!(
-        attempts[2],
-        (
-            2,
-            "cloudflare_workers_ai".to_owned(),
-            "skipped".to_owned(),
-            false,
-            Some("skipped_unconfigured".to_owned()),
-        )
-    );
-    assert_eq!(
-        attempts[3],
-        (
-            3,
-            "cloudflare_workers_ai".to_owned(),
-            "skipped".to_owned(),
-            false,
-            Some("skipped_unconfigured".to_owned()),
-        )
-    );
-    assert_eq!(
-        attempts[4],
-        (
-            4,
+            7,
             "groq".to_owned(),
             "completed".to_owned(),
             true,
@@ -3493,6 +3474,6 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
             .bind(entry.selection.request_id)
             .fetch_one(&pool)
             .await?;
-    assert_eq!(final_attempt_count, 5);
+    assert_eq!(final_attempt_count, 8);
     Ok(())
 }
