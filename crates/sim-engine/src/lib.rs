@@ -200,6 +200,13 @@ pub const ACTION_GROUNDED_SIGNAL_RULESET_VERSION: u32 = 40;
 /// Ruleset forty-one lets successive physical calls become learned ordered
 /// compositions. It adds no words, slots, referents, or language objective.
 pub const COMPOSITIONAL_SIGNAL_RULESET_VERSION: u32 = 41;
+/// Ruleset forty-two makes composition extend rather than erase an inhabitant's
+/// established atomic call knowledge. Independent human sources strengthen a
+/// learner's grounded association, and a heard call is echoed into a conflicting
+/// action only while it remains genuinely unclassified. Ordinary-world life-cycle
+/// turnover begins only after three distinct grounded conventions are shared by
+/// at least four living people; no form, meaning, word, or goal is supplied.
+pub const SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION: u32 = 42;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -322,6 +329,10 @@ const MAX_SIGNAL_MOTOR_ASSOCIATIONS: usize =
     world_domain::SIGNAL_FORM_VARIANT_COUNT as usize * (HERITABLE_ACTION_KINDS.len() + 3);
 const MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS: usize = 4_096;
 const COMPOSITIONAL_SIGNAL_MAX_GAP_TICKS: u64 = 32;
+const SOCIAL_SIGNAL_SUPPORT_WINDOW_TICKS: u64 = 288;
+const SOCIAL_SIGNAL_SUPPORT_MAX_BONUS: i16 = 8;
+const LANGUAGE_LIFECYCLE_MIN_LEARNERS: usize = 4;
+const LANGUAGE_LIFECYCLE_MIN_MEANINGS: usize = 3;
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 const CANCER_RESEARCH_MAX_PERCEPTION_MEMORY_ENTRIES: usize = 2_048;
@@ -1343,6 +1354,38 @@ impl OrganismState {
             })
             .and_then(|entry| u8::try_from(entry.quantized_value).ok())
             .filter(|intensity| (1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).contains(intensity))
+    }
+
+    fn recent_signal_source_count(&self, signal_form: u8, at_tick: SimTick) -> usize {
+        self.perception_memory
+            .iter()
+            .filter(|entry| {
+                entry.subject_id.is_some()
+                    && entry.channel == PerceptionChannel::Sound
+                    && entry.property_code == "signal_amplitude"
+                    && entry.quantized_value == i32::from(signal_form)
+                    && entry.observed_at <= at_tick
+                    && at_tick.get().saturating_sub(entry.observed_at.get())
+                        <= SOCIAL_SIGNAL_SUPPORT_WINDOW_TICKS
+            })
+            .filter_map(|entry| entry.subject_id)
+            .collect::<BTreeSet<_>>()
+            .len()
+    }
+
+    fn has_established_other_meaning(
+        &self,
+        signal_form: u8,
+        action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
+    ) -> bool {
+        self.signal_action_associations.iter().any(|entry| {
+            entry.preceding_signal.is_none()
+                && entry.signal_intensity == signal_form
+                && entry.value >= SIGNAL_COORDINATION_REINFORCEMENT
+                && (entry.action_kind, entry.movement_direction)
+                    != (action_kind, movement_direction)
+        })
     }
 
     fn age_ticks(&self) -> Option<u64> {
@@ -3361,7 +3404,22 @@ impl EngineState {
             .filter(|candidate| candidate.action.kind == PrimitiveActionKind::EmitSignal)
             .collect::<Vec<_>>();
         if self.uses_action_grounded_signal_selection_driver() {
-            let recent_signal = organism.recent_signal(self.tick);
+            let recent_signal = organism.recent_signal(self.tick).filter(|signal_form| {
+                !self.uses_social_language_consolidation_driver()
+                    || organism
+                        .distinctive_signal_prediction(
+                            None,
+                            *signal_form,
+                            grounded_action.kind,
+                            grounded_action.movement_direction,
+                        )
+                        .is_some()
+                    || !organism.has_established_other_meaning(
+                        *signal_form,
+                        grounded_action.kind,
+                        grounded_action.movement_direction,
+                    )
+            });
             let preceding_signal = self
                 .plans_compositional_signal_driver()
                 .then(|| organism.preceding_produced_signal(self.tick.checked_next().ok()?))
@@ -3373,11 +3431,11 @@ impl EngineState {
                     candidate.weight,
                     signal_form,
                     recent_signal,
-                    organism.signal_convention_strength(
+                    self.production_signal_convention_strength(
+                        organism,
                         preceding_signal,
                         signal_form,
-                        grounded_action.kind,
-                        grounded_action.movement_direction,
+                        grounded_action,
                     ),
                 );
             }
@@ -3438,6 +3496,32 @@ impl EngineState {
         Ok(Some(u8::try_from(selected.action.intensity).expect(
             "signal-form domain is bounded to an unsigned byte",
         )))
+    }
+
+    fn production_signal_convention_strength(
+        &self,
+        organism: &OrganismState,
+        preceding_signal: Option<u8>,
+        signal_form: u8,
+        grounded_action: &PrimitiveAction,
+    ) -> Option<u32> {
+        let compositional = organism.signal_convention_strength(
+            preceding_signal,
+            signal_form,
+            grounded_action.kind,
+            grounded_action.movement_direction,
+        );
+        let inherited_atomic = preceding_signal
+            .filter(|_| self.uses_social_language_consolidation_driver())
+            .and_then(|_| {
+                organism.signal_convention_strength(
+                    None,
+                    signal_form,
+                    grounded_action.kind,
+                    grounded_action.movement_direction,
+                )
+            });
+        compositional.max(inherited_atomic)
     }
 
     fn next_action_value(
@@ -3531,6 +3615,7 @@ impl EngineState {
     fn next_signal_action_association(
         &self,
         organism: &OrganismState,
+        actor_id: EntityId,
         preceding_signal: Option<u8>,
         signal_intensity: u8,
         action: &PrimitiveAction,
@@ -3561,11 +3646,27 @@ impl EngineState {
                 )
             })?;
         let competitive = self.uses_competitive_signal_learning_driver();
-        let reinforcement = if coordinated {
+        let mut reinforcement = if coordinated {
             SIGNAL_COORDINATION_REINFORCEMENT
         } else {
             SIGNAL_PREDICTION_REINFORCEMENT
         };
+        if self.uses_social_language_consolidation_driver() {
+            let prior_sources = organism.recent_signal_source_count(signal_intensity, self.tick);
+            let includes_actor = organism.perception_memory.iter().any(|entry| {
+                entry.subject_id == Some(actor_id)
+                    && entry.channel == PerceptionChannel::Sound
+                    && entry.property_code == "signal_amplitude"
+                    && entry.quantized_value == i32::from(signal_intensity)
+                    && self.tick.get().saturating_sub(entry.observed_at.get())
+                        <= SOCIAL_SIGNAL_SUPPORT_WINDOW_TICKS
+            });
+            let sources = prior_sources.saturating_add(usize::from(!includes_actor));
+            let social_bonus = i16::try_from(sources.saturating_sub(1).saturating_mul(2))
+                .unwrap_or(i16::MAX)
+                .min(SOCIAL_SIGNAL_SUPPORT_MAX_BONUS);
+            reinforcement = reinforcement.saturating_add(social_bonus);
+        }
         let value = if competitive {
             prior
                 .map_or(reinforcement, |prior| {
@@ -4267,13 +4368,12 @@ impl EngineState {
             }
         }
 
+        let human_life_cycle_open = self.shared_grounded_language_is_present();
         let mut groups =
             BTreeMap::<(S2CellId, &str, &str, u8, Digest, Digest), Vec<&OrganismState>>::new();
-        for organism in self
-            .organisms
-            .values()
-            .filter(|organism| organism.is_alive())
-        {
+        for organism in self.organisms.values().filter(|organism| {
+            organism.is_alive() && (organism.role == OrganismRole::Fauna || human_life_cycle_open)
+        }) {
             let Some(patch) = organism.embodied_patch else {
                 continue;
             };
@@ -4572,6 +4672,29 @@ impl EngineState {
                     })?,
                 thermal_capacity,
             )?
+        };
+
+        // Ruleset 42's founders still experience and learn from bodily pressure,
+        // but irreversible turnover cannot pre-empt the language experiment. Keep
+        // each lethal load one physical unit below failure until the population's
+        // own shared conventions open the life cycle. Nothing is restored or
+        // supplied when that happens; ordinary physiology simply continues.
+        let life_cycle_open =
+            organism.role == OrganismRole::Fauna || self.shared_grounded_language_is_present();
+        let energy_load = if life_cycle_open {
+            energy_load
+        } else {
+            energy_load.min(energy_capacity.saturating_sub(1))
+        };
+        let hydration_load = if life_cycle_open {
+            hydration_load
+        } else {
+            hydration_load.min(regulation.hydration_failure_seconds.saturating_sub(1))
+        };
+        let thermal_load = if life_cycle_open {
+            thermal_load
+        } else {
+            thermal_load.min(thermal_capacity.saturating_sub(1))
         };
 
         Ok(BodilyRegulationState {
@@ -5230,7 +5353,10 @@ impl EngineState {
                         to: to_value,
                     });
                 }
-                if let Some(cause) = Self::regulation_death_cause(to.needs) {
+                if (organism.role == OrganismRole::Fauna
+                    || self.shared_grounded_language_is_present())
+                    && let Some(cause) = Self::regulation_death_cause(to.needs)
+                {
                     deaths.push(DomainEvent::OrganismDied {
                         organism_id: organism.organism_id,
                         cause,
@@ -5268,6 +5394,7 @@ impl EngineState {
                         let (from, to, inhibited_from, inhibited_to) = self
                             .next_signal_action_association(
                                 observer,
+                                actor_id,
                                 None,
                                 signal_intensity,
                                 action,
@@ -5310,6 +5437,7 @@ impl EngineState {
                             let (from, to, inhibited_from, inhibited_to) = self
                                 .next_signal_action_association(
                                     observer,
+                                    actor_id,
                                     preceding_signal,
                                     signal_form,
                                     action,
@@ -5532,6 +5660,56 @@ impl EngineState {
     fn uses_compositional_signal_driver(&self) -> bool {
         compositional_signal_active(self.manifest.ruleset_version, self.tick)
             && self.uses_action_grounded_signal_selection_driver()
+    }
+
+    fn uses_social_language_consolidation_driver(&self) -> bool {
+        self.manifest.ruleset_version >= SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
+            && !self.uses_world_experiment_bootstrap()
+    }
+
+    fn shared_grounded_language_is_present(&self) -> bool {
+        if !self.uses_social_language_consolidation_driver() {
+            return true;
+        }
+        let mut learners =
+            BTreeMap::<(u8, PrimitiveActionKind, Option<u8>), BTreeSet<EntityId>>::new();
+        for organism in self
+            .organisms
+            .values()
+            .filter(|organism| organism.is_alive() && organism.role == OrganismRole::Person)
+        {
+            for association in organism
+                .signal_action_associations
+                .iter()
+                .filter(|association| association.preceding_signal.is_none())
+            {
+                if organism
+                    .distinctive_signal_prediction(
+                        None,
+                        association.signal_intensity,
+                        association.action_kind,
+                        association.movement_direction,
+                    )
+                    .is_some()
+                {
+                    learners
+                        .entry((
+                            association.signal_intensity,
+                            association.action_kind,
+                            association.movement_direction,
+                        ))
+                        .or_default()
+                        .insert(organism.organism_id);
+                }
+            }
+        }
+        learners
+            .into_iter()
+            .filter(|(_, learners)| learners.len() >= LANGUAGE_LIFECYCLE_MIN_LEARNERS)
+            .map(|((_, action, direction), _)| (action, direction))
+            .collect::<BTreeSet<_>>()
+            .len()
+            >= LANGUAGE_LIFECYCLE_MIN_MEANINGS
     }
 
     fn plans_compositional_signal_driver(&self) -> bool {
@@ -6479,6 +6657,7 @@ impl EngineState {
                             let (actual_actor, from, to, inhibited_from, inhibited_to) = actual;
                             let expected = self.next_signal_action_association(
                                 observer,
+                                actor_id,
                                 preceding_signal,
                                 intensity,
                                 action,
@@ -16410,6 +16589,95 @@ mod tests {
         snapshot
             .verify_integrity()
             .expect("compositional signal snapshot integrity");
+    }
+
+    #[test]
+    fn ruleset_forty_two_composition_inherits_atomic_conventions() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4200_1a6e));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 12, SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION);
+        let organism_id = *running.organisms.keys().next().expect("fixture person");
+        let organism = running
+            .organisms
+            .get_mut(&organism_id)
+            .expect("fixture person state");
+        organism.signal_action_associations.clear();
+        organism
+            .signal_action_associations
+            .push(SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 8,
+                value: 32,
+            });
+        let action = PrimitiveAction {
+            kind: PrimitiveActionKind::Rest,
+            target_id: None,
+            intensity: 1,
+            contact_region: None,
+            movement_direction: None,
+        };
+        let organism = running
+            .organisms
+            .get(&organism_id)
+            .expect("fixture person state");
+        assert_eq!(
+            running.production_signal_convention_strength(organism, Some(19), 7, &action),
+            organism.signal_convention_strength(None, 7, PrimitiveActionKind::Rest, None)
+        );
+    }
+
+    #[test]
+    fn ruleset_forty_two_life_cycle_requires_shared_distinct_meanings() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4200_1afe));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 12, SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION);
+        assert!(!running.shared_grounded_language_is_present());
+        let learners = running
+            .organisms
+            .keys()
+            .copied()
+            .take(4)
+            .collect::<Vec<_>>();
+        for organism_id in learners {
+            let organism = running
+                .organisms
+                .get_mut(&organism_id)
+                .expect("fixture learner");
+            organism.signal_action_associations = vec![
+                SignalActionAssociationState {
+                    association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                    preceding_signal: None,
+                    signal_intensity: 3,
+                    action_kind: PrimitiveActionKind::Rest,
+                    movement_direction: None,
+                    observations: 8,
+                    value: 32,
+                },
+                SignalActionAssociationState {
+                    association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                    preceding_signal: None,
+                    signal_intensity: 4,
+                    action_kind: PrimitiveActionKind::Move,
+                    movement_direction: Some(1),
+                    observations: 8,
+                    value: 32,
+                },
+                SignalActionAssociationState {
+                    association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                    preceding_signal: None,
+                    signal_intensity: 5,
+                    action_kind: PrimitiveActionKind::Release,
+                    movement_direction: None,
+                    observations: 8,
+                    value: 32,
+                },
+            ];
+        }
+        assert!(running.shared_grounded_language_is_present());
     }
 
     #[test]
