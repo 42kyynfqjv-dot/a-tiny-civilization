@@ -46,6 +46,20 @@ if ! rg --multiline --context 4 '^  web-api:$' compose.yaml | rg --line-number '
   exit 1
 fi
 
+# GitHub-hosted runners can carry a Compose release that accepts long bind
+# syntax but omits an explicit false `create_host_path` value from rendered
+# JSON. Verify all four declarations in the authored evidence-worker block
+# before accepting that renderer omission below.
+evidence_worker_block="$(awk '
+  $0 == "  cancer-evidence-worker:" { inside = 1 }
+  inside && /^  [[:alnum:]_-]+:$/ && $0 != "  cancer-evidence-worker:" { exit }
+  inside { print }
+' compose.hindsight.yaml)"
+if [[ "$(grep -c '^          create_host_path: false$' <<<"$evidence_worker_block")" -ne 4 ]]; then
+  echo "Production boundary violation: every evidence bind must explicitly refuse host-path creation." >&2
+  exit 1
+fi
+
 # The held-out NCI labels and patient-derived PDC matrix are runtime
 # qualification input, not research context. Resolve the optional profile as
 # Compose will run it and prove that only read-only, non-auto-created binds reach
@@ -97,7 +111,7 @@ else:
         volume = matching[0]
         if volume.get("type") != "bind" or volume.get("read_only") is not True:
             failures.append("answer-key mount must be a read-only bind")
-        if (volume.get("bind") or {}).get("create_host_path") is not False:
+        if (volume.get("bind") or {}).get("create_host_path") is True:
             failures.append("answer-key bind must refuse to create a missing host path")
         source = volume.get("source") or ""
         if not source.endswith(source_suffix):
@@ -130,7 +144,7 @@ else:
         volume = pdc_mounts[0]
         if volume.get("type") != "bind" or volume.get("read_only") is not True:
             failures.append(f"{expected_name} mount must be a read-only bind")
-        if (volume.get("bind") or {}).get("create_host_path") is not False:
+        if (volume.get("bind") or {}).get("create_host_path") is True:
             failures.append(f"{expected_name} bind must refuse to create a missing host path")
         expected_source_suffix = (
             f"/runtime-qualification/pdc000711/sha256/"
@@ -153,7 +167,7 @@ else:
         volume = tcga_mounts[0]
         if volume.get("type") != "bind" or volume.get("read_only") is not True:
             failures.append("TCGA-GBM aggregate mount must be a read-only bind")
-        if (volume.get("bind") or {}).get("create_host_path") is not False:
+        if (volume.get("bind") or {}).get("create_host_path") is True:
             failures.append("TCGA-GBM aggregate bind must refuse to create a missing host path")
         expected_suffix = f"/runtime-qualification/tcga-gbm/sha256/{tcga_hash}/{tcga_name}"
         if not (volume.get("source") or "").endswith(expected_suffix):

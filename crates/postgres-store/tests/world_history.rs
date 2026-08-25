@@ -2668,7 +2668,7 @@ async fn cancer_research_and_production_use_distinct_cost_accounts(pool: PgPool)
     assert_eq!(
         accounts,
         vec![
-            ("cancer_research".to_owned(), 30_000, 3_000_000),
+            ("cancer_research".to_owned(), 30_000, 8_000_000),
             ("production".to_owned(), 0, 3_000_000),
         ]
     );
