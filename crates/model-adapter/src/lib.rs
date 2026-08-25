@@ -379,6 +379,15 @@ impl CancerResearchModel for DeterministicCancerResearch {
         request
             .validate_route(route)
             .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
+        if !matches!(
+            request.selection.task,
+            CancerResearchTask::ProposeDiscriminatingExperiment
+                | CancerResearchTask::DesignIndependentReplication
+        ) {
+            return Err(CancerResearchModelError::Rejected(
+                "this research turn requires generative scientific reasoning".to_owned(),
+            ));
+        }
         let contribution = deterministic_research_contribution(request)?;
         let response_hash = Digest::canonical(&contribution)
             .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))?;
@@ -399,7 +408,7 @@ impl CancerResearchModel for DeterministicCancerResearch {
             billed_micro_usd: 0,
             contribution,
             provider_response_hash: response_hash,
-            adapter_version: "deterministic-systematic-research-v1".to_owned(),
+            adapter_version: "deterministic-systematic-research-v2".to_owned(),
         };
         receipt
             .validate_against(route, request)
@@ -2232,7 +2241,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn deterministic_research_keeps_basic_screening_alive_without_inference() {
+    async fn deterministic_research_only_keeps_systematic_screening_alive_without_inference() {
         let adapter = DeterministicCancerResearch;
         let route = CognitionModelRoute::deterministic_systematic_screen_v1();
 
@@ -2241,15 +2250,11 @@ mod tests {
             CancerResearchInferenceTier::Exploration,
             None,
         );
-        let receipt = adapter
+        let error = adapter
             .infer_research(&route, &hypothesis)
             .await
-            .expect("systematic hypothesis");
-        assert_eq!(receipt.billed_micro_usd, 0);
-        assert_eq!(
-            receipt.contribution.artifact_kind,
-            CancerResearchArtifactKind::Hypothesis
-        );
+            .expect_err("hypothesis formation requires generative reasoning");
+        assert!(matches!(error, CancerResearchModelError::Rejected(_)));
 
         let challenge = response_challenge_request();
         let receipt = adapter

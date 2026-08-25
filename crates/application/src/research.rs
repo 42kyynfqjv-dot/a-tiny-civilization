@@ -904,6 +904,9 @@ impl CancerResearchModelRequest {
                 CognitionRouteRegistry::cancer_research_exploration()
                     .routes
                     .contains(route)
+                    || CognitionRouteRegistry::cancer_research_exploration_legacy_v11()
+                        .routes
+                        .contains(route)
             }
             CancerResearchInferenceTier::Escalation => {
                 route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()

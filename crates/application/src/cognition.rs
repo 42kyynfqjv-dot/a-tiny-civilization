@@ -20,13 +20,14 @@ pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V6: u16 = 6;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V5: u16 = 5;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V4: u16 = 4;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V3: u16 = 3;
-pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 11;
+pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V11: u16 = 11;
+pub const CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 12;
 pub const CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const MAX_COGNITION_ROUTES: usize = 256;
 pub const COGNITION_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
 pub const COGNITION_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 3_000_000;
-pub const CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH: u64 = 2_500_000;
-pub const CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 3_000_000;
+pub const CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH: u64 = 7_500_000;
+pub const CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH: u64 = 8_000_000;
 pub const MAX_PAID_COGNITION_RESERVATION_MICRO_USD: u64 = 50_000;
 const MAX_INPUT_READINGS: usize = 32;
 pub const MAX_COGNITION_RECALLED_MEMORIES: usize = 8;
@@ -484,10 +485,21 @@ pub struct CognitionRouteRegistry {
 }
 
 impl CognitionRouteRegistry {
-    fn shared_free_routes() -> Vec<CognitionModelRoute> {
+    fn legacy_shared_free_routes() -> Vec<CognitionModelRoute> {
         vec![
             CognitionModelRoute::local_qwen2_5_1_5b(),
             CognitionModelRoute::local_gpt_oss_20b(),
+            CognitionModelRoute::cloudflare_gpt_oss_20b(),
+            CognitionModelRoute::cloudflare_gpt_oss_120b(),
+            CognitionModelRoute::groq_gpt_oss_20b(),
+            CognitionModelRoute::groq_gpt_oss_120b(),
+            CognitionModelRoute::cerebras_llama3_1_8b(),
+            CognitionModelRoute::cerebras_gpt_oss_120b(),
+        ]
+    }
+
+    fn external_free_routes() -> Vec<CognitionModelRoute> {
+        vec![
             CognitionModelRoute::cloudflare_gpt_oss_20b(),
             CognitionModelRoute::cloudflare_gpt_oss_120b(),
             CognitionModelRoute::groq_gpt_oss_20b(),
@@ -504,7 +516,7 @@ impl CognitionRouteRegistry {
             CognitionModelRoute::openrouter_gpt_oss_20b_free(),
             CognitionModelRoute::openrouter_gpt_oss_120b_free(),
         ];
-        routes.extend(Self::shared_free_routes());
+        routes.extend(Self::legacy_shared_free_routes());
         routes.push(CognitionModelRoute::openrouter_deepseek_v4_flash());
         Self {
             policy_version: COGNITION_ROUTE_POLICY_VERSION,
@@ -533,10 +545,28 @@ impl CognitionRouteRegistry {
             CognitionModelRoute::openrouter_cancer_free(),
             CognitionModelRoute::deterministic_systematic_screen_v1(),
         ];
-        routes.extend(Self::shared_free_routes());
+        routes.extend(Self::external_free_routes());
         routes.push(CognitionModelRoute::fireworks_cancer_gpt_oss_20b());
         Self {
             policy_version: CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
+            routes,
+        }
+    }
+
+    #[must_use]
+    pub fn cancer_research_exploration_legacy_v11() -> Self {
+        let mut routes = vec![
+            CognitionModelRoute::hetzner_qwen3_6_35b_a3b_fp8(),
+            CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free(),
+            CognitionModelRoute::openrouter_cancer_nemotron_3_super_free(),
+            CognitionModelRoute::openrouter_cancer_lfm_2_5_2_6b_free(),
+            CognitionModelRoute::openrouter_cancer_free(),
+            CognitionModelRoute::deterministic_systematic_screen_v1(),
+        ];
+        routes.extend(Self::legacy_shared_free_routes());
+        routes.push(CognitionModelRoute::fireworks_cancer_gpt_oss_20b());
+        Self {
+            policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V11,
             routes,
         }
     }
@@ -549,7 +579,7 @@ impl CognitionRouteRegistry {
             CognitionModelRoute::openrouter_cancer_lfm_2_5_2_6b_free(),
             CognitionModelRoute::openrouter_cancer_free(),
         ];
-        routes.extend(Self::shared_free_routes());
+        routes.extend(Self::legacy_shared_free_routes());
         routes.push(CognitionModelRoute::fireworks_cancer_gpt_oss_20b());
         Self {
             policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V10,
@@ -564,7 +594,7 @@ impl CognitionRouteRegistry {
             CognitionModelRoute::openrouter_cancer_free(),
             CognitionModelRoute::openrouter_cancer_gpt_oss_120b_free(),
         ];
-        routes.extend(Self::shared_free_routes());
+        routes.extend(Self::legacy_shared_free_routes());
         routes.push(CognitionModelRoute::fireworks_cancer_gpt_oss_20b());
         Self {
             policy_version: LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V9,
@@ -634,6 +664,10 @@ impl CognitionRouteRegistry {
         match (purpose, policy_version) {
             (
                 CognitionRoutePurpose::CancerResearchExploration,
+                LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V11,
+            ) => Ok(Self::cancer_research_exploration_legacy_v11()),
+            (
+                CognitionRoutePurpose::CancerResearchExploration,
                 CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
             ) => Ok(Self::cancer_research_exploration()),
             (
@@ -701,6 +735,7 @@ impl CognitionRouteRegistry {
                     | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V8
                     | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V9
                     | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V10
+                    | LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V11
                     | CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
             ),
             CognitionRoutePurpose::CancerResearchEscalation => {
@@ -791,6 +826,9 @@ impl CognitionRouteRegistry {
                     }
                     LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V10 => {
                         Self::cancer_research_exploration_legacy_v10().routes
+                    }
+                    LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V11 => {
+                        Self::cancer_research_exploration_legacy_v11().routes
                     }
                     CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION => {
                         Self::cancer_research_exploration().routes
@@ -1644,8 +1682,6 @@ mod tests {
                 CognitionModelRoute::openrouter_cancer_lfm_2_5_2_6b_free(),
                 CognitionModelRoute::openrouter_cancer_free(),
                 CognitionModelRoute::deterministic_systematic_screen_v1(),
-                CognitionModelRoute::local_qwen2_5_1_5b(),
-                CognitionModelRoute::local_gpt_oss_20b(),
                 CognitionModelRoute::cloudflare_gpt_oss_20b(),
                 CognitionModelRoute::cloudflare_gpt_oss_120b(),
                 CognitionModelRoute::groq_gpt_oss_20b(),
@@ -1794,11 +1830,10 @@ mod tests {
                 CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
             )
         );
-        const {
-            assert!(
-                CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
-                    <= COGNITION_HARD_STOP_MICRO_USD_PER_MONTH
-            );
-        }
+        assert!(
+            CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH
+                < CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
+        );
+        assert_eq!(CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH, 8_000_000);
     }
 }

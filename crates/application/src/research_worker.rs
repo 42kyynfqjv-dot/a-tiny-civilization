@@ -6,7 +6,8 @@ use crate::{
     CANCER_RESEARCH_MODEL_CONTRACT_VERSION, CancerResearchAttemptPersistenceState,
     CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
     CancerResearchModel, CancerResearchModelError, CancerResearchPaidReservationDecision,
-    CognitionBillingClass, CognitionProviderId, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionProviderId,
+    CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
     CognitionRouteRegistry, DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
     MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
 };
@@ -108,24 +109,12 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
     entry
         .validate()
         .map_err(|error| CancerResearchWorkerError::Corrupt(error.to_string()))?;
-    let registry = match entry.request.route_purpose() {
-        crate::CognitionRoutePurpose::CancerResearchExploration => {
-            CognitionRouteRegistry::cancer_research_exploration()
-        }
-        crate::CognitionRoutePurpose::CancerResearchEscalation => {
-            CognitionRouteRegistry::cancer_research_escalation()
-        }
-        _ => {
-            return Err(CancerResearchWorkerError::Corrupt(
-                "research request selected a non-research route purpose".to_owned(),
-            ));
-        }
-    };
+    let mut records = store.list_cancer_research_route_attempts(entry).await?;
+    let registry = select_registry_for_records(entry.request.route_purpose(), &records)?;
     registry
         .validate(entry.request.route_purpose())
         .map_err(|error| CancerResearchWorkerError::Corrupt(error.to_string()))?;
 
-    let mut records = store.list_cancer_research_route_attempts(entry).await?;
     if let Some(in_flight) = records.iter().find(|record| {
         record.persistence_state == CancerResearchAttemptPersistenceState::Dispatched
     }) {
@@ -283,6 +272,38 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
             .await?;
     }
     finalize_result(store, worker_id, entry, &registry, attempts, None).await
+}
+
+fn select_registry_for_records(
+    purpose: CognitionRoutePurpose,
+    records: &[CancerResearchRouteAttemptRecord],
+) -> Result<CognitionRouteRegistry, CancerResearchWorkerError> {
+    let candidates = match purpose {
+        CognitionRoutePurpose::CancerResearchExploration => vec![
+            CognitionRouteRegistry::cancer_research_exploration(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v11(),
+        ],
+        CognitionRoutePurpose::CancerResearchEscalation => {
+            vec![CognitionRouteRegistry::cancer_research_escalation()]
+        }
+        _ => {
+            return Err(CancerResearchWorkerError::Corrupt(
+                "research request selected a non-research route purpose".to_owned(),
+            ));
+        }
+    };
+    candidates
+        .into_iter()
+        .find(|registry| {
+            records.iter().all(|record| {
+                registry.routes.get(usize::from(record.route_index)) == Some(&record.route)
+            })
+        })
+        .ok_or_else(|| {
+            CancerResearchWorkerError::Corrupt(
+                "durable research attempts do not match a supported route policy".to_owned(),
+            )
+        })
 }
 
 fn normalize_model_result(
@@ -452,6 +473,32 @@ mod tests {
         );
         assert_eq!(attempts[1].route_index, 1);
         assert_eq!(attempts[1].status, CognitionRouteAttemptStatus::Rejected);
+    }
+
+    #[test]
+    fn durable_v11_attempts_keep_their_original_registry_after_policy_twelve() {
+        let legacy = CognitionRouteRegistry::cancer_research_exploration_legacy_v11();
+        let route = legacy.routes[6].clone();
+        let records = vec![CancerResearchRouteAttemptRecord {
+            route_index: 6,
+            route,
+            persistence_state: CancerResearchAttemptPersistenceState::Completed,
+            attempt: None,
+            receipt: None,
+        }];
+
+        let recovered =
+            select_registry_for_records(CognitionRoutePurpose::CancerResearchExploration, &records)
+                .expect("legacy route policy remains recoverable");
+        assert_eq!(recovered.policy_version, legacy.policy_version);
+
+        let fresh =
+            select_registry_for_records(CognitionRoutePurpose::CancerResearchExploration, &[])
+                .expect("fresh work uses the current policy");
+        assert_eq!(
+            fresh.policy_version,
+            crate::CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION
+        );
     }
 
     #[test]
