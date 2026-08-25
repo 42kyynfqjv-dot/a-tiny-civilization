@@ -723,7 +723,13 @@ fn research_api_request(
     // spending the entire 30-second route window on hidden reasoning or a
     // runaway answer; the signed selection remains the authoritative 4,096-token
     // validation ceiling and paid escalation retains it.
-    let provider_max_tokens = if route.billing_class == CognitionBillingClass::FreeAllocation {
+    let provider_max_tokens = if provider == &CognitionProviderId::hetzner_experiments() {
+        // The pinned Qwen route is a hosted free allocation, but its structured
+        // contribution regularly needs more than the generic shared-endpoint
+        // ceiling. Truncating JSON makes every otherwise useful result invalid,
+        // so allow the signed per-turn bound here.
+        request.selection.model_max_output_tokens
+    } else if route.billing_class == CognitionBillingClass::FreeAllocation {
         request.selection.model_max_output_tokens.min(1_536)
     } else {
         request.selection.model_max_output_tokens
@@ -2332,6 +2338,10 @@ mod tests {
         assert_eq!(payload["response_format"]["type"], "json_schema");
         assert_eq!(payload["response_format"]["json_schema"]["strict"], true);
         assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(
+            payload["max_tokens"],
+            request.selection.model_max_output_tokens
+        );
         assert!(!payload.to_string().contains("\"uniqueItems\""));
     }
 
