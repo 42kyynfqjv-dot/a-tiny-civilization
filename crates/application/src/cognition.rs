@@ -1830,10 +1830,12 @@ mod tests {
                 CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
             )
         );
-        assert!(
-            CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH
-                < CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
-        );
+        const {
+            assert!(
+                CANCER_RESEARCH_TARGET_MICRO_USD_PER_MONTH
+                    < CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH
+            );
+        }
         assert_eq!(CANCER_RESEARCH_HARD_STOP_MICRO_USD_PER_MONTH, 8_000_000);
     }
 }
