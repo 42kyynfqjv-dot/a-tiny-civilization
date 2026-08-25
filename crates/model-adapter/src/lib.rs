@@ -689,12 +689,19 @@ fn research_api_request(
             "You are working in the Treatments program. Advance a falsifiable therapeutic mechanism, intervention, delivery method, or treatment apparatus intended to change disease burden. Diagnostic-only work belongs to the separate Devices program and must not be this contribution's central result."
         }
     };
-    let contribution_schema = research_contribution_schema(
+    let mut contribution_schema = research_contribution_schema(
         request.selection.stage,
         request.selection.task,
         campaign_directive.as_ref(),
         response_challenge,
     );
+    if provider == &CognitionProviderId::hetzner_experiments() {
+        // Hetzner's current vLLM grammar implementation rejects the standard
+        // JSON-Schema `uniqueItems` keyword. Removing it only from the remote
+        // generation grammar is safe: the signed request and the local closed
+        // receipt validator still enforce uniqueness before anything commits.
+        remove_schema_keyword(&mut contribution_schema, "uniqueItems");
+    }
     let schema_text = serde_json::to_string(&contribution_schema)
         .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
     let response_challenge_rule = match response_challenge.map(|challenge| challenge.intervention) {
@@ -763,6 +770,23 @@ fn research_api_request(
     }
     apply_openrouter_provider_policy(&mut payload, provider, route);
     Ok(payload)
+}
+
+fn remove_schema_keyword(schema: &mut Value, keyword: &str) {
+    match schema {
+        Value::Object(object) => {
+            object.remove(keyword);
+            for value in object.values_mut() {
+                remove_schema_keyword(value, keyword);
+            }
+        }
+        Value::Array(values) => {
+            for value in values {
+                remove_schema_keyword(value, keyword);
+            }
+        }
+        _ => {}
+    }
 }
 
 fn research_contribution_schema(
@@ -2238,6 +2262,25 @@ mod tests {
 
         assert_eq!(payload["reasoning_effort"], "low");
         assert_eq!(payload["response_format"]["type"], "json_schema");
+    }
+
+    #[test]
+    fn hetzner_grammar_omits_unsupported_uniqueness_hint_but_keeps_strict_schema() {
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let payload = research_api_request(
+            &CognitionProviderId::hetzner_experiments(),
+            &CognitionModelRoute::hetzner_qwen3_6_35b_a3b_fp8(),
+            &request,
+        )
+        .expect("valid Hetzner payload");
+
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert_eq!(payload["response_format"]["json_schema"]["strict"], true);
+        assert!(!payload.to_string().contains("\"uniqueItems\""));
     }
 
     #[tokio::test]
