@@ -72,6 +72,22 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
     drop(held);
     let reacquired = second.acquire_runner_writer_lock().await?;
     drop(reacquired);
+
+    let world_a = WorldId::from_uuid(Uuid::from_u128(0xA));
+    let world_b = WorldId::from_uuid(Uuid::from_u128(0xB));
+    let held_a = first.acquire_world_writer_lock(world_a).await?;
+    let held_b = second.acquire_world_writer_lock(world_b).await?;
+    assert!(matches!(
+        second.acquire_world_writer_lock(world_a).await,
+        Err(StoreError::Conflict(message)) if message.contains(&world_a.to_string())
+    ));
+    assert!(matches!(
+        second.acquire_runner_writer_lock().await,
+        Err(StoreError::Conflict(message)) if message.contains("canonical-writer lock")
+    ));
+    drop(held_a);
+    drop(held_b);
+
     let heartbeat_floor = Utc::now();
     for service_name in [
         "simulation-runner",

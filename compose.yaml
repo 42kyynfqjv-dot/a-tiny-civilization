@@ -125,6 +125,8 @@ services:
     environment:
       <<: *app-environment
       RUNNER_HEARTBEAT_SECONDS: ${RUNNER_HEARTBEAT_SECONDS:-5}
+      RUNNER_HEARTBEAT_NAME: simulation-runner
+      RUNNER_WORLD_ID: ${ORDINARY_WORLD_ID:-f5012e01-252d-5841-bc09-143826a20e16}
       # The public host advances one deterministic tick per minute. Simulation
       # physics still use the world-pinned tick duration; this only controls
       # wall-clock presentation and caps immutable-ledger growth on one box.
@@ -137,6 +139,25 @@ services:
     volumes:
       # The runner may read content-addressed inputs—including DE441 source bytes
       # for a future source-backed celestial driver—but must never mutate them.
+      - ${ATINY_RUNTIME_ARTIFACT_ROOT:-./runtime-artifacts}:/runtime:ro
+    restart: unless-stopped
+
+  cancer-runner:
+    <<: *rust-service
+    profiles: ["container-research"]
+    command: ["/app/civilization-runner", "serve"]
+    environment:
+      <<: *app-environment
+      RUNNER_HEARTBEAT_SECONDS: ${RUNNER_HEARTBEAT_SECONDS:-5}
+      RUNNER_HEARTBEAT_NAME: simulation-runner-cancer
+      RUNNER_WORLD_ID: ${CANCER_WORLD_ID:-}
+      RUNNER_TICK_MILLISECONDS: ${RUNNER_TICK_MILLISECONDS:-60000}
+      ATINY_CIVILIZATION_DATA_EXECUTABLE: /app/civilization-data
+      ATINY_JPL_DE441_INPUT_DIRECTORY: /runtime/data/source-cache/jpl-de441
+    depends_on:
+      migrate:
+        condition: service_healthy
+    volumes:
       - ${ATINY_RUNTIME_ARTIFACT_ROOT:-./runtime-artifacts}:/runtime:ro
     restart: unless-stopped
 

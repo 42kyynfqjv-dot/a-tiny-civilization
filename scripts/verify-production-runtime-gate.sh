@@ -65,7 +65,7 @@ fi
 for contract in \
   'validate-production-world-state\.py' \
   'mode require-running' \
-  'deployment lost its single running world after service startup'; do
+  'deployment lost its expected running ordinary world after service startup'; do
   if ! rg -q "$contract" "$deployment"; then
     echo "production deployment lost qualified-world contract: $contract" >&2
     exit 1

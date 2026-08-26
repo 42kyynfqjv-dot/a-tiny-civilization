@@ -70,16 +70,64 @@ impl PostgresStore {
     /// connection. PostgreSQL releases this operational lock on connection loss.
     pub async fn acquire_runner_writer_lock(&self) -> Result<sqlx::PgConnection, StoreError> {
         const RUNNER_WRITER_LOCK_KEY: i64 = 0x4154_494E_5957_5249;
+        self.acquire_writer_lock(RUNNER_WRITER_LOCK_KEY, "canonical-writer")
+            .await
+    }
+
+    /// Holds a writer lease for exactly one canonical world. Independent worlds
+    /// may advance in separate failure domains, while a second writer for the
+    /// same world still fails closed and PostgreSQL releases the lease on crash.
+    pub async fn acquire_world_writer_lock(
+        &self,
+        world_id: WorldId,
+    ) -> Result<sqlx::PgConnection, StoreError> {
+        const RUNNER_WRITER_LOCK_KEY: i64 = 0x4154_494E_5957_5249;
+        const WORLD_WRITER_LOCK_NAMESPACE: i64 = 0x4154_494E_5957_4C44;
+        let uuid = world_id.as_uuid();
+        let bytes = uuid.as_bytes();
+        let high = i64::from_be_bytes(bytes[..8].try_into().expect("UUID high half"));
+        let low = i64::from_be_bytes(bytes[8..].try_into().expect("UUID low half"));
+        let world_lock_key = WORLD_WRITER_LOCK_NAMESPACE ^ high ^ low;
         let mut connection = self.pool.acquire().await.map_err(unavailable)?;
+        let global_scope_available: bool =
+            sqlx::query_scalar("SELECT pg_try_advisory_lock_shared($1)")
+                .bind(RUNNER_WRITER_LOCK_KEY)
+                .fetch_one(&mut *connection)
+                .await
+                .map_err(unavailable)?;
+        if !global_scope_available {
+            return Err(StoreError::Conflict(
+                "an all-world simulation runner holds the canonical-writer lock".to_owned(),
+            ));
+        }
         let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
-            .bind(RUNNER_WRITER_LOCK_KEY)
+            .bind(world_lock_key)
             .fetch_one(&mut *connection)
             .await
             .map_err(unavailable)?;
         if !acquired {
-            return Err(StoreError::Conflict(
-                "another simulation runner holds the canonical-writer lock".to_owned(),
-            ));
+            return Err(StoreError::Conflict(format!(
+                "another simulation runner holds the world {world_id} canonical-writer lock"
+            )));
+        }
+        Ok(connection.detach())
+    }
+
+    async fn acquire_writer_lock(
+        &self,
+        lock_key: i64,
+        lock_name: &str,
+    ) -> Result<sqlx::PgConnection, StoreError> {
+        let mut connection = self.pool.acquire().await.map_err(unavailable)?;
+        let acquired: bool = sqlx::query_scalar("SELECT pg_try_advisory_lock($1)")
+            .bind(lock_key)
+            .fetch_one(&mut *connection)
+            .await
+            .map_err(unavailable)?;
+        if !acquired {
+            return Err(StoreError::Conflict(format!(
+                "another simulation runner holds the {lock_name} lock"
+            )));
         }
         Ok(connection.detach())
     }

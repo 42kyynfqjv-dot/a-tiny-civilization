@@ -174,7 +174,7 @@ if grep -qE '^CANCER_WORLD_ID=[0-9a-fA-F-]{36}$' "$environment_file"; then
   # the optional patient-derived qualification worker. Keep both model turns
   # and experiment execution alive across every ordinary production deploy.
   "${compose_command[@]}" "${compose_args[@]}" --profile container-research up -d \
-    cancer-research-worker cancer-virtual-lab-worker
+    cancer-runner cancer-research-worker cancer-virtual-lab-worker
 fi
 # Avoid recreating API dependencies with accidental Compose defaults while updating the
 # public web container. Never use --remove-orphans: the application and any separately
@@ -198,14 +198,15 @@ fi
 running_world_rows="$(
   "${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
     "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \
-      \"SELECT id::text,current_sequence::text FROM worlds WHERE status='running' ORDER BY id\""
+      \"SELECT id::text,current_sequence::text FROM worlds
+        WHERE status='running' AND id='${expected_world_id}'::uuid ORDER BY id\""
 )"
 running_worlds=()
 if [[ -n "$running_world_rows" ]]; then
   mapfile -t running_worlds <<<"$running_world_rows"
 fi
 if ((${#running_worlds[@]} != 1)); then
-  echo "deployment lost its single running world after service startup" >&2
+  echo "deployment lost its expected running ordinary world after service startup" >&2
   exit 1
 fi
 IFS='|' read -r running_world_id running_world_sequence <<<"${running_worlds[0]}"

@@ -1187,7 +1187,8 @@ fn validate_event_for_schema(
                             (value == crate::ACTION_VALUE_MAX && increment <= 16)
                                 || matches!(increment, 4 | 6 | 8 | 10 | 12 | 14 | 16)
                         } else {
-                            matches!(increment, 4 | 8)
+                            (value == crate::ACTION_VALUE_MAX && increment <= 8)
+                                || matches!(increment, 4 | 8)
                         }
                     };
                     from.map_or(valid_reinforcement(to.value, 0), |from| {
@@ -2334,6 +2335,34 @@ mod tests {
             Digest::sha256(b"competitive prediction state"),
         )
         .expect("schema thirty-three accepts one reinforced and one inhibited prediction");
+
+        let saturated_from = SignalActionAssociationState {
+            observations: 9,
+            value: crate::ACTION_VALUE_MAX - 1,
+            ..reinforced_from
+        };
+        EventBatch::new(
+            COMPETITIVE_SIGNAL_LEARNING_EVENT_SCHEMA_VERSION,
+            manifest.world_id,
+            EventSequence::new(2),
+            SimTick::new(2),
+            36,
+            Digest::ZERO,
+            vec![DomainEvent::OrganismSignalActionAssociationChanged {
+                observer_id: EntityId::from_uuid(Uuid::from_u128(0xC001)),
+                actor_id: EntityId::from_uuid(Uuid::from_u128(0xC002)),
+                from: Some(saturated_from),
+                to: SignalActionAssociationState {
+                    observations: 10,
+                    value: crate::ACTION_VALUE_MAX,
+                    ..saturated_from
+                },
+                inhibited_from: None,
+                inhibited_to: None,
+            }],
+            Digest::sha256(b"saturated competitive prediction state"),
+        )
+        .expect("competitive reinforcement may saturate at the bounded maximum");
 
         let mut incomplete = event;
         if let DomainEvent::OrganismSignalActionAssociationChanged { inhibited_to, .. } =

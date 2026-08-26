@@ -90,13 +90,25 @@ struct Cli {
 #[allow(clippy::large_enum_variant)]
 #[derive(Debug, Subcommand)]
 enum Command {
-    /// Verify and advance all explicitly initialized running worlds.
+    /// Verify and advance one pinned world, or all running worlds in development.
     Serve {
+        /// Pin this process to one world so an integrity failure cannot stop an
+        /// unrelated world. Production requires this value.
+        #[arg(long, env = "RUNNER_WORLD_ID")]
+        world_id: Option<WorldId>,
+
         #[arg(long, env = "RUNNER_TICK_MILLISECONDS", default_value_t = 1_000)]
         tick_milliseconds: u64,
 
         #[arg(long, env = "RUNNER_HEARTBEAT_SECONDS", default_value_t = 10)]
         heartbeat_seconds: u64,
+
+        #[arg(
+            long,
+            env = "RUNNER_HEARTBEAT_NAME",
+            default_value = "simulation-runner"
+        )]
+        heartbeat_name: String,
     },
     /// Create or resume a clearly non-production PostgreSQL proof world.
     InitProof {
@@ -734,13 +746,31 @@ async fn main() -> Result<()> {
         .context("connect runner to PostgreSQL")?;
 
     match cli.command.unwrap_or(Command::Serve {
+        world_id: None,
         tick_milliseconds: 1_000,
         heartbeat_seconds: 10,
+        heartbeat_name: "simulation-runner".to_owned(),
     }) {
         Command::Serve {
+            world_id,
             tick_milliseconds,
             heartbeat_seconds,
-        } => serve(&store, tick_milliseconds, heartbeat_seconds).await,
+            heartbeat_name,
+        } => {
+            if is_production_environment(std::env::var("APP_ENV").ok().as_deref())
+                && world_id.is_none()
+            {
+                anyhow::bail!("production runners must set RUNNER_WORLD_ID");
+            }
+            serve(
+                &store,
+                world_id,
+                tick_milliseconds,
+                heartbeat_seconds,
+                heartbeat_name,
+            )
+            .await
+        }
         Command::InitProof {
             world_id,
             seed,
@@ -1755,7 +1785,7 @@ async fn retire_for_successor(
         anyhow::bail!("a world cannot be its own successor");
     }
     let _writer_lock = store
-        .acquire_runner_writer_lock()
+        .acquire_world_writer_lock(world_id)
         .await
         .context("acquire the database canonical-writer lock")?;
     if store
@@ -1796,7 +1826,7 @@ async fn advance_qualification_world(
         anyhow::bail!("qualification tick count must be between 1 and {MAX_QUALIFICATION_TICKS}");
     }
     let _writer_lock = store
-        .acquire_runner_writer_lock()
+        .acquire_world_writer_lock(world_id)
         .await
         .context("acquire the database canonical-writer lock")?;
     let mut session = resume_world_from_snapshot(store, world_id)
@@ -1847,22 +1877,27 @@ fn print_verified_world(world_id: WorldId, session: WorldSession) -> Result<()> 
 
 async fn serve(
     store: &PostgresStore,
+    world_id: Option<WorldId>,
     tick_milliseconds: u64,
     heartbeat_seconds: u64,
+    heartbeat_name: String,
 ) -> Result<()> {
-    let _writer_lock = store
-        .acquire_runner_writer_lock()
-        .await
-        .context("acquire the database canonical-writer lock")?;
+    let _writer_lock = if let Some(world_id) = world_id {
+        store.acquire_world_writer_lock(world_id).await
+    } else {
+        store.acquire_runner_writer_lock().await
+    }
+    .context("acquire the runner writer lock")?;
     let instance_id = Uuid::new_v4();
     let heartbeat = ServiceHeartbeat {
-        service_name: "simulation-runner".to_owned(),
+        service_name: heartbeat_name,
         instance_id,
         metadata: json!({
             "baseline_ruleset_version": RULESET_VERSION,
             "default_provisional_ruleset_version": DEFAULT_PROVISIONAL_RULESET_VERSION,
             "runner_version": env!("CARGO_PKG_VERSION"),
             "mode": "deterministic-ticks",
+            "world_id": world_id,
         }),
     };
     let mut heartbeat_interval =
@@ -1876,6 +1911,7 @@ async fn serve(
         %instance_id,
         baseline_ruleset_version = RULESET_VERSION,
         default_provisional_ruleset_version = DEFAULT_PROVISIONAL_RULESET_VERSION,
+        ?world_id,
         tick_milliseconds = tick_milliseconds.max(1),
         "runner started"
     );
@@ -1883,7 +1919,7 @@ async fn serve(
     loop {
         tokio::select! {
             _ = tick_interval.tick() => {
-                if let Err(error) = advance_running_worlds(store, &mut sessions).await {
+                if let Err(error) = advance_running_worlds(store, &mut sessions, world_id).await {
                     if error.is_retryable() {
                         tracing::warn!(%error, "world advancement unavailable; will reload and retry");
                         sessions.clear();
@@ -1910,8 +1946,17 @@ async fn serve(
 async fn advance_running_worlds(
     store: &PostgresStore,
     sessions: &mut BTreeMap<WorldId, WorldSession>,
+    selected_world_id: Option<WorldId>,
 ) -> Result<(), WorldRuntimeError> {
-    let running_ids = store.list_running_world_ids().await?;
+    let mut running_ids = store.list_running_world_ids().await?;
+    if let Some(selected_world_id) = selected_world_id {
+        if !running_ids.contains(&selected_world_id) {
+            return Err(WorldRuntimeError::Integrity(format!(
+                "configured runner world {selected_world_id} is not running"
+            )));
+        }
+        running_ids.retain(|world_id| *world_id == selected_world_id);
+    }
     let running_set = running_ids.iter().copied().collect::<BTreeSet<_>>();
     sessions.retain(|world_id, _| running_set.contains(world_id));
 
