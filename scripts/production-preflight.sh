@@ -173,7 +173,7 @@ fi
 
 cancer_research_timeout_seconds="${CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS:-120}"
 cancer_research_free_timeout_seconds="${CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS:-30}"
-cancer_research_claim_lease_seconds="${CANCER_RESEARCH_CLAIM_LEASE_SECONDS:-900}"
+cancer_research_claim_lease_seconds="${CANCER_RESEARCH_CLAIM_LEASE_SECONDS:-300}"
 for value in "$cancer_research_timeout_seconds" "$cancer_research_free_timeout_seconds" \
   "$cancer_research_claim_lease_seconds"; do
   if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || ((value > 86400)); then
@@ -185,14 +185,13 @@ if ((cancer_research_free_timeout_seconds > cancer_research_timeout_seconds)); t
   echo "CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS cannot exceed CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS" >&2
   exit 2
 fi
-# The closed route contract admits at most sixteen network attempts with paid
-# routes last. Keep even fifteen free attempts plus one paid attempt inside one
-# durable claim generation.
-cancer_research_worst_case_seconds=$((
-  cancer_research_free_timeout_seconds * 15 + cancer_research_timeout_seconds
-))
-if ((cancer_research_claim_lease_seconds <= cancer_research_worst_case_seconds)); then
-  echo "CANCER_RESEARCH_CLAIM_LEASE_SECONDS must outlive every bounded route attempt" >&2
+# Generation tokens prevent late responses from a reclaimed process, and each
+# completed store operation renews the lease. Cover one longest network call
+# plus explicit scheduling slack rather than delaying crash recovery for an
+# entire route ladder.
+cancer_research_operation_lease_floor=$((cancer_research_timeout_seconds + 60))
+if ((cancer_research_claim_lease_seconds <= cancer_research_operation_lease_floor)); then
+  echo "CANCER_RESEARCH_CLAIM_LEASE_SECONDS must outlive one bounded operation plus renewal slack" >&2
   exit 2
 fi
 

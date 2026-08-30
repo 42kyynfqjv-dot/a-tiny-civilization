@@ -76,6 +76,7 @@ const MAX_MEMORY_IDLE_POLL_MILLISECONDS: u64 = 5_000;
 const MAX_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 300;
 const MAX_COGNITION_CLAIM_LEASE_SECONDS: u32 = 86_400;
 const COGNITION_CLAIM_RENEWAL_SLACK_SECONDS: u64 = 60;
+const CANCER_RESEARCH_CLAIM_RENEWAL_SLACK_SECONDS: u64 = 60;
 const MAX_QUALIFICATION_TICKS: u64 = 1_000_000;
 
 #[derive(Debug, Parser)]
@@ -487,7 +488,7 @@ enum Command {
         #[arg(
             long,
             env = "CANCER_RESEARCH_CLAIM_LEASE_SECONDS",
-            default_value_t = 900
+            default_value_t = 300
         )]
         claim_lease_seconds: u32,
 
@@ -3958,17 +3959,14 @@ fn validate_cancer_research_worker_timing(
     if free_timeout_seconds > paid_timeout_seconds {
         anyhow::bail!("Cancer research free-route timeout cannot exceed the paid-route timeout");
     }
-    // A closed registry admits at most sixteen network attempts and places paid
-    // routes last. Cover fifteen free attempts plus one paid attempt even though
-    // every currently admitted registry is shorter.
-    let worst_case_seconds = free_timeout_seconds
-        .checked_mul(u64::from(
-            application::MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS - 1,
-        ))
-        .and_then(|free| free.checked_add(paid_timeout_seconds))
-        .context("calculate bounded Cancer research worker duration")?;
-    if u64::from(claim_lease_seconds) <= worst_case_seconds {
-        anyhow::bail!("Cancer research claim lease must outlive every bounded route attempt");
+    let operation_lease_floor = paid_timeout_seconds
+        .max(free_timeout_seconds)
+        .checked_add(CANCER_RESEARCH_CLAIM_RENEWAL_SLACK_SECONDS)
+        .context("calculate bounded Cancer research operation lease")?;
+    if u64::from(claim_lease_seconds) <= operation_lease_floor {
+        anyhow::bail!(
+            "Cancer research claim lease must outlive one bounded operation plus renewal slack"
+        );
     }
     Ok(())
 }
@@ -5274,15 +5272,16 @@ mod tests {
         assert!(drain);
         assert_eq!(request_timeout_seconds, 120);
         assert_eq!(free_request_timeout_seconds, 30);
-        assert_eq!(claim_lease_seconds, 900);
+        assert_eq!(claim_lease_seconds, 300);
         validate_cancer_research_worker_timing(
             request_timeout_seconds,
             free_request_timeout_seconds,
             claim_lease_seconds,
         )
         .expect("default research worker timing");
-        assert!(validate_cancer_research_worker_timing(120, 30, 570).is_err());
-        assert!(validate_cancer_research_worker_timing(30, 31, 900).is_err());
+        assert!(validate_cancer_research_worker_timing(120, 30, 180).is_err());
+        assert!(validate_cancer_research_worker_timing(120, 30, 300).is_ok());
+        assert!(validate_cancer_research_worker_timing(30, 31, 300).is_err());
         assert_eq!(
             paid_reservation_micro_usd,
             application::DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD

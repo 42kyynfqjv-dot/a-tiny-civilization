@@ -42,6 +42,7 @@ struct ResearchJobRow {
     inference_tier: String,
     request_payload: Value,
     request_checksum: Vec<u8>,
+    claim_token: Uuid,
     claim_count: i64,
 }
 
@@ -1156,13 +1157,14 @@ impl CancerResearchJobStore for PostgresStore {
                 LIMIT 1
             )
             UPDATE cancer_research_requests AS request
-            SET claimed_by=$1, claimed_at=NOW(), claim_count=request.claim_count+1, last_error=NULL
+            SET claimed_by=$1, claimed_at=NOW(), claim_token=gen_random_uuid(),
+                claim_count=request.claim_count+1, last_error=NULL
             FROM candidate
             WHERE request.request_id=candidate.request_id
             RETURNING request.request_id, request.world_id, request.resident_id,
                 request.selected_tick, request.deadline_tick, request.ordinal,
                 request.stage, request.inference_tier, request.request_payload,
-                request.request_checksum, request.claim_count
+                request.request_checksum, request.claim_token, request.claim_count
             "#,
         )
         .bind(worker_id)
@@ -1188,14 +1190,16 @@ impl CancerResearchJobStore for PostgresStore {
             r#"
             UPDATE cancer_research_requests
             SET available_at=NOW()+($3::BIGINT*INTERVAL '1 second'),
-                claimed_by=NULL, claimed_at=NULL, last_error=$4
-            WHERE request_id=$1 AND claimed_by=$2 AND completed_at IS NULL
+                claimed_by=NULL, claimed_at=NULL, claim_token=NULL, last_error=$4
+            WHERE request_id=$1 AND claimed_by=$2 AND claim_token=$5
+              AND completed_at IS NULL
             "#,
         )
         .bind(entry.request.request_id)
         .bind(worker_id)
         .bind(retry)
         .bind(error)
+        .bind(entry.claim_token)
         .execute(self.pool())
         .await
         .map_err(operation_error)?;
@@ -1222,7 +1226,7 @@ impl CancerResearchJobStore for PostgresStore {
         }
         let request_checksum = entry.request.canonical_hash().map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         sqlx::query(
             r#"
             INSERT INTO cancer_research_terminal_failures (
@@ -1241,13 +1245,15 @@ impl CancerResearchJobStore for PostgresStore {
         let updated = sqlx::query(
             r#"
             UPDATE cancer_research_requests
-            SET completed_at=NOW(),claimed_by=NULL,claimed_at=NULL,last_error=$3
-            WHERE request_id=$1 AND claimed_by=$2 AND completed_at IS NULL
+            SET completed_at=NOW(),claimed_by=NULL,claimed_at=NULL,claim_token=NULL,last_error=$3
+            WHERE request_id=$1 AND claimed_by=$2 AND claim_token=$4
+              AND completed_at IS NULL
             "#,
         )
         .bind(entry.request.request_id)
         .bind(worker_id)
         .bind(&error)
+        .bind(entry.claim_token)
         .execute(&mut *transaction)
         .await
         .map_err(operation_error)?;
@@ -1279,7 +1285,7 @@ impl CancerResearchJobStore for PostgresStore {
         let route_payload = serde_json::to_value(route).map_err(corrupt)?;
         let route_checksum = Digest::canonical(route).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         sqlx::query(
             r#"
             INSERT INTO cancer_research_route_dispatches (
@@ -1350,7 +1356,7 @@ impl CancerResearchJobStore for PostgresStore {
             .transpose()
             .map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         let dispatch = sqlx::query_as::<_, (Value, Vec<u8>)>(
             r#"SELECT route_payload, route_checksum
                FROM cancer_research_route_dispatches
@@ -1469,7 +1475,7 @@ impl CancerResearchJobStore for PostgresStore {
             .canonical_hash(entry.request.route_purpose())
             .map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         sqlx::query(
             r#"
             INSERT INTO cancer_research_results (
@@ -1489,14 +1495,19 @@ impl CancerResearchJobStore for PostgresStore {
         if let Some(receipt) = result.receipt.as_ref() {
             enqueue_cancer_research_memory(&mut transaction, &entry.request, receipt).await?;
         }
-        sqlx::query(
-            "UPDATE cancer_research_requests SET completed_at=NOW() WHERE request_id=$1 AND claimed_by=$2 AND completed_at IS NULL",
+        let completed = sqlx::query(
+            "UPDATE cancer_research_requests SET completed_at=NOW() WHERE request_id=$1 AND claimed_by=$2 AND claim_token=$3 AND completed_at IS NULL",
         )
         .bind(entry.request.request_id)
         .bind(worker_id)
+        .bind(entry.claim_token)
         .execute(&mut *transaction)
         .await
         .map_err(operation_error)?;
+        require_one(
+            completed.rows_affected(),
+            "completed research request is not held by this worker",
+        )?;
         transaction.commit().await.map_err(operation_error)
     }
 
@@ -1984,7 +1995,7 @@ impl CancerResearchJobStore for PostgresStore {
         let scope = CognitionBillingScope::CancerResearch;
         let (target, hard_stop) = scope.monthly_limits_micro_usd();
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         let billing_month: NaiveDate =
             sqlx::query_scalar("SELECT date_trunc('month', CURRENT_DATE)::DATE")
                 .fetch_one(&mut *transaction)
@@ -2134,7 +2145,7 @@ impl CancerResearchJobStore for PostgresStore {
         }
         let receipt_payload = serde_json::to_value(receipt).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         let durable_receipt = sqlx::query_scalar::<_, Value>(
             r#"
             SELECT outcome.receipt_payload
@@ -2172,7 +2183,7 @@ impl CancerResearchJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         if !paid_research_release_is_safe(&mut transaction, entry.request.request_id).await? {
             return Err(StoreError::Conflict(
                 "a paid research call without an explicit rejected outcome cannot release its reservation"
@@ -2197,7 +2208,7 @@ impl CancerResearchJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         if !paid_research_was_dispatched(&mut transaction, entry.request.request_id).await? {
             return Err(StoreError::Conflict(
                 "an undispatched paid research call cannot become billing-indeterminate".to_owned(),
@@ -2964,6 +2975,7 @@ fn parse_job(row: ResearchJobRow) -> Result<CancerResearchJobEntry, StoreError> 
     }
     let entry = CancerResearchJobEntry {
         request,
+        claim_token: row.claim_token,
         claim_count,
     };
     entry.validate().map_err(corrupt)?;
@@ -3063,13 +3075,20 @@ fn route_from_attempt(attempt: &CognitionRouteAttempt) -> Result<CognitionModelR
 async fn ensure_claim(
     transaction: &mut Transaction<'_, Postgres>,
     worker_id: &str,
-    request_id: Uuid,
+    entry: &CancerResearchJobEntry,
 ) -> Result<(), StoreError> {
     let held = sqlx::query_scalar::<_, Uuid>(
-        "SELECT request_id FROM cancer_research_requests WHERE request_id=$1 AND claimed_by=$2 AND completed_at IS NULL FOR UPDATE",
+        r#"
+        UPDATE cancer_research_requests
+        SET claimed_at=NOW()
+        WHERE request_id=$1 AND claimed_by=$2 AND claim_token=$3
+          AND completed_at IS NULL
+        RETURNING request_id
+        "#,
     )
-    .bind(request_id)
+    .bind(entry.request.request_id)
     .bind(worker_id)
+    .bind(entry.claim_token)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(operation_error)?;
@@ -3077,7 +3096,8 @@ async fn ensure_claim(
         Ok(())
     } else {
         Err(StoreError::Conflict(format!(
-            "cancer research request {request_id} is not held by this worker"
+            "cancer research request {} is not held by this worker",
+            entry.request.request_id
         )))
     }
 }
@@ -3317,15 +3337,41 @@ mod tests {
             .enqueue_cancer_research_request(&request)
             .await
             .expect("idempotent enqueue");
-        let entry = store
+        let stale_entry = store
             .claim_next_cancer_research_request("research-test-worker", 60)
             .await
             .expect("claim")
             .expect("job");
+        sqlx::query(
+            "UPDATE cancer_research_requests SET claimed_at=NOW()-INTERVAL '10 minutes' WHERE request_id=$1",
+        )
+        .bind(stale_entry.request.request_id)
+        .execute(store.pool())
+        .await
+        .expect("expire first research lease");
+        let entry = store
+            .claim_next_cancer_research_request("research-test-worker", 60)
+            .await
+            .expect("reclaim")
+            .expect("expired job");
         assert_eq!(entry.request, request);
+        assert_eq!(entry.claim_count, 2);
+        assert_ne!(stale_entry.claim_token, entry.claim_token);
 
         let registry = CognitionRouteRegistry::cancer_research_exploration();
         let route = registry.routes[0].clone();
+        assert!(
+            store
+                .begin_cancer_research_route_attempt(
+                    "research-test-worker",
+                    &stale_entry,
+                    0,
+                    &route,
+                )
+                .await
+                .is_err(),
+            "a stale generation must not regain authority through a reused worker ID"
+        );
         store
             .begin_cancer_research_route_attempt("research-test-worker", &entry, 0, &route)
             .await
@@ -3685,6 +3731,351 @@ mod tests {
                 .await
                 .expect("load worker result")
                 .is_some()
+        );
+
+        let recovery_selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(70),
+            SimTick::new(80),
+            3,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::GenerateMechanisticHypothesis,
+            CancerResearchInferenceTier::Exploration,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            Vec::new(),
+            None,
+            2_048,
+        )
+        .expect("recovery selection");
+        let recovery_request = CancerResearchModelRequest::new(
+            recovery_selection,
+            Vec::<CancerResearchEvidenceDocument>::new(),
+            Vec::new(),
+        )
+        .expect("recovery request");
+        store
+            .enqueue_cancer_research_request(&recovery_request)
+            .await
+            .expect("enqueue recovery request");
+        let interrupted = store
+            .claim_next_cancer_research_request("recovery-worker", 60)
+            .await
+            .expect("claim recovery request")
+            .expect("recovery job");
+        let recovery_registry = CognitionRouteRegistry::cancer_research_exploration();
+        store
+            .begin_cancer_research_route_attempt(
+                "recovery-worker",
+                &interrupted,
+                0,
+                &recovery_registry.routes[0],
+            )
+            .await
+            .expect("persist interrupted free dispatch");
+        sqlx::query(
+            "UPDATE cancer_research_requests SET claimed_at=NOW()-INTERVAL '10 minutes' WHERE request_id=$1",
+        )
+        .bind(recovery_request.request_id)
+        .execute(store.pool())
+        .await
+        .expect("expire interrupted research claim");
+
+        let mut recovery_adapters: CancerResearchModelAdapters = BTreeMap::new();
+        recovery_adapters.insert(
+            recovery_registry.routes[1].provider.clone(),
+            Arc::new(SuccessfulResearchModel),
+        );
+        let recovered = process_next_cancer_research_job(
+            &store,
+            &recovery_adapters,
+            "recovery-worker",
+            &CancerResearchWorkerConfiguration::default(),
+        )
+        .await
+        .expect("recover interrupted free dispatch");
+        assert_eq!(
+            recovered,
+            CancerResearchWorkerOutcome::Completed {
+                request_id: recovery_request.request_id,
+                succeeded: true,
+            },
+            "a crashed free route must not discard the rest of the ladder"
+        );
+        let recovered_entry = CancerResearchJobEntry {
+            request: recovery_request,
+            claim_token: sqlx::query_scalar(
+                "SELECT claim_token FROM cancer_research_requests WHERE request_id=$1",
+            )
+            .bind(interrupted.request.request_id)
+            .fetch_one(store.pool())
+            .await
+            .expect("load recovered claim token"),
+            claim_count: 2,
+        };
+        let recovered_attempts = store
+            .list_cancer_research_route_attempts(&recovered_entry)
+            .await
+            .expect("load recovered route prefix");
+        assert_eq!(recovered_attempts.len(), 2);
+        assert_eq!(
+            recovered_attempts[0]
+                .attempt
+                .as_ref()
+                .expect("recovered unavailable attempt")
+                .status,
+            CognitionRouteAttemptStatus::Unavailable
+        );
+        assert_eq!(
+            recovered_attempts[1]
+                .attempt
+                .as_ref()
+                .expect("continued successful attempt")
+                .status,
+            CognitionRouteAttemptStatus::Succeeded
+        );
+
+        let paid_crash_selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(90),
+            SimTick::new(100),
+            4,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::LiteratureAudit,
+            CancerResearchTask::ChallengeFrozenHypothesis,
+            CancerResearchInferenceTier::Escalation,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            Vec::new(),
+            Some(Digest::sha256(b"paid crash candidate")),
+            2_048,
+        )
+        .expect("paid crash selection");
+        let paid_crash_request = CancerResearchModelRequest::new(
+            paid_crash_selection,
+            Vec::<CancerResearchEvidenceDocument>::new(),
+            Vec::new(),
+        )
+        .expect("paid crash request");
+        store
+            .enqueue_cancer_research_request(&paid_crash_request)
+            .await
+            .expect("enqueue paid crash request");
+        let paid_crash_entry = store
+            .claim_next_cancer_research_request("paid-crash-worker", 60)
+            .await
+            .expect("claim paid crash request")
+            .expect("paid crash job");
+        let paid_crash_authorization = match store
+            .reserve_paid_cancer_research(
+                "paid-crash-worker",
+                &paid_crash_entry,
+                &paid_route,
+                MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+            )
+            .await
+            .expect("reserve paid crash request")
+        {
+            CancerResearchPaidReservationDecision::Authorized(authorization) => authorization,
+            CancerResearchPaidReservationDecision::DeniedHardStop => {
+                panic!("fresh paid crash reservation unexpectedly denied")
+            }
+        };
+        store
+            .begin_cancer_research_route_attempt(
+                "paid-crash-worker",
+                &paid_crash_entry,
+                paid_route_index,
+                &paid_route,
+            )
+            .await
+            .expect("persist paid crash dispatch");
+        let ambiguous_paid_attempt = CognitionRouteAttempt {
+            route_index: paid_route_index,
+            provider: paid_route.provider.clone(),
+            requested_model: paid_route.requested_model.clone(),
+            billing_class: paid_route.billing_class,
+            status: CognitionRouteAttemptStatus::Unavailable,
+        };
+        store
+            .finish_cancer_research_route_attempt(
+                "paid-crash-worker",
+                &paid_crash_entry,
+                &ambiguous_paid_attempt,
+                None,
+            )
+            .await
+            .expect("persist ambiguous paid outcome");
+        // Model a crash after the route outcome committed but before the
+        // reservation could be marked indeterminate.
+        sqlx::query(
+            "UPDATE cancer_research_requests SET claimed_at=NOW()-INTERVAL '10 minutes' WHERE request_id=$1",
+        )
+        .bind(paid_crash_request.request_id)
+        .execute(store.pool())
+        .await
+        .expect("expire paid crash claim");
+
+        let recovered_paid = process_next_cancer_research_job(
+            &store,
+            &CancerResearchModelAdapters::new(),
+            "paid-crash-worker",
+            &CancerResearchWorkerConfiguration::default(),
+        )
+        .await
+        .expect("recover ambiguous paid outcome");
+        assert_eq!(
+            recovered_paid,
+            CancerResearchWorkerOutcome::Completed {
+                request_id: paid_crash_request.request_id,
+                succeeded: false,
+            }
+        );
+        let paid_crash_status: String = sqlx::query_scalar(
+            "SELECT status FROM cancer_research_cost_reservations WHERE request_id=$1",
+        )
+        .bind(paid_crash_authorization.request_id)
+        .fetch_one(store.pool())
+        .await
+        .expect("load recovered paid reservation");
+        assert_eq!(paid_crash_status, "indeterminate");
+        assert!(
+            store
+                .load_cancer_research_result(paid_crash_request.request_id)
+                .await
+                .expect("load recovered paid result")
+                .is_some(),
+            "billing ambiguity must not strand the research request"
+        );
+
+        let resolved_crash_selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(110),
+            SimTick::new(120),
+            5,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::LiteratureAudit,
+            CancerResearchTask::ChallengeFrozenHypothesis,
+            CancerResearchInferenceTier::Escalation,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            Vec::new(),
+            Some(Digest::sha256(b"resolved paid crash candidate")),
+            2_048,
+        )
+        .expect("resolved paid crash selection");
+        let resolved_crash_request = CancerResearchModelRequest::new(
+            resolved_crash_selection,
+            Vec::<CancerResearchEvidenceDocument>::new(),
+            Vec::new(),
+        )
+        .expect("resolved paid crash request");
+        store
+            .enqueue_cancer_research_request(&resolved_crash_request)
+            .await
+            .expect("enqueue resolved paid crash request");
+        let resolved_crash_entry = store
+            .claim_next_cancer_research_request("resolved-paid-crash-worker", 60)
+            .await
+            .expect("claim resolved paid crash request")
+            .expect("resolved paid crash job");
+        let resolved_crash_authorization = match store
+            .reserve_paid_cancer_research(
+                "resolved-paid-crash-worker",
+                &resolved_crash_entry,
+                &paid_route,
+                MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+            )
+            .await
+            .expect("reserve resolved paid crash request")
+        {
+            CancerResearchPaidReservationDecision::Authorized(authorization) => authorization,
+            CancerResearchPaidReservationDecision::DeniedHardStop => {
+                panic!("resolved paid crash reservation unexpectedly denied")
+            }
+        };
+        store
+            .begin_cancer_research_route_attempt(
+                "resolved-paid-crash-worker",
+                &resolved_crash_entry,
+                paid_route_index,
+                &paid_route,
+            )
+            .await
+            .expect("persist resolved paid crash dispatch");
+        store
+            .finish_cancer_research_route_attempt(
+                "resolved-paid-crash-worker",
+                &resolved_crash_entry,
+                &CognitionRouteAttempt {
+                    route_index: paid_route_index,
+                    provider: paid_route.provider.clone(),
+                    requested_model: paid_route.requested_model.clone(),
+                    billing_class: paid_route.billing_class,
+                    status: CognitionRouteAttemptStatus::Unavailable,
+                },
+                None,
+            )
+            .await
+            .expect("persist resolved ambiguous paid outcome");
+        store
+            .mark_paid_cancer_research_indeterminate(
+                "resolved-paid-crash-worker",
+                &resolved_crash_entry,
+                &resolved_crash_authorization,
+            )
+            .await
+            .expect("resolve paid ambiguity before crash");
+        // Model the second crash window: billing is already conservative, but
+        // the request itself has not yet been finalized.
+        sqlx::query(
+            "UPDATE cancer_research_requests SET claimed_at=NOW()-INTERVAL '10 minutes' WHERE request_id=$1",
+        )
+        .bind(resolved_crash_request.request_id)
+        .execute(store.pool())
+        .await
+        .expect("expire resolved paid crash claim");
+        let (_, next_paid_route) = paid_registry
+            .routes
+            .iter()
+            .enumerate()
+            .skip(usize::from(paid_route_index) + 1)
+            .find(|(_, route)| route.billing_class == CognitionBillingClass::PaidApproved)
+            .expect("escalation registry contains a second paid route");
+        let mut resolved_crash_adapters = CancerResearchModelAdapters::new();
+        resolved_crash_adapters.insert(
+            next_paid_route.provider.clone(),
+            Arc::new(SuccessfulResearchModel),
+        );
+        let recovered_resolved_paid = process_next_cancer_research_job(
+            &store,
+            &resolved_crash_adapters,
+            "resolved-paid-crash-worker",
+            &CancerResearchWorkerConfiguration {
+                paid_enabled: true,
+                ..CancerResearchWorkerConfiguration::default()
+            },
+        )
+        .await
+        .expect("recover already-resolved paid ambiguity");
+        assert_eq!(
+            recovered_resolved_paid,
+            CancerResearchWorkerOutcome::Completed {
+                request_id: resolved_crash_request.request_id,
+                succeeded: false,
+            }
+        );
+        let resolved_dispatches: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cancer_research_route_dispatches WHERE request_id=$1",
+        )
+        .bind(resolved_crash_request.request_id)
+        .fetch_one(store.pool())
+        .await
+        .expect("count resolved paid crash dispatches");
+        assert_eq!(
+            resolved_dispatches, 1,
+            "a resolved ambiguous paid call must never advance to another paid route"
         );
     }
 }

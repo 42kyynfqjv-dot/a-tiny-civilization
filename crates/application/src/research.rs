@@ -1030,6 +1030,9 @@ pub trait CancerResearchModel: Send + Sync {
 #[serde(deny_unknown_fields)]
 pub struct CancerResearchJobEntry {
     pub request: CancerResearchModelRequest,
+    /// Opaque database lease generation. It prevents a response from an old
+    /// process from gaining authority when the same worker ID is reclaimed.
+    pub claim_token: Uuid,
     pub claim_count: u32,
 }
 
@@ -1059,7 +1062,7 @@ impl CancerResearchTerminalFailureClass {
 impl CancerResearchJobEntry {
     pub fn validate(&self) -> Result<(), CancerResearchModelContractError> {
         self.request.validate()?;
-        if self.claim_count == 0 {
+        if self.claim_token.is_nil() || self.claim_count == 0 {
             return Err(CancerResearchModelContractError::InvalidJob);
         }
         Ok(())

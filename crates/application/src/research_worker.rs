@@ -23,7 +23,7 @@ pub struct CancerResearchWorkerConfiguration {
 impl Default for CancerResearchWorkerConfiguration {
     fn default() -> Self {
         Self {
-            claim_lease_seconds: 900,
+            claim_lease_seconds: 300,
             retry_after_seconds: 30,
             paid_reservation_micro_usd: DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
             paid_enabled: false,
@@ -177,16 +177,12 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
         store
             .finish_cancer_research_route_attempt(worker_id, entry, &attempt, None)
             .await?;
-        if in_flight.route.billing_class == CognitionBillingClass::PaidApproved
-            && let Some(authorization) =
-                store.load_paid_cancer_research_authorization(entry).await?
-        {
-            store
-                .mark_paid_cancer_research_indeterminate(worker_id, entry, &authorization)
-                .await?;
-        }
+        // The interrupted network call is never repeated, but a free-route
+        // crash must not discard the remainder of the closed ladder. Reload
+        // the now-terminal prefix. Paid ambiguity is reconciled from that
+        // durable prefix below, so a crash between these two operations is
+        // recoverable without releasing a possibly incurred charge.
         records = store.list_cancer_research_route_attempts(entry).await?;
-        return finalize_from_records(store, worker_id, entry, &registry, &records).await;
     }
 
     if records.iter().any(|record| {
@@ -199,9 +195,34 @@ async fn process_claimed_job<S: CancerResearchJobStore + ?Sized>(
         return finalize_from_records(store, worker_id, entry, &registry, &records).await;
     }
 
+    let mut paid_authorization = store.load_paid_cancer_research_authorization(entry).await?;
+    let has_ambiguous_paid_outcome = records.iter().any(|record| {
+        record.route.billing_class == CognitionBillingClass::PaidApproved
+            && record.attempt.as_ref().is_some_and(|attempt| {
+                matches!(
+                    attempt.status,
+                    CognitionRouteAttemptStatus::Unavailable
+                        | CognitionRouteAttemptStatus::InvalidResponse
+                )
+            })
+    });
+    if has_ambiguous_paid_outcome {
+        // A provider may have accepted this request before the worker lost its
+        // response or rejected its shape. Resolve the reservation
+        // conservatively from durable history before finalizing. This check is
+        // intentionally restart-safe across both crash windows: an active
+        // authorization is marked indeterminate, while an already-resolved
+        // reservation still stops the ladder before a second paid dispatch.
+        if let Some(authorization) = paid_authorization.as_ref() {
+            store
+                .mark_paid_cancer_research_indeterminate(worker_id, entry, authorization)
+                .await?;
+        }
+        return finalize_from_records(store, worker_id, entry, &registry, &records).await;
+    }
+
     let recovered_attempts = attempts_from_records(&registry, &records)?;
     let mut attempts = recovered_attempts;
-    let mut paid_authorization = store.load_paid_cancer_research_authorization(entry).await?;
 
     for (position, route) in registry.routes.iter().enumerate().skip(attempts.len()) {
         let route_index = u16::try_from(position).map_err(|_| {

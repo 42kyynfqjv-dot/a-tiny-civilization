@@ -15,5 +15,6 @@ grep -qF 'HF_HUB_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-1}' "$compose_file"
 grep -qF 'TRANSFORMERS_OFFLINE: ${HINDSIGHT_HF_OFFLINE:-1}' "$compose_file"
 grep -qF 'COGNITION_CLAIM_LEASE_SECONDS: ${COGNITION_CLAIM_LEASE_SECONDS:-300}' "$compose_file"
 grep -qF 'COGNITION_REQUEST_TIMEOUT_SECONDS: ${COGNITION_REQUEST_TIMEOUT_SECONDS:-180}' "$compose_file"
+grep -qF 'CANCER_RESEARCH_CLAIM_LEASE_SECONDS: ${CANCER_RESEARCH_CLAIM_LEASE_SECONDS:-300}' "$compose_file"
 
 echo "Hindsight and local cognition are pinned, keyless, text-minimized, and CPU-timeout provisioned."

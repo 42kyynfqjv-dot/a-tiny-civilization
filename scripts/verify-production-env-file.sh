@@ -52,13 +52,13 @@ fi
 
 short_research_lease_file="${temporary_directory}/short-research-lease.env"
 cp "$environment_file" "$short_research_lease_file"
-echo 'CANCER_RESEARCH_CLAIM_LEASE_SECONDS=570' >> "$short_research_lease_file"
+echo 'CANCER_RESEARCH_CLAIM_LEASE_SECONDS=180' >> "$short_research_lease_file"
 if "${project_root}/scripts/production-preflight.sh" --env-file "$short_research_lease_file" \
   >"${temporary_directory}/short-research-lease.txt" 2>&1; then
-  echo "production preflight accepted a lease shorter than one bounded research job" >&2
+  echo "production preflight accepted a research lease without renewal slack" >&2
   exit 1
 fi
-if ! grep -q 'must outlive every bounded route attempt' \
+if ! grep -q 'must outlive one bounded operation plus renewal slack' \
   "${temporary_directory}/short-research-lease.txt"; then
   echo "production preflight rejected the short research lease for the wrong reason" >&2
   exit 1
