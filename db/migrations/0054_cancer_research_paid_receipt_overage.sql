@@ -59,8 +59,9 @@ BEGIN
     FROM pg_constraint
     WHERE conrelid = 'cognition_cost_accounts'::REGCLASS
       AND contype = 'c'
-      AND pg_get_constraintdef(oid)
-          LIKE '%reserved_micro_usd + spent_micro_usd <= hard_stop_micro_usd%';
+      AND pg_get_constraintdef(oid) LIKE '%reserved_micro_usd%'
+      AND pg_get_constraintdef(oid) LIKE '%spent_micro_usd%'
+      AND pg_get_constraintdef(oid) LIKE '%hard_stop_micro_usd%';
 
     IF constraint_name IS NULL THEN
         RAISE EXCEPTION 'cognition account hard-stop constraint was not found';
