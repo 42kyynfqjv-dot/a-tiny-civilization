@@ -18,13 +18,12 @@ use world_domain::{
 };
 
 use crate::{
+    CANCER_RESEARCH_CAMPAIGN_MAX_TESTS, CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS,
     CancerResearchCampaignDirective, CancerResearchCampaignTestAssessment,
     CancerVirtualExperimentCandidate, cancer_research_campaign_test_assessment,
 };
 
 const PARTS_PER_MILLION: u32 = 1_000_000;
-const MAX_CAMPAIGN_TESTS: usize = 5;
-const REQUIRED_SUPPORTING_TESTS: usize = 3;
 const OXYGEN_HYPOXIA_THRESHOLD: u32 = 250_000;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -66,9 +65,12 @@ impl CancerTissueRefinementCandidate {
     pub fn validate_survivor(&self) -> Result<(), CancerTissueRefinementError> {
         validate_current_result(&self.root_result, &self.root)?;
         if self.campaign_id != CancerResearchCampaignDirective::campaign_id(self.root.request_id)
-            || self.root_result.interpretation
-                != CancerVirtualExperimentInterpretation::ModelSupportsPrediction
-            || !(REQUIRED_SUPPORTING_TESTS..=MAX_CAMPAIGN_TESTS)
+            || !matches!(
+                self.root_result.interpretation,
+                CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+                    | CancerVirtualExperimentInterpretation::ModelInconclusive
+            )
+            || !(CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS..=CANCER_RESEARCH_CAMPAIGN_MAX_TESTS)
                 .contains(&self.campaign_experiments.len())
         {
             return Err(CancerTissueRefinementError::IneligibleCampaign);
@@ -121,7 +123,7 @@ impl CancerTissueRefinementCandidate {
                 }
             }
         }
-        if supporting < REQUIRED_SUPPORTING_TESTS {
+        if supporting < CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS {
             return Err(CancerTissueRefinementError::IneligibleCampaign);
         }
         if self.survival_evidence.synthesis_request_id.is_nil()
@@ -1048,8 +1050,9 @@ mod tests {
         CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION, CancerResearchArtifactKind,
         CancerResearchClaim, CancerResearchContribution, CancerResearchInferenceTier,
         CancerResearchProfile, CancerResearchTarget, CancerResearchTask,
-        CancerResearchTurnSelection, CancerVirtualEndpoint, CancerVirtualExperimentPlan,
-        CancerVirtualMechanismTarget, EntityId, SimTick, WorldId, WorldSeed,
+        CancerResearchTurnSelection, CancerVirtualEndpoint, CancerVirtualExperimentInterpretation,
+        CancerVirtualExperimentPlan, CancerVirtualMechanismTarget, EntityId, SimTick, WorldId,
+        WorldSeed,
     };
 
     fn experiment(
@@ -1079,6 +1082,29 @@ mod tests {
         modality: CancerVirtualInterventionModality,
         subject_model: CancerVirtualSubjectModel,
         endpoint: CancerVirtualEndpoint,
+    ) -> CancerVirtualExperimentCandidate {
+        experiment_with_subject_and_intensity(
+            world_id,
+            ordinal,
+            stage,
+            exposure_hours,
+            modality,
+            subject_model,
+            endpoint,
+            900_000,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn experiment_with_subject_and_intensity(
+        world_id: WorldId,
+        ordinal: u32,
+        stage: CancerResearchStage,
+        exposure_hours: u16,
+        modality: CancerVirtualInterventionModality,
+        subject_model: CancerVirtualSubjectModel,
+        endpoint: CancerVirtualEndpoint,
+        intensity_parts_per_million: u32,
     ) -> CancerVirtualExperimentCandidate {
         let resident_id = EntityId::deterministic(world_id, &ordinal.to_be_bytes());
         let frozen_candidate_hash = (stage == CancerResearchStage::IndependentReplication)
@@ -1122,7 +1148,7 @@ mod tests {
                 primary_target: CancerVirtualMechanismTarget::CellDivision,
                 secondary_target: None,
                 primary_endpoint: endpoint,
-                intensity_parts_per_million: 900_000,
+                intensity_parts_per_million,
                 exposure_hours,
                 cohort_size: 128 + u16::try_from(ordinal).unwrap_or_default(),
             }),
@@ -1139,17 +1165,20 @@ mod tests {
 
     fn surviving_candidate() -> CancerTissueRefinementCandidate {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x5155));
-        let root = experiment(
+        let root = experiment_with_subject_and_intensity(
             world_id,
             1,
             CancerResearchStage::BlindDiscovery,
             168,
             CancerVirtualInterventionModality::MolecularInhibition,
+            CancerVirtualSubjectModel::TumorOrganoid,
+            CancerVirtualEndpoint::ViableTumorFraction,
+            300_000,
         );
         let root_result = execute_cancer_virtual_experiment(&root).expect("root result");
         assert_eq!(
             root_result.interpretation,
-            CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+            CancerVirtualExperimentInterpretation::ModelInconclusive
         );
         let root_hash = root.artifact_hash;
         let campaign_id = CancerResearchCampaignDirective::campaign_id(root.request_id);
@@ -1214,6 +1243,75 @@ mod tests {
     }
 
     #[test]
+    fn survivor_promoted_during_escalation_remains_tissue_eligible() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x5155_0010));
+        let root = experiment(
+            world_id,
+            1,
+            CancerResearchStage::BlindDiscovery,
+            168,
+            CancerVirtualInterventionModality::MolecularInhibition,
+        );
+        let root_result = execute_cancer_virtual_experiment(&root).expect("root result");
+        let root_hash = root.artifact_hash;
+        let campaign_id = CancerResearchCampaignDirective::campaign_id(root.request_id);
+        let campaign_experiments = [300_000_u32, 300_000, 300_000, 900_000, 900_000, 900_000]
+            .into_iter()
+            .enumerate()
+            .map(|(offset, intensity)| {
+                let candidate = experiment_with_subject_and_intensity(
+                    world_id,
+                    u32::try_from(offset).expect("offset") + 2,
+                    CancerResearchStage::IndependentReplication,
+                    96 + u16::try_from(offset).expect("offset") * 12,
+                    CancerVirtualInterventionModality::MolecularInhibition,
+                    CancerVirtualSubjectModel::TumorOrganoid,
+                    CancerVirtualEndpoint::ViableTumorFraction,
+                    intensity,
+                );
+                let result = execute_cancer_virtual_experiment(&candidate).expect("result");
+                CancerTissueRefinementCampaignExperiment {
+                    frozen_root_artifact_hash: root_hash,
+                    candidate,
+                    result,
+                }
+            })
+            .collect::<Vec<_>>();
+        let supporting_tests = campaign_experiments
+            .iter()
+            .filter(|experiment| {
+                cancer_research_campaign_test_assessment(&experiment.result)
+                    == CancerResearchCampaignTestAssessment::Supports
+            })
+            .count();
+        let inconclusive_tests = campaign_experiments.len() - supporting_tests;
+        assert_eq!((supporting_tests, inconclusive_tests), (3, 3));
+        let candidate = CancerTissueRefinementCandidate {
+            campaign_id,
+            survival_evidence: CancerTissueRefinementSurvivalEvidence {
+                synthesis_request_id: Uuid::from_u128(0x5155_0010_ffff),
+                synthesis_request_hash: Digest::sha256(b"late synthesis request"),
+                synthesis_result_hash: Digest::sha256(b"late synthesis result"),
+                campaign_id,
+                root_artifact_hash: root_hash,
+                supporting_tests: u8::try_from(supporting_tests).expect("support count"),
+                falsifying_tests: 0,
+                inconclusive_tests: u8::try_from(inconclusive_tests).expect("inconclusive count"),
+            },
+            root,
+            root_result,
+            campaign_experiments,
+        };
+        candidate
+            .validate_survivor()
+            .expect("late survivor is eligible");
+        let protocol =
+            prepare_cancer_tissue_refinement_protocol(&candidate).expect("late protocol");
+        assert_eq!(protocol.campaign_result_hashes.len(), 6);
+        protocol.validate().expect("late protocol validates");
+    }
+
+    #[test]
     fn output_and_execution_stay_inside_every_declared_ceiling() {
         let candidate = surviving_candidate();
         let protocol = prepare_cancer_tissue_refinement_protocol(&candidate).expect("protocol");
@@ -1271,6 +1369,21 @@ mod tests {
             CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect;
         assert!(matches!(
             prepare_cancer_tissue_refinement_protocol(&adverse),
+            Err(CancerTissueRefinementError::IneligibleCampaign)
+        ));
+
+        let mut adverse_root = surviving_candidate();
+        adverse_root.root_result.interpretation =
+            CancerVirtualExperimentInterpretation::ModelShowsNoMaterialEffect;
+        assert!(
+            adverse_root
+                .root_result
+                .validate_against(&adverse_root.root.contribution)
+                .is_ok(),
+            "the root allowlist, not generic result structure, must reject the adverse root"
+        );
+        assert!(matches!(
+            prepare_cancer_tissue_refinement_protocol(&adverse_root),
             Err(CancerTissueRefinementError::IneligibleCampaign)
         ));
     }

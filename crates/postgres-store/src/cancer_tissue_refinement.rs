@@ -320,6 +320,20 @@ impl PostgresStore {
               AND request.request_payload->'selection'->>'task'='interpret_replication_result'
               AND result.result_payload->'receipt' <> 'null'::JSONB
               AND job.refinement_id IS NULL
+              -- Ineligible synthesis rows are terminal history, not pending
+              -- admission work. Filtering before LIMIT prevents the oldest 64
+              -- falsified/inconclusive campaigns from starving a later survivor.
+              AND EXISTS (
+                  SELECT 1
+                  FROM JSONB_ARRAY_ELEMENTS(
+                      request.request_payload->'evidence_documents'
+                  ) AS document
+                  WHERE document->'reference'->>'source_id'
+                            LIKE 'cancer-world://campaign-directive/%'
+                    AND ((document->>'content')::JSONB)->>'phase'='synthesis'
+                    AND ((document->>'content')::JSONB)->>'outcome'
+                            ='survived_replication_round'
+              )
             ORDER BY request.ordinal,request.request_id
             LIMIT $3
             "#,
@@ -781,11 +795,12 @@ fn operation_error(error: sqlx::Error) -> StoreError {
 #[cfg(test)]
 mod tests {
     use application::{
-        CANCER_RESEARCH_MODEL_CONTRACT_VERSION, CancerResearchCampaignDirective,
-        CancerResearchEvidenceDocument, CancerResearchLadderResult, CancerResearchModelReceipt,
-        CancerResearchModelRequest, CancerTissueRefinementJobStore,
-        CancerTissueRefinementWorkerStep, CognitionRouteAttempt, CognitionRouteAttemptStatus,
-        ModelTokenUsage, execute_cancer_virtual_experiment, process_next_cancer_tissue_refinement,
+        CANCER_RESEARCH_CAMPAIGN_MAX_TESTS, CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+        CancerResearchCampaignDirective, CancerResearchEvidenceDocument,
+        CancerResearchLadderResult, CancerResearchModelReceipt, CancerResearchModelRequest,
+        CancerTissueRefinementJobStore, CancerTissueRefinementWorkerStep, CognitionRouteAttempt,
+        CognitionRouteAttemptStatus, ModelTokenUsage, execute_cancer_virtual_experiment,
+        process_next_cancer_tissue_refinement,
     };
     use world_domain::{
         CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION, CancerResearchArtifactKind,
@@ -971,6 +986,133 @@ mod tests {
 
     #[tokio::test]
     #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
+    async fn more_than_one_admission_page_of_non_survivors_cannot_starve_a_later_survivor() {
+        let store = test_store().await;
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4412));
+        insert_test_world(&store, world_id).await;
+        let non_survivor_count =
+            usize::try_from(MAX_ELIGIBLE_SYNTHESIS_SCAN).expect("positive scan limit") + 1;
+        let inconclusive_tests = u8::try_from(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS)
+            .expect("campaign test ceiling fits the durable directive");
+        let campaign_ordinal_width = u32::try_from(CANCER_RESEARCH_CAMPAIGN_MAX_TESTS + 2)
+            .expect("bounded campaign ordinal width");
+        let mut first_ordinal = 1_u32;
+        for _ in 0..non_survivor_count {
+            insert_campaign_in_world(
+                &store,
+                world_id,
+                CampaignFixtureSpec {
+                    first_ordinal,
+                    outcome: CancerResearchCampaignOutcome::Inconclusive,
+                    supporting_tests: 0,
+                    falsifying_tests: 0,
+                    inconclusive_tests,
+                    complete_followups: true,
+                    root_intensity_parts_per_million: 900_000,
+                    supporting_tests_last: false,
+                },
+            )
+            .await;
+            first_ordinal = first_ordinal
+                .checked_add(campaign_ordinal_width)
+                .expect("fixture ordinal");
+        }
+        let survivor = insert_campaign_in_world(
+            &store,
+            world_id,
+            CampaignFixtureSpec {
+                first_ordinal,
+                outcome: CancerResearchCampaignOutcome::SurvivedReplicationRound,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 0,
+                complete_followups: true,
+                root_intensity_parts_per_million: 900_000,
+                supporting_tests_last: false,
+            },
+        )
+        .await;
+
+        let claimed = store
+            .claim_next_cancer_tissue_refinement(world_id, "tissue-worker-after-page", 900)
+            .await
+            .expect("admission scan")
+            .expect("later survivor is not starved");
+        assert_eq!(
+            claimed.candidate.survival_evidence.synthesis_request_id,
+            survivor.synthesis_request_id
+        );
+        assert_eq!(
+            claimed.candidate.root.artifact_hash,
+            survivor.root_artifact_hash
+        );
+        let job_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cancer_tissue_refinement_jobs WHERE world_id=$1",
+        )
+        .bind(world_id.as_uuid())
+        .fetch_one(store.pool())
+        .await
+        .expect("job count");
+        assert_eq!(job_count, 1, "only the actual survivor is admitted");
+        let result =
+            application::execute_cancer_tissue_refinement(&claimed.candidate, &claimed.protocol)
+                .expect("execute survivor after bounded admission scan");
+        store
+            .complete_cancer_tissue_refinement(&claimed, &result)
+            .await
+            .expect("complete survivor after bounded admission scan");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
+    async fn inconclusive_root_with_three_late_supports_is_durably_admitted() {
+        let store = test_store().await;
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4413));
+        insert_test_world(&store, world_id).await;
+        let survivor = insert_campaign_in_world(
+            &store,
+            world_id,
+            CampaignFixtureSpec {
+                first_ordinal: 1,
+                outcome: CancerResearchCampaignOutcome::SurvivedReplicationRound,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 3,
+                complete_followups: true,
+                root_intensity_parts_per_million: 300_000,
+                supporting_tests_last: true,
+            },
+        )
+        .await;
+
+        let claimed = store
+            .claim_next_cancer_tissue_refinement(world_id, "tissue-worker-late-survivor", 900)
+            .await
+            .expect("admission scan")
+            .expect("six-test survivor is admitted");
+        assert_eq!(
+            claimed.candidate.survival_evidence.synthesis_request_id,
+            survivor.synthesis_request_id
+        );
+        assert_eq!(
+            claimed.candidate.root_result.interpretation,
+            world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive
+        );
+        assert_eq!(claimed.candidate.campaign_experiments.len(), 6);
+        assert_eq!(claimed.candidate.survival_evidence.supporting_tests, 3);
+        assert_eq!(claimed.candidate.survival_evidence.inconclusive_tests, 3);
+        assert_eq!(claimed.protocol.campaign_result_hashes.len(), 6);
+        let result =
+            application::execute_cancer_tissue_refinement(&claimed.candidate, &claimed.protocol)
+                .expect("execute late-survivor refinement");
+        store
+            .complete_cancer_tissue_refinement(&claimed, &result)
+            .await
+            .expect("complete late-survivor refinement");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
     async fn expired_claim_reclaims_and_stale_token_cannot_write() {
         let store = test_store().await;
         let fixture = insert_survived_campaign(&store, 0x4420).await;
@@ -1043,6 +1185,18 @@ mod tests {
         .await
     }
 
+    #[derive(Clone, Copy)]
+    struct CampaignFixtureSpec {
+        first_ordinal: u32,
+        outcome: CancerResearchCampaignOutcome,
+        supporting_tests: u8,
+        falsifying_tests: u8,
+        inconclusive_tests: u8,
+        complete_followups: bool,
+        root_intensity_parts_per_million: u32,
+        supporting_tests_last: bool,
+    }
+
     async fn insert_campaign_with_outcome(
         store: &PostgresStore,
         seed: u128,
@@ -1054,16 +1208,38 @@ mod tests {
     ) -> DurableCampaignFixture {
         let world_id = WorldId::from_uuid(Uuid::from_u128(seed));
         insert_test_world(store, world_id).await;
+        insert_campaign_in_world(
+            store,
+            world_id,
+            CampaignFixtureSpec {
+                first_ordinal: 1,
+                outcome,
+                supporting_tests,
+                falsifying_tests,
+                inconclusive_tests,
+                complete_followups,
+                root_intensity_parts_per_million: 900_000,
+                supporting_tests_last: false,
+            },
+        )
+        .await
+    }
+
+    async fn insert_campaign_in_world(
+        store: &PostgresStore,
+        world_id: WorldId,
+        spec: CampaignFixtureSpec,
+    ) -> DurableCampaignFixture {
         let root_selection = selection(
             world_id,
-            1,
+            spec.first_ordinal,
             CancerResearchStage::BlindDiscovery,
             CancerResearchTask::ProposeDiscriminatingExperiment,
             CancerResearchInferenceTier::Exploration,
             None,
             Vec::new(),
         );
-        let root_plan = plan(168, 900_000);
+        let root_plan = plan(168, spec.root_intensity_parts_per_million);
         let (root_request, root_result, root_contribution) = research_row(
             root_selection,
             Vec::new(),
@@ -1074,24 +1250,24 @@ mod tests {
         let root_candidate = CancerVirtualExperimentCandidate {
             world_id,
             request_id: root_request.request_id,
-            ordinal: 1,
+            ordinal: spec.first_ordinal,
             artifact_hash: root_contribution.canonical_hash().expect("root hash"),
             contribution: root_contribution,
         };
         let root_experiment = execute_cancer_virtual_experiment(&root_candidate).expect("root lab");
-        assert_eq!(
-            root_experiment.interpretation,
-            world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
-        );
         insert_virtual_result(store, &root_experiment, &root_candidate.contribution).await;
         let root_hash = root_candidate.artifact_hash;
         let campaign_id = CancerResearchCampaignDirective::campaign_id(root_request.request_id);
 
-        let test_count = usize::from(supporting_tests)
-            + usize::from(falsifying_tests)
-            + usize::from(inconclusive_tests);
+        let test_count = usize::from(spec.supporting_tests)
+            + usize::from(spec.falsifying_tests)
+            + usize::from(spec.inconclusive_tests);
         for index in 0..test_count {
-            let ordinal = u32::try_from(index).expect("index") + 2;
+            let ordinal = spec
+                .first_ordinal
+                .checked_add(u32::try_from(index).expect("index"))
+                .and_then(|ordinal| ordinal.checked_add(1))
+                .expect("fixture ordinal");
             let followup_selection = selection(
                 world_id,
                 ordinal,
@@ -1101,12 +1277,25 @@ mod tests {
                 Some(root_hash),
                 Vec::new(),
             );
-            let intensity = if index < usize::from(supporting_tests) {
-                900_000
-            } else if index < usize::from(supporting_tests + falsifying_tests) {
-                50_000
+            let expected_assessment = if spec.supporting_tests_last {
+                if index < usize::from(spec.inconclusive_tests) {
+                    application::CancerResearchCampaignTestAssessment::Inconclusive
+                } else if index < usize::from(spec.inconclusive_tests + spec.falsifying_tests) {
+                    application::CancerResearchCampaignTestAssessment::Falsifies
+                } else {
+                    application::CancerResearchCampaignTestAssessment::Supports
+                }
+            } else if index < usize::from(spec.supporting_tests) {
+                application::CancerResearchCampaignTestAssessment::Supports
+            } else if index < usize::from(spec.supporting_tests + spec.falsifying_tests) {
+                application::CancerResearchCampaignTestAssessment::Falsifies
             } else {
-                300_000
+                application::CancerResearchCampaignTestAssessment::Inconclusive
+            };
+            let intensity = match expected_assessment {
+                application::CancerResearchCampaignTestAssessment::Supports => 900_000,
+                application::CancerResearchCampaignTestAssessment::Falsifies => 50_000,
+                application::CancerResearchCampaignTestAssessment::Inconclusive => 300_000,
             };
             let (request, result, contribution) = research_row(
                 followup_selection,
@@ -1117,7 +1306,13 @@ mod tests {
                     intensity,
                 )),
             );
-            insert_research_row(store, &request, &result, complete_followups || index > 0).await;
+            insert_research_row(
+                store,
+                &request,
+                &result,
+                spec.complete_followups || index > 0,
+            )
+            .await;
             let candidate = CancerVirtualExperimentCandidate {
                 world_id,
                 request_id: request.request_id,
@@ -1126,26 +1321,27 @@ mod tests {
                 contribution,
             };
             let experiment = execute_cancer_virtual_experiment(&candidate).expect("followup lab");
-            // Non-survivor fixtures only exercise synthesis rejection; preserve
-            // fully valid result bytes rather than forging an interpretation.
-            if outcome == CancerResearchCampaignOutcome::SurvivedReplicationRound {
-                assert_eq!(
-                    application::cancer_research_campaign_test_assessment(&experiment),
-                    application::CancerResearchCampaignTestAssessment::Supports
-                );
-            }
+            assert_eq!(
+                application::cancer_research_campaign_test_assessment(&experiment),
+                expected_assessment,
+                "fixture test {index} produced the wrong campaign assessment"
+            );
             insert_virtual_result(store, &experiment, &candidate.contribution).await;
         }
 
-        let synthesis_ordinal = u32::try_from(test_count).expect("count") + 2;
+        let synthesis_ordinal = spec
+            .first_ordinal
+            .checked_add(u32::try_from(test_count).expect("count"))
+            .and_then(|ordinal| ordinal.checked_add(1))
+            .expect("fixture ordinal");
         let directive = CancerResearchCampaignDirective::Synthesis {
             schema_version: application::CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
             campaign_id,
             root_artifact_hash: root_hash,
-            outcome,
-            supporting_tests,
-            falsifying_tests,
-            inconclusive_tests,
+            outcome: spec.outcome,
+            supporting_tests: spec.supporting_tests,
+            falsifying_tests: spec.falsifying_tests,
+            inconclusive_tests: spec.inconclusive_tests,
         };
         let document = directive
             .evidence_document(world_id)

@@ -27,7 +27,11 @@ pub const RESPONSE_CHALLENGE_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 
 /// observer-side evidence worker perform exact, provenance-bound molecular
 /// lookups without interpreting or fuzzy-matching research prose.
 pub const CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION: u16 = 6;
-pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 1;
+/// Schema v2 requires sensing plans to measure detection sensitivity and keeps
+/// treatment plans on intervention endpoints. Historical v1 plans stay
+/// replayable, including early structurally inert experiment proposals.
+pub const CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION: u16 = 2;
 pub const LEGACY_CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 1;
 /// Schema v2 adds a compact multiscale readout. Historical v1 results remain
 /// readable and immutable; the current method writes v2 rows beside them.
@@ -35,7 +39,9 @@ pub const CANCER_VIRTUAL_EXPERIMENT_RESULT_SCHEMA_VERSION: u16 = 2;
 pub const CANCER_VIRTUAL_MECHANISTIC_READOUT_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_VIRTUAL_LAB_METHOD_VERSION: u16 = 2;
 pub const CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION: u16 = 1;
-pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 1;
+/// Method v2 makes malformed-source filtering and duplicate-source selection
+/// total and deterministic. Historical method-v1 audits remain valid records.
+pub const CANCER_RESEARCH_NOVELTY_METHOD_VERSION: u16 = 2;
 pub const CANCER_NCI60_RESPONSE_PREDICTION_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_NCI60_RESPONSE_QUALIFICATION_SCHEMA_VERSION: u16 = 1;
 pub const CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION: u16 = 1;
@@ -1189,8 +1195,11 @@ impl CancerVirtualExperimentResult {
 
 impl CancerVirtualExperimentPlan {
     pub fn validate(&self) -> Result<(), CancerResearchContractError> {
-        if self.schema_version != CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION
-            || self.intensity_parts_per_million == 0
+        if !matches!(
+            self.schema_version,
+            LEGACY_CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION
+                | CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION
+        ) || self.intensity_parts_per_million == 0
             || self.intensity_parts_per_million > 1_000_000
             || self.exposure_hours == 0
             || self.exposure_hours > 2_160
@@ -1211,6 +1220,11 @@ impl CancerVirtualExperimentPlan {
             self.intervention_modality == CancerVirtualInterventionModality::DiagnosticSensing;
         let diagnostic_endpoint =
             self.primary_endpoint == CancerVirtualEndpoint::DetectionSensitivity;
+        if self.schema_version == CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION
+            && diagnostic != diagnostic_endpoint
+        {
+            return Err(CancerResearchContractError::InvalidVirtualExperimentPlan);
+        }
         match artifact_kind {
             CancerResearchArtifactKind::DiagnosticInstrumentDesign
                 if diagnostic && diagnostic_endpoint => {}
@@ -1491,6 +1505,22 @@ pub struct CancerResearchNoveltyMatch {
     pub overlap_per_mille: u16,
 }
 
+impl CancerResearchNoveltyMatch {
+    pub fn validate(&self) -> Result<(), CancerResearchContractError> {
+        if !bounded_text(&self.source_id, MAX_RESEARCH_SOURCE_ID_BYTES)
+            || !bounded_text(&self.title, MAX_RESEARCH_TITLE_BYTES)
+            || self.overlap_per_mille > 1_000
+            || self
+                .published_on
+                .as_ref()
+                .is_some_and(|date| date.trim() != date || date.len() != 10)
+        {
+            return Err(CancerResearchContractError::InvalidNoveltyAudit);
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct CancerResearchNoveltyAudit {
@@ -1533,15 +1563,7 @@ impl CancerResearchNoveltyAudit {
             || self.literature_overlap_per_mille > 1_000
             || self.prior_world_overlap_per_mille > 1_000
             || self.matches.len() > MAX_CANCER_RESEARCH_NOVELTY_MATCHES
-            || self.matches.iter().any(|source| {
-                !bounded_text(&source.source_id, MAX_RESEARCH_SOURCE_ID_BYTES)
-                    || !bounded_text(&source.title, MAX_RESEARCH_TITLE_BYTES)
-                    || source.overlap_per_mille > 1_000
-                    || source
-                        .published_on
-                        .as_ref()
-                        .is_some_and(|date| date.trim() != date || date.len() != 10)
-            })
+            || self.matches.iter().any(|source| source.validate().is_err())
             || self
                 .matches
                 .windows(2)
@@ -1820,6 +1842,26 @@ mod tests {
         historical_schema_two.schema_version =
             VIRTUAL_PLAN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION;
         assert!(historical_schema_two.validate_against(&selection).is_ok());
+
+        let mut incoherent_current = planned.clone();
+        let plan = incoherent_current
+            .virtual_experiment_plan
+            .as_mut()
+            .expect("current plan");
+        plan.intervention_modality = CancerVirtualInterventionModality::DiagnosticSensing;
+        assert!(matches!(
+            incoherent_current.validate_against(&selection),
+            Err(CancerResearchContractError::InvalidContribution)
+        ));
+        incoherent_current
+            .virtual_experiment_plan
+            .as_mut()
+            .expect("legacy plan")
+            .schema_version = LEGACY_CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION;
+        assert!(
+            incoherent_current.validate_against(&selection).is_ok(),
+            "historical plan bytes remain replayable"
+        );
 
         let mut corrupt_schema_four = historical_schema_two;
         corrupt_schema_four.schema_version = CAMPAIGN_CANCER_RESEARCH_CONTRIBUTION_SCHEMA_VERSION;

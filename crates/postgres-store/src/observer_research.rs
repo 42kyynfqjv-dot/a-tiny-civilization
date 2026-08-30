@@ -37,6 +37,75 @@ use crate::PostgresStore;
 
 const MAX_PUBLIC_TISSUE_REFINEMENTS: i64 = 12;
 const MAX_PUBLIC_TISSUE_PAYLOAD_BYTES: i32 = 262_144;
+const RESEARCH_PROJECTION_QUERY: &str = r#"
+    WITH research_memory AS (
+        SELECT
+            (memory.payload->>'ordinal')::BIGINT AS ordinal,
+            MAX(memory.completed_at) AS completed_at
+        FROM memory_outbox AS memory
+        WHERE memory.world_id=$1 AND memory.agent_id=$2
+          AND memory.payload->>'context'='Cancer World research artifact'
+        GROUP BY (memory.payload->>'ordinal')::BIGINT
+    ), experiment_memory AS (
+        SELECT
+            (memory.payload->>'ordinal')::BIGINT AS ordinal,
+            MAX(memory.completed_at) AS completed_at
+        FROM memory_outbox AS memory
+        WHERE memory.world_id=$1 AND memory.agent_id=$2
+          AND memory.payload->>'context'='Cancer World virtual experiment result'
+        GROUP BY (memory.payload->>'ordinal')::BIGINT
+    )
+    SELECT request.request_payload, request.request_checksum,
+           result.result_payload, result.result_checksum, result.created_at,
+           memory.completed_at AS memory_completed_at,
+           novelty.method_version AS novelty_method_version,
+           novelty.audit_payload AS novelty_payload,
+           novelty.audit_checksum AS novelty_checksum,
+           novelty.created_at AS novelty_created_at,
+           experiment.result_payload AS experiment_payload,
+           experiment.result_checksum AS experiment_checksum,
+           experiment.created_at AS experiment_created_at,
+           experiment_memory.completed_at AS experiment_memory_completed_at,
+           qualification.result_payload AS qualification_payload,
+           qualification.result_checksum AS qualification_checksum,
+           qualification.created_at AS qualification_created_at,
+           patient_qualification.result_payload AS patient_qualification_payload,
+           patient_qualification.result_checksum AS patient_qualification_checksum,
+           patient_qualification.created_at AS patient_qualification_created_at,
+           tcga_qualification.result_payload AS tcga_qualification_payload,
+           tcga_qualification.result_checksum AS tcga_qualification_checksum,
+           tcga_qualification.created_at AS tcga_qualification_created_at
+    FROM cancer_research_requests AS request
+    JOIN cancer_research_results AS result USING (request_id)
+    LEFT JOIN research_memory AS memory ON memory.ordinal=request.ordinal
+    LEFT JOIN LATERAL (
+        SELECT candidate.method_version, candidate.audit_payload,
+               candidate.audit_checksum, candidate.created_at
+        FROM cancer_research_novelty_audits AS candidate
+        WHERE candidate.request_id=request.request_id
+          AND candidate.method_version BETWEEN 1 AND $3
+        ORDER BY (candidate.method_version=$3) DESC,
+                 candidate.method_version DESC,
+                 candidate.audit_id
+        LIMIT 1
+    ) AS novelty ON TRUE
+    LEFT JOIN cancer_virtual_experiment_results AS experiment
+      ON experiment.request_id=request.request_id
+     AND experiment.method_version=$4
+    LEFT JOIN experiment_memory ON experiment_memory.ordinal=request.ordinal
+    LEFT JOIN cancer_nci60_response_qualifications AS qualification
+      ON qualification.request_id=request.request_id
+     AND qualification.method_version=$5
+    LEFT JOIN cancer_patient_derived_molecular_qualifications AS patient_qualification
+      ON patient_qualification.request_id=request.request_id
+     AND patient_qualification.method_version=$6
+    LEFT JOIN cancer_tcga_gbm_target_context_qualifications AS tcga_qualification
+      ON tcga_qualification.request_id=request.request_id
+     AND tcga_qualification.method_version=$7
+    WHERE request.world_id=$1
+      AND result.result_payload->'receipt' <> 'null'::JSONB
+    ORDER BY request.ordinal, request.request_id
+    "#;
 
 #[derive(FromRow)]
 struct ResearchProjectionRow {
@@ -46,6 +115,7 @@ struct ResearchProjectionRow {
     result_checksum: Vec<u8>,
     created_at: DateTime<Utc>,
     memory_completed_at: Option<DateTime<Utc>>,
+    novelty_method_version: Option<i32>,
     novelty_payload: Option<Value>,
     novelty_checksum: Option<Vec<u8>>,
     novelty_created_at: Option<DateTime<Utc>>,
@@ -360,82 +430,21 @@ impl ObserverCancerResearchStore for PostgresStore {
             .map(|row| reconstruct_tissue_refinement(row, world_id))
             .collect::<Result<Vec<_>, _>>()?;
 
-        let rows = sqlx::query_as::<_, ResearchProjectionRow>(
-            r#"
-            WITH research_memory AS (
-                SELECT
-                    (memory.payload->>'ordinal')::BIGINT AS ordinal,
-                    MAX(memory.completed_at) AS completed_at
-                FROM memory_outbox AS memory
-                WHERE memory.world_id=$1 AND memory.agent_id=$2
-                  AND memory.payload->>'context'='Cancer World research artifact'
-                GROUP BY (memory.payload->>'ordinal')::BIGINT
-            ), experiment_memory AS (
-                SELECT
-                    (memory.payload->>'ordinal')::BIGINT AS ordinal,
-                    MAX(memory.completed_at) AS completed_at
-                FROM memory_outbox AS memory
-                WHERE memory.world_id=$1 AND memory.agent_id=$2
-                  AND memory.payload->>'context'='Cancer World virtual experiment result'
-                GROUP BY (memory.payload->>'ordinal')::BIGINT
-            )
-            SELECT request.request_payload, request.request_checksum,
-                   result.result_payload, result.result_checksum, result.created_at,
-                   memory.completed_at AS memory_completed_at,
-                   novelty.audit_payload AS novelty_payload,
-                   novelty.audit_checksum AS novelty_checksum,
-                   novelty.created_at AS novelty_created_at,
-                   experiment.result_payload AS experiment_payload,
-                   experiment.result_checksum AS experiment_checksum,
-                   experiment.created_at AS experiment_created_at,
-                   experiment_memory.completed_at AS experiment_memory_completed_at,
-                   qualification.result_payload AS qualification_payload,
-                   qualification.result_checksum AS qualification_checksum,
-                   qualification.created_at AS qualification_created_at,
-                   patient_qualification.result_payload AS patient_qualification_payload,
-                   patient_qualification.result_checksum AS patient_qualification_checksum,
-                   patient_qualification.created_at AS patient_qualification_created_at,
-                   tcga_qualification.result_payload AS tcga_qualification_payload,
-                   tcga_qualification.result_checksum AS tcga_qualification_checksum,
-                   tcga_qualification.created_at AS tcga_qualification_created_at
-            FROM cancer_research_requests AS request
-            JOIN cancer_research_results AS result USING (request_id)
-            LEFT JOIN research_memory AS memory ON memory.ordinal=request.ordinal
-            LEFT JOIN cancer_research_novelty_audits AS novelty
-              ON novelty.request_id=request.request_id
-             AND novelty.method_version=$3
-            LEFT JOIN cancer_virtual_experiment_results AS experiment
-              ON experiment.request_id=request.request_id
-             AND experiment.method_version=$4
-            LEFT JOIN experiment_memory ON experiment_memory.ordinal=request.ordinal
-            LEFT JOIN cancer_nci60_response_qualifications AS qualification
-              ON qualification.request_id=request.request_id
-             AND qualification.method_version=$5
-            LEFT JOIN cancer_patient_derived_molecular_qualifications AS patient_qualification
-              ON patient_qualification.request_id=request.request_id
-             AND patient_qualification.method_version=$6
-            LEFT JOIN cancer_tcga_gbm_target_context_qualifications AS tcga_qualification
-              ON tcga_qualification.request_id=request.request_id
-             AND tcga_qualification.method_version=$7
-            WHERE request.world_id=$1
-              AND result.result_payload->'receipt' <> 'null'::JSONB
-            ORDER BY request.ordinal, request.request_id
-            "#,
-        )
-        .bind(world_id.as_uuid())
-        .bind(collective_id.as_uuid())
-        .bind(i32::from(CANCER_RESEARCH_NOVELTY_METHOD_VERSION))
-        .bind(i32::from(CANCER_VIRTUAL_LAB_METHOD_VERSION))
-        .bind(i32::from(
-            CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
-        ))
-        .bind(i32::from(
-            CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
-        ))
-        .bind(i32::from(CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION))
-        .fetch_all(&mut *transaction)
-        .await
-        .map_err(unavailable)?;
+        let rows = sqlx::query_as::<_, ResearchProjectionRow>(RESEARCH_PROJECTION_QUERY)
+            .bind(world_id.as_uuid())
+            .bind(collective_id.as_uuid())
+            .bind(i32::from(CANCER_RESEARCH_NOVELTY_METHOD_VERSION))
+            .bind(i32::from(CANCER_VIRTUAL_LAB_METHOD_VERSION))
+            .bind(i32::from(
+                CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
+            ))
+            .bind(i32::from(
+                CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
+            ))
+            .bind(i32::from(CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION))
+            .fetch_all(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
         let mut artifacts = Vec::with_capacity(rows.len());
         for row in rows {
             let request: CancerResearchModelRequest =
@@ -470,17 +479,20 @@ impl ObserverCancerResearchStore for PostgresStore {
                 .map_err(contract_error)?;
             let artifact_hash = Digest::canonical(&receipt.contribution).map_err(contract_error)?;
             let novelty_audit = match (
+                row.novelty_method_version,
                 row.novelty_payload,
                 row.novelty_checksum,
                 row.novelty_created_at,
             ) {
-                (None, None, None) => None,
-                (Some(payload), Some(checksum), Some(created_at)) => {
+                (None, None, None, None) => None,
+                (Some(method_version), Some(payload), Some(checksum), Some(created_at)) => {
                     let audit: CancerResearchNoveltyAudit = serde_json::from_value(payload)
                         .map_err(|error| corrupt(format!("invalid novelty audit: {error}")))?;
                     audit.validate().map_err(contract_error)?;
                     let audit_hash = digest_from_db(&checksum, "research novelty audit checksum")?;
-                    if audit.world_id != world_id
+                    if i32::from(audit.method_version) != method_version
+                        || method_version > i32::from(CANCER_RESEARCH_NOVELTY_METHOD_VERSION)
+                        || audit.world_id != world_id
                         || audit.request_id != request.request_id
                         || audit.artifact_hash != artifact_hash
                         || audit.canonical_hash().map_err(contract_error)? != audit_hash
@@ -1404,6 +1416,22 @@ mod tests {
         assert!(validate_research_rollup_counts(20, 2, 7, 11, 5, 3, 1, 6).is_err());
         assert!(validate_research_rollup_counts(20, 2, 7, 10, 5, 2, 1, 6).is_err());
         assert!(validate_research_rollup_counts(20, 2, 7, 11, 5, 2, 0, 6).is_err());
+    }
+
+    #[test]
+    fn research_projection_prefers_current_novelty_and_falls_back_to_history() {
+        assert!(RESEARCH_PROJECTION_QUERY.contains("LEFT JOIN LATERAL"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("candidate.method_version BETWEEN 1 AND $3"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("ORDER BY (candidate.method_version=$3) DESC"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("candidate.method_version DESC"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("candidate.audit_id"));
+
+        // The rest of the independently versioned projections must retain their
+        // established bind positions when novelty gains its historical fallback.
+        assert!(RESEARCH_PROJECTION_QUERY.contains("experiment.method_version=$4"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("qualification.method_version=$5"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("patient_qualification.method_version=$6"));
+        assert!(RESEARCH_PROJECTION_QUERY.contains("tcga_qualification.method_version=$7"));
     }
 
     fn tissue_digest(byte: u8) -> Digest {

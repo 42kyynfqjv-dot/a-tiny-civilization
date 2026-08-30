@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v17";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v18";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -723,13 +723,13 @@ fn research_api_request(
             "Generate one mechanistic hypothesis. Set artifact_kind to hypothesis and virtual_experiment_plan to null."
         }
         CancerResearchTask::ProposeDiscriminatingExperiment => {
-            "Propose a controlled discriminating experiment with a concrete falsification route. Set artifact_kind to experiment_proposal. Supply the closed virtual_experiment_plan that the deterministic model can execute. Its secondary_target must differ from primary_target or be null. Do not invent an outcome or claim the experiment has already run."
+            "Propose a controlled discriminating experiment with a concrete falsification route. Set artifact_kind to experiment_proposal. Supply the closed virtual_experiment_plan that the deterministic model can execute. Diagnostic sensing must use detection_sensitivity; every other modality must use a non-detection endpoint. Its secondary_target must differ from primary_target or be null. Do not invent an outcome or claim the experiment has already run."
         }
         CancerResearchTask::DesignDiagnosticInstrument => {
-            "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Set artifact_kind to diagnostic_instrument_design. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection; secondary_target must differ from primary_target or be null. Do not claim that it has been built or measured."
+            "Design a physically testable sensing, imaging, assay, or lab-automation instrument. Set artifact_kind to diagnostic_instrument_design. Specify the observable, operating principle, controls, calibration, failure modes, and a falsification test. Supply a diagnostic_sensing virtual_experiment_plan using detection_sensitivity; secondary_target must differ from primary_target or be null. Do not claim that it has been built or measured."
         }
         CancerResearchTask::DesignTreatmentMachine => {
-            "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Set artifact_kind to treatment_machine_design. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Supply the closed virtual_experiment_plan that tests its model-compatible projection; secondary_target must differ from primary_target or be null. Do not claim efficacy or that it has been built."
+            "Design a physically testable drug-delivery, surgical, radiation, thermal, or other treatment machine. Set artifact_kind to treatment_machine_design. Specify the mechanism, targeting constraints, controls, safety interlocks, failure modes, and a falsification test. Supply a non-diagnostic virtual_experiment_plan using a non-detection endpoint; secondary_target must differ from primary_target or be null. Do not claim efficacy or that it has been built."
         }
         CancerResearchTask::ChallengeFrozenHypothesis
         | CancerResearchTask::AuditAgainstLiterature => {
@@ -1149,7 +1149,7 @@ fn virtual_experiment_plan_schema(
     let plan = json!({
         "type": "object",
         "properties": {
-            "schema_version": {"type": "integer", "const": 1},
+            "schema_version": {"type": "integer", "const": CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION},
             "subject_model": {"type": "string", "enum": ["cell_culture", "tumor_organoid", "orthotopic_mouse"]},
             "intervention_modality": {"type": "string", "enum": modalities},
             "primary_target": {"type": "string", "enum": ["cell_division", "dna_repair", "apoptosis_resistance", "hypoxia_adaptation", "angiogenesis", "immune_evasion", "invasion"]},
@@ -1373,6 +1373,14 @@ fn normalize_research_output(
         && plan.secondary_target == Some(plan.primary_target)
     {
         plan.secondary_target = None;
+    }
+    // This is a newly generated contribution, never historical replay. Pin its
+    // redundant plan version to the current contract so a provider cannot opt
+    // new work into the permissive legacy-v1 coherence rules.
+    if selection.stage == CancerResearchStage::BlindDiscovery
+        && let Some(plan) = &mut output.virtual_experiment_plan
+    {
+        plan.schema_version = CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION;
     }
     match (selection.stage, selection.task) {
         (
@@ -2300,6 +2308,10 @@ mod tests {
             diagnostic["properties"]["virtual_experiment_plan"]["properties"]["intervention_modality"]
                 ["enum"],
             json!(["diagnostic_sensing"])
+        );
+        assert_eq!(
+            diagnostic["properties"]["virtual_experiment_plan"]["properties"]["schema_version"]["const"],
+            json!(CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION)
         );
         let treatment = research_contribution_schema(
             CancerResearchStage::BlindDiscovery,

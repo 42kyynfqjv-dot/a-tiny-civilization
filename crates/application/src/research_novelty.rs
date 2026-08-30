@@ -81,26 +81,40 @@ pub fn calculate_cancer_research_novelty(
             let source_terms =
                 significant_terms(&format!("{} {}", source.title, source.abstract_text), 256);
             let (score, intersection) = overlap_score(&artifact_terms, &source_terms);
-            (intersection >= 2 && score > 0).then(|| {
-                (
-                    CancerResearchNoveltyMatch {
-                        source_id: source.source_id.trim().to_owned(),
-                        title: source.title.trim().to_owned(),
-                        published_on: source.published_on.clone(),
-                        overlap_per_mille: score,
-                    },
-                    source_terms,
-                )
-            })
+            if intersection < 2 || score == 0 {
+                return None;
+            }
+            let novelty_match = CancerResearchNoveltyMatch {
+                source_id: source.source_id.trim().to_owned(),
+                title: source.title.trim().to_owned(),
+                published_on: source.published_on.clone(),
+                overlap_per_mille: score,
+            };
+            novelty_match
+                .validate()
+                .ok()
+                .map(|()| (novelty_match, source_terms))
         })
         .collect();
+    // External indexes can return the same source more than once with different
+    // metadata. Group by identity before ranking: ranking first only made equal
+    // IDs adjacent when their scores also happened to be equal, allowing one
+    // malformed response to poison every subsequent audit pass.
+    scored_sources.sort_by(|(left, left_terms), (right, right_terms)| {
+        left.source_id
+            .cmp(&right.source_id)
+            .then_with(|| right.overlap_per_mille.cmp(&left.overlap_per_mille))
+            .then_with(|| left.title.cmp(&right.title))
+            .then_with(|| left.published_on.cmp(&right.published_on))
+            .then_with(|| left_terms.cmp(right_terms))
+    });
+    scored_sources.dedup_by(|(left, _), (right, _)| left.source_id == right.source_id);
     scored_sources.sort_by(|(left, _), (right, _)| {
         right
             .overlap_per_mille
             .cmp(&left.overlap_per_mille)
             .then_with(|| left.source_id.cmp(&right.source_id))
     });
-    scored_sources.dedup_by(|(left, _), (right, _)| left.source_id == right.source_id);
     scored_sources.truncate(MAX_CANCER_RESEARCH_NOVELTY_MATCHES);
 
     let literature_overlap_per_mille = scored_sources
@@ -188,7 +202,8 @@ fn tokenize(text: &str) -> Vec<String> {
         .split(|character: char| !character.is_ascii_alphanumeric())
         .filter_map(|raw| {
             let term = normalize_term(raw);
-            (!term.is_empty() && !STOP_TERMS.contains(&term.as_str())).then_some(term)
+            (!term.is_empty() && term.len() <= 64 && !STOP_TERMS.contains(&term.as_str()))
+                .then_some(term)
         })
         .collect()
 }
@@ -419,5 +434,125 @@ mod tests {
         let audit = calculate_cancer_research_novelty(&candidate(world_id, contribution), &[])
             .expect("audit");
         assert_eq!(audit.status, CancerResearchNoveltyStatus::NoCloseMatchFound);
+    }
+
+    #[test]
+    fn duplicate_external_source_ids_cannot_poison_an_audit_batch() {
+        let (world_id, contribution) = contribution(
+            "P2X7 extracellular ATP signaling drives glioblastoma invasion",
+            "Extracellular ATP activates P2X7 purinergic signaling and promotes invasive migration through calcium signaling.",
+        );
+        let sources = [
+            CancerResearchNoveltySource {
+                source_id: "https://europepmc.org/article/MED/duplicate".to_owned(),
+                title: "P2X7 purinergic receptor signaling in glioblastoma invasion".to_owned(),
+                published_on: Some("2025-01-01".to_owned()),
+                abstract_text: "Extracellular ATP activates P2X7 signaling and calcium dependent invasive migration.".to_owned(),
+            },
+            CancerResearchNoveltySource {
+                source_id: "https://europepmc.org/article/MED/distinct".to_owned(),
+                title: "ATP signaling in invasive brain tumors".to_owned(),
+                published_on: Some("2024-01-01".to_owned()),
+                abstract_text: "Purinergic signaling supports invasive migration.".to_owned(),
+            },
+            CancerResearchNoveltySource {
+                source_id: "https://europepmc.org/article/MED/duplicate".to_owned(),
+                title: "ATP receptor study".to_owned(),
+                published_on: Some("2025-01-01".to_owned()),
+                abstract_text: "ATP signaling in cancer.".to_owned(),
+            },
+        ];
+        let audit = calculate_cancer_research_novelty(&candidate(world_id, contribution), &sources)
+            .expect("duplicate external rows are normalized");
+        assert_eq!(
+            audit
+                .matches
+                .iter()
+                .filter(|source| source.source_id.ends_with("/duplicate"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn malformed_external_metadata_is_ignored_instead_of_stalling_the_worker() {
+        let (world_id, contribution) = contribution(
+            "P2X7 extracellular ATP signaling drives glioblastoma invasion",
+            "Extracellular ATP activates P2X7 purinergic signaling and promotes invasive migration through calcium signaling.",
+        );
+        let audit = calculate_cancer_research_novelty(
+            &candidate(world_id, contribution),
+            &[CancerResearchNoveltySource {
+                source_id: "https://europepmc.org/article/MED/oversized".to_owned(),
+                title: "x".repeat(257),
+                published_on: Some("not-a-date".to_owned()),
+                abstract_text: "Extracellular ATP activates P2X7 signaling and calcium dependent invasive migration.".to_owned(),
+            }],
+        )
+        .expect("malformed external metadata is not a batch poison pill");
+        assert!(audit.matches.is_empty());
+    }
+
+    #[test]
+    fn duplicate_selection_is_independent_of_external_response_order() {
+        let (world_id, contribution) = contribution(
+            "P2X7 extracellular ATP signaling drives glioblastoma invasion",
+            "Extracellular ATP activates P2X7 purinergic signaling and promotes invasive migration through calcium signaling.",
+        );
+        let earlier = CancerResearchNoveltySource {
+            source_id: "https://europepmc.org/article/MED/permutation".to_owned(),
+            title: "P2X7 purinergic receptor signaling in glioblastoma invasion".to_owned(),
+            published_on: Some("2024-01-01".to_owned()),
+            abstract_text:
+                "Extracellular ATP activates P2X7 signaling and calcium dependent invasive migration."
+                    .to_owned(),
+        };
+        let later = CancerResearchNoveltySource {
+            published_on: Some("2025-01-01".to_owned()),
+            ..earlier.clone()
+        };
+        let forward = calculate_cancer_research_novelty(
+            &candidate(world_id, contribution.clone()),
+            &[later.clone(), earlier.clone()],
+        )
+        .expect("forward audit");
+        let reverse = calculate_cancer_research_novelty(
+            &candidate(world_id, contribution),
+            &[earlier, later],
+        )
+        .expect("reverse audit");
+        assert_eq!(forward, reverse);
+        assert_eq!(forward.method_version, 2);
+        assert_eq!(
+            forward.matches[0].published_on.as_deref(),
+            Some("2024-01-01")
+        );
+    }
+
+    #[test]
+    fn historical_method_one_audits_remain_valid() {
+        let (world_id, contribution) = contribution(
+            "Phase coupled acoustic lattice perturbation",
+            "A phase coupled acoustic lattice perturbs spatial clone boundaries under intermittent pressure gradients.",
+        );
+        let mut historical =
+            calculate_cancer_research_novelty(&candidate(world_id, contribution), &[])
+                .expect("current audit");
+        assert_eq!(historical.method_version, 2);
+        historical.method_version = 1;
+        historical.audit_id =
+            CancerResearchNoveltyAudit::deterministic_id(historical.request_id, 1);
+        historical.validate().expect("historical method one audit");
+    }
+
+    #[test]
+    fn oversized_model_tokens_cannot_poison_a_novelty_audit() {
+        let (world_id, contribution) = contribution(
+            &"x".repeat(65),
+            "The bounded comparison contains ordinary searchable mechanism terms.",
+        );
+        let audit = calculate_cancer_research_novelty(&candidate(world_id, contribution), &[])
+            .expect("oversized terms are excluded");
+        assert!(audit.query_terms.iter().all(|term| term.len() <= 64));
     }
 }

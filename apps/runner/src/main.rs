@@ -1236,7 +1236,7 @@ async fn serve_cancer_evidence_worker(
             }
             Ok(_) => {}
             Err(error) if !once => {
-                tracing::error!(world_id = %world_id, %error, "Cancer World novelty audit failed; unaudited artifacts remain queued")
+                tracing::error!(world_id = %world_id, error = ?error, "Cancer World novelty audit failed; unaudited artifacts remain queued")
             }
             Err(error) => return Err(error),
         }

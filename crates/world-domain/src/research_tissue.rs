@@ -17,6 +17,8 @@ pub const CANCER_TISSUE_REFINEMENT_MAX_STEPS: u16 = 256;
 pub const CANCER_TISSUE_REFINEMENT_MAX_SNAPSHOTS_PER_SCENARIO: usize = 16;
 pub const CANCER_TISSUE_REFINEMENT_MAX_OUTPUT_SNAPSHOTS: usize =
     CANCER_TISSUE_REFINEMENT_SCENARIO_COUNT * CANCER_TISSUE_REFINEMENT_MAX_SNAPSHOTS_PER_SCENARIO;
+pub const CANCER_TISSUE_REFINEMENT_MIN_CAMPAIGN_RESULTS: usize = 3;
+pub const CANCER_TISSUE_REFINEMENT_MAX_CAMPAIGN_RESULTS: usize = 10;
 pub const CANCER_TISSUE_REFINEMENT_CAVEATS: [&str; 4] = [
     "This is an uncalibrated deterministic tissue projection, not biological, animal, clinical, safety, or efficacy evidence.",
     "Cells are bounded population units on a two-dimensional lattice; they are not an exact tumor, organoid, mouse, or person.",
@@ -106,7 +108,9 @@ impl CancerTissueRefinementProtocol {
             || self.survival_synthesis_request_id.is_nil()
             || self.survival_synthesis_request_hash == Digest::ZERO
             || self.survival_synthesis_result_hash == Digest::ZERO
-            || !(3..=5).contains(&self.campaign_result_hashes.len())
+            || !(CANCER_TISSUE_REFINEMENT_MIN_CAMPAIGN_RESULTS
+                ..=CANCER_TISSUE_REFINEMENT_MAX_CAMPAIGN_RESULTS)
+                .contains(&self.campaign_result_hashes.len())
             || self
                 .campaign_result_hashes
                 .windows(2)
