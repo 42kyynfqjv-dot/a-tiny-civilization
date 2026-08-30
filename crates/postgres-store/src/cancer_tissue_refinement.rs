@@ -592,7 +592,7 @@ impl PostgresStore {
         .await
         .map_err(operation_error)?;
         let mut campaign_experiments = Vec::new();
-        let mut synthesis_seen = 0_usize;
+        let mut successful_synthesis_seen = 0_usize;
         for row in child_rows {
             if !row.completed {
                 return Err(corrupt("tissue campaign contains an incomplete follow-up"));
@@ -621,10 +621,15 @@ impl PostgresStore {
             }
             match request.selection.task {
                 CancerResearchTask::DesignIndependentReplication => {
-                    let contribution = result
-                        .receipt
-                        .ok_or_else(|| corrupt("tissue campaign test omitted its contribution"))?
-                        .contribution;
+                    let Some(receipt) = result.receipt else {
+                        if row.experiment_payload.is_some() || row.experiment_checksum.is_some() {
+                            return Err(corrupt(
+                                "failed tissue campaign test cannot carry a virtual result",
+                            ));
+                        }
+                        continue;
+                    };
+                    let contribution = receipt.contribution;
                     let experiment = match (row.experiment_payload, row.experiment_checksum) {
                         (Some(payload), Some(checksum)) => {
                             let experiment: CancerVirtualExperimentResult =
@@ -661,20 +666,25 @@ impl PostgresStore {
                     });
                 }
                 CancerResearchTask::InterpretReplicationResult => {
-                    synthesis_seen += 1;
-                    if request.request_id != synthesis_request_id
-                        || row.experiment_payload.is_some()
-                        || row.experiment_checksum.is_some()
-                    {
+                    if row.experiment_payload.is_some() || row.experiment_checksum.is_some() {
                         return Err(corrupt(
-                            "tissue campaign has multiple or malformed synthesis rows",
+                            "tissue campaign synthesis cannot carry a virtual result",
+                        ));
+                    }
+                    if result.receipt.is_none() {
+                        continue;
+                    }
+                    successful_synthesis_seen += 1;
+                    if request.request_id != synthesis_request_id {
+                        return Err(corrupt(
+                            "tissue campaign has a second successful synthesis row",
                         ));
                     }
                 }
                 _ => return Err(corrupt("tissue campaign contains an unexpected task")),
             }
         }
-        if synthesis_seen != 1
+        if successful_synthesis_seen != 1
             || campaign_experiments.len()
                 != usize::from(supporting_tests) + usize::from(inconclusive_tests)
         {
@@ -1010,6 +1020,8 @@ mod tests {
                     complete_followups: true,
                     root_intensity_parts_per_million: 900_000,
                     supporting_tests_last: false,
+                    failed_replication_deliveries: 0,
+                    failed_synthesis_deliveries: 0,
                 },
             )
             .await;
@@ -1029,6 +1041,8 @@ mod tests {
                 complete_followups: true,
                 root_intensity_parts_per_million: 900_000,
                 supporting_tests_last: false,
+                failed_replication_deliveries: 0,
+                failed_synthesis_deliveries: 0,
             },
         )
         .await;
@@ -1081,6 +1095,8 @@ mod tests {
                 complete_followups: true,
                 root_intensity_parts_per_million: 300_000,
                 supporting_tests_last: true,
+                failed_replication_deliveries: 0,
+                failed_synthesis_deliveries: 0,
             },
         )
         .await;
@@ -1109,6 +1125,234 @@ mod tests {
             .complete_cancer_tissue_refinement(&claimed, &result)
             .await
             .expect("complete late-survivor refinement");
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
+    async fn failed_replication_delivery_does_not_poison_a_later_survivor() {
+        let store = test_store().await;
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4414));
+        insert_test_world(&store, world_id).await;
+        let survivor = insert_campaign_in_world(
+            &store,
+            world_id,
+            CampaignFixtureSpec {
+                first_ordinal: 1,
+                outcome: CancerResearchCampaignOutcome::SurvivedReplicationRound,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 0,
+                complete_followups: true,
+                root_intensity_parts_per_million: 900_000,
+                supporting_tests_last: false,
+                failed_replication_deliveries: 1,
+                failed_synthesis_deliveries: 0,
+            },
+        )
+        .await;
+
+        store
+            .admit_eligible_tissue_refinement_protocols(world_id)
+            .await
+            .expect("failed replication delivery is ignored during admission");
+        let candidate = store
+            .load_tissue_candidate(world_id, survivor.synthesis_request_id)
+            .await
+            .expect("reconstruct survivor")
+            .expect("survivor remains eligible");
+        assert_eq!(
+            candidate.survival_evidence.synthesis_request_id,
+            survivor.synthesis_request_id
+        );
+        assert_eq!(candidate.campaign_experiments.len(), 3);
+        let job_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cancer_tissue_refinement_jobs WHERE world_id=$1",
+        )
+        .bind(world_id.as_uuid())
+        .fetch_one(store.pool())
+        .await
+        .expect("job count");
+        assert_eq!(job_count, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
+    async fn failed_synthesis_delivery_does_not_poison_a_later_successful_synthesis() {
+        let store = test_store().await;
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4415));
+        insert_test_world(&store, world_id).await;
+        let survivor = insert_campaign_in_world(
+            &store,
+            world_id,
+            CampaignFixtureSpec {
+                first_ordinal: 1,
+                outcome: CancerResearchCampaignOutcome::SurvivedReplicationRound,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 0,
+                complete_followups: true,
+                root_intensity_parts_per_million: 900_000,
+                supporting_tests_last: false,
+                failed_replication_deliveries: 0,
+                failed_synthesis_deliveries: 1,
+            },
+        )
+        .await;
+
+        store
+            .admit_eligible_tissue_refinement_protocols(world_id)
+            .await
+            .expect("failed synthesis delivery is ignored during admission");
+        let candidate = store
+            .load_tissue_candidate(world_id, survivor.synthesis_request_id)
+            .await
+            .expect("reconstruct survivor")
+            .expect("later successful synthesis remains eligible");
+        assert_eq!(
+            candidate.survival_evidence.synthesis_request_id,
+            survivor.synthesis_request_id
+        );
+        assert_eq!(candidate.campaign_experiments.len(), 3);
+        let job_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cancer_tissue_refinement_jobs WHERE world_id=$1",
+        )
+        .bind(world_id.as_uuid())
+        .fetch_one(store.pool())
+        .await
+        .expect("job count");
+        assert_eq!(job_count, 1);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
+    async fn receiptless_replication_with_a_virtual_result_fails_closed() {
+        let store = test_store().await;
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4416));
+        insert_test_world(&store, world_id).await;
+        let survivor = insert_campaign_in_world(
+            &store,
+            world_id,
+            CampaignFixtureSpec {
+                first_ordinal: 1,
+                outcome: CancerResearchCampaignOutcome::SurvivedReplicationRound,
+                supporting_tests: 3,
+                falsifying_tests: 0,
+                inconclusive_tests: 0,
+                complete_followups: true,
+                root_intensity_parts_per_million: 900_000,
+                supporting_tests_last: false,
+                failed_replication_deliveries: 1,
+                failed_synthesis_deliveries: 0,
+            },
+        )
+        .await;
+
+        let failed_request_payload: Value = sqlx::query_scalar(
+            r#"
+            SELECT request.request_payload
+            FROM cancer_research_requests AS request
+            JOIN cancer_research_results AS result USING (request_id)
+            WHERE request.world_id=$1
+              AND request.request_payload->'selection'->>'frozen_candidate_hash'=$2
+              AND request.request_payload->'selection'->>'task'='design_independent_replication'
+              AND result.result_payload->'receipt'='null'::JSONB
+            ORDER BY request.ordinal,request.request_id
+            LIMIT 1
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(survivor.root_artifact_hash.to_string())
+        .fetch_one(store.pool())
+        .await
+        .expect("failed replication request");
+        let failed_request: CancerResearchModelRequest =
+            serde_json::from_value(failed_request_payload).expect("failed request payload");
+        failed_request
+            .validate()
+            .expect("failed request provenance");
+        let contribution = CancerResearchContribution::new_with_virtual_experiment(
+            &failed_request.selection,
+            CancerResearchArtifactKind::ExperimentProposal,
+            "Impossible failed-delivery experiment",
+            "This fixture must be rejected because no successful receipt owns its experiment.",
+            vec![CancerResearchClaim {
+                statement: "A failed delivery cannot authorize a virtual result.".to_owned(),
+                testable_prediction: "Admission rejects this injected row.".to_owned(),
+                falsification_test: "Admission silently accepts the injected row.".to_owned(),
+                citation_hashes: Vec::new(),
+            }],
+            Some(plan(120, 900_000)),
+        )
+        .expect("impossible contribution fixture");
+        let candidate = CancerVirtualExperimentCandidate {
+            world_id,
+            request_id: failed_request.request_id,
+            ordinal: failed_request.selection.ordinal,
+            artifact_hash: contribution.canonical_hash().expect("artifact hash"),
+            contribution: contribution.clone(),
+        };
+        let experiment = execute_cancer_virtual_experiment(&candidate).expect("virtual result");
+
+        // The production trigger correctly prevents this row. Disable only that
+        // trigger inside one transaction so reconstruction itself is proven to
+        // fail closed if storage corruption or an old importer ever bypasses it.
+        let mut transaction = store.pool().begin().await.expect("transaction");
+        sqlx::query(
+            "ALTER TABLE cancer_virtual_experiment_results DISABLE TRIGGER cancer_virtual_experiment_results_validate_insert",
+        )
+        .execute(&mut *transaction)
+        .await
+        .expect("disable validation trigger in isolated fixture");
+        sqlx::query(
+            r#"
+            INSERT INTO cancer_virtual_experiment_results (
+                experiment_id,world_id,request_id,method_version,artifact_hash,
+                plan_hash,result_payload,result_checksum
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+            "#,
+        )
+        .bind(experiment.experiment_id)
+        .bind(world_id.as_uuid())
+        .bind(failed_request.request_id)
+        .bind(i32::from(experiment.method_version))
+        .bind(experiment.artifact_hash.as_bytes().as_slice())
+        .bind(experiment.plan_hash.as_bytes().as_slice())
+        .bind(serde_json::to_value(&experiment).expect("experiment payload"))
+        .bind(
+            experiment
+                .canonical_hash(&contribution)
+                .expect("experiment checksum")
+                .as_bytes()
+                .as_slice(),
+        )
+        .execute(&mut *transaction)
+        .await
+        .expect("inject impossible experiment");
+        sqlx::query(
+            "ALTER TABLE cancer_virtual_experiment_results ENABLE TRIGGER cancer_virtual_experiment_results_validate_insert",
+        )
+        .execute(&mut *transaction)
+        .await
+        .expect("restore validation trigger");
+        transaction.commit().await.expect("commit corrupt fixture");
+
+        let error = store
+            .admit_eligible_tissue_refinement_protocols(world_id)
+            .await
+            .expect_err("receipt-less experiment must fail closed");
+        assert!(matches!(
+            error,
+            StoreError::Corrupt(message)
+                if message.contains("failed tissue campaign test cannot carry a virtual result")
+        ));
+        let job_count: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM cancer_tissue_refinement_jobs WHERE world_id=$1",
+        )
+        .bind(world_id.as_uuid())
+        .fetch_one(store.pool())
+        .await
+        .expect("job count");
+        assert_eq!(job_count, 0, "corrupt campaign was not admitted");
     }
 
     #[tokio::test]
@@ -1195,6 +1439,8 @@ mod tests {
         complete_followups: bool,
         root_intensity_parts_per_million: u32,
         supporting_tests_last: bool,
+        failed_replication_deliveries: u8,
+        failed_synthesis_deliveries: u8,
     }
 
     async fn insert_campaign_with_outcome(
@@ -1220,6 +1466,8 @@ mod tests {
                 complete_followups,
                 root_intensity_parts_per_million: 900_000,
                 supporting_tests_last: false,
+                failed_replication_deliveries: 0,
+                failed_synthesis_deliveries: 0,
             },
         )
         .await
@@ -1329,11 +1577,26 @@ mod tests {
             insert_virtual_result(store, &experiment, &candidate.contribution).await;
         }
 
-        let synthesis_ordinal = spec
+        let mut next_ordinal = spec
             .first_ordinal
             .checked_add(u32::try_from(test_count).expect("count"))
             .and_then(|ordinal| ordinal.checked_add(1))
             .expect("fixture ordinal");
+        for _ in 0..spec.failed_replication_deliveries {
+            let failed_selection = selection(
+                world_id,
+                next_ordinal,
+                CancerResearchStage::IndependentReplication,
+                CancerResearchTask::DesignIndependentReplication,
+                CancerResearchInferenceTier::Exploration,
+                Some(root_hash),
+                Vec::new(),
+            );
+            let (failed_request, failed_result) = failed_research_row(failed_selection, Vec::new());
+            insert_research_row(store, &failed_request, &failed_result, true).await;
+            next_ordinal = next_ordinal.checked_add(1).expect("fixture ordinal");
+        }
+
         let directive = CancerResearchCampaignDirective::Synthesis {
             schema_version: application::CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
             campaign_id,
@@ -1346,9 +1609,25 @@ mod tests {
         let document = directive
             .evidence_document(world_id)
             .expect("directive evidence");
+        for _ in 0..spec.failed_synthesis_deliveries {
+            let failed_selection = selection(
+                world_id,
+                next_ordinal,
+                CancerResearchStage::IndependentReplication,
+                CancerResearchTask::InterpretReplicationResult,
+                CancerResearchInferenceTier::Escalation,
+                Some(root_hash),
+                vec![document.reference.clone()],
+            );
+            let (failed_request, failed_result) =
+                failed_research_row(failed_selection, vec![document.clone()]);
+            insert_research_row(store, &failed_request, &failed_result, true).await;
+            next_ordinal = next_ordinal.checked_add(1).expect("fixture ordinal");
+        }
+
         let synthesis_selection = selection(
             world_id,
-            synthesis_ordinal,
+            next_ordinal,
             CancerResearchStage::IndependentReplication,
             CancerResearchTask::InterpretReplicationResult,
             CancerResearchInferenceTier::Escalation,
@@ -1486,6 +1765,44 @@ mod tests {
             .validate_against(&registry, &request)
             .expect("result");
         (request, result, contribution)
+    }
+
+    fn failed_research_row(
+        selection: CancerResearchTurnSelection,
+        evidence_documents: Vec<CancerResearchEvidenceDocument>,
+    ) -> (CancerResearchModelRequest, CancerResearchLadderResult) {
+        let request = CancerResearchModelRequest::new(selection, evidence_documents, Vec::new())
+            .expect("failed request");
+        let registry = CognitionRouteRegistry::cancer_research_for_policy(
+            request.route_purpose(),
+            if request.selection.inference_tier == CancerResearchInferenceTier::Exploration {
+                CognitionRouteRegistry::cancer_research_exploration().policy_version
+            } else {
+                CognitionRouteRegistry::cancer_research_escalation().policy_version
+            },
+        )
+        .expect("registry");
+        let route = &registry.routes[0];
+        let result = CancerResearchLadderResult {
+            contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+            request_id: request.request_id,
+            route_policy_version: registry.policy_version,
+            route_registry_hash: registry
+                .canonical_hash(request.route_purpose())
+                .expect("registry hash"),
+            attempts: vec![CognitionRouteAttempt {
+                route_index: 0,
+                provider: route.provider.clone(),
+                requested_model: route.requested_model.clone(),
+                billing_class: route.billing_class,
+                status: CognitionRouteAttemptStatus::Unavailable,
+            }],
+            receipt: None,
+        };
+        result
+            .validate_against(&registry, &request)
+            .expect("failed result");
+        (request, result)
     }
 
     async fn insert_test_world(store: &PostgresStore, world_id: WorldId) {

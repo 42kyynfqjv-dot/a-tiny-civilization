@@ -2,6 +2,10 @@
 
 Status: accepted for the live Cancer World research projection.
 
+Amended by ADR 0175. Observer-side novelty is no longer a campaign-eligibility
+input and failed provider deliveries are retained as provenance without counting
+as completed tests.
+
 ## Decision
 
 Cancer World no longer promotes the newest hypothesis on a long fixed interval.
@@ -9,16 +13,21 @@ Every fifth turn in each independent program is instead available to the oldest
 eligible unresolved campaign. A blind artifact becomes eligible only when:
 
 - it contains a closed virtual-experiment plan;
-- the current deterministic virtual-lab method supports its prediction; and
-- the current observer-side overlap audit reports a new combination or no close
-  match, rather than known overlap or an audit error.
+- the current deterministic virtual-lab method supports its prediction or returns
+  an inconclusive result that can be challenged; and
+- its immutable internal research and virtual-lab provenance validates.
+
+Europe PMC overlap audits are observer-side assessments. Their presence, method
+version, status, latency, or temporary absence cannot select or suppress canonical
+campaign work.
 
 The original contribution hash is stored as `frozen_candidate_hash` on every
 campaign request. This existing immutable field is the lineage edge; campaign
-state is reconstructed from the append-only request, result, novelty, and virtual
-experiment records rather than maintained in a mutable status table.
+state is reconstructed from the append-only request, result, and virtual-experiment
+records rather than maintained in a mutable status table. Novelty records remain a
+separate observer projection.
 
-An active campaign receives up to five preregistered adversarial model tests. The
+An active campaign receives up to ten preregistered adversarial model tests. The
 test sequence varies subject abstraction, intensity, exposure, endpoint, and
 modality in a deterministic order. Every required plan is frozen in a
 content-addressed campaign directive before the model is called. The model may
@@ -27,7 +36,7 @@ identical deterministic plan does not count as replication.
 
 One no-material-effect or concerning-tradeoff result falsifies the campaign at
 this model layer. Three supporting results with no falsifying result allow it to
-survive the replication round. Five tests without either condition are
+survive the replication round. Ten tests without either condition are
 inconclusive. A final synthesis turn receives that computed outcome as immutable
 input and may explain, but not upgrade, it. Paid escalation is permitted only for
 a survived-round synthesis and remains inside the existing treasury circuit
@@ -68,4 +77,3 @@ source of research truth.
   otherwise nonterminal tests.
 - Missing, failed, or still-running model and virtual-lab jobs do not manufacture
   a test result and do not stall ordinary blind research.
-

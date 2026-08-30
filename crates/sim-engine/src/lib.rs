@@ -3856,6 +3856,7 @@ impl EngineState {
         } else {
             SIGNAL_ACTION_ASSOCIATION_SCHEMA_VERSION
         };
+        let bounded_form_competition = self.plans_bounded_signal_competition_driver();
         let inhibited_from = competitive
             .then(|| {
                 organism
@@ -3871,7 +3872,11 @@ impl EngineState {
                         let same_meaning_competing_form =
                             (entry.preceding_signal, entry.signal_intensity)
                                 != (preceding_signal, signal_intensity)
-                                && entry.preceding_signal.is_some() == preceding_signal.is_some()
+                                && (if bounded_form_competition {
+                                    entry.preceding_signal == preceding_signal
+                                } else {
+                                    entry.preceding_signal.is_some() == preceding_signal.is_some()
+                                })
                                 && (entry.action_kind, entry.movement_direction)
                                     == (action.kind, movement_direction);
                         same_form_competing_meaning || same_meaning_competing_form
@@ -17349,6 +17354,142 @@ mod tests {
     }
 
     #[test]
+    fn ruleset_forty_two_hardening_bounds_learning_inhibition_by_predecessor_and_replays() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4200_b01d));
+        let (_, mut running, genesis) =
+            grounded_language_fixture(world_id, 2, SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION);
+        let ids = running.organisms.keys().copied().collect::<Vec<_>>();
+        let observer_id = ids[0];
+        let actor_id = ids[1];
+        let associations = vec![
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: Some(1),
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 12,
+                value: 120,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: Some(2),
+                signal_intensity: 8,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 4,
+                value: 20,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: Some(2),
+                signal_intensity: 9,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 8,
+                value: 80,
+            },
+        ];
+        running
+            .organisms
+            .get_mut(&observer_id)
+            .expect("fixture observer")
+            .signal_action_associations = associations;
+        let action = PrimitiveAction {
+            kind: PrimitiveActionKind::Rest,
+            target_id: None,
+            intensity: 1,
+            contact_region: None,
+            movement_direction: None,
+        };
+
+        running.tick = SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK - 2);
+        let (_, _, legacy_inhibited, _) = running
+            .next_signal_action_association(
+                &running.organisms[&observer_id],
+                actor_id,
+                Some(2),
+                8,
+                &action,
+                false,
+            )
+            .expect("legacy association update");
+        assert_eq!(
+            legacy_inhibited
+                .expect("legacy presence-only context competitor")
+                .preceding_signal,
+            Some(1),
+            "the historical transition must retain its cross-predecessor inhibition for replay",
+        );
+
+        running.tick = SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK - 1);
+        for organism in running.organisms.values_mut() {
+            organism.age_ticks = Some(
+                organism
+                    .initial_age_ticks
+                    .saturating_add(running.tick.get()),
+            );
+            organism.bodily_regulated_at = Some(running.tick);
+            organism.action_values_updated_at = Some(running.tick);
+        }
+        let (_, _, bounded_inhibited, _) = running
+            .next_signal_action_association(
+                &running.organisms[&observer_id],
+                actor_id,
+                Some(2),
+                8,
+                &action,
+                false,
+            )
+            .expect("bounded association update");
+        assert_eq!(
+            bounded_inhibited
+                .expect("same-predecessor competitor")
+                .preceding_signal,
+            Some(2),
+            "the activation transition must not inhibit another ordered-call context",
+        );
+
+        running.celestial_state = Some(CelestialState::new(
+            TdbSecondsSinceJ2000::new(i128::from(running.tick.get()) * 300),
+            CartesianMillimetres::new(1, 2, 3),
+            CartesianMillimetres::new(4, 5, 6),
+        ));
+        running.celestial_tick = Some(running.tick);
+        running
+            .refresh_partition_schedule()
+            .expect("boundary partition schedule");
+        let boundary_snapshot =
+            Snapshot::new(running.clone(), genesis.sequence, genesis.batch_hash)
+                .expect("boundary snapshot");
+        let events = running
+            .plan_next_tick_with_celestial_and_cognition(
+                CelestialState::new(
+                    TdbSecondsSinceJ2000::new(
+                        i128::from(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK) * 300,
+                    ),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ),
+                &[],
+            )
+            .expect("activation-boundary transition");
+        let (after, batch) = running
+            .commit(
+                genesis.sequence.checked_next().expect("boundary sequence"),
+                genesis.batch_hash,
+                events,
+            )
+            .expect("activation-boundary commit");
+        assert_eq!(
+            replay_from_snapshot(&boundary_snapshot, &[batch])
+                .expect("activation-boundary replay")
+                .state,
+            after,
+        );
+    }
+
+    #[test]
     fn bounded_private_memory_evicts_the_oldest_perception_deterministically() {
         let fill_perception_memory = |state: &mut EngineState| {
             let observed_at = state.tick;
@@ -17883,6 +18024,63 @@ mod tests {
         without_current_conventions
             .validate()
             .expect("latched lifecycle remains valid after conventions change");
+    }
+
+    #[test]
+    fn hardened_language_can_escape_a_saturated_single_meaning_incumbent() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4500_1afe));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 8, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
+        for organism in running.organisms.values_mut() {
+            organism.signal_action_associations = (1..=world_domain::SIGNAL_FORM_VARIANT_COUNT)
+                .map(|signal_intensity| SignalActionAssociationState {
+                    association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                    preceding_signal: None,
+                    signal_intensity,
+                    action_kind: PrimitiveActionKind::Rest,
+                    movement_direction: None,
+                    observations: 64,
+                    value: ACTION_VALUE_MAX,
+                })
+                .collect();
+        }
+        assert!(!running.grounded_language_threshold_is_met());
+
+        let mut language_tick = None;
+        for _ in 0..1_700 {
+            let next_tick = running.tick.checked_next().expect("bounded fixture tick");
+            let events = running
+                .plan_next_tick_with_celestial_and_cognition(
+                    CelestialState::new(
+                        TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+                        CartesianMillimetres::new(i128::from(next_tick.get()), 2, 3),
+                        CartesianMillimetres::new(4, i128::from(next_tick.get()) + 5, 6),
+                    ),
+                    &[],
+                )
+                .expect("hardened language tick");
+            running
+                .validate_event_coupling(&events)
+                .expect("hardened language event coupling");
+            running
+                .apply_events(&events)
+                .expect("hardened language transition applies");
+            running.validate().expect("hardened language state");
+            if running.shared_grounded_language_is_present() {
+                language_tick = Some(running.tick);
+                break;
+            }
+        }
+
+        assert!(
+            language_tick.is_some(),
+            "bounded neutral competition must escape an incumbent where every form initially predicts only rest",
+        );
+        eprintln!(
+            "saturated single-meaning incumbent escaped at tick {}",
+            language_tick.expect("language tick")
+        );
+        assert_eq!(running.human_life_cycle_opened_at, language_tick);
     }
 
     #[test]

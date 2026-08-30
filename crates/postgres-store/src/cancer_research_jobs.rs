@@ -92,8 +92,6 @@ struct CampaignRootRow {
     result_checksum: Vec<u8>,
     experiment_payload: Value,
     experiment_checksum: Vec<u8>,
-    audit_payload: Value,
-    audit_checksum: Vec<u8>,
 }
 
 #[derive(FromRow)]
@@ -1618,7 +1616,7 @@ impl CancerResearchJobStore for PostgresStore {
                     COUNT(*) FILTER (
                         WHERE child_result.result_payload->'receipt' = 'null'::JSONB
                           AND (child_result.result_payload->>'route_policy_version')::INTEGER
-                              IN ($6, $8)
+                              IN ($5, $7)
                     ) AS current_policy_failures,
                     BOOL_OR(
                         child.request_payload->'selection'->>'task'
@@ -1639,9 +1637,6 @@ impl CancerResearchJobStore for PostgresStore {
                 JOIN cancer_virtual_experiment_results AS experiment
                   ON experiment.request_id=request.request_id
                  AND experiment.method_version=$4
-                JOIN cancer_research_novelty_audits AS audit
-                  ON audit.request_id=request.request_id
-                 AND audit.method_version=$5
                 LEFT JOIN child_stats AS children
                   ON children.frozen_candidate_hash=ENCODE(experiment.artifact_hash, 'hex')
                 WHERE request.world_id=$1
@@ -1654,8 +1649,7 @@ impl CancerResearchJobStore for PostgresStore {
                       'model_supports_prediction',
                       'model_inconclusive'
                   )
-                  AND audit.normalized_status IN ('new_combination','no_close_match_found')
-                  AND COALESCE(children.current_policy_failures, 0) < $7
+                  AND COALESCE(children.current_policy_failures, 0) < $6
                   AND NOT COALESCE(children.synthesis_complete, FALSE)
                 ORDER BY
                     COALESCE(children.successful_children, 0) DESC,
@@ -1668,26 +1662,19 @@ impl CancerResearchJobStore for PostgresStore {
             SELECT request.request_payload, request.request_checksum,
                    result.result_payload, result.result_checksum,
                    experiment.result_payload AS experiment_payload,
-                   experiment.result_checksum AS experiment_checksum,
-                   audit.audit_payload, audit.audit_checksum
+                   experiment.result_checksum AS experiment_checksum
             FROM selected_candidate AS selected
             JOIN cancer_research_requests AS request USING (request_id)
             JOIN cancer_research_results AS result USING (request_id)
             JOIN cancer_virtual_experiment_results AS experiment
               ON experiment.request_id=request.request_id
              AND experiment.method_version=$4
-            JOIN cancer_research_novelty_audits AS audit
-              ON audit.request_id=request.request_id
-             AND audit.method_version=$5
             "#,
         )
         .bind(world_id.as_uuid())
         .bind(i64::from(before_ordinal))
         .bind(i64::from(program.ordinal_remainder()))
         .bind(i32::from(world_domain::CANCER_VIRTUAL_LAB_METHOD_VERSION))
-        .bind(i32::from(
-            world_domain::CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
-        ))
         .bind(i32::from(
             application::CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION,
         ))
@@ -1750,25 +1737,6 @@ impl CancerResearchJobStore for PostgresStore {
                 "campaign root virtual experiment failed its durable provenance",
             ));
         }
-        let novelty: CancerResearchNoveltyAudit =
-            serde_json::from_value(row.audit_payload).map_err(corrupt)?;
-        novelty.validate().map_err(corrupt)?;
-        if novelty.world_id != world_id
-            || novelty.request_id != root.request.request_id
-            || novelty.artifact_hash != root_artifact_hash
-            || !matches!(
-                novelty.status,
-                CancerResearchNoveltyStatus::NewCombination
-                    | CancerResearchNoveltyStatus::NoCloseMatchFound
-            )
-            || novelty.canonical_hash().map_err(corrupt)?
-                != digest_from_db(&row.audit_checksum, "campaign root novelty checksum")?
-        {
-            return Err(corrupt(
-                "campaign root novelty audit failed its durable provenance",
-            ));
-        }
-
         let followup_rows = sqlx::query_as::<_, CampaignFollowupRow>(
             r#"
             SELECT child.request_payload, child.request_checksum,
@@ -3203,14 +3171,20 @@ mod tests {
         CANCER_RESEARCH_MODEL_CONTRACT_VERSION, CancerResearchEvidenceDocument,
         CancerResearchModel, CancerResearchModelAdapters, CancerResearchModelError,
         CancerResearchModelRequest, CancerResearchWorkerConfiguration, CancerResearchWorkerOutcome,
-        CognitionProviderId, ModelTokenUsage, process_next_cancer_research_job,
+        CognitionProviderId, ModelTokenUsage, execute_cancer_virtual_experiment,
+        process_next_cancer_research_job,
     };
     use std::{collections::BTreeMap, sync::Arc};
     use uuid::Uuid;
     use world_domain::{
-        CancerResearchArtifactKind, CancerResearchClaim, CancerResearchContribution,
-        CancerResearchInferenceTier, CancerResearchProfile, CancerResearchTarget,
-        CancerResearchTask, CancerResearchTurnSelection, EntityId, SimTick, WorldId, WorldSeed,
+        CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION, CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
+        CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION, CancerResearchArtifactKind,
+        CancerResearchClaim, CancerResearchContribution, CancerResearchInferenceTier,
+        CancerResearchNoveltyAudit, CancerResearchNoveltyStatus, CancerResearchProfile,
+        CancerResearchTarget, CancerResearchTask, CancerResearchTurnSelection,
+        CancerVirtualEndpoint, CancerVirtualExperimentPlan, CancerVirtualInterventionModality,
+        CancerVirtualMechanismTarget, CancerVirtualSubjectModel, EntityId, SimTick, WorldId,
+        WorldSeed,
     };
 
     use super::*;
@@ -3257,6 +3231,249 @@ mod tests {
                 adapter_version: "fake-worker-v1".to_owned(),
             })
         }
+    }
+
+    #[tokio::test]
+    #[ignore = "requires TEST_DATABASE_URL pointing at an isolated PostgreSQL database"]
+    async fn campaign_selection_is_independent_of_absent_or_revised_novelty() {
+        let database_url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL");
+        let store = PostgresStore::connect(&database_url, 4)
+            .await
+            .expect("connect test database");
+        store.migrate().await.expect("migrate test database");
+
+        let world_id = WorldId::from_uuid(Uuid::new_v4());
+        insert_campaign_test_world(&store, world_id).await;
+        let (request, contribution) = insert_campaign_test_root(&store, world_id, 0).await;
+        let program = world_domain::CancerResearchProgram::for_ordinal(request.selection.ordinal);
+
+        let without_audit = store
+            .load_cancer_research_campaign_candidate(world_id, 10, program)
+            .await
+            .expect("load campaign without novelty")
+            .expect("immutable research root is eligible without observer novelty");
+        assert_eq!(without_audit.root.request.request_id, request.request_id);
+
+        for (method_version, status) in [
+            (1, CancerResearchNoveltyStatus::NoCloseMatchFound),
+            (
+                CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
+                CancerResearchNoveltyStatus::KnownOverlap,
+            ),
+        ] {
+            let audit = CancerResearchNoveltyAudit {
+                schema_version: CANCER_RESEARCH_NOVELTY_AUDIT_SCHEMA_VERSION,
+                method_version,
+                audit_id: CancerResearchNoveltyAudit::deterministic_id(
+                    request.request_id,
+                    method_version,
+                ),
+                world_id,
+                request_id: request.request_id,
+                artifact_hash: contribution.canonical_hash().expect("artifact hash"),
+                query_terms: vec!["campaign".to_owned(), "fixture".to_owned()],
+                status,
+                literature_overlap_per_mille: if status == CancerResearchNoveltyStatus::KnownOverlap
+                {
+                    1_000
+                } else {
+                    0
+                },
+                prior_world_overlap_per_mille: 0,
+                matches: Vec::new(),
+                warnings: Vec::new(),
+            };
+            store
+                .store_cancer_research_novelty_audit(&audit)
+                .await
+                .expect("store observer audit");
+            let after_audit = store
+                .load_cancer_research_campaign_candidate(world_id, 10, program)
+                .await
+                .expect("load campaign after novelty revision")
+                .expect("observer assessment cannot remove canonical campaign work");
+            assert_eq!(
+                after_audit, without_audit,
+                "campaign reconstruction changed after observer novelty method {method_version}"
+            );
+        }
+    }
+
+    async fn insert_campaign_test_world(store: &PostgresStore, world_id: WorldId) {
+        let zero = vec![0_u8; 32];
+        let seed = u64::from_be_bytes(
+            world_id.as_uuid().as_bytes()[..8]
+                .try_into()
+                .expect("UUID contains a u64 seed"),
+        )
+        .to_string();
+        sqlx::query(
+            r#"
+            INSERT INTO worlds (
+                id,seed,status,ruleset_version,manifest,manifest_checksum,
+                last_event_checksum,current_state_checksum
+            ) VALUES ($1,$2,'running',39,'{}'::JSONB,$3,$3,$3)
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(seed)
+        .bind(zero)
+        .execute(store.pool())
+        .await
+        .expect("world");
+        sqlx::query(
+            r#"
+            INSERT INTO event_batches (
+                world_id,sequence,tick,event_schema_version,ruleset_version,payload,
+                checksum,previous_checksum,post_state_checksum
+            ) VALUES ($1,1,0,1,39,'{}'::JSONB,$2,$2,$2)
+            "#,
+        )
+        .bind(world_id.as_uuid())
+        .bind(vec![0_u8; 32])
+        .execute(store.pool())
+        .await
+        .expect("event provenance");
+    }
+
+    async fn insert_campaign_test_root(
+        store: &PostgresStore,
+        world_id: WorldId,
+        ordinal: u32,
+    ) -> (CancerResearchModelRequest, CancerResearchContribution) {
+        let resident_id = EntityId::deterministic(world_id, b"campaign-novelty-firewall");
+        let selection = CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(1),
+            SimTick::new(2),
+            ordinal,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchTask::ProposeDiscriminatingExperiment,
+            CancerResearchInferenceTier::Exploration,
+            CancerResearchProfile::seeded(WorldSeed::new(39), resident_id).expect("profile"),
+            Vec::new(),
+            None,
+            512,
+        )
+        .expect("selection");
+        let request =
+            CancerResearchModelRequest::new(selection, Vec::new(), Vec::new()).expect("request");
+        let contribution = CancerResearchContribution::new_with_virtual_experiment(
+            &request.selection,
+            CancerResearchArtifactKind::ExperimentProposal,
+            "Campaign novelty firewall fixture",
+            "A deterministic campaign root whose observer assessment must not affect scheduling.",
+            vec![CancerResearchClaim {
+                statement: "A bounded perturbation changes the modeled endpoint.".to_owned(),
+                testable_prediction: "The projected tumor fraction differs from control."
+                    .to_owned(),
+                falsification_test: "The preregistered direction is absent.".to_owned(),
+                citation_hashes: Vec::new(),
+            }],
+            Some(CancerVirtualExperimentPlan {
+                schema_version: CANCER_VIRTUAL_EXPERIMENT_PLAN_SCHEMA_VERSION,
+                subject_model: CancerVirtualSubjectModel::TumorOrganoid,
+                intervention_modality: CancerVirtualInterventionModality::MolecularInhibition,
+                primary_target: CancerVirtualMechanismTarget::CellDivision,
+                secondary_target: None,
+                primary_endpoint: CancerVirtualEndpoint::ViableTumorFraction,
+                intensity_parts_per_million: 900_000,
+                exposure_hours: 168,
+                cohort_size: 128,
+            }),
+        )
+        .expect("contribution");
+        let registry = CognitionRouteRegistry::cancer_research_exploration();
+        let route = &registry.routes[0];
+        let attempt = CognitionRouteAttempt {
+            route_index: 0,
+            provider: route.provider.clone(),
+            requested_model: route.requested_model.clone(),
+            billing_class: route.billing_class,
+            status: CognitionRouteAttemptStatus::Succeeded,
+        };
+        let receipt = CancerResearchModelReceipt {
+            contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+            request_id: request.request_id,
+            request_hash: request.canonical_hash().expect("request hash"),
+            provider: route.provider.clone(),
+            requested_model: route.requested_model.clone(),
+            resolved_model: route.requested_model.clone(),
+            provider_response_id: format!("campaign-fixture-{}", request.request_id),
+            usage: ModelTokenUsage {
+                prompt_tokens: 100,
+                completion_tokens: 100,
+            },
+            billed_micro_usd: 0,
+            contribution: contribution.clone(),
+            provider_response_hash: Digest::sha256(request.request_id.as_bytes()),
+            adapter_version: "campaign-novelty-firewall-v1".to_owned(),
+        };
+        let result = CancerResearchLadderResult {
+            contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
+            request_id: request.request_id,
+            route_policy_version: registry.policy_version,
+            route_registry_hash: registry
+                .canonical_hash(request.route_purpose())
+                .expect("registry hash"),
+            attempts: vec![attempt],
+            receipt: Some(receipt),
+        };
+        result
+            .validate_against(&registry, &request)
+            .expect("result");
+
+        store
+            .enqueue_cancer_research_request(&request)
+            .await
+            .expect("enqueue root");
+        sqlx::query(
+            r#"
+            INSERT INTO cancer_research_results (
+                request_id,route_policy_version,route_registry_checksum,
+                result_payload,result_checksum
+            ) VALUES ($1,$2,$3,$4,$5)
+            "#,
+        )
+        .bind(request.request_id)
+        .bind(i32::from(result.route_policy_version))
+        .bind(result.route_registry_hash.as_bytes().as_slice())
+        .bind(serde_json::to_value(&result).expect("result JSON"))
+        .bind(
+            Digest::canonical(&result)
+                .expect("result checksum")
+                .as_bytes()
+                .as_slice(),
+        )
+        .execute(store.pool())
+        .await
+        .expect("insert result");
+        sqlx::query("UPDATE cancer_research_requests SET completed_at=NOW() WHERE request_id=$1")
+            .bind(request.request_id)
+            .execute(store.pool())
+            .await
+            .expect("complete request");
+
+        let candidate = CancerVirtualExperimentCandidate {
+            world_id,
+            request_id: request.request_id,
+            ordinal,
+            artifact_hash: contribution.canonical_hash().expect("artifact hash"),
+            contribution: contribution.clone(),
+        };
+        let experiment = execute_cancer_virtual_experiment(&candidate).expect("virtual lab");
+        assert!(matches!(
+            experiment.interpretation,
+            world_domain::CancerVirtualExperimentInterpretation::ModelSupportsPrediction
+                | world_domain::CancerVirtualExperimentInterpretation::ModelInconclusive
+        ));
+        store
+            .store_cancer_virtual_experiment_result(&experiment, &contribution, ordinal)
+            .await
+            .expect("store virtual result");
+        (request, contribution)
     }
 
     #[tokio::test]

@@ -227,8 +227,8 @@ pub struct CancerResearchCampaignFollowup {
 }
 
 /// Read model used by the scheduler to continue exactly one deterministic
-/// campaign. The root produced a non-falsifying virtual projection and passed
-/// the observer-side overlap gate before it can enter this structure.
+/// campaign. Eligibility comes only from immutable research and virtual-lab
+/// provenance; observer-side novelty audits never enter canonical scheduling.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct CancerResearchCampaignCandidate {
     pub root: CancerResearchPriorResult,
