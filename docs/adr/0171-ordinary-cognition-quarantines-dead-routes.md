@@ -92,3 +92,19 @@ boundary. Cancer research routing and all canonical simulation rules remain
 unchanged.
 
 Provider capability reference: <https://openrouter.ai/openrouter/free>.
+
+## Live-probe amendment: force one typed tool call
+
+Two version-20 canaries returned JSON-mode content that still failed the exact local
+action contract. Adapter contract version 21 replaces JSON mode on only the ordinary
+dynamic-free route with one forced `select_bounded_primitive_action` function call,
+disables parallel calls, and accepts exactly one call with that name. OpenRouter
+documents both forced tool choice and standardized tool-call arguments; the dynamic
+router can therefore exclude models without tool support. The returned argument
+string still passes through the same deny-unknown-fields `BoundedAction` parser and
+all receipt, zero-cost, deadline, input-log, and replay checks. A malformed, missing,
+renamed, or multiple tool call remains an unavailable cognition result and cannot
+alter canonical history.
+
+Tool-calling reference:
+<https://openrouter.ai/docs/guides/features/tool-calling>.

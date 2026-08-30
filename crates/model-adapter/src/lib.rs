@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v20";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v21";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -1544,10 +1544,9 @@ fn api_request(
     // first oneOf branch regardless of the prompt. A closed bare-token parser
     // retains the same safety boundary while allowing the local model to make
     // the choice. OpenRouter's dynamic free pool spans models with inconsistent
-    // provider-side JSON-Schema support. Its router does, however, advertise
-    // feature filtering for plain JSON mode, so the ordinary route requests a
-    // JSON object and leaves exact schema enforcement to the same strict local
-    // parser used for every hosted response.
+    // provider-side JSON-Schema response-format support. Its router does,
+    // however, advertise feature filtering for tool calls, so the ordinary
+    // route forces one typed function call and validates its arguments locally.
     if !local_unconstrained && !dynamic_openrouter_free {
         payload["response_format"] = json!({
             "type": "json_schema",
@@ -1558,7 +1557,19 @@ fn api_request(
             }
         });
     } else if dynamic_openrouter_free {
-        payload["response_format"] = json!({"type": "json_object"});
+        payload["tools"] = json!([{
+            "type": "function",
+            "function": {
+                "name": "select_bounded_primitive_action",
+                "description": "Select exactly one bounded primitive motor action.",
+                "parameters": bounded_action_schema()
+            }
+        }]);
+        payload["tool_choice"] = json!({
+            "type": "function",
+            "function": {"name": "select_bounded_primitive_action"}
+        });
+        payload["parallel_tool_calls"] = Value::Bool(false);
     }
     apply_openrouter_provider_policy(&mut payload, provider, route);
     Ok(payload)
@@ -1745,12 +1756,24 @@ fn parse_response(
     let provider_response_id =
         provider_response_identity(provider, parsed.id.as_deref(), response_hash)
             .map_err(CognitionModelError::InvalidResponse)?;
-    let content = parsed.choices[0]
-        .message
-        .content
-        .as_deref()
+    let message = &parsed.choices[0].message;
+    let tool_arguments = match message.tool_calls.as_slice() {
+        [] => None,
+        [call] if call.function.name == "select_bounded_primitive_action" => {
+            Some(call.function.arguments.as_str())
+        }
+        _ => {
+            return Err(CognitionModelError::InvalidResponse(
+                "completion returned an unexpected bounded-action tool call".to_owned(),
+            ));
+        }
+    };
+    let content = tool_arguments
+        .or(message.content.as_deref())
         .ok_or_else(|| {
-            CognitionModelError::InvalidResponse("completion omitted message content".to_owned())
+            CognitionModelError::InvalidResponse(
+                "completion omitted bounded-action content or tool arguments".to_owned(),
+            )
         })?;
     let action = parse_bounded_action(provider, request, content)?;
     let prompt_tokens = u32::try_from(parsed.usage.prompt_tokens).map_err(|_| {
@@ -2817,7 +2840,14 @@ mod tests {
         let response = json!({
             "id": "generation-1",
             "model": "openai/gpt-oss-120b:free",
-            "choices": [{"message": {"content": "{\"action_kind\":\"orient\"}"}}],
+            "choices": [{"message": {"content": null, "tool_calls": [{
+                "id": "call-1",
+                "type": "function",
+                "function": {
+                    "name": "select_bounded_primitive_action",
+                    "arguments": "{\"action_kind\":\"orient\"}"
+                }
+            }]}}],
             "usage": {"prompt_tokens": 91, "completion_tokens": 7, "cost": 0}
         });
         let (adapter, seen) = adapter_for(CognitionProviderId::openrouter(), response).await;
@@ -2832,7 +2862,17 @@ mod tests {
         assert_eq!(receipt.billed_micro_usd, 0);
         let seen = seen.lock().expect("test lock").clone().expect("request");
         assert_eq!(seen["provider"]["require_parameters"], true);
-        assert_eq!(seen["response_format"]["type"], "json_object");
+        assert!(seen.get("response_format").is_none());
+        assert_eq!(seen["tools"][0]["type"], "function");
+        assert_eq!(
+            seen["tools"][0]["function"]["name"],
+            "select_bounded_primitive_action"
+        );
+        assert_eq!(
+            seen["tool_choice"]["function"]["name"],
+            "select_bounded_primitive_action"
+        );
+        assert_eq!(seen["parallel_tool_calls"], false);
         assert!(seen.get("include_reasoning").is_none());
         assert_eq!(seen["reasoning"]["effort"], "none");
         assert_eq!(seen["reasoning"]["exclude"], true);
