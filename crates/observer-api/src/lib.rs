@@ -51,6 +51,7 @@ const OAUTH_ATTEMPT_MINUTES: i64 = 10;
 const OBSERVER_SESSION_DAYS: i64 = 30;
 const CANCER_ACCESS_HEADER: &str = "x-atc-cancer-console-token";
 const CANCER_RESEARCH_CACHE_TTL: Duration = Duration::from_secs(60);
+const CANCER_RESEARCH_CACHE_RETRY: Duration = Duration::from_secs(10);
 
 /// Read-only observer composition. The simulation runner does not import this port.
 pub trait ObserverReadStore:
@@ -202,6 +203,7 @@ struct CachedCancerResearch {
     world_id: WorldId,
     limit: u16,
     expires_at: Instant,
+    refreshing: bool,
     view: PublicCancerResearchView,
 }
 
@@ -1496,16 +1498,26 @@ async fn public_cancer_research(
         .map_err(|_| ApiError::NotFound)?;
     require_cancer_access(&state, &headers, world_id)?;
     let limit = query.limit.unwrap_or(120).clamp(1, 500);
-    // Hold the mutex across the rebuild deliberately: it coalesces concurrent
-    // console requests instead of letting each one deserialize and deduplicate
-    // the full immutable research history on a separate database connection.
+    // Hold the mutex across only the first rebuild deliberately: it coalesces
+    // concurrent cold-start requests instead of letting each one deserialize
+    // and deduplicate the full immutable research history. Once a valid view
+    // exists, serve it immediately at expiry and refresh it in the background;
+    // the private live console must not stall every minute on a multi-second
+    // provenance reconstruction.
     let mut cache = state.cancer_research_cache.lock().await;
-    if let Some(cached) = cache.as_ref()
+    if let Some(cached) = cache.as_mut()
         && cached.world_id == world_id
         && cached.limit == limit
-        && cached.expires_at > Instant::now()
     {
-        return Ok(Json(cached.view.clone()));
+        let view = cached.view.clone();
+        if cached.expires_at <= Instant::now() && !cached.refreshing {
+            cached.refreshing = true;
+            let refresh_state = state.clone();
+            tokio::spawn(async move {
+                refresh_cancer_research_cache(refresh_state, world_id, limit).await;
+            });
+        }
+        return Ok(Json(view));
     }
     let view = state
         .store
@@ -1517,9 +1529,42 @@ async fn public_cancer_research(
         world_id,
         limit,
         expires_at: Instant::now() + CANCER_RESEARCH_CACHE_TTL,
+        refreshing: false,
         view: view.clone(),
     });
     Ok(Json(view))
+}
+
+async fn refresh_cancer_research_cache(state: ApiState, world_id: WorldId, limit: u16) {
+    let refreshed = state.store.public_cancer_research(world_id, limit).await;
+    let mut cache = state.cancer_research_cache.lock().await;
+    let Some(cached) = cache
+        .as_mut()
+        .filter(|cached| cached.world_id == world_id && cached.limit == limit)
+    else {
+        return;
+    };
+    match refreshed {
+        Ok(Some(view)) => {
+            *cached = CachedCancerResearch {
+                world_id,
+                limit,
+                expires_at: Instant::now() + CANCER_RESEARCH_CACHE_TTL,
+                refreshing: false,
+                view,
+            };
+        }
+        Ok(None) => {
+            cached.refreshing = false;
+            cached.expires_at = Instant::now() + CANCER_RESEARCH_CACHE_RETRY;
+            tracing::warn!(%world_id, "Cancer research cache refresh found no world");
+        }
+        Err(error) => {
+            cached.refreshing = false;
+            cached.expires_at = Instant::now() + CANCER_RESEARCH_CACHE_RETRY;
+            tracing::warn!(%world_id, %error, "Cancer research cache refresh failed");
+        }
+    }
 }
 
 #[derive(Debug, Deserialize)]
