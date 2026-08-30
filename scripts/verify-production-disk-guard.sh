@@ -44,6 +44,7 @@ if rg -n '(find|delete|prune).*(postgres|hindsight)|(postgres|hindsight).*(find|
   exit 1
 fi
 rg -Fq 'docker builder prune' "$guard"
+rg -Fq 'install -d -m 0755 "$lock_directory"' "$guard"
 rg -Fq "docker inspect --type volume" "$guard"
 rg -Fq 'a-tiny-civilization-postgres-ruleset33-v1' "$guard"
 rg -Fq 'a-tiny-civilization-hindsight-v1' "$guard"

@@ -88,7 +88,11 @@ if ((dry_run == 1)); then
   exit 0
 fi
 
-exec 9>/run/a-tiny-civilization/disk-guard.lock
+lock_directory=/run/a-tiny-civilization
+# systemd creates RuntimeDirectory for timer invocations, but operators also run
+# this guard directly during releases. Keep the direct path equally reliable.
+install -d -m 0755 "$lock_directory"
+exec 9>"${lock_directory}/disk-guard.lock"
 if ! flock -n 9; then
   echo "another disk guard run is active" >&2
   exit 0
