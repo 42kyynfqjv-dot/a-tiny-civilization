@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v24";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v25";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -809,6 +809,12 @@ fn research_api_request(
         // ceiling. Truncating JSON makes every otherwise useful result invalid,
         // so allow the signed per-turn bound here.
         request.selection.model_max_output_tokens
+    } else if dynamic_openrouter_free {
+        // Dynamic routing can select a model with mandatory reasoning. Minimal
+        // reasoning may consume part of the completion, so leave enough room
+        // for the historically observed contribution tail while retaining the
+        // signed 4,096-token request ceiling and the 30-second route timeout.
+        request.selection.model_max_output_tokens.min(2_560)
     } else if route.billing_class == CognitionBillingClass::FreeAllocation {
         request.selection.model_max_output_tokens.min(1_536)
     } else {
@@ -1641,21 +1647,15 @@ fn apply_openrouter_provider_policy(
             "allow_fallbacks": true
         })
     };
-    if cancer_research && route == &CognitionModelRoute::openrouter_cancer_free() {
-        // A hidden reasoning trace can consume the dynamic free route's entire
-        // 1,536-token allowance before it emits the required research tool
-        // arguments. The downstream campaign and virtual-lab layers provide
-        // the deliberate evaluation; this first generative turn must finish a
-        // bounded contribution rather than return null content.
-        payload["reasoning"] = json!({"effort": "none", "exclude": true});
-    } else if !cancer_research && route == &CognitionModelRoute::openrouter_free() {
-        // `include_reasoning=false` only hides reasoning from the response; it
-        // does not stop a randomly selected reasoning model from consuming the
-        // complete tiny motor-action allowance and returning null content.
-        // This route needs one closed primitive action, not deliberation. Use
-        // OpenRouter's current unified control to require a final answer with
-        // reasoning disabled, while the local typed parser remains authoritative.
-        payload["reasoning"] = json!({"effort": "none", "exclude": true});
+    if (cancer_research && route == &CognitionModelRoute::openrouter_cancer_free())
+        || (!cancer_research && route == &CognitionModelRoute::openrouter_free())
+    {
+        // `openrouter/free` can select endpoints whose reasoning is mandatory;
+        // those endpoints reject `effort: none`. Request the smallest portable
+        // effort instead. Excluding the trace keeps only the required typed
+        // tool arguments in the response, while provider usage still accounts
+        // for every reasoning token and the local closed parser remains final.
+        payload["reasoning"] = json!({"effort": "minimal", "exclude": true});
     } else {
         payload["include_reasoning"] = Value::Bool(false);
     }
@@ -2697,14 +2697,17 @@ mod tests {
             payload["tools"][0]["function"]["parameters"]["additionalProperties"],
             false
         );
-        assert_eq!(payload["reasoning"]["effort"], "none");
+        assert_eq!(payload["reasoning"]["effort"], "minimal");
         assert_eq!(payload["reasoning"]["exclude"], true);
         let system_prompt = payload["messages"][0]["content"]
             .as_str()
             .expect("system prompt");
         assert!(system_prompt.contains("required bounded_cancer_research_contribution function"));
         assert!(!system_prompt.contains("additionalProperties"));
-        assert_eq!(payload["max_tokens"], 1_536);
+        assert_eq!(
+            payload["max_tokens"],
+            request.selection.model_max_output_tokens.min(2_560)
+        );
     }
 
     #[tokio::test]
@@ -3031,7 +3034,7 @@ mod tests {
         );
         assert!(seen.get("parallel_tool_calls").is_none());
         assert!(seen.get("include_reasoning").is_none());
-        assert_eq!(seen["reasoning"]["effort"], "none");
+        assert_eq!(seen["reasoning"]["effort"], "minimal");
         assert_eq!(seen["reasoning"]["exclude"], true);
     }
 
