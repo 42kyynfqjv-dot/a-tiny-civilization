@@ -128,6 +128,13 @@ pub trait WorldStore: Send + Sync {
         after_sequence: EventSequence,
     ) -> Result<Vec<EventBatch>, StoreError>;
 
+    /// Loads only the immutable first batch. Existing-world initialization
+    /// must not materialize an unbounded history merely to compare genesis.
+    async fn load_genesis_event_batch(
+        &self,
+        world_id: WorldId,
+    ) -> Result<Option<EventBatch>, StoreError>;
+
     async fn load_latest_snapshot(&self, world_id: WorldId) -> Result<Snapshot, StoreError>;
 
     async fn commit_transition(
@@ -350,16 +357,14 @@ async fn initialize_or_resume_world_internal<S: WorldStore + ?Sized>(
         });
     }
 
-    let batches = store
-        .load_event_batches(manifest.world_id, EventSequence::ZERO)
-        .await?;
-    if batches.first() != Some(&genesis_batch) {
+    let stored_genesis = store.load_genesis_event_batch(manifest.world_id).await?;
+    if stored_genesis.as_ref() != Some(&genesis_batch) {
         return Err(WorldRuntimeError::Integrity(format!(
             "world {} genesis differs from the requested initialization",
             manifest.world_id
         )));
     }
-    resume_world(store, manifest.world_id).await
+    resume_world_from_snapshot(store, manifest.world_id).await
 }
 
 /// Rebuilds a session from the complete event log and independently checks the latest

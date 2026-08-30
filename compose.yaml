@@ -101,6 +101,8 @@ services:
       APPLE_REDIRECT_URI: ${APPLE_REDIRECT_URI:-https://atinycivilization.com/api/v1/auth/apple/callback}
       NEWSLETTER_WEEKLY_SIGNUP_URL: ${NEWSLETTER_WEEKLY_SIGNUP_URL:-https://buttondown.com/atinycivilization}
       ATINY_MODERATOR_ID: ${ATINY_MODERATOR_ID:-}
+      CANCER_WORLD_ID: ${CANCER_WORLD_ID:-}
+      CANCER_CONSOLE_TOKEN: ${CANCER_CONSOLE_TOKEN:-}
     depends_on:
       migrate:
         condition: service_healthy

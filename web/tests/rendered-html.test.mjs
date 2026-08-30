@@ -161,12 +161,69 @@ test("keeps the Cancer World console unlinked and available only through its con
   );
   assert.equal(hidden.status, 200);
   assert.equal(hidden.headers.get("x-robots-tag"), "noindex, nofollow, noarchive, nosnippet");
+  assert.match(
+    hidden.headers.get("set-cookie") ?? "",
+    /__Host-atc_cancer_access=[0-9a-f]{64}; Path=\/; Max-Age=604800; HttpOnly; SameSite=Strict; Secure/,
+  );
   const html = await hidden.text();
   assert.match(html, /CANCER WORLD/);
   assert.match(html, /00000000-0000-0000-0000-000000000037/);
   assert.match(html, /UNCALIBRATED DETERMINISTIC TISSUE PROJECTIONS/);
   assert.match(html, /never enter research memory, change campaign status/i);
   assert.match(html, /No campaign has completed this bounded tissue projection yet/);
+});
+
+test("denies direct Cancer API access and authorizes only the hidden console session", async () => {
+  const workerUrl = new URL("../dist/server/index.js", import.meta.url);
+  workerUrl.searchParams.set("cancer-api", `${process.pid}-${Date.now()}`);
+  const { default: worker } = await import(workerUrl.href);
+  const env = {
+    ASSETS: { fetch: async () => new Response("Not found", { status: 404 }) },
+    OBSERVER_API_URL: "http://observer.internal:8080/",
+    CANCER_CONSOLE_TOKEN: "private-test-token",
+    CANCER_WORLD_ID: "00000000-0000-0000-0000-000000000037",
+  };
+  const context = { waitUntil() {}, passThroughOnException() {} };
+  const originalFetch = globalThis.fetch;
+  let forwardedToken;
+  globalThis.fetch = async (request) => {
+    forwardedToken = request.headers.get("x-atc-cancer-console-token");
+    return Response.json({ ok: true });
+  };
+  try {
+    const direct = await worker.fetch(
+      new Request(
+        "http://localhost/api/v1/worlds/00000000-0000-0000-0000-000000000037/research",
+      ),
+      env,
+      context,
+    );
+    assert.equal(direct.status, 404);
+    assert.equal(forwardedToken, undefined);
+
+    const hidden = await worker.fetch(
+      new Request("http://localhost/research/private-test-token", {
+        headers: { accept: "text/html" },
+      }),
+      env,
+      context,
+    );
+    const cookie = (hidden.headers.get("set-cookie") ?? "").split(";", 1)[0];
+    assert.match(cookie, /^__Host-atc_cancer_access=[0-9a-f]{64}$/);
+
+    const authorized = await worker.fetch(
+      new Request(
+        "http://localhost/api/v1/worlds/00000000-0000-0000-0000-000000000037/research",
+        { headers: { cookie } },
+      ),
+      env,
+      context,
+    );
+    assert.equal(authorized.status, 200);
+    assert.equal(forwardedToken, "private-test-token");
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });
 
 test("server-renders an individual life route", async () => {

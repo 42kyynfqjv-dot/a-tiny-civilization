@@ -258,6 +258,12 @@ impl FoundationStore for PostgresStore {
     async fn record_heartbeat(&self, heartbeat: &ServiceHeartbeat) -> Result<(), StoreError> {
         sqlx::query(
             r#"
+            WITH pruned AS (
+                DELETE FROM service_heartbeats
+                WHERE service_name = $1
+                  AND last_seen_at < NOW() - INTERVAL '30 days'
+                RETURNING instance_id
+            )
             INSERT INTO service_heartbeats (service_name, instance_id, last_seen_at, metadata)
             VALUES ($1, $2, NOW(), $3)
             ON CONFLICT (service_name, instance_id)

@@ -21,9 +21,8 @@ use application::{
     construct_configured_genesis_with_materials, execute_cancer_virtual_experiment,
     initialize_or_resume_configured_world_with_materials, initialize_or_resume_world,
     process_next_cancer_research_job, process_next_cancer_tissue_refinement,
-    process_next_cognition_job, reconcile_fireworks_billing_export, resume_world,
-    resume_world_from_snapshot, retire_world_for_successor, schedule_due_cancer_research_turn,
-    schedule_world_cognition,
+    process_next_cognition_job, reconcile_fireworks_billing_export, resume_world_from_snapshot,
+    retire_world_for_successor, schedule_due_cancer_research_turn, schedule_world_cognition,
 };
 use clap::{Parser, Subcommand};
 use hindsight_adapter::HindsightMemory;
@@ -35,10 +34,10 @@ use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
     CANCER_BIOLOGY_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
-    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION,
-    SITUATED_SIGNAL_REUSE_RULESET_VERSION, replay, replay_from_snapshot,
-    run_partition_capacity_probe,
+    LIFECYCLE_CONTINUITY_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
+    MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
+    REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_outcome,
+    replay_from_snapshot, run_partition_capacity_probe,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
 use url::Url;
@@ -66,7 +65,7 @@ use world_domain::{
 
 /// New ordinary full-Earth worlds start with productive compositional signals layered
 /// over every earlier physical driver. Older worlds retain their genesis ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = SITUATED_SIGNAL_REUSE_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = LIFECYCLE_CONTINUITY_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
@@ -1757,7 +1756,7 @@ async fn verify_world(store: &PostgresStore, world_id: WorldId) -> Result<()> {
     // bounded number of times makes the operator command usable against a live
     // runner without weakening its final integrity check.
     for attempt in 1..=3 {
-        match resume_world(store, world_id).await {
+        match verify_world_once(store, world_id).await {
             Ok(session) => return print_verified_world(world_id, session),
             Err(error) => {
                 if attempt == 3 {
@@ -1768,6 +1767,63 @@ async fn verify_world(store: &PostgresStore, world_id: WorldId) -> Result<()> {
         }
     }
     unreachable!("bounded verification loop returns on success or final error")
+}
+
+async fn verify_world_once(store: &PostgresStore, world_id: WorldId) -> Result<WorldSession> {
+    const VERIFY_PAGE_BATCHES: u32 = 32;
+
+    let expected = store
+        .load_world(world_id)
+        .await
+        .context("load committed world cursor before verification")?;
+    let through_sequence = expected.cursor.sequence;
+    let mut outcome =
+        replay(expected.manifest.clone(), &[]).context("initialize bounded genesis replay")?;
+
+    while outcome.through_sequence < through_sequence {
+        let page = store
+            .load_event_batch_page(
+                world_id,
+                outcome.through_sequence,
+                through_sequence,
+                VERIFY_PAGE_BATCHES,
+            )
+            .await
+            .context("load bounded canonical event page")?;
+        if page.is_empty() {
+            anyhow::bail!(
+                "world {world_id} canonical history ended at sequence {} before committed head {through_sequence}",
+                outcome.through_sequence,
+            );
+        }
+        outcome =
+            replay_from_outcome(outcome, &page).context("continue bounded canonical replay")?;
+    }
+
+    let replayed_state_hash = outcome
+        .state
+        .state_hash()
+        .context("hash bounded genesis replay state")?;
+    if outcome.state.manifest() != &expected.manifest
+        || outcome.through_sequence != expected.cursor.sequence
+        || outcome.state.tick() != expected.cursor.tick
+        || outcome.state.status() != expected.status
+        || outcome.last_event_hash != expected.cursor.last_event_hash
+        || replayed_state_hash != expected.cursor.state_hash
+    {
+        anyhow::bail!("world {world_id} cursor differs from bounded genesis replay");
+    }
+
+    // Verify the newest cache independently. The live writer may have advanced
+    // beyond the fixed full-replay head while the bounded scan was running;
+    // both checks remain anchored to immutable canonical event hashes.
+    resume_world_from_snapshot(store, world_id)
+        .await
+        .context("verify latest snapshot and bounded tail")?;
+    Ok(WorldSession {
+        world: expected,
+        state: outcome.state,
+    })
 }
 
 async fn retire_for_successor(
@@ -1871,7 +1927,7 @@ fn print_verified_world(world_id: WorldId, session: WorldSession) -> Result<()> 
     );
     println!("event head: {}", session.world.cursor.last_event_hash);
     println!("state hash: {}", session.world.cursor.state_hash);
-    println!("genesis replay == snapshot + tail == committed cursor");
+    println!("bounded genesis replay and latest snapshot + tail match their committed cursors");
     Ok(())
 }
 
@@ -4838,7 +4894,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
+        assert_eq!(ruleset_version, LIFECYCLE_CONTINUITY_RULESET_VERSION);
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -4965,7 +5021,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
+        assert_eq!(ruleset_version, LIFECYCLE_CONTINUITY_RULESET_VERSION);
     }
 
     #[test]

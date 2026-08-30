@@ -84,7 +84,10 @@ services:
     environment:
       HINDSIGHT_BASE_URL: http://hindsight:8888
       HINDSIGHT_API_KEY: ${HINDSIGHT_API_KEY:-}
-      HINDSIGHT_REQUEST_TIMEOUT_SECONDS: ${HINDSIGHT_REQUEST_TIMEOUT_SECONDS:-15}
+      # Admin-only research recall currently takes about 22 seconds against the
+      # full isolated bank. Keep this separate from the live memory workers'
+      # tighter request deadline.
+      CANCER_RESEARCH_MEMORY_TIMEOUT_SECONDS: ${CANCER_RESEARCH_MEMORY_TIMEOUT_SECONDS:-60}
     depends_on:
       hindsight:
         condition: service_healthy
@@ -189,10 +192,10 @@ services:
       CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS: ${CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS:-120}
       CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED: ${CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED:-false}
       CANCER_RESEARCH_PAID_ENABLED: ${CANCER_RESEARCH_PAID_ENABLED:-false}
-      # Any metered overflow reserves $0.015, which covers the maximum accepted
-      # GPT-OSS request at the pinned tariff; the durable monthly account still
-      # enforces the independent $3.00 hard stop.
-      CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: ${CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD:-15000}
+      # Reserve the full per-call exposure ceiling. The unused portion is
+      # released on settlement and the independent monthly hard stop remains
+      # authoritative even if a provider changes its tariff.
+      CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: ${CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD:-250000}
     depends_on:
       migrate:
         condition: service_healthy

@@ -74,8 +74,13 @@ async fn main() -> Result<()> {
             loop {
                 tokio::select! {
                     result = async {
+                        let running_world_ids = store
+                            .list_running_world_ids()
+                            .await
+                            .context("list running worlds")?;
                         let world_ids = store.list_world_ids().await.context("list worlds")?;
-                        project_worlds(&store, &world_ids).await?;
+                        let world_ids = prioritize_running_worlds(running_world_ids, world_ids);
+                        project_worlds_isolated(&store, &world_ids).await;
                         store
                             .record_heartbeat(&heartbeat)
                             .await
@@ -92,6 +97,35 @@ async fn main() -> Result<()> {
         }
     }
     Ok(())
+}
+
+fn prioritize_running_worlds(
+    running_world_ids: Vec<WorldId>,
+    all_world_ids: Vec<WorldId>,
+) -> Vec<WorldId> {
+    let mut ordered = running_world_ids;
+    let mut seen = ordered
+        .iter()
+        .copied()
+        .collect::<std::collections::BTreeSet<_>>();
+    for world_id in all_world_ids {
+        if seen.insert(world_id) {
+            ordered.push(world_id);
+        }
+    }
+    ordered
+}
+
+async fn project_worlds_isolated(store: &PostgresStore, world_ids: &[WorldId]) {
+    for world_id in world_ids {
+        if let Err(error) = project_worlds(store, std::slice::from_ref(world_id)).await {
+            tracing::error!(
+                %world_id,
+                %error,
+                "public projections for one world failed; continuing with remaining worlds"
+            );
+        }
+    }
 }
 
 async fn shutdown_signal() {
@@ -363,4 +397,21 @@ fn init_tracing() {
         .with(filter)
         .with(tracing_subscriber::fmt::layer().json())
         .init();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn continuous_projection_prioritizes_running_worlds_without_duplicates() {
+        let archived = WorldId::from_uuid(Uuid::from_u128(1));
+        let running = WorldId::from_uuid(Uuid::from_u128(2));
+        let retired = WorldId::from_uuid(Uuid::from_u128(3));
+
+        assert_eq!(
+            prioritize_running_worlds(vec![running], vec![archived, running, retired],),
+            vec![running, archived, retired]
+        );
+    }
 }

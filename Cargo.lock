@@ -401,6 +401,7 @@ dependencies = [
  "tracing-subscriber",
  "url",
  "uuid",
+ "world-domain",
 ]
 
 [[package]]
@@ -2024,6 +2025,7 @@ dependencies = [
  "application",
  "async-trait",
  "chrono",
+ "flate2",
  "observer-auth",
  "observer-projection",
  "serde",

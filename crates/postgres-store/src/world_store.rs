@@ -1,8 +1,10 @@
 use application::{StoreError, StoredWorld, TransitionEffects, WorldCursor, WorldStore};
 use async_trait::async_trait;
-use serde_json::{Value, json};
+use flate2::{Compression, read::ZlibDecoder, write::ZlibEncoder};
+use serde_json::Value;
 use sim_engine::{EngineState, Snapshot};
 use sqlx::{FromRow, Postgres, Transaction};
+use std::io::{Read, Write};
 use uuid::Uuid;
 use world_domain::{
     CognitionDeadlineInput, CognitionInputOutcome, CognitionUnavailableReason, Digest, DomainEvent,
@@ -19,6 +21,8 @@ const SNAPSHOT_SEQUENCE_INTERVAL: u64 = 64;
 // older checkpoints multiplies storage with no replay benefit because resume
 // always selects the newest checkpoint and verifies its immutable event anchor.
 const SNAPSHOTS_RETAINED_PER_WORLD: i64 = 1;
+const MAX_EVENT_BATCH_JSON_BYTES: usize = 32 * 1024 * 1024;
+const CANCER_EVENT_BATCH_PAYLOAD_ENCODING: &str = "zlib-json-v1";
 
 impl PostgresStore {
     /// Load a bounded page of canonical history for disposable read-side rebuilds.
@@ -46,6 +50,9 @@ impl PostgresStore {
                 event_schema_version,
                 ruleset_version,
                 payload,
+                payload_encoding,
+                compressed_payload,
+                uncompressed_payload_bytes,
                 checksum,
                 previous_checksum,
                 post_state_checksum
@@ -90,9 +97,19 @@ pub(crate) struct EventBatchRow {
     event_schema_version: i32,
     ruleset_version: i32,
     payload: Value,
+    payload_encoding: String,
+    compressed_payload: Option<Vec<u8>>,
+    uncompressed_payload_bytes: Option<i32>,
     checksum: Vec<u8>,
     previous_checksum: Vec<u8>,
     post_state_checksum: Vec<u8>,
+}
+
+struct EncodedEventBatchPayload {
+    payload: Value,
+    encoding: &'static str,
+    compressed: Option<Vec<u8>>,
+    uncompressed_bytes: Option<i32>,
 }
 
 #[derive(FromRow)]
@@ -237,6 +254,9 @@ impl WorldStore for PostgresStore {
                 event_schema_version,
                 ruleset_version,
                 payload,
+                payload_encoding,
+                compressed_payload,
+                uncompressed_payload_bytes,
                 checksum,
                 previous_checksum,
                 post_state_checksum
@@ -252,6 +272,16 @@ impl WorldStore for PostgresStore {
         .map_err(operation_error)?;
 
         rows.into_iter().map(parse_event_batch).collect()
+    }
+
+    async fn load_genesis_event_batch(
+        &self,
+        world_id: WorldId,
+    ) -> Result<Option<EventBatch>, StoreError> {
+        let mut page = self
+            .load_event_batch_page(world_id, EventSequence::ZERO, EventSequence::new(1), 1)
+            .await?;
+        Ok(page.pop())
     }
 
     async fn load_latest_snapshot(&self, world_id: WorldId) -> Result<Snapshot, StoreError> {
@@ -313,7 +343,8 @@ impl WorldStore for PostgresStore {
         let ruleset_version = i32::try_from(batch.ruleset_version).map_err(|_| {
             StoreError::Conflict("ruleset version exceeds PostgreSQL integer range".to_owned())
         })?;
-        let batch_json = serde_json::to_value(batch).map_err(corrupt)?;
+        let batch_payload =
+            encode_event_batch_payload(batch, snapshot.state.manifest().experiment.is_some())?;
         let persist_snapshot = sequence == 1
             || batch
                 .sequence
@@ -361,11 +392,14 @@ impl WorldStore for PostgresStore {
                 event_schema_version,
                 ruleset_version,
                 payload,
+                payload_encoding,
+                compressed_payload,
+                uncompressed_payload_bytes,
                 checksum,
                 previous_checksum,
                 post_state_checksum
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
             "#,
         )
         .bind(batch.world_id.as_uuid())
@@ -373,7 +407,10 @@ impl WorldStore for PostgresStore {
         .bind(tick)
         .bind(event_schema_version)
         .bind(ruleset_version)
-        .bind(batch_json)
+        .bind(batch_payload.payload)
+        .bind(batch_payload.encoding)
+        .bind(batch_payload.compressed)
+        .bind(batch_payload.uncompressed_bytes)
         .bind(batch.batch_hash.as_bytes().as_slice())
         .bind(batch.previous_hash.as_bytes().as_slice())
         .bind(batch.post_state_hash.as_bytes().as_slice())
@@ -501,28 +538,6 @@ impl WorldStore for PostgresStore {
                 batch.world_id
             )));
         }
-
-        let outbox_id = deterministic_outbox_id(batch.world_id, batch.sequence);
-        sqlx::query(
-            r#"
-            INSERT INTO outbox (id, world_id, source_sequence, topic, payload)
-            VALUES ($1, $2, $3, 'canonical.transition.committed', $4)
-            "#,
-        )
-        .bind(outbox_id)
-        .bind(batch.world_id.as_uuid())
-        .bind(sequence)
-        .bind(json!({
-            "world_id": batch.world_id,
-            "sequence": batch.sequence,
-            "tick": batch.tick,
-            "batch_hash": batch.batch_hash,
-            "state_hash": snapshot.state_hash,
-            "status": snapshot.state.status(),
-        }))
-        .execute(&mut *transaction)
-        .await
-        .map_err(operation_error)?;
 
         for memory in &effects.memory_retains {
             let payload = serde_json::to_value(memory).map_err(corrupt)?;
@@ -918,7 +933,7 @@ fn parse_world(row: WorldRow) -> Result<StoredWorld, StoreError> {
 }
 
 pub(crate) fn parse_event_batch(row: EventBatchRow) -> Result<EventBatch, StoreError> {
-    let batch: EventBatch = serde_json::from_value(row.payload).map_err(corrupt)?;
+    let batch = decode_event_batch_payload(&row)?;
     batch.verify_integrity().map_err(corrupt)?;
     if batch.world_id.as_uuid() != row.world_id
         || to_i64(batch.sequence.get(), "event sequence")? != row.sequence
@@ -935,6 +950,86 @@ pub(crate) fn parse_event_batch(row: EventBatchRow) -> Result<EventBatch, StoreE
         )));
     }
     Ok(batch)
+}
+
+fn encode_event_batch_payload(
+    batch: &EventBatch,
+    compress: bool,
+) -> Result<EncodedEventBatchPayload, StoreError> {
+    if !compress {
+        return Ok(EncodedEventBatchPayload {
+            payload: serde_json::to_value(batch).map_err(corrupt)?,
+            encoding: "jsonb-v1",
+            compressed: None,
+            uncompressed_bytes: None,
+        });
+    }
+    let canonical_json = serde_json::to_vec(batch).map_err(corrupt)?;
+    if canonical_json.is_empty() || canonical_json.len() > MAX_EVENT_BATCH_JSON_BYTES {
+        return Err(StoreError::Conflict(
+            "canonical event batch JSON exceeds its storage bound".to_owned(),
+        ));
+    }
+    let mut encoder = ZlibEncoder::new(Vec::new(), Compression::new(6));
+    encoder.write_all(&canonical_json).map_err(corrupt)?;
+    let compressed = encoder.finish().map_err(corrupt)?;
+    Ok(EncodedEventBatchPayload {
+        payload: Value::Null,
+        encoding: CANCER_EVENT_BATCH_PAYLOAD_ENCODING,
+        compressed: Some(compressed),
+        uncompressed_bytes: Some(i32::try_from(canonical_json.len()).map_err(|_| {
+            StoreError::Conflict(
+                "canonical event batch JSON length exceeds PostgreSQL integer range".to_owned(),
+            )
+        })?),
+    })
+}
+
+fn decode_event_batch_payload(row: &EventBatchRow) -> Result<EventBatch, StoreError> {
+    match row.payload_encoding.as_str() {
+        "jsonb-v1" => {
+            if row.compressed_payload.is_some() || row.uncompressed_payload_bytes.is_some() {
+                return Err(StoreError::Corrupt(
+                    "JSONB event batch unexpectedly carries compressed storage fields".to_owned(),
+                ));
+            }
+            serde_json::from_value(row.payload.clone()).map_err(corrupt)
+        }
+        CANCER_EVENT_BATCH_PAYLOAD_ENCODING => {
+            if row.payload != Value::Null {
+                return Err(StoreError::Corrupt(
+                    "compressed event batch has a non-null JSONB placeholder".to_owned(),
+                ));
+            }
+            let expected_bytes = row
+                .uncompressed_payload_bytes
+                .and_then(|value| usize::try_from(value).ok())
+                .filter(|value| (1..=MAX_EVENT_BATCH_JSON_BYTES).contains(value))
+                .ok_or_else(|| {
+                    StoreError::Corrupt(
+                        "compressed event batch has an invalid decoded length".to_owned(),
+                    )
+                })?;
+            let compressed = row.compressed_payload.as_deref().ok_or_else(|| {
+                StoreError::Corrupt("compressed event batch omitted its bytes".to_owned())
+            })?;
+            let decoder = ZlibDecoder::new(compressed);
+            let mut decoded = Vec::with_capacity(expected_bytes.min(1024 * 1024));
+            decoder
+                .take(u64::try_from(MAX_EVENT_BATCH_JSON_BYTES).expect("bound fits u64") + 1)
+                .read_to_end(&mut decoded)
+                .map_err(corrupt)?;
+            if decoded.len() != expected_bytes || decoded.len() > MAX_EVENT_BATCH_JSON_BYTES {
+                return Err(StoreError::Corrupt(
+                    "compressed event batch decoded length does not match its index".to_owned(),
+                ));
+            }
+            serde_json::from_slice(&decoded).map_err(corrupt)
+        }
+        other => Err(StoreError::Corrupt(format!(
+            "unknown event batch payload encoding {other}"
+        ))),
+    }
 }
 
 fn parse_snapshot(row: SnapshotRow) -> Result<Snapshot, StoreError> {
@@ -982,13 +1077,6 @@ fn validate_transition(
     Ok(())
 }
 
-fn deterministic_outbox_id(world_id: WorldId, sequence: EventSequence) -> Uuid {
-    Uuid::new_v5(
-        &world_id.as_uuid(),
-        format!("projection:{}", sequence.get()).as_bytes(),
-    )
-}
-
 fn status_text(status: WorldStatus) -> &'static str {
     match status {
         WorldStatus::Initializing => "initializing",
@@ -1030,7 +1118,10 @@ fn from_i64(value: i64, field: &str) -> Result<u64, StoreError> {
 fn operation_error(error: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(database) = &error {
         let code = database.code().as_deref().map(str::to_owned);
-        if matches!(code.as_deref(), Some("23505" | "23514" | "40001" | "P0001")) {
+        if code.as_deref() == Some("40001") {
+            return StoreError::Unavailable(database.message().to_owned());
+        }
+        if matches!(code.as_deref(), Some("23505" | "23514" | "P0001")) {
             return StoreError::Conflict(database.message().to_owned());
         }
     }
@@ -1039,4 +1130,71 @@ fn operation_error(error: sqlx::Error) -> StoreError {
 
 fn corrupt(error: impl std::fmt::Display) -> StoreError {
     StoreError::Corrupt(error.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn batch() -> EventBatch {
+        EventBatch::new(
+            1,
+            WorldId::from_uuid(Uuid::from_u128(0xcace)),
+            EventSequence::new(1),
+            SimTick::new(1),
+            1,
+            Digest::ZERO,
+            vec![DomainEvent::WorldExtinct],
+            Digest::sha256(b"compressed-post-state"),
+        )
+        .expect("test batch")
+    }
+
+    fn row(batch: &EventBatch, encoded: EncodedEventBatchPayload) -> EventBatchRow {
+        EventBatchRow {
+            world_id: batch.world_id.as_uuid(),
+            sequence: i64::try_from(batch.sequence.get()).expect("sequence"),
+            tick: i64::try_from(batch.tick.get()).expect("tick"),
+            event_schema_version: i32::from(batch.event_schema_version),
+            ruleset_version: i32::try_from(batch.ruleset_version).expect("ruleset"),
+            payload: encoded.payload,
+            payload_encoding: encoded.encoding.to_owned(),
+            compressed_payload: encoded.compressed,
+            uncompressed_payload_bytes: encoded.uncompressed_bytes,
+            checksum: batch.batch_hash.as_bytes().to_vec(),
+            previous_checksum: batch.previous_hash.as_bytes().to_vec(),
+            post_state_checksum: batch.post_state_hash.as_bytes().to_vec(),
+        }
+    }
+
+    #[test]
+    fn event_batch_storage_codecs_round_trip_and_bound_decoding() {
+        let batch = batch();
+        let plain = row(
+            &batch,
+            encode_event_batch_payload(&batch, false).expect("plain encoding"),
+        );
+        assert_eq!(parse_event_batch(plain).expect("plain batch"), batch);
+
+        let compressed = row(
+            &batch,
+            encode_event_batch_payload(&batch, true).expect("compressed encoding"),
+        );
+        assert_eq!(
+            parse_event_batch(compressed).expect("compressed batch"),
+            batch
+        );
+
+        let mut wrong_length = row(
+            &batch,
+            encode_event_batch_payload(&batch, true).expect("compressed encoding"),
+        );
+        wrong_length.uncompressed_payload_bytes = wrong_length
+            .uncompressed_payload_bytes
+            .map(|bytes| bytes.saturating_add(1));
+        assert!(matches!(
+            parse_event_batch(wrong_length),
+            Err(StoreError::Corrupt(_))
+        ));
+    }
 }

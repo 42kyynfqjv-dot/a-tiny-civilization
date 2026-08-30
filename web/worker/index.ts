@@ -21,6 +21,9 @@ interface ExecutionContext {
   passThroughOnException(): void;
 }
 
+const CANCER_ACCESS_COOKIE = "__Host-atc_cancer_access";
+const CANCER_ACCESS_HEADER = "x-atc-cancer-console-token";
+
 // Image security config. SVG sources with .svg extension auto-skip the
 // optimization endpoint on the client side (served directly, no proxy).
 // To route SVGs through the optimizer (with security headers), set
@@ -37,6 +40,9 @@ const worker = {
       env?.CANCER_WORLD_ID ??
       (typeof process === "undefined" ? undefined : process.env.CANCER_WORLD_ID);
     const cancerConsolePath = cancerConsoleToken ? `/research/${cancerConsoleToken}` : undefined;
+    const cancerAccessFingerprint = cancerConsoleToken
+      ? await sha256Hex(cancerConsoleToken)
+      : undefined;
 
     if (url.pathname === "/cancer-console") {
       return withSecurityHeaders(new Response("Not found", { status: 404 }), url.pathname);
@@ -95,8 +101,32 @@ const worker = {
           url.pathname,
         );
       }
+      const cancerApi = isCancerApiPath(url.pathname, cancerWorldId);
+      const authorizedCancerRequest = Boolean(
+        cancerApi &&
+          cancerConsoleToken &&
+          cancerAccessFingerprint &&
+          constantTimeEqual(
+            cookieValue(request.headers.get("cookie"), CANCER_ACCESS_COOKIE) ?? "",
+            cancerAccessFingerprint,
+          ),
+      );
+      if (cancerApi && !authorizedCancerRequest) {
+        return withSecurityHeaders(new Response("Not found", { status: 404 }), url.pathname);
+      }
       const upstream = new URL(url.pathname + url.search, observerApiUrl);
-      return withSecurityHeaders(await fetch(new Request(upstream, request)), url.pathname);
+      const upstreamHeaders = new Headers(request.headers);
+      upstreamHeaders.delete(CANCER_ACCESS_HEADER);
+      if (authorizedCancerRequest && cancerConsoleToken) {
+        upstreamHeaders.set(CANCER_ACCESS_HEADER, cancerConsoleToken);
+      }
+      const forwarded = new Request(new Request(upstream, request), { headers: upstreamHeaders });
+      const upstreamResponse = await fetch(forwarded);
+      if (cancerWorldId && url.pathname === "/api/v1/worlds" && upstreamResponse.ok) {
+        const filtered = await withoutCancerWorld(upstreamResponse, cancerWorldId);
+        return withSecurityHeaders(filtered, url.pathname);
+      }
+      return withSecurityHeaders(upstreamResponse, url.pathname);
     }
 
     if (url.pathname === "/_vinext/image") {
@@ -114,9 +144,68 @@ const worker = {
     if (!isCancerConsole) return response;
     const headers = new Headers(response.headers);
     headers.set("x-robots-tag", "noindex, nofollow, noarchive, nosnippet");
+    if (cancerAccessFingerprint) {
+      headers.append(
+        "set-cookie",
+        `${CANCER_ACCESS_COOKIE}=${cancerAccessFingerprint}; Path=/; Max-Age=604800; HttpOnly; SameSite=Strict; Secure`,
+      );
+    }
     return new Response(response.body, { headers, status: response.status, statusText: response.statusText });
   },
 };
+
+function isCancerApiPath(pathname: string, worldId: string | undefined): boolean {
+  if (/\/research(?:\/|$)/.test(pathname)) return true;
+  if (!worldId) return false;
+  const prefix = `/api/v1/worlds/${worldId.toLowerCase()}`;
+  return pathname.toLowerCase() === prefix || pathname.toLowerCase().startsWith(`${prefix}/`);
+}
+
+function cookieValue(raw: string | null, name: string): string | undefined {
+  if (!raw) return undefined;
+  const matches = raw
+    .split(";")
+    .map((part) => part.trim())
+    .filter((part) => part.startsWith(`${name}=`))
+    .map((part) => part.slice(name.length + 1));
+  return matches.length === 1 && matches[0] ? matches[0] : undefined;
+}
+
+function constantTimeEqual(left: string, right: string): boolean {
+  if (left.length !== right.length) return false;
+  let difference = 0;
+  for (let index = 0; index < left.length; index += 1) {
+    difference |= left.charCodeAt(index) ^ right.charCodeAt(index);
+  }
+  return difference === 0;
+}
+
+async function sha256Hex(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(value));
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+}
+
+async function withoutCancerWorld(response: Response, cancerWorldId: string): Promise<Response> {
+  try {
+    const payload = (await response.clone().json()) as { worlds?: Array<{ world_id?: unknown }> };
+    if (!Array.isArray(payload.worlds)) return response;
+    const hiddenId = cancerWorldId.toLowerCase();
+    payload.worlds = payload.worlds.filter(
+      (world) => typeof world.world_id !== "string" || world.world_id.toLowerCase() !== hiddenId,
+    );
+    const headers = new Headers(response.headers);
+    headers.set("content-type", "application/json");
+    return new Response(JSON.stringify(payload), {
+      headers,
+      status: response.status,
+      statusText: response.statusText,
+    });
+  } catch {
+    return response;
+  }
+}
 
 function cloudflareVisitorProtocol(value: string | null): string | undefined {
   if (!value) return undefined;

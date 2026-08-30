@@ -391,9 +391,15 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
 
   useEffect(() => {
     let active = true;
+    let timer: number | undefined;
+    let controller: AbortController | undefined;
     async function refresh() {
+      controller = new AbortController();
       try {
-        const statusResponse = await fetch("/api/v1/status", { cache: "no-store" });
+        const statusResponse = await fetch("/api/v1/status", {
+          cache: "no-store",
+          signal: controller.signal,
+        });
         if (!statusResponse.ok) throw new Error("status");
         const status = (await statusResponse.json()) as FoundationStatus;
         let telemetry: Telemetry | null = null;
@@ -401,8 +407,14 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
         if (worldId) {
           const id = encodeURIComponent(worldId);
           const [telemetryResponse, researchResponse] = await Promise.all([
-            fetch(`/api/v1/worlds/${id}/telemetry`, { cache: "no-store" }),
-            fetch(`/api/v1/worlds/${id}/research?limit=240`, { cache: "no-store" }),
+            fetch(`/api/v1/worlds/${id}/telemetry`, {
+              cache: "no-store",
+              signal: controller.signal,
+            }),
+            fetch(`/api/v1/worlds/${id}/research?limit=120`, {
+              cache: "no-store",
+              signal: controller.signal,
+            }),
           ]);
           if (telemetryResponse.ok) telemetry = (await telemetryResponse.json()) as Telemetry;
           if (researchResponse.ok) research = (await researchResponse.json()) as ResearchView;
@@ -413,11 +425,17 @@ export function CancerWorldConsole({ worldId }: { worldId: string }) {
         }
       } catch {
         if (active) setOnline(false);
+      } finally {
+        controller = undefined;
+        if (active) timer = window.setTimeout(refresh, 30_000);
       }
     }
     void refresh();
-    const timer = window.setInterval(refresh, 10_000);
-    return () => { active = false; window.clearInterval(timer); };
+    return () => {
+      active = false;
+      controller?.abort();
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [worldId]);
 
   async function searchMemory(event: FormEvent<HTMLFormElement>) {

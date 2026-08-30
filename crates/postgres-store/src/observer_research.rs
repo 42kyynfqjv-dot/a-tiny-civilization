@@ -690,7 +690,7 @@ impl ObserverCancerResearchStore for PostgresStore {
             });
         }
         let campaigns = reconstruct_campaigns(&artifacts)?;
-        let (mut artifacts, duplicate_artifacts) = collapse_duplicate_research(artifacts);
+        let (mut artifacts, duplicate_artifacts) = collapse_duplicate_research(artifacts)?;
         let distinct_artifacts = u64::try_from(artifacts.len())
             .map_err(|_| corrupt("distinct artifact count overflow"))?;
         let programs = [
@@ -1031,16 +1031,31 @@ fn cancer_lab_capabilities() -> Vec<PublicCancerLabCapability> {
 
 fn collapse_duplicate_research(
     artifacts: Vec<PublicCancerResearchArtifact>,
-) -> (Vec<PublicCancerResearchArtifact>, u64) {
+) -> Result<(Vec<PublicCancerResearchArtifact>, u64), ObserverProjectionStoreError> {
     let mut canonical: Vec<PublicCancerResearchArtifact> = Vec::new();
+    let mut candidates_by_shape = BTreeMap::<Vec<u8>, Vec<usize>>::new();
     let mut duplicate_count = 0_u64;
     for artifact in artifacts {
-        let duplicate_of = canonical.iter().position(|existing| {
-            existing.program == artifact.program
-                && cancer_research_contributions_duplicate(
-                    &existing.contribution,
+        // A contribution can only be a duplicate when its program, stage,
+        // artifact kind, executable plan, and response challenge are identical.
+        // Bucket on those exact fields before running the semantic prose
+        // comparison. Most systematic screens have a distinct plan, turning the
+        // previous all-history O(n^2) console rebuild into a near-linear pass.
+        let shape = serde_json::to_vec(&(
+            artifact.program,
+            artifact.contribution.stage,
+            artifact.contribution.artifact_kind,
+            &artifact.contribution.virtual_experiment_plan,
+            &artifact.contribution.nci60_response_prediction,
+        ))
+        .map_err(|error| corrupt(format!("serialize research duplicate shape: {error}")))?;
+        let duplicate_of = candidates_by_shape.get(&shape).and_then(|candidates| {
+            candidates.iter().copied().find(|index| {
+                cancer_research_contributions_duplicate(
+                    &canonical[*index].contribution,
                     &artifact.contribution,
                 )
+            })
         });
         if let Some(index) = duplicate_of {
             if research_evidence_rank(&artifact) > research_evidence_rank(&canonical[index]) {
@@ -1057,7 +1072,9 @@ fn collapse_duplicate_research(
             }
             duplicate_count = duplicate_count.saturating_add(1);
         } else {
+            let index = canonical.len();
             canonical.push(artifact);
+            candidates_by_shape.entry(shape).or_default().push(index);
         }
     }
     canonical.sort_by(|left, right| {
@@ -1073,7 +1090,7 @@ fn collapse_duplicate_research(
             .cmp(&left_activity)
             .then_with(|| right.ordinal.cmp(&left.ordinal))
     });
-    (canonical, duplicate_count)
+    Ok((canonical, duplicate_count))
 }
 
 fn research_duplicate(artifact: PublicCancerResearchArtifact) -> PublicCancerResearchDuplicate {

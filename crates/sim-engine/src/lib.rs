@@ -213,6 +213,12 @@ pub const SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION: u32 = 42;
 /// convention had to exist before repeated production could create it. No form,
 /// meaning, goal, or vocabulary is supplied by the observer.
 pub const SITUATED_SIGNAL_REUSE_RULESET_VERSION: u32 = 43;
+/// Ruleset forty-four makes the human life-cycle boundary durable once the
+/// population has formed the required grounded conventions. It also evaluates
+/// reproductive contact across the same bounded local landscape vicinity used
+/// for hearing and social attention, while retaining deterministic pairing and
+/// close-kin exclusion.
+pub const LIFECYCLE_CONTINUITY_RULESET_VERSION: u32 = 44;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -274,6 +280,7 @@ pub const CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION: u16 = 35;
 /// A terminal cache for a populated world explicitly retired for a successor.
 pub const WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION: u16 = 36;
 pub const COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION: u16 = 37;
+pub const LIFECYCLE_CONTINUITY_SNAPSHOT_SCHEMA_VERSION: u16 = 38;
 /// External work receives this fixed simulated-time window. Wall-clock latency can
 /// decide only whether the result is present by the deadline, never move the deadline.
 pub const COGNITION_RESPONSE_WINDOW_TICKS: u64 = 60;
@@ -334,6 +341,7 @@ const CANCER_RESEARCH_COHORT_STATE_HASH_SCHEMA_VERSION: u16 = 34;
 const CANCER_BURDEN_STATE_HASH_SCHEMA_VERSION: u16 = 35;
 const WORLD_SUCCESSOR_RETIREMENT_STATE_HASH_SCHEMA_VERSION: u16 = 36;
 const COMPOSITIONAL_SIGNAL_STATE_HASH_SCHEMA_VERSION: u16 = 37;
+const LIFECYCLE_CONTINUITY_STATE_HASH_SCHEMA_VERSION: u16 = 38;
 const MATERIAL_SURFACE_REGION_COUNT: usize = 8;
 const SIGNAL_INTENSITY_VARIANT_COUNT: u16 = world_domain::SIGNAL_FORM_VARIANT_COUNT as u16;
 const MAX_SIGNAL_ACTION_ASSOCIATIONS: usize =
@@ -827,6 +835,12 @@ fn compositional_signal_active(ruleset_version: u32, tick: SimTick) -> bool {
 
 fn situated_signal_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= SITUATED_SIGNAL_REUSE_RULESET_VERSION
+        || (ruleset_version == SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
+            && tick.get() >= RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK)
+}
+
+fn lifecycle_continuity_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= LIFECYCLE_CONTINUITY_RULESET_VERSION
         || (ruleset_version == SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
             && tick.get() >= RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK)
 }
@@ -1535,6 +1549,8 @@ pub struct EngineState {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     cancer_burdens: BTreeMap<EntityId, CancerBurdenState>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    human_life_cycle_opened_at: Option<SimTick>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<PartitionSchedule>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     celestial_state: Option<CelestialState>,
@@ -1843,6 +1859,7 @@ impl EngineState {
             pending_cognition_requests: BTreeMap::new(),
             initial_cancer_research_cohort: BTreeSet::new(),
             cancer_burdens: BTreeMap::new(),
+            human_life_cycle_opened_at: None,
             partition_schedule: None,
             celestial_state: None,
             celestial_tick: None,
@@ -3989,20 +4006,37 @@ impl EngineState {
         &self,
         left: &OrganismState,
         right: &OrganismState,
-    ) -> Option<(ReproductivePhysiologyCommitment, EntityId)> {
+    ) -> Result<Option<(ReproductivePhysiologyCommitment, EntityId)>, EngineError> {
         if left.organism_id == right.organism_id
             || left.species != right.species
             || left.role != right.role
-            || left.embodied_patch.is_none()
-            || left.embodied_patch != right.embodied_patch
             || left.reproductive_physiology != right.reproductive_physiology
             || (self.uses_close_kin_exclusion_driver() && self.are_close_kin(left, right))
         {
-            return None;
+            return Ok(None);
         }
-        let profile = left.reproductive_physiology.as_ref()?;
-        let developing_parent_id = Self::reproductive_category_developer(profile, left, right)?;
-        Some((profile.clone(), developing_parent_id))
+        let (Some(left_patch), Some(right_patch)) = (left.embodied_patch, right.embodied_patch)
+        else {
+            return Ok(None);
+        };
+        let in_contact =
+            if left.role == OrganismRole::Person && self.uses_lifecycle_continuity_driver() {
+                self.patches_share_local_vicinity(left_patch, right_patch)?
+            } else {
+                left_patch == right_patch
+            };
+        if !in_contact {
+            return Ok(None);
+        }
+        let Some(profile) = left.reproductive_physiology.as_ref() else {
+            return Ok(None);
+        };
+        let Some(developing_parent_id) =
+            Self::reproductive_category_developer(profile, left, right)
+        else {
+            return Ok(None);
+        };
+        Ok(Some((profile.clone(), developing_parent_id)))
     }
 
     /// Private genealogy guard. Including the organism itself at depth zero
@@ -4447,8 +4481,10 @@ impl EngineState {
         }
 
         let human_life_cycle_open = self.shared_grounded_language_is_present();
-        let mut groups =
-            BTreeMap::<(S2CellId, &str, &str, u8, Digest, Digest), Vec<&OrganismState>>::new();
+        let mut groups = BTreeMap::<
+            (Option<S2CellId>, &str, &str, u8, Digest, Digest),
+            Vec<&OrganismState>,
+        >::new();
         for organism in self.organisms.values().filter(|organism| {
             organism.is_alive() && (organism.role == OrganismRole::Fauna || human_life_cycle_open)
         }) {
@@ -4470,9 +4506,16 @@ impl EngineState {
             } else {
                 Digest::ZERO
             };
+            let contact_scope = if organism.role == OrganismRole::Person
+                && self.uses_lifecycle_continuity_driver()
+            {
+                None
+            } else {
+                Some(patch)
+            };
             groups
                 .entry((
-                    patch,
+                    contact_scope,
                     organism.species.catalog.as_str(),
                     organism.species.identifier.as_str(),
                     role,
@@ -4483,6 +4526,10 @@ impl EngineState {
                 .push(organism);
         }
         let mut committed_parents = BTreeSet::new();
+        let local_index = self
+            .uses_lifecycle_continuity_driver()
+            .then(|| self.local_organism_index())
+            .transpose()?;
         for organisms in groups.values() {
             let profile = organisms[0]
                 .reproductive_physiology
@@ -4526,16 +4573,55 @@ impl EngineState {
                     })
                     .collect::<Vec<_>>();
                 if pairing.first == pairing.second {
-                    for pair in first.chunks_exact(2) {
-                        let left = pair[0];
-                        let right = pair[1];
-                        let Some((pair_profile, developing_parent_id)) =
-                            self.reproductive_pair(left, right)
-                        else {
-                            return Err(EngineError::InvalidReproductiveCommitment(
-                                left.organism_id,
-                            ));
+                    let first_ids = first
+                        .iter()
+                        .map(|organism| organism.organism_id)
+                        .collect::<BTreeSet<_>>();
+                    for (left_index, left) in first.iter().copied().enumerate() {
+                        if committed_parents.contains(&left.organism_id) {
+                            continue;
+                        }
+                        let local_candidates;
+                        let candidates = if left.role == OrganismRole::Person
+                            && self.uses_lifecycle_continuity_driver()
+                        {
+                            let patch = left
+                                .embodied_patch
+                                .ok_or(EngineError::MissingEmbodiedPatch(left.organism_id))?;
+                            local_candidates = self
+                                .local_vicinity_organisms(
+                                    local_index.as_ref().expect("active local index"),
+                                    patch,
+                                )?
+                                .into_iter()
+                                .copied()
+                                .filter(|right_id| {
+                                    *right_id > left.organism_id && first_ids.contains(right_id)
+                                })
+                                .filter_map(|right_id| self.organisms.get(&right_id))
+                                .collect::<Vec<_>>();
+                            local_candidates.as_slice()
+                        } else {
+                            &first[left_index + 1..]
                         };
+                        let mut selected = None;
+                        for right in candidates.iter().copied() {
+                            if committed_parents.contains(&right.organism_id) {
+                                continue;
+                            }
+                            if let Some(pair) = self.reproductive_pair(left, right)? {
+                                selected = Some((right, pair));
+                                break;
+                            }
+                        }
+                        let Some((right, (pair_profile, developing_parent_id))) = selected else {
+                            continue;
+                        };
+                        // One deterministic eligible pair receives one opportunity
+                        // draw. A failed draw must not multiply its probability by
+                        // trying every other nearby organism in the same tick.
+                        committed_parents.insert(left.organism_id);
+                        committed_parents.insert(right.organism_id);
                         if let Some(event) = self.plan_reproductive_start(
                             left,
                             right,
@@ -4543,8 +4629,6 @@ impl EngineState {
                             developing_parent_id,
                         )? {
                             events.push(event);
-                            committed_parents.insert(left.organism_id);
-                            committed_parents.insert(right.organism_id);
                         }
                     }
                     continue;
@@ -4560,12 +4644,50 @@ impl EngineState {
                             && self.reproductively_ready(organism, profile)
                     })
                     .collect::<Vec<_>>();
-                for (left, right) in first.into_iter().zip(second) {
-                    let Some((pair_profile, developing_parent_id)) =
-                        self.reproductive_pair(left, right)
-                    else {
-                        return Err(EngineError::InvalidReproductiveCommitment(left.organism_id));
+                let second_ids = second
+                    .iter()
+                    .map(|organism| organism.organism_id)
+                    .collect::<BTreeSet<_>>();
+                for left in first {
+                    if committed_parents.contains(&left.organism_id) {
+                        continue;
+                    }
+                    let local_candidates;
+                    let candidates = if left.role == OrganismRole::Person
+                        && self.uses_lifecycle_continuity_driver()
+                    {
+                        let patch = left
+                            .embodied_patch
+                            .ok_or(EngineError::MissingEmbodiedPatch(left.organism_id))?;
+                        local_candidates = self
+                            .local_vicinity_organisms(
+                                local_index.as_ref().expect("active local index"),
+                                patch,
+                            )?
+                            .into_iter()
+                            .copied()
+                            .filter(|right_id| second_ids.contains(right_id))
+                            .filter_map(|right_id| self.organisms.get(&right_id))
+                            .collect::<Vec<_>>();
+                        local_candidates.as_slice()
+                    } else {
+                        second.as_slice()
                     };
+                    let mut selected = None;
+                    for right in candidates {
+                        if committed_parents.contains(&right.organism_id) {
+                            continue;
+                        }
+                        if let Some(pair) = self.reproductive_pair(left, right)? {
+                            selected = Some((*right, pair));
+                            break;
+                        }
+                    }
+                    let Some((right, (pair_profile, developing_parent_id))) = selected else {
+                        continue;
+                    };
+                    committed_parents.insert(left.organism_id);
+                    committed_parents.insert(right.organism_id);
                     if let Some(event) = self.plan_reproductive_start(
                         left,
                         right,
@@ -4573,8 +4695,6 @@ impl EngineState {
                         developing_parent_id,
                     )? {
                         events.push(event);
-                        committed_parents.insert(left.organism_id);
-                        committed_parents.insert(right.organism_id);
                     }
                 }
             }
@@ -4935,6 +5055,7 @@ impl EngineState {
                 .copied()
                 .collect(),
             cancer_burdens: self.cancer_burdens.values().collect(),
+            human_life_cycle_opened_at: self.human_life_cycle_opened_at,
             partition_schedule: self.partition_schedule.as_ref(),
             celestial_state: self.celestial_state,
             celestial_tick: self.celestial_tick,
@@ -5745,6 +5866,11 @@ impl EngineState {
             && !self.uses_world_experiment_bootstrap()
     }
 
+    fn uses_lifecycle_continuity_driver(&self) -> bool {
+        lifecycle_continuity_active(self.manifest.ruleset_version, self.tick)
+            && self.uses_social_language_consolidation_driver()
+    }
+
     fn plans_situated_signal_reuse_driver(&self) -> bool {
         self.tick
             .checked_next()
@@ -5752,7 +5878,7 @@ impl EngineState {
             && self.uses_social_language_consolidation_driver()
     }
 
-    fn shared_grounded_language_is_present(&self) -> bool {
+    fn grounded_language_threshold_is_met(&self) -> bool {
         if !self.uses_social_language_consolidation_driver() {
             return true;
         }
@@ -5800,6 +5926,21 @@ impl EngineState {
             .collect::<BTreeSet<_>>()
             .len()
             >= LANGUAGE_LIFECYCLE_MIN_MEANINGS
+    }
+
+    fn shared_grounded_language_is_present(&self) -> bool {
+        !self.uses_social_language_consolidation_driver()
+            || self.human_life_cycle_opened_at.is_some()
+            || self.grounded_language_threshold_is_met()
+    }
+
+    fn open_human_life_cycle_if_ready(&mut self) {
+        if self.human_life_cycle_opened_at.is_none()
+            && self.uses_lifecycle_continuity_driver()
+            && self.grounded_language_threshold_is_met()
+        {
+            self.human_life_cycle_opened_at = Some(self.tick);
+        }
     }
 
     fn plans_compositional_signal_driver(&self) -> bool {
@@ -5971,6 +6112,7 @@ impl EngineState {
         for event in events {
             self.apply_event(event)?;
         }
+        self.open_human_life_cycle_if_ready();
         Ok(())
     }
 
@@ -7057,6 +7199,8 @@ impl EngineState {
     fn state_hash_schema_version(&self) -> u16 {
         if self.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_STATE_HASH_SCHEMA_VERSION
+        } else if self.uses_lifecycle_continuity_driver() {
+            LIFECYCLE_CONTINUITY_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_compositional_signal_driver() {
             COMPOSITIONAL_SIGNAL_STATE_HASH_SCHEMA_VERSION
         } else if self.uses_cancer_biology_driver() {
@@ -7708,7 +7852,7 @@ impl EngineState {
                     .get(&parent_ids[1])
                     .ok_or(EngineError::UnknownParent(parent_ids[1]))?;
                 let Some((profile, expected_developing_parent)) =
-                    self.reproductive_pair(left, right)
+                    self.reproductive_pair(left, right)?
                 else {
                     return Err(EngineError::InvalidReproductiveDevelopment(*development_id));
                 };
@@ -8916,6 +9060,15 @@ impl EngineState {
         {
             return Err(EngineError::WorldExperimentRequiresNewerRuleset);
         }
+        if self.human_life_cycle_opened_at.is_some_and(|opened_at| {
+            opened_at > self.tick
+                || !lifecycle_continuity_active(self.manifest.ruleset_version, opened_at)
+                || self.uses_world_experiment_bootstrap()
+        }) {
+            return Err(EngineError::InvalidEmbodiedEvent(
+                "human life-cycle continuity state is invalid".to_owned(),
+            ));
+        }
         if self.status == WorldStatus::Initializing {
             if !self.initial_cancer_research_cohort.is_empty() || !self.cancer_burdens.is_empty() {
                 return Err(EngineError::InvalidCancerResearchInitialCohort);
@@ -9656,6 +9809,8 @@ struct StateHashMaterial<'a> {
     #[serde(skip_serializing_if = "Vec::is_empty")]
     cancer_burdens: Vec<&'a CancerBurdenState>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    human_life_cycle_opened_at: Option<SimTick>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     partition_schedule: Option<&'a PartitionSchedule>,
     #[serde(skip_serializing_if = "Option::is_none")]
     celestial_state: Option<CelestialState>,
@@ -9683,6 +9838,8 @@ impl Snapshot {
         let state_hash = state.state_hash()?;
         let snapshot_schema_version = if state.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if state.uses_lifecycle_continuity_driver() {
+            LIFECYCLE_CONTINUITY_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_compositional_signal_driver() {
             COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
         } else if state.uses_cancer_biology_driver() {
@@ -9813,6 +9970,7 @@ impl Snapshot {
                 | CANCER_BURDEN_SNAPSHOT_SCHEMA_VERSION
                 | WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
                 | COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
+                | LIFECYCLE_CONTINUITY_SNAPSHOT_SCHEMA_VERSION
         ) {
             return Err(EngineError::UnsupportedSnapshotSchema(
                 self.snapshot_schema_version,
@@ -9820,6 +9978,8 @@ impl Snapshot {
         }
         let expected_schema_version = if self.state.status == WorldStatus::Retired {
             WORLD_SUCCESSOR_RETIREMENT_SNAPSHOT_SCHEMA_VERSION
+        } else if self.state.uses_lifecycle_continuity_driver() {
+            LIFECYCLE_CONTINUITY_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_compositional_signal_driver() {
             COMPOSITIONAL_SIGNAL_SNAPSHOT_SCHEMA_VERSION
         } else if self.state.uses_cancer_biology_driver() {
@@ -9963,6 +10123,23 @@ pub fn replay_from_snapshot(
         snapshot.state.clone(),
         snapshot.through_sequence,
         snapshot.last_event_hash,
+        tail,
+    )
+}
+
+/// Continues a verified replay without retaining the already-applied batches.
+///
+/// Operator verification uses this to scan long append-only histories in
+/// bounded pages. The replay cursor and hash chain remain canonical; only the
+/// disposable in-memory representation of earlier event batches is released.
+pub fn replay_from_outcome(
+    outcome: ReplayOutcome,
+    tail: &[EventBatch],
+) -> Result<ReplayOutcome, EngineError> {
+    replay_from_cursor(
+        outcome.state,
+        outcome.through_sequence,
+        outcome.last_event_hash,
         tail,
     )
 }
@@ -16069,9 +16246,15 @@ mod tests {
             LEGACY_SNAPSHOT_SCHEMA_VERSION
         );
         let complete = replay(manifest(), &batches).expect("valid full replay");
+        let paged = replay_from_outcome(
+            replay(manifest(), &batches[..1]).expect("valid first replay page"),
+            &batches[1..],
+        )
+        .expect("valid continued replay");
         let from_snapshot =
             replay_from_snapshot(&snapshot, &batches[1..]).expect("valid tail replay");
 
+        assert_eq!(paged, complete);
         assert_eq!(from_snapshot, complete);
         let from_snapshot_hash = from_snapshot.state.state_hash();
         let complete_hash = complete.state.state_hash();
@@ -16803,6 +16986,22 @@ mod tests {
             SITUATED_SIGNAL_REUSE_RULESET_VERSION,
             SimTick::ZERO,
         ));
+        assert!(!lifecycle_continuity_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK - 1),
+        ));
+        assert!(lifecycle_continuity_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK),
+        ));
+        assert!(!lifecycle_continuity_active(
+            SITUATED_SIGNAL_REUSE_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+        assert!(lifecycle_continuity_active(
+            LIFECYCLE_CONTINUITY_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
     }
 
     #[test]
@@ -16896,8 +17095,9 @@ mod tests {
     #[test]
     fn situated_reuse_can_form_shared_language_without_assigned_words() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x4300_1afe));
-        let (_, mut running, genesis) =
-            grounded_language_fixture(world_id, 24, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
+        let (manifest, mut running, genesis) =
+            grounded_language_fixture(world_id, 24, LIFECYCLE_CONTINUITY_RULESET_VERSION);
+        let mut batches = vec![genesis.clone()];
         let mut sequence = genesis.sequence;
         let mut previous_hash = genesis.batch_hash;
         let mut language_tick = None;
@@ -16920,6 +17120,7 @@ mod tests {
                 .expect("situated language transition commits");
             previous_hash = batch.batch_hash;
             running = next;
+            batches.push(batch);
             if running.shared_grounded_language_is_present() {
                 language_tick = Some(running.tick);
                 break;
@@ -16929,6 +17130,128 @@ mod tests {
         assert!(
             language_tick.is_some(),
             "an unassisted 24-person fixture must share three grounded meanings within 512 ticks"
+        );
+        assert_eq!(running.human_life_cycle_opened_at, language_tick);
+        assert_eq!(
+            running.state_hash_schema_version(),
+            LIFECYCLE_CONTINUITY_STATE_HASH_SCHEMA_VERSION,
+        );
+        let snapshot = Snapshot::new(running.clone(), sequence, previous_hash)
+            .expect("lifecycle-continuity snapshot");
+        assert_eq!(
+            snapshot.snapshot_schema_version,
+            LIFECYCLE_CONTINUITY_SNAPSHOT_SCHEMA_VERSION,
+        );
+        snapshot
+            .verify_integrity()
+            .expect("lifecycle-continuity snapshot integrity");
+        assert_eq!(
+            replay(manifest, &batches)
+                .expect("lifecycle-continuity replay")
+                .state,
+            running,
+        );
+
+        let mut without_current_conventions = running.clone();
+        for organism in without_current_conventions.organisms.values_mut() {
+            organism.signal_action_associations.clear();
+            organism.signal_action_associations_updated_at = None;
+        }
+        assert!(!without_current_conventions.grounded_language_threshold_is_met());
+        assert!(
+            without_current_conventions.shared_grounded_language_is_present(),
+            "the life-cycle boundary is a one-way historical transition"
+        );
+        without_current_conventions
+            .validate()
+            .expect("latched lifecycle remains valid after conventions change");
+    }
+
+    #[test]
+    fn lifecycle_pairing_uses_local_vicinity_and_skips_ineligible_first_match() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4400_1afe));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 24, LIFECYCLE_CONTINUITY_RULESET_VERSION);
+        running.tick = SimTick::new(1);
+        running.human_life_cycle_opened_at = Some(running.tick);
+
+        let females = running
+            .organisms
+            .values()
+            .filter(|organism| organism.birth_category.as_str() == "female")
+            .map(|organism| organism.organism_id)
+            .collect::<Vec<_>>();
+        let males = running
+            .organisms
+            .values()
+            .filter(|organism| organism.birth_category.as_str() == "male")
+            .map(|organism| organism.organism_id)
+            .collect::<Vec<_>>();
+        let female_id = females[0];
+        let ineligible_male_id = males[0];
+        let eligible_male_id = males[1];
+        for organism in running.organisms.values_mut() {
+            organism.age_ticks = Some(0);
+        }
+        for organism_id in [female_id, ineligible_male_id, eligible_male_id] {
+            running
+                .organisms
+                .get_mut(&organism_id)
+                .expect("selected fixture person")
+                .age_ticks = Some(1_000_000);
+        }
+
+        let female_patch = running.organisms[&female_id]
+            .embodied_patch
+            .expect("fixture embodied patch");
+        let landscape_level = running
+            .local_interaction_level()
+            .expect("local interaction level");
+        let neighboring_landscape = s2_edge_neighbors(
+            female_patch
+                .ancestor(landscape_level)
+                .expect("female landscape"),
+        )
+        .expect("neighboring landscapes")[0];
+        let nearby_patch = neighboring_landscape
+            .descendants_at(female_patch.level())
+            .expect("nearby embodied descendants")[0];
+        running
+            .organisms
+            .get_mut(&eligible_male_id)
+            .expect("eligible male")
+            .embodied_patch = Some(nearby_patch);
+
+        let shared_parent = EntityId::from_uuid(Uuid::from_u128(0x4400_dead));
+        running
+            .organisms
+            .get_mut(&female_id)
+            .expect("female")
+            .parent_ids = vec![shared_parent];
+        running
+            .organisms
+            .get_mut(&ineligible_male_id)
+            .expect("ineligible male")
+            .parent_ids = vec![shared_parent];
+
+        let reproductive_events = running
+            .plan_reproductive_events()
+            .expect("ineligible first match is skipped");
+        let parent_ids = reproductive_events
+            .iter()
+            .find_map(|event| match event {
+                DomainEvent::ReproductiveDevelopmentStarted { parent_ids, .. } => Some(parent_ids),
+                _ => None,
+            })
+            .expect("nearby eligible alternative starts development");
+        assert!(parent_ids.contains(&female_id));
+        assert!(parent_ids.contains(&eligible_male_id));
+        assert!(!parent_ids.contains(&ineligible_male_id));
+        assert_ne!(female_patch, nearby_patch);
+        assert!(
+            running
+                .patches_share_local_vicinity(female_patch, nearby_patch)
+                .expect("bounded local vicinity")
         );
     }
 

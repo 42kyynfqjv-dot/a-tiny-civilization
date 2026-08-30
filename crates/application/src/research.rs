@@ -59,9 +59,13 @@ pub const MAX_CANCER_RESEARCH_MEMORY_BYTES: usize = 16 * 1024;
 pub const MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS: u16 = 16;
 pub const MAX_CANCER_RESEARCH_LITERATURE_DOCUMENTS: usize = 8;
 pub const MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 250_000;
-/// Covers the maximum accepted Fireworks GPT-OSS prompt plus 4,096 output
-/// tokens at the pinned public tariff, with margin for tokenization variance.
-pub const DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 = 15_000;
+/// Reserve the full per-call exposure ceiling before a paid dispatch. Provider
+/// tariffs and token accounting can change independently of this binary; a
+/// smaller estimate once allowed a valid provider receipt to exceed its durable
+/// reservation and left that successful request in an infinite retry loop.
+/// Unused authorization is released atomically when the receipt settles.
+pub const DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD: u64 =
+    MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD;
 /// The durable internal wiki is unbounded; an individual model turn receives a
 /// compact recent working set. Keeping this to one catalogue page prevents the
 /// local 32K-context fallback from being excluded merely because the world has
@@ -74,6 +78,10 @@ pub const CANCER_RESEARCH_CAMPAIGN_REQUIRED_SUPPORTS: usize = 3;
 /// inconclusive.
 pub const CANCER_RESEARCH_CAMPAIGN_EXPLORATION_TESTS: usize = 5;
 pub const CANCER_RESEARCH_CAMPAIGN_MAX_TESTS: usize = 10;
+/// A provider outage must not let one campaign consume every promotion slot.
+/// The counter is scoped to the current immutable route policy so deploying a
+/// repaired ladder gives an infrastructure-blocked campaign a fresh chance.
+pub const CANCER_RESEARCH_CAMPAIGN_MAX_DELIVERY_FAILURES_PER_POLICY: usize = 3;
 pub const CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION: u16 = 2;
 const LEGACY_CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION: u16 = 1;
 const LEGACY_CANCER_RESEARCH_CAMPAIGN_MAX_TESTS: usize = 5;
@@ -645,7 +653,10 @@ pub fn cancer_research_contributions_duplicate(
     left: &CancerResearchContribution,
     right: &CancerResearchContribution,
 ) -> bool {
-    if left.artifact_kind != right.artifact_kind || left.stage != right.stage {
+    if left.artifact_kind != right.artifact_kind
+        || left.stage != right.stage
+        || left.molecular_targets != right.molecular_targets
+    {
         return false;
     }
     // Similar prose must not collapse materially different executable plans.
@@ -900,17 +911,28 @@ impl CancerResearchModelRequest {
         self.validate()?;
         route.validate()?;
         let approved = match self.selection.inference_tier {
-            CancerResearchInferenceTier::Exploration => {
-                CognitionRouteRegistry::cancer_research_exploration()
+            CancerResearchInferenceTier::Exploration => [
+                CognitionRouteRegistry::cancer_research_exploration(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v12(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v11(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v10(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v9(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v8(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v7(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v6(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v5(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v4(),
+                CognitionRouteRegistry::cancer_research_exploration_legacy_v3(),
+            ]
+            .iter()
+            .any(|registry| registry.routes.contains(route)),
+            CancerResearchInferenceTier::Escalation => {
+                CognitionRouteRegistry::cancer_research_escalation()
                     .routes
                     .contains(route)
-                    || CognitionRouteRegistry::cancer_research_exploration_legacy_v11()
+                    || CognitionRouteRegistry::cancer_research_escalation_legacy_v4()
                         .routes
                         .contains(route)
-            }
-            CancerResearchInferenceTier::Escalation => {
-                route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro()
-                    || route == &CognitionModelRoute::openrouter_cancer_deepseek_v4_flash()
             }
         };
         if approved {
@@ -964,6 +986,7 @@ impl CancerResearchModelReceipt {
             || self.adapter_version.trim().is_empty()
             || self.adapter_version.len() > MAX_ADAPTER_VERSION_BYTES
             || self.usage.completion_tokens > u32::from(request.selection.model_max_output_tokens)
+            || self.billed_micro_usd > MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
         {
             return Err(CancerResearchModelContractError::InvalidReceipt);
         }
@@ -1008,6 +1031,29 @@ pub trait CancerResearchModel: Send + Sync {
 pub struct CancerResearchJobEntry {
     pub request: CancerResearchModelRequest,
     pub claim_count: u32,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CancerResearchTerminalFailureClass {
+    StoreMigration,
+    StoreConflict,
+    StoreNotFound,
+    StoreCorrupt,
+    WorkerCorrupt,
+}
+
+impl CancerResearchTerminalFailureClass {
+    #[must_use]
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::StoreMigration => "store_migration",
+            Self::StoreConflict => "store_conflict",
+            Self::StoreNotFound => "store_not_found",
+            Self::StoreCorrupt => "store_corrupt",
+            Self::WorkerCorrupt => "worker_corrupt",
+        }
+    }
 }
 
 impl CancerResearchJobEntry {
@@ -1314,6 +1360,17 @@ pub trait CancerResearchJobStore: Send + Sync {
         entry: &CancerResearchJobEntry,
         error: &str,
         retry_after_seconds: u32,
+    ) -> Result<(), StoreError>;
+
+    /// Ends a request whose durable state cannot become valid by waiting and
+    /// retrying. The append-only failure record preserves the exact reason and
+    /// prevents a deterministic defect from reclaiming one row forever.
+    async fn terminally_fail_cancer_research_request(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        failure_class: CancerResearchTerminalFailureClass,
+        error: &str,
     ) -> Result<(), StoreError>;
 
     /// Commits immutable evidence that a network call is about to occur before
@@ -1776,6 +1833,19 @@ mod tests {
         assert!(!cancer_research_contributions_duplicate(
             &original,
             &opposing_mechanism
+        ));
+
+        let mut first_target = original.clone();
+        first_target.molecular_targets = vec![world_domain::CancerMolecularTarget {
+            gene_symbol: "EGFR".to_owned(),
+        }];
+        let mut second_target = original.clone();
+        second_target.molecular_targets = vec![world_domain::CancerMolecularTarget {
+            gene_symbol: "TP53".to_owned(),
+        }];
+        assert!(!cancer_research_contributions_duplicate(
+            &first_target,
+            &second_target
         ));
 
         let plan = CancerVirtualExperimentPlan {

@@ -25,6 +25,7 @@ done
 maximum_age_seconds="${BACKEND_HEARTBEAT_MAX_AGE_SECONDS:-60}"
 maximum_projection_lag="${BACKEND_PROJECTION_MAX_LAG_SEQUENCES:-100}"
 maximum_async_age_seconds="${BACKEND_ASYNC_MAX_AGE_SECONDS:-300}"
+maximum_cancer_claim_count="${BACKEND_CANCER_MAX_CLAIM_COUNT:-20}"
 minimum_free_mib="${BACKEND_MIN_FREE_MIB:-20480}"
 if [[ ! "$wait_seconds" =~ ^[0-9]+$ ]] || ((wait_seconds > 300)); then
   echo "--wait-seconds must be an integer from 0 through 300" >&2
@@ -42,6 +43,11 @@ fi
 if [[ ! "$maximum_async_age_seconds" =~ ^[1-9][0-9]*$ ]] \
    || ((maximum_async_age_seconds < 60 || maximum_async_age_seconds > 3600)); then
   echo "BACKEND_ASYNC_MAX_AGE_SECONDS must be an integer from 60 through 3600" >&2
+  exit 2
+fi
+if [[ ! "$maximum_cancer_claim_count" =~ ^[1-9][0-9]*$ ]] \
+   || ((maximum_cancer_claim_count > 100000)); then
+  echo "BACKEND_CANCER_MAX_CLAIM_COUNT must be an integer from 1 through 100000" >&2
   exit 2
 fi
 if [[ ! "$minimum_free_mib" =~ ^[1-9][0-9]*$ ]] \
@@ -80,26 +86,37 @@ check_once() {
   data_status="$("${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
     "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \"
       WITH active_world AS (
-        SELECT id,current_sequence FROM worlds
+        SELECT id,current_sequence,manifest FROM worlds
         WHERE status IN ('initializing','running','extinct')
+      ), cancer_world AS (
+        SELECT id FROM active_world
+        WHERE manifest #>> '{experiment,commitment,target}' IS NOT NULL
       ), projection AS (
         SELECT COUNT(projection_offset.*) FILTER (WHERE projection_offset.projection_name IN (
                  'public-timeline-v1','public-organism-v1',
-                 'public-finding-v2','public-world-telemetry-v1','public-artifact-v1'
+                 'public-finding-v2','public-world-telemetry-v1','public-artifact-v1',
+                 'public-habitat-v1','public-language-v1'
                ))::BIGINT AS required_count,
                COALESCE(MAX(ABS(world.current_sequence - projection_offset.through_sequence)),0)::BIGINT AS maximum_lag
         FROM active_world world
         LEFT JOIN projection_offsets projection_offset ON projection_offset.world_id=world.id
           AND projection_offset.projection_name IN (
             'public-timeline-v1','public-organism-v1',
-            'public-finding-v2','public-world-telemetry-v1','public-artifact-v1'
+            'public-finding-v2','public-world-telemetry-v1','public-artifact-v1',
+            'public-habitat-v1','public-language-v1'
           )
       )
       SELECT
         (SELECT COUNT(DISTINCT service_name) FROM service_heartbeats
          WHERE service_name IN ('simulation-runner','observer-projector','memory-worker','cognition-worker')
            AND last_seen_at >= NOW() - make_interval(secs => ${maximum_age_seconds})),
+        (SELECT COUNT(DISTINCT service_name) FROM service_heartbeats
+         WHERE service_name IN (
+           'simulation-runner-cancer','cancer-research-worker',
+           'cancer-virtual-lab-worker','cancer-tissue-refinement-worker'
+         ) AND last_seen_at >= NOW() - make_interval(secs => ${maximum_age_seconds})),
         (SELECT COUNT(*) FROM active_world),
+        (SELECT COUNT(*) FROM cancer_world),
         projection.required_count,
         projection.maximum_lag,
         (SELECT COUNT(*) FROM memory_outbox memory JOIN active_world world ON world.id=memory.world_id
@@ -117,23 +134,40 @@ check_once() {
          LEFT JOIN cognition_deadline_latches latch USING(request_id)
          WHERE result.request_id IS NULL AND latch.request_id IS NULL
            AND request.claimed_at < NOW() - make_interval(secs => ${maximum_async_age_seconds}))
+        ,(SELECT COUNT(*) FROM cancer_research_requests request
+          JOIN cancer_world world ON world.id=request.world_id
+          WHERE request.completed_at IS NULL
+            AND (
+              request.claim_count > ${maximum_cancer_claim_count}
+              OR (
+                request.available_at < NOW() - make_interval(secs => ${maximum_async_age_seconds})
+                AND COALESCE(request.claimed_at,request.created_at)
+                    < NOW() - make_interval(secs => ${maximum_async_age_seconds})
+              )
+            ))
         ,current_setting('data_checksums')
         ,current_setting('fsync')
         ,current_setting('synchronous_commit')
         ,current_setting('full_page_writes')
       FROM projection\"")" || return 1
-  IFS='|' read -r heartbeat_count active_world_count projection_count projection_lag \
-    stale_memory_count stuck_cognition_count data_checksums fsync synchronous_commit \
-    full_page_writes <<<"$data_status"
+  IFS='|' read -r heartbeat_count cancer_heartbeat_count active_world_count \
+    cancer_world_count projection_count projection_lag stale_memory_count \
+    stuck_cognition_count stuck_cancer_research_count data_checksums fsync \
+    synchronous_commit full_page_writes <<<"$data_status"
   [[ "$data_checksums" == "on" ]] || return 1
   [[ "$fsync" == "on" ]] || return 1
   [[ "$synchronous_commit" == "on" ]] || return 1
   [[ "$full_page_writes" == "on" ]] || return 1
   [[ "$heartbeat_count" == "4" ]] || return 1
   [[ "$active_world_count" =~ ^[0-9]+$ ]] || return 1
+  [[ "$cancer_world_count" =~ ^[0-9]+$ ]] || return 1
+  if ((cancer_world_count > 0)); then
+    [[ "$cancer_heartbeat_count" == "4" ]] || return 1
+    [[ "$stuck_cancer_research_count" == "0" ]] || return 1
+  fi
   if ((active_world_count > 0)); then
     [[ "$projection_count" =~ ^[0-9]+$ ]] || return 1
-    ((projection_count == active_world_count * 5)) || return 1
+    ((projection_count == active_world_count * 7)) || return 1
     ((projection_lag <= maximum_projection_lag)) || return 1
     [[ "$stale_memory_count" == "0" ]] || return 1
     [[ "$stuck_cognition_count" == "0" ]] || return 1

@@ -6,8 +6,8 @@ use crate::{
     CANCER_RESEARCH_MODEL_CONTRACT_VERSION, CancerResearchAttemptPersistenceState,
     CancerResearchJobEntry, CancerResearchJobStore, CancerResearchLadderResult,
     CancerResearchModel, CancerResearchModelError, CancerResearchPaidReservationDecision,
-    CancerResearchRouteAttemptRecord, CognitionBillingClass, CognitionProviderId,
-    CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
+    CancerResearchRouteAttemptRecord, CancerResearchTerminalFailureClass, CognitionBillingClass,
+    CognitionProviderId, CognitionRouteAttempt, CognitionRouteAttemptStatus, CognitionRoutePurpose,
     CognitionRouteRegistry, DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
     MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, StoreError,
 };
@@ -84,18 +84,67 @@ pub async fn process_next_cancer_research_job<S: CancerResearchJobStore + ?Sized
     };
     match process_claimed_job(store, adapters, worker_id, configuration, &entry).await {
         Ok(outcome) => Ok(outcome),
-        Err(error @ CancerResearchWorkerError::Store(_)) => {
+        Err(error @ CancerResearchWorkerError::Store(StoreError::Unavailable(_))) => {
             store
                 .reschedule_cancer_research_request(
                     worker_id,
                     &entry,
                     &error.to_string(),
-                    configuration.retry_after_seconds,
+                    transient_retry_delay_seconds(
+                        configuration.retry_after_seconds,
+                        entry.claim_count,
+                    ),
                 )
                 .await?;
             Err(error)
         }
-        Err(error) => Err(error),
+        Err(error @ CancerResearchWorkerError::Store(_))
+        | Err(error @ CancerResearchWorkerError::Corrupt(_)) => {
+            let failure_class = terminal_failure_class(&error).ok_or_else(|| {
+                CancerResearchWorkerError::Corrupt(
+                    "non-transient research error omitted its terminal class".to_owned(),
+                )
+            })?;
+            store
+                .terminally_fail_cancer_research_request(
+                    worker_id,
+                    &entry,
+                    failure_class,
+                    &error.to_string(),
+                )
+                .await?;
+            Err(error)
+        }
+        Err(error @ CancerResearchWorkerError::Configuration(_)) => Err(error),
+    }
+}
+
+fn transient_retry_delay_seconds(base_seconds: u32, claim_count: u32) -> u32 {
+    let shift = claim_count.saturating_sub(1).min(7);
+    base_seconds.saturating_mul(1_u32 << shift).clamp(1, 3_600)
+}
+
+const fn terminal_failure_class(
+    error: &CancerResearchWorkerError,
+) -> Option<CancerResearchTerminalFailureClass> {
+    match error {
+        CancerResearchWorkerError::Store(StoreError::Unavailable(_))
+        | CancerResearchWorkerError::Configuration(_) => None,
+        CancerResearchWorkerError::Store(StoreError::Migration(_)) => {
+            Some(CancerResearchTerminalFailureClass::StoreMigration)
+        }
+        CancerResearchWorkerError::Store(StoreError::Conflict(_)) => {
+            Some(CancerResearchTerminalFailureClass::StoreConflict)
+        }
+        CancerResearchWorkerError::Store(StoreError::NotFound(_)) => {
+            Some(CancerResearchTerminalFailureClass::StoreNotFound)
+        }
+        CancerResearchWorkerError::Store(StoreError::Corrupt(_)) => {
+            Some(CancerResearchTerminalFailureClass::StoreCorrupt)
+        }
+        CancerResearchWorkerError::Corrupt(_) => {
+            Some(CancerResearchTerminalFailureClass::WorkerCorrupt)
+        }
     }
 }
 
@@ -281,11 +330,21 @@ fn select_registry_for_records(
     let candidates = match purpose {
         CognitionRoutePurpose::CancerResearchExploration => vec![
             CognitionRouteRegistry::cancer_research_exploration(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v12(),
             CognitionRouteRegistry::cancer_research_exploration_legacy_v11(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v10(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v9(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v8(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v7(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v6(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v5(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v4(),
+            CognitionRouteRegistry::cancer_research_exploration_legacy_v3(),
         ],
-        CognitionRoutePurpose::CancerResearchEscalation => {
-            vec![CognitionRouteRegistry::cancer_research_escalation()]
-        }
+        CognitionRoutePurpose::CancerResearchEscalation => vec![
+            CognitionRouteRegistry::cancer_research_escalation(),
+            CognitionRouteRegistry::cancer_research_escalation_legacy_v4(),
+        ],
         _ => {
             return Err(CancerResearchWorkerError::Corrupt(
                 "research request selected a non-research route purpose".to_owned(),
@@ -513,5 +572,30 @@ mod tests {
             ..default
         };
         assert!(invalid.validate().is_err());
+    }
+
+    #[test]
+    fn only_unavailable_storage_retries_with_bounded_backoff() {
+        assert_eq!(transient_retry_delay_seconds(30, 1), 30);
+        assert_eq!(transient_retry_delay_seconds(30, 4), 240);
+        assert_eq!(transient_retry_delay_seconds(30, u32::MAX), 3_600);
+        assert_eq!(
+            terminal_failure_class(&CancerResearchWorkerError::Store(StoreError::Unavailable(
+                "temporary".to_owned()
+            ))),
+            None
+        );
+        assert_eq!(
+            terminal_failure_class(&CancerResearchWorkerError::Store(StoreError::Conflict(
+                "deterministic".to_owned()
+            ))),
+            Some(CancerResearchTerminalFailureClass::StoreConflict)
+        );
+        assert_eq!(
+            terminal_failure_class(&CancerResearchWorkerError::Corrupt(
+                "bad durable route".to_owned()
+            )),
+            Some(CancerResearchTerminalFailureClass::WorkerCorrupt)
+        );
     }
 }

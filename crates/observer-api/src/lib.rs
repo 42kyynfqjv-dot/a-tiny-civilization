@@ -1,6 +1,9 @@
 //! HTTP read boundary for the external observer system.
 
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use application::{
     AgentMemory, FoundationStore, MemoryRecallOutcome, MemoryRecallRequest,
@@ -46,6 +49,8 @@ use world_domain::{BirthCategory, Digest, EntityId, EventSequence, WorldId};
 
 const OAUTH_ATTEMPT_MINUTES: i64 = 10;
 const OBSERVER_SESSION_DAYS: i64 = 30;
+const CANCER_ACCESS_HEADER: &str = "x-atc-cancer-console-token";
+const CANCER_RESEARCH_CACHE_TTL: Duration = Duration::from_secs(60);
 
 /// Read-only observer composition. The simulation runner does not import this port.
 pub trait ObserverReadStore:
@@ -89,6 +94,8 @@ pub struct ApiState {
     supporter_cancellation: Option<Arc<SupporterCancellationService>>,
     newsletter: Option<Arc<NewsletterRuntime>>,
     research_memory: Option<Arc<dyn AgentMemory>>,
+    cancer_access: Option<Arc<CancerAccessRuntime>>,
+    cancer_research_cache: Arc<tokio::sync::Mutex<Option<CachedCancerResearch>>>,
 }
 
 impl ApiState {
@@ -104,6 +111,8 @@ impl ApiState {
             supporter_cancellation: None,
             newsletter: None,
             research_memory: None,
+            cancer_access: None,
+            cancer_research_cache: Arc::new(tokio::sync::Mutex::new(None)),
         }
     }
 
@@ -157,6 +166,15 @@ impl ApiState {
         self.research_memory = Some(memory);
         self
     }
+
+    #[must_use]
+    pub fn with_cancer_console_access(mut self, world_id: WorldId, console_token: &str) -> Self {
+        self.cancer_access = Some(Arc::new(CancerAccessRuntime {
+            world_id,
+            token_digest: Digest::sha256(console_token.as_bytes()),
+        }));
+        self
+    }
 }
 
 struct StripeWebhookRuntime {
@@ -173,6 +191,18 @@ struct AuthRuntime {
 
 struct NewsletterRuntime {
     weekly_signup_url: Url,
+}
+
+struct CancerAccessRuntime {
+    world_id: WorldId,
+    token_digest: Digest,
+}
+
+struct CachedCancerResearch {
+    world_id: WorldId,
+    limit: u16,
+    expires_at: Instant,
+    view: PublicCancerResearchView,
 }
 
 pub fn router(state: ApiState) -> Router {
@@ -1034,11 +1064,14 @@ struct WorldsResponse {
 }
 
 async fn public_worlds(State(state): State<ApiState>) -> Result<Json<WorldsResponse>, ApiError> {
-    let worlds = state
+    let mut worlds = state
         .store
         .list_public_worlds()
         .await
         .map_err(log_observer_error)?;
+    if let Some(access) = state.cancer_access.as_ref() {
+        worlds.retain(|world| world.world_id != access.world_id);
+    }
     Ok(Json(WorldsResponse { worlds }))
 }
 
@@ -1454,18 +1487,38 @@ async fn public_memory(
 
 async fn public_cancer_research(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(world_id): Path<String>,
     Query(query): Query<TimelineQuery>,
 ) -> Result<Json<PublicCancerResearchView>, ApiError> {
     let world_id = world_id
         .parse::<WorldId>()
         .map_err(|_| ApiError::NotFound)?;
+    require_cancer_access(&state, &headers, world_id)?;
+    let limit = query.limit.unwrap_or(120).clamp(1, 500);
+    // Hold the mutex across the rebuild deliberately: it coalesces concurrent
+    // console requests instead of letting each one deserialize and deduplicate
+    // the full immutable research history on a separate database connection.
+    let mut cache = state.cancer_research_cache.lock().await;
+    if let Some(cached) = cache.as_ref()
+        && cached.world_id == world_id
+        && cached.limit == limit
+        && cached.expires_at > Instant::now()
+    {
+        return Ok(Json(cached.view.clone()));
+    }
     let view = state
         .store
-        .public_cancer_research(world_id, query.limit.unwrap_or(120))
+        .public_cancer_research(world_id, limit)
         .await
         .map_err(log_observer_error)?
         .ok_or(ApiError::NotFound)?;
+    *cache = Some(CachedCancerResearch {
+        world_id,
+        limit,
+        expires_at: Instant::now() + CANCER_RESEARCH_CACHE_TTL,
+        view: view.clone(),
+    });
     Ok(Json(view))
 }
 
@@ -1477,12 +1530,14 @@ struct ResearchSearchQuery {
 
 async fn search_cancer_research_memory(
     State(state): State<ApiState>,
+    headers: HeaderMap,
     Path(world_id): Path<String>,
     Query(query): Query<ResearchSearchQuery>,
 ) -> Result<Json<MemoryRecallOutcome>, ApiError> {
     let world_id = world_id
         .parse::<WorldId>()
         .map_err(|_| ApiError::NotFound)?;
+    require_cancer_access(&state, &headers, world_id)?;
     let memory = state
         .research_memory
         .as_ref()
@@ -1524,6 +1579,26 @@ async fn search_cancer_research_memory(
         )
     })?;
     Ok(Json(memory.recall(&request).await))
+}
+
+fn require_cancer_access(
+    state: &ApiState,
+    headers: &HeaderMap,
+    world_id: WorldId,
+) -> Result<(), ApiError> {
+    let access = state.cancer_access.as_ref().ok_or(ApiError::NotFound)?;
+    if access.world_id != world_id {
+        return Err(ApiError::NotFound);
+    }
+    let supplied = headers
+        .get(CANCER_ACCESS_HEADER)
+        .map(HeaderValue::as_bytes)
+        .filter(|value| !value.is_empty())
+        .ok_or(ApiError::NotFound)?;
+    if Digest::sha256(supplied) != access.token_digest {
+        return Err(ApiError::NotFound);
+    }
+    Ok(())
 }
 
 async fn public_organism(

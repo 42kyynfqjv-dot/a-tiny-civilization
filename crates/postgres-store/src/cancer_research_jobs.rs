@@ -7,9 +7,10 @@ use application::{
     CancerResearchLiteratureSnapshot, CancerResearchMemoryInput, CancerResearchModelReceipt,
     CancerResearchModelRequest, CancerResearchNoveltyCandidate, CancerResearchPaidAuthorization,
     CancerResearchPaidReservationDecision, CancerResearchPriorResult,
-    CancerResearchRouteAttemptRecord, CancerTcgaGbmTargetContextCandidate,
-    CancerVirtualExperimentCandidate, CancerVirtualExperimentCatalogSummary, CognitionBillingClass,
-    CognitionBillingScope, CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
+    CancerResearchRouteAttemptRecord, CancerResearchTerminalFailureClass,
+    CancerTcgaGbmTargetContextCandidate, CancerVirtualExperimentCandidate,
+    CancerVirtualExperimentCatalogSummary, CognitionBillingClass, CognitionBillingScope,
+    CognitionModelRoute, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRouteRegistry, MAX_CANCER_RESEARCH_MEMORY_INPUTS,
     MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD, MemoryRetain, StoreError,
     cancer_research_collective_id, cancer_research_contributions_duplicate,
@@ -1186,6 +1187,62 @@ impl CancerResearchJobStore for PostgresStore {
         )
     }
 
+    async fn terminally_fail_cancer_research_request(
+        &self,
+        worker_id: &str,
+        entry: &CancerResearchJobEntry,
+        failure_class: CancerResearchTerminalFailureClass,
+        error: &str,
+    ) -> Result<(), StoreError> {
+        validate_worker_id(worker_id)?;
+        entry.validate().map_err(corrupt)?;
+        let error = error.chars().take(2_048).collect::<String>();
+        if error.trim().is_empty() {
+            return Err(StoreError::Conflict(
+                "terminal research failure text cannot be empty".to_owned(),
+            ));
+        }
+        let request_checksum = entry.request.canonical_hash().map_err(corrupt)?;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        ensure_claim(&mut transaction, worker_id, entry.request.request_id).await?;
+        sqlx::query(
+            r#"
+            INSERT INTO cancer_research_terminal_failures (
+                request_id,request_checksum,failure_class,failure_text,claim_count
+            ) VALUES ($1,$2,$3,$4,$5)
+            "#,
+        )
+        .bind(entry.request.request_id)
+        .bind(request_checksum.as_bytes().as_slice())
+        .bind(failure_class.as_str())
+        .bind(&error)
+        .bind(i64::from(entry.claim_count))
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        let updated = sqlx::query(
+            r#"
+            UPDATE cancer_research_requests
+            SET completed_at=NOW(),claimed_by=NULL,claimed_at=NULL,last_error=$3
+            WHERE request_id=$1 AND claimed_by=$2 AND completed_at IS NULL
+            "#,
+        )
+        .bind(entry.request.request_id)
+        .bind(worker_id)
+        .bind(&error)
+        .execute(&mut *transaction)
+        .await
+        .map_err(operation_error)?;
+        require_one(
+            updated.rows_affected(),
+            "terminal research request is not held by this worker",
+        )?;
+        // Any unresolved paid authorization remains conservative and visible
+        // for provider reconciliation; dead-lettering never guesses that an
+        // external dispatch was free or releases potentially incurred spend.
+        transaction.commit().await.map_err(operation_error)
+    }
+
     async fn begin_cancer_research_route_attempt(
         &self,
         worker_id: &str,
@@ -1521,7 +1578,32 @@ impl CancerResearchJobStore for PostgresStore {
     ) -> Result<Option<CancerResearchCampaignCandidate>, StoreError> {
         let row = sqlx::query_as::<_, CampaignRootRow>(
             r#"
-            WITH selected_candidate AS MATERIALIZED (
+            WITH child_stats AS MATERIALIZED (
+                SELECT
+                    child.request_payload->'selection'->>'frozen_candidate_hash'
+                        AS frozen_candidate_hash,
+                    COUNT(*) AS total_children,
+                    COUNT(*) FILTER (
+                        WHERE child_result.result_payload->'receipt' <> 'null'::JSONB
+                    ) AS successful_children,
+                    COUNT(*) FILTER (
+                        WHERE child_result.result_payload->'receipt' = 'null'::JSONB
+                          AND (child_result.result_payload->>'route_policy_version')::INTEGER
+                              IN ($6, $8)
+                    ) AS current_policy_failures,
+                    BOOL_OR(
+                        child.request_payload->'selection'->>'task'
+                            = 'interpret_replication_result'
+                        AND child_result.result_payload->'receipt' <> 'null'::JSONB
+                    ) AS synthesis_complete
+                FROM cancer_research_requests AS child
+                JOIN cancer_research_results AS child_result USING (request_id)
+                WHERE child.world_id=$1
+                  AND child.ordinal < $2
+                  AND child.stage='independent_replication'
+                GROUP BY child.request_payload->'selection'->>'frozen_candidate_hash'
+            ),
+            selected_candidate AS MATERIALIZED (
                 SELECT request.request_id
                 FROM cancer_research_requests AS request
                 JOIN cancer_research_results AS result USING (request_id)
@@ -1531,6 +1613,8 @@ impl CancerResearchJobStore for PostgresStore {
                 JOIN cancer_research_novelty_audits AS audit
                   ON audit.request_id=request.request_id
                  AND audit.method_version=$5
+                LEFT JOIN child_stats AS children
+                  ON children.frozen_candidate_hash=ENCODE(experiment.artifact_hash, 'hex')
                 WHERE request.world_id=$1
                   AND request.ordinal < $2
                   AND MOD(request.ordinal, 2) = $3
@@ -1542,29 +1626,11 @@ impl CancerResearchJobStore for PostgresStore {
                       'model_inconclusive'
                   )
                   AND audit.normalized_status IN ('new_combination','no_close_match_found')
-                  AND NOT EXISTS (
-                      SELECT 1
-                      FROM cancer_research_requests AS child
-                      JOIN cancer_research_results AS child_result USING (request_id)
-                      WHERE child.world_id=request.world_id
-                        AND child.ordinal < $2
-                        AND child.stage='independent_replication'
-                        AND child.request_payload->'selection'->>'frozen_candidate_hash'
-                            = ENCODE(experiment.artifact_hash, 'hex')
-                        AND child.request_payload->'selection'->>'task'
-                            = 'interpret_replication_result'
-                        AND child_result.result_payload->'receipt' <> 'null'::JSONB
-                  )
+                  AND COALESCE(children.current_policy_failures, 0) < $7
+                  AND NOT COALESCE(children.synthesis_complete, FALSE)
                 ORDER BY
-                    EXISTS (
-                        SELECT 1
-                        FROM cancer_research_requests AS existing_child
-                        WHERE existing_child.world_id=request.world_id
-                          AND existing_child.ordinal < $2
-                          AND existing_child.stage='independent_replication'
-                          AND existing_child.request_payload->'selection'->>'frozen_candidate_hash'
-                              = ENCODE(experiment.artifact_hash, 'hex')
-                    ) DESC,
+                    COALESCE(children.successful_children, 0) DESC,
+                    COALESCE(children.total_children, 0),
                     (experiment.result_payload->>'interpretation'='model_supports_prediction') DESC,
                     request.ordinal,
                     request.request_id
@@ -1592,6 +1658,16 @@ impl CancerResearchJobStore for PostgresStore {
         .bind(i32::from(world_domain::CANCER_VIRTUAL_LAB_METHOD_VERSION))
         .bind(i32::from(
             world_domain::CANCER_RESEARCH_NOVELTY_METHOD_VERSION,
+        ))
+        .bind(i32::from(
+            application::CANCER_RESEARCH_ESCALATION_ROUTE_POLICY_VERSION,
+        ))
+        .bind(
+            i64::try_from(application::CANCER_RESEARCH_CAMPAIGN_MAX_DELIVERY_FAILURES_PER_POLICY)
+                .map_err(|_| corrupt("campaign delivery failure limit overflow"))?,
+        )
+        .bind(i32::from(
+            application::CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION,
         ))
         .fetch_optional(self.pool())
         .await
@@ -2031,10 +2107,11 @@ impl CancerResearchJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         if receipt.request_id != entry.request.request_id
-            || receipt.billed_micro_usd > authorization.reserved_micro_usd
+            || receipt.billed_micro_usd > MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD
         {
             return Err(StoreError::Conflict(
-                "paid research receipt exceeds or differs from its reservation".to_owned(),
+                "paid research receipt exceeds the per-call cap or differs from its request"
+                    .to_owned(),
             ));
         }
         let receipt_payload = serde_json::to_value(receipt).map_err(corrupt)?;
@@ -2670,9 +2747,14 @@ async fn resolve_research_reservation(
     let (status, actual, release_reserved, add_spent) = match resolution {
         ResearchReservationResolution::Settled(actual) => {
             let actual = to_i64(actual, "paid research actual cost")?;
-            if actual > reserved {
+            if actual
+                > to_i64(
+                    MAX_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD,
+                    "paid research per-call cap",
+                )?
+            {
                 return Err(StoreError::Conflict(
-                    "paid research cost exceeds its reservation".to_owned(),
+                    "paid research cost exceeds the per-call cap".to_owned(),
                 ));
             }
             ("settled", Some(actual), reserved, actual)
@@ -2687,7 +2769,7 @@ async fn resolve_research_reservation(
             SET reserved_micro_usd=reserved_micro_usd-$2,
                 spent_micro_usd=spent_micro_usd+$3,updated_at=NOW()
             WHERE billing_scope='cancer_research' AND billing_month=$1
-              AND reserved_micro_usd >= $2 AND hard_stop_micro_usd >= spent_micro_usd+$3
+              AND reserved_micro_usd >= $2
             "#,
         )
         .bind(authorization.billing_month)
@@ -2991,10 +3073,10 @@ fn corrupt(error: impl std::fmt::Display) -> StoreError {
 fn operation_error(error: sqlx::Error) -> StoreError {
     if let sqlx::Error::Database(database) = &error {
         let code = database.code().as_deref().map(str::to_owned);
-        if matches!(
-            code.as_deref(),
-            Some("23503" | "23505" | "23514" | "40001" | "P0001")
-        ) {
+        if code.as_deref() == Some("40001") {
+            return StoreError::Unavailable(database.message().to_owned());
+        }
+        if matches!(code.as_deref(), Some("23503" | "23505" | "23514" | "P0001")) {
             return StoreError::Conflict(database.message().to_owned());
         }
     }

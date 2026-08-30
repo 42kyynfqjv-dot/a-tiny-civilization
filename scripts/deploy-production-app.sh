@@ -171,10 +171,27 @@ done
   api projector runner memory-worker cognition-worker
 if grep -qE '^CANCER_WORLD_ID=[0-9a-fA-F-]{36}$' "$environment_file"; then
   # The deterministic virtual lab is a core Cancer World consumer, not part of
-  # the optional patient-derived qualification worker. Keep both model turns
-  # and experiment execution alive across every ordinary production deploy.
-  "${compose_command[@]}" "${compose_args[@]}" --profile container-research up -d \
-    cancer-runner cancer-research-worker cancer-virtual-lab-worker
+  # an optional sidecar. Keep research, evidence qualification, the bounded
+  # tissue projection, and experiment execution on the same newly built image.
+  # Omitting evidence here once left a deleted-inode host binary running for
+  # weeks while its backlog silently grew.
+  "${compose_command[@]}" "${compose_args[@]}" \
+    --profile container-research --profile cancer-tissue up -d \
+    cancer-runner cancer-research-worker cancer-virtual-lab-worker \
+    cancer-evidence-worker cancer-tissue-worker
+
+  # These workers predate their container-isolated replacements. Disable any
+  # installed host copies only after Compose has accepted and started the
+  # replacement services, preventing duplicate claimers after this deploy or a
+  # later reboot.
+  for legacy_unit in \
+    atiny-cancer-research.service \
+    atiny-cancer-evidence.service \
+    atiny-cancer-tissue-refinement.service; do
+    if systemctl cat "$legacy_unit" >/dev/null 2>&1; then
+      systemctl disable --now "$legacy_unit"
+    fi
+  done
 fi
 # Avoid recreating API dependencies with accidental Compose defaults while updating the
 # public web container. Never use --remove-orphans: the application and any separately

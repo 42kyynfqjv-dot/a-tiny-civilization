@@ -89,6 +89,13 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
     drop(held_b);
 
     let heartbeat_floor = Utc::now();
+    let stale_heartbeat_id = Uuid::new_v4();
+    sqlx::query(
+        "INSERT INTO service_heartbeats (service_name,instance_id,last_seen_at) VALUES ('simulation-runner',$1,NOW() - INTERVAL '31 days')",
+    )
+    .bind(stale_heartbeat_id)
+    .execute(second.pool())
+    .await?;
     for service_name in [
         "simulation-runner",
         "observer-projector",
@@ -103,6 +110,13 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
             })
             .await?;
     }
+    let stale_heartbeat_remains: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM service_heartbeats WHERE service_name='simulation-runner' AND instance_id=$1)",
+    )
+    .bind(stale_heartbeat_id)
+    .fetch_one(second.pool())
+    .await?;
+    assert!(!stale_heartbeat_remains);
     let status = second.foundation_status().await?;
     for observed in [
         status.latest_runner_heartbeat,

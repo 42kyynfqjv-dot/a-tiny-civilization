@@ -142,8 +142,16 @@ enum Command {
         hindsight_base_url: Option<String>,
         #[arg(long, env = "HINDSIGHT_API_KEY", hide_env_values = true)]
         hindsight_api_key: Option<String>,
-        #[arg(long, env = "HINDSIGHT_REQUEST_TIMEOUT_SECONDS", default_value_t = 15)]
+        #[arg(
+            long,
+            env = "CANCER_RESEARCH_MEMORY_TIMEOUT_SECONDS",
+            default_value_t = 60
+        )]
         hindsight_request_timeout_seconds: u64,
+        #[arg(long, env = "CANCER_WORLD_ID")]
+        cancer_world_id: Option<String>,
+        #[arg(long, env = "CANCER_CONSOLE_TOKEN", hide_env_values = true)]
+        cancer_console_token: Option<String>,
     },
 }
 
@@ -182,7 +190,9 @@ async fn main() -> Result<()> {
         newsletter_weekly_signup_url: None,
         hindsight_base_url: None,
         hindsight_api_key: None,
-        hindsight_request_timeout_seconds: 15,
+        hindsight_request_timeout_seconds: 60,
+        cancer_world_id: None,
+        cancer_console_token: None,
     }) {
         Command::Migrate => {
             store.migrate().await.context("apply database migrations")?;
@@ -341,9 +351,26 @@ async fn main() -> Result<()> {
             hindsight_base_url,
             hindsight_api_key,
             hindsight_request_timeout_seconds,
+            cancer_world_id,
+            cancer_console_token,
         } => {
             let secure_cookies = environment == "production";
             let mut state = ApiState::new(Arc::new(store.clone()), environment);
+            match (nonempty(cancer_world_id), nonempty(cancer_console_token)) {
+                (Some(world_id), Some(token)) => {
+                    let world_id = world_id
+                        .parse::<world_domain::WorldId>()
+                        .context("parse CANCER_WORLD_ID")?;
+                    state = state.with_cancer_console_access(world_id, &token);
+                    tracing::info!(%world_id, "Cancer research API access boundary enabled");
+                }
+                (None, None) => {
+                    tracing::info!("Cancer research API access boundary disabled");
+                }
+                _ => anyhow::bail!(
+                    "CANCER_WORLD_ID and CANCER_CONSOLE_TOKEN must be configured together"
+                ),
+            }
             if let Some(base_url) = nonempty(hindsight_base_url) {
                 let memory = HindsightMemory::new(
                     &base_url,

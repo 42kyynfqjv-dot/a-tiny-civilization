@@ -383,6 +383,7 @@ impl CancerResearchModel for DeterministicCancerResearch {
             request.selection.task,
             CancerResearchTask::ProposeDiscriminatingExperiment
                 | CancerResearchTask::DesignIndependentReplication
+                | CancerResearchTask::InterpretReplicationResult
         ) {
             return Err(CancerResearchModelError::Rejected(
                 "this research turn requires generative scientific reasoning".to_owned(),
@@ -408,7 +409,7 @@ impl CancerResearchModel for DeterministicCancerResearch {
             billed_micro_usd: 0,
             contribution,
             provider_response_hash: response_hash,
-            adapter_version: "deterministic-systematic-research-v2".to_owned(),
+            adapter_version: "deterministic-systematic-research-v3".to_owned(),
         };
         receipt
             .validate_against(route, request)
@@ -421,6 +422,9 @@ fn deterministic_research_contribution(
     request: &CancerResearchModelRequest,
 ) -> Result<CancerResearchContribution, CancerResearchModelError> {
     let selection = &request.selection;
+    if selection.task == CancerResearchTask::InterpretReplicationResult {
+        return deterministic_campaign_synthesis(request);
+    }
     let ordinal = selection.ordinal;
     let target = systematic_target(ordinal);
     let plan = match selection.task {
@@ -497,6 +501,61 @@ fn deterministic_research_contribution(
         Vec::new(),
         plan,
         prediction,
+    )
+    .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))
+}
+
+fn deterministic_campaign_synthesis(
+    request: &CancerResearchModelRequest,
+) -> Result<CancerResearchContribution, CancerResearchModelError> {
+    let Some(CancerResearchCampaignDirective::Synthesis {
+        outcome,
+        supporting_tests,
+        falsifying_tests,
+        inconclusive_tests,
+        ..
+    }) = cancer_research_campaign_directive(request)
+        .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?
+    else {
+        return Err(CancerResearchModelError::Rejected(
+            "systematic synthesis omitted its frozen campaign outcome".to_owned(),
+        ));
+    };
+    let outcome_label = match outcome {
+        application::CancerResearchCampaignOutcome::Falsified => "falsified",
+        application::CancerResearchCampaignOutcome::SurvivedReplicationRound => {
+            "survived-replication"
+        }
+        application::CancerResearchCampaignOutcome::Inconclusive => "inconclusive",
+    };
+    let mut citation_hashes = request
+        .evidence_documents
+        .iter()
+        .map(|document| document.reference.content_hash)
+        .collect::<Vec<_>>();
+    citation_hashes.sort_unstable();
+    citation_hashes.dedup();
+    let counts = format!(
+        "{supporting_tests} supporting, {falsifying_tests} falsifying, and {inconclusive_tests} inconclusive virtual tests"
+    );
+    CancerResearchContribution::new_with_structured_evidence_targets(
+        &request.selection,
+        CancerResearchArtifactKind::ReplicationResult,
+        format!("Campaign {outcome_label} after frozen replication round"),
+        format!(
+            "The preregistered stopping rule classified this campaign as {outcome_label} after {counts}. This is a deterministic synthesis of immutable virtual-lab projections, not wet-lab, animal, clinical, or causal evidence."
+        ),
+        vec![CancerResearchClaim {
+            statement: format!(
+                "The frozen virtual campaign outcome is {outcome_label} from {counts}."
+            ),
+            testable_prediction: "A replay over the same immutable campaign artifacts will reproduce the same stopping-rule counts and outcome.".to_owned(),
+            falsification_test: "Reject this synthesis if any cited campaign artifact fails checksum validation or replay produces different counts or a different stopping-rule outcome.".to_owned(),
+            citation_hashes,
+        }],
+        Vec::new(),
+        None,
+        None,
     )
     .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()))
 }
@@ -2078,6 +2137,40 @@ mod tests {
             .expect("campaign request")
     }
 
+    fn campaign_synthesis_request() -> CancerResearchModelRequest {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xcace));
+        let resident_id = EntityId::deterministic(world_id, b"campaign-synthesis-adapter-test");
+        let root_artifact_hash = Digest::sha256(b"campaign-synthesis-root");
+        let directive = CancerResearchCampaignDirective::Synthesis {
+            schema_version: application::CANCER_RESEARCH_CAMPAIGN_DIRECTIVE_SCHEMA_VERSION,
+            campaign_id: Uuid::from_u128(0xbeef),
+            root_artifact_hash,
+            outcome: application::CancerResearchCampaignOutcome::Inconclusive,
+            supporting_tests: 1,
+            falsifying_tests: 0,
+            inconclusive_tests: 9,
+        };
+        let evidence_document = directive.evidence_document(world_id).expect("directive");
+        let selection = world_domain::CancerResearchTurnSelection::new(
+            world_id,
+            resident_id,
+            SimTick::new(200),
+            SimTick::new(220),
+            4,
+            CancerResearchTarget::AdultGlioblastoma,
+            CancerResearchStage::IndependentReplication,
+            CancerResearchTask::InterpretReplicationResult,
+            CancerResearchInferenceTier::Escalation,
+            CancerResearchProfile::seeded(WorldSeed::new(37), resident_id).expect("profile"),
+            vec![evidence_document.reference.clone()],
+            Some(root_artifact_hash),
+            2_048,
+        )
+        .expect("synthesis selection");
+        CancerResearchModelRequest::new(selection, vec![evidence_document], Vec::new())
+            .expect("synthesis request")
+    }
+
     fn response_challenge_request() -> CancerResearchModelRequest {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0xcace));
         let resident_id = EntityId::deterministic(world_id, b"response-challenge-adapter-test");
@@ -2415,6 +2508,18 @@ mod tests {
             receipt.contribution.virtual_experiment_plan,
             Some(required_plan)
         );
+
+        let synthesis = campaign_synthesis_request();
+        let receipt = adapter
+            .infer_research(&route, &synthesis)
+            .await
+            .expect("systematic campaign synthesis");
+        assert_eq!(
+            receipt.contribution.artifact_kind,
+            CancerResearchArtifactKind::ReplicationResult
+        );
+        assert!(receipt.contribution.virtual_experiment_plan.is_none());
+        assert!(receipt.contribution.title.contains("inconclusive"));
     }
 
     #[test]
@@ -2578,7 +2683,7 @@ mod tests {
         assert!(matches!(
             adapter
                 .infer_research(
-                    &CognitionModelRoute::openrouter_cancer_deepseek_v4_pro(),
+                    &CognitionModelRoute::openrouter_cancer_deepseek_v4_flash(),
                     &blind,
                 )
                 .await,
