@@ -42,6 +42,12 @@ commit atomically; a still-wedged process is killed 30 seconds later, leaving no
 result and an expiring database lease that another process can safely reclaim.
 The canonical runner never executes tissue work.
 
+The worker polls continuously, so migration 0065 gives completed campaign
+synthesis requests a narrow partial index. This is only an operational access
+path: campaign survival remains reconstructed and revalidated from immutable
+request, result, and virtual-experiment evidence before any protocol is
+admitted. The index cannot award survival or change research history.
+
 Tissue protocols or results are not research evidence documents. They are not
 written to Hindsight, research prompts, the campaign scheduler, canonical world
 events, or a clinical vocabulary. They remain observer-side uncalibrated model
