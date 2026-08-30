@@ -129,6 +129,16 @@ impl ObserverCancerResearchStore for PostgresStore {
         if self.public_world_telemetry(world_id).await?.is_none() {
             return Ok(None);
         }
+        // The worker can commit a new result while this comparatively rich
+        // projection is being reconstructed. Every count, artifact, campaign,
+        // qualification, and evidence row must therefore come from one
+        // database snapshot; otherwise a valid commit can make one response
+        // internally disagree with itself.
+        let mut transaction = self.pool().begin().await.map_err(unavailable)?;
+        sqlx::query("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+            .execute(&mut *transaction)
+            .await
+            .map_err(unavailable)?;
         let target = sqlx::query_scalar::<_, Option<String>>(
             r#"
             SELECT worlds.manifest -> 'experiment' -> 'commitment' ->> 'target'
@@ -137,7 +147,7 @@ impl ObserverCancerResearchStore for PostgresStore {
             "#,
         )
         .bind(world_id.as_uuid())
-        .fetch_optional(self.pool())
+        .fetch_optional(&mut *transaction)
         .await
         .map_err(unavailable)?
         .flatten()
@@ -147,6 +157,15 @@ impl ObserverCancerResearchStore for PostgresStore {
 
         let stats = sqlx::query_as::<_, ResearchStatsRow>(
             r#"
+            WITH research_memory AS (
+                SELECT
+                    (memory.payload->>'ordinal')::BIGINT AS ordinal,
+                    BOOL_OR(memory.completed_at IS NOT NULL) AS accepted
+                FROM memory_outbox AS memory
+                WHERE memory.world_id=$1 AND memory.agent_id=$2
+                  AND memory.payload->>'context'='Cancer World research artifact'
+                GROUP BY (memory.payload->>'ordinal')::BIGINT
+            )
             SELECT
                 COUNT(*) AS total_requests,
                 COUNT(*) FILTER (WHERE request.completed_at IS NULL) AS pending_requests,
@@ -162,18 +181,10 @@ impl ObserverCancerResearchStore for PostgresStore {
                       )
                 ) AS unsuccessful_requests,
                 (
-                    SELECT COUNT(*)
-                    FROM memory_outbox
-                    WHERE world_id=$1 AND agent_id=$2
-                      AND payload->>'context'='Cancer World research artifact'
-                      AND completed_at IS NULL
+                    SELECT COUNT(*) FROM research_memory WHERE NOT accepted
                 ) AS memory_queued,
                 (
-                    SELECT COUNT(*)
-                    FROM memory_outbox
-                    WHERE world_id=$1 AND agent_id=$2
-                      AND payload->>'context'='Cancer World research artifact'
-                      AND completed_at IS NOT NULL
+                    SELECT COUNT(*) FROM research_memory WHERE accepted
                 ) AS memory_accepted,
                 (
                     SELECT first_request.request_payload
@@ -189,7 +200,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         )
         .bind(world_id.as_uuid())
         .bind(collective_id.as_uuid())
-        .fetch_one(self.pool())
+        .fetch_one(&mut *transaction)
         .await
         .map_err(unavailable)?;
         if stats.total_requests == 0 {
@@ -200,7 +211,7 @@ impl ObserverCancerResearchStore for PostgresStore {
             .into_iter()
             .map(|program| summarize_program(program, &[]))
             .collect::<Result<Vec<_>, _>>()?;
-            return Ok(Some(PublicCancerResearchView {
+            let view = PublicCancerResearchView {
                 projection_version: PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION,
                 world_id,
                 memory_bank_id: cancer_research_memory_bank_id(world_id),
@@ -220,7 +231,9 @@ impl ObserverCancerResearchStore for PostgresStore {
                 tissue_refinements: Vec::new(),
                 artifacts: Vec::new(),
                 evidence: Vec::new(),
-            }));
+            };
+            transaction.commit().await.map_err(unavailable)?;
+            return Ok(Some(view));
         }
         let first_request: CancerResearchModelRequest = serde_json::from_value(
             stats
@@ -274,7 +287,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(i32::from(
             CANCER_NCI60_RESPONSE_QUALIFICATION_METHOD_VERSION,
         ))
-        .fetch_all(self.pool())
+        .fetch_all(&mut *transaction)
         .await
         .map_err(unavailable)?;
         let nci60_benchmark = summarize_nci60_benchmark(&nci60_benchmark_rows)?;
@@ -298,7 +311,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(world_id.as_uuid())
         .bind(i32::from(CANCER_TISSUE_REFINEMENT_METHOD_VERSION))
         .bind(MAX_PUBLIC_TISSUE_PAYLOAD_BYTES)
-        .fetch_one(self.pool())
+        .fetch_one(&mut *transaction)
         .await
         .map_err(unavailable)?;
         if oversized_tissue_payload_exists {
@@ -339,7 +352,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         .bind(i32::from(CANCER_TISSUE_REFINEMENT_METHOD_VERSION))
         .bind(MAX_PUBLIC_TISSUE_PAYLOAD_BYTES)
         .bind(MAX_PUBLIC_TISSUE_REFINEMENTS)
-        .fetch_all(self.pool())
+        .fetch_all(&mut *transaction)
         .await
         .map_err(unavailable)?;
         let tissue_refinements = tissue_rows
@@ -349,6 +362,23 @@ impl ObserverCancerResearchStore for PostgresStore {
 
         let rows = sqlx::query_as::<_, ResearchProjectionRow>(
             r#"
+            WITH research_memory AS (
+                SELECT
+                    (memory.payload->>'ordinal')::BIGINT AS ordinal,
+                    MAX(memory.completed_at) AS completed_at
+                FROM memory_outbox AS memory
+                WHERE memory.world_id=$1 AND memory.agent_id=$2
+                  AND memory.payload->>'context'='Cancer World research artifact'
+                GROUP BY (memory.payload->>'ordinal')::BIGINT
+            ), experiment_memory AS (
+                SELECT
+                    (memory.payload->>'ordinal')::BIGINT AS ordinal,
+                    MAX(memory.completed_at) AS completed_at
+                FROM memory_outbox AS memory
+                WHERE memory.world_id=$1 AND memory.agent_id=$2
+                  AND memory.payload->>'context'='Cancer World virtual experiment result'
+                GROUP BY (memory.payload->>'ordinal')::BIGINT
+            )
             SELECT request.request_payload, request.request_checksum,
                    result.result_payload, result.result_checksum, result.created_at,
                    memory.completed_at AS memory_completed_at,
@@ -370,22 +400,14 @@ impl ObserverCancerResearchStore for PostgresStore {
                    tcga_qualification.created_at AS tcga_qualification_created_at
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
-            LEFT JOIN memory_outbox AS memory
-              ON memory.world_id=request.world_id
-             AND memory.agent_id=$2
-             AND (memory.payload->>'ordinal')::BIGINT=request.ordinal
-             AND memory.payload->>'context'='Cancer World research artifact'
+            LEFT JOIN research_memory AS memory ON memory.ordinal=request.ordinal
             LEFT JOIN cancer_research_novelty_audits AS novelty
               ON novelty.request_id=request.request_id
              AND novelty.method_version=$3
             LEFT JOIN cancer_virtual_experiment_results AS experiment
               ON experiment.request_id=request.request_id
              AND experiment.method_version=$4
-            LEFT JOIN memory_outbox AS experiment_memory
-              ON experiment_memory.world_id=request.world_id
-             AND experiment_memory.agent_id=$2
-             AND (experiment_memory.payload->>'ordinal')::BIGINT=request.ordinal
-             AND experiment_memory.payload->>'context'='Cancer World virtual experiment result'
+            LEFT JOIN experiment_memory ON experiment_memory.ordinal=request.ordinal
             LEFT JOIN cancer_nci60_response_qualifications AS qualification
               ON qualification.request_id=request.request_id
              AND qualification.method_version=$5
@@ -411,7 +433,7 @@ impl ObserverCancerResearchStore for PostgresStore {
             CANCER_PATIENT_DERIVED_MOLECULAR_QUALIFICATION_METHOD_VERSION,
         ))
         .bind(i32::from(CANCER_TCGA_GBM_TARGET_CONTEXT_METHOD_VERSION))
-        .fetch_all(self.pool())
+        .fetch_all(&mut *transaction)
         .await
         .map_err(unavailable)?;
         let mut artifacts = Vec::with_capacity(rows.len());
@@ -718,7 +740,7 @@ impl ObserverCancerResearchStore for PostgresStore {
         )
         .bind(world_id.as_uuid())
         .bind(i64::from(limit.clamp(1, 500)))
-        .fetch_all(self.pool())
+        .fetch_all(&mut *transaction)
         .await
         .map_err(unavailable)?;
         let evidence = evidence_rows
@@ -736,22 +758,36 @@ impl ObserverCancerResearchStore for PostgresStore {
             })
             .collect::<Result<Vec<_>, ObserverProjectionStoreError>>()?;
 
-        Ok(Some(PublicCancerResearchView {
+        let total_requests = to_u64(stats.total_requests, "total request count")?;
+        let pending_requests = to_u64(stats.pending_requests, "pending request count")?;
+        let successful_requests = to_u64(stats.successful_requests, "successful request count")?;
+        let unsuccessful_requests =
+            to_u64(stats.unsuccessful_requests, "unsuccessful request count")?;
+        let memory_queued = to_u64(stats.memory_queued, "queued memory count")?;
+        let memory_accepted = to_u64(stats.memory_accepted, "accepted memory count")?;
+        validate_research_rollup_counts(
+            total_requests,
+            pending_requests,
+            successful_requests,
+            unsuccessful_requests,
+            distinct_artifacts,
+            duplicate_artifacts,
+            memory_queued,
+            memory_accepted,
+        )?;
+        let view = PublicCancerResearchView {
             projection_version: PUBLIC_CANCER_RESEARCH_PROJECTION_VERSION,
             world_id,
             memory_bank_id: cancer_research_memory_bank_id(world_id),
             target: first_request.selection.target,
-            total_requests: to_u64(stats.total_requests, "total request count")?,
-            pending_requests: to_u64(stats.pending_requests, "pending request count")?,
-            successful_requests: to_u64(stats.successful_requests, "successful request count")?,
-            unsuccessful_requests: to_u64(
-                stats.unsuccessful_requests,
-                "unsuccessful request count",
-            )?,
+            total_requests,
+            pending_requests,
+            successful_requests,
+            unsuccessful_requests,
             distinct_artifacts,
             duplicate_artifacts,
-            memory_queued: to_u64(stats.memory_queued, "queued memory count")?,
-            memory_accepted: to_u64(stats.memory_accepted, "accepted memory count")?,
+            memory_queued,
+            memory_accepted,
             programs,
             campaigns,
             lab_capabilities: cancer_lab_capabilities(),
@@ -759,7 +795,9 @@ impl ObserverCancerResearchStore for PostgresStore {
             tissue_refinements,
             artifacts,
             evidence,
-        }))
+        };
+        transaction.commit().await.map_err(unavailable)?;
+        Ok(Some(view))
     }
 }
 
@@ -1317,6 +1355,33 @@ fn to_u64(value: i64, field: &str) -> Result<u64, ObserverProjectionStoreError> 
     u64::try_from(value).map_err(|_| corrupt(format!("{field} is negative")))
 }
 
+#[allow(clippy::too_many_arguments)]
+fn validate_research_rollup_counts(
+    total_requests: u64,
+    pending_requests: u64,
+    successful_requests: u64,
+    unsuccessful_requests: u64,
+    distinct_artifacts: u64,
+    duplicate_artifacts: u64,
+    memory_queued: u64,
+    memory_accepted: u64,
+) -> Result<(), ObserverProjectionStoreError> {
+    let terminal_sum = pending_requests
+        .checked_add(successful_requests)
+        .and_then(|count| count.checked_add(unsuccessful_requests));
+    let artifact_sum = distinct_artifacts.checked_add(duplicate_artifacts);
+    let memory_sum = memory_queued.checked_add(memory_accepted);
+    if terminal_sum != Some(total_requests)
+        || artifact_sum != Some(successful_requests)
+        || memory_sum != Some(successful_requests)
+    {
+        return Err(corrupt(
+            "Cancer World research rollup crossed an inconsistent database snapshot",
+        ));
+    }
+    Ok(())
+}
+
 fn contract_error(error: impl std::fmt::Display) -> ObserverProjectionStoreError {
     corrupt(error.to_string())
 }
@@ -1332,6 +1397,14 @@ fn corrupt(message: impl Into<String>) -> ObserverProjectionStoreError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn research_rollup_requires_one_coherent_snapshot() {
+        validate_research_rollup_counts(20, 2, 7, 11, 5, 2, 1, 6).expect("coherent rollup");
+        assert!(validate_research_rollup_counts(20, 2, 7, 11, 5, 3, 1, 6).is_err());
+        assert!(validate_research_rollup_counts(20, 2, 7, 10, 5, 2, 1, 6).is_err());
+        assert!(validate_research_rollup_counts(20, 2, 7, 11, 5, 2, 0, 6).is_err());
+    }
 
     fn tissue_digest(byte: u8) -> Digest {
         Digest::from_bytes([byte; 32])
