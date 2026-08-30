@@ -251,7 +251,7 @@ pub const RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK: u64 = 5_000;
 /// The running ruleset-forty-two public world receives the ordinary-world
 /// saturation and episodic-memory hardening only at this disclosed boundary.
 /// Earlier transitions retain their exact bookkeeping events and memory effects.
-pub const RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK: u64 = 6_000;
+pub const RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK: u64 = 5_300;
 /// Cancer World uses the same bounded social-value representation. Once a value
 /// is saturated, its observation count likewise cannot affect action selection;
 /// suppress those counter-only events after this future replay boundary without
@@ -1410,6 +1410,7 @@ impl OrganismState {
         signal_intensity: u8,
         action_kind: PrimitiveActionKind,
         movement_direction: Option<u8>,
+        bounded_competition: bool,
     ) -> Option<u32> {
         let association = self.signal_action_association(
             preceding_signal,
@@ -1424,19 +1425,32 @@ impl OrganismState {
             .signal_action_associations
             .iter()
             .filter(|entry| {
-                entry.preceding_signal.is_some() == preceding_signal.is_some()
-                    && entry.signal_intensity != signal_intensity
+                (if bounded_competition {
+                    entry.preceding_signal == preceding_signal
+                } else {
+                    entry.preceding_signal.is_some() == preceding_signal.is_some()
+                }) && entry.signal_intensity != signal_intensity
                     && (entry.action_kind, entry.movement_direction)
                         == (action_kind, movement_direction)
             })
             .map(|entry| entry.observations)
             .max()
             .unwrap_or(0);
+        let evidence_ceiling = if bounded_competition {
+            ACTION_GROUNDED_CONVENTION_MAX_BONUS.saturating_sub(SITUATED_SIGNAL_REUSE_LEADER_BONUS)
+        } else {
+            ACTION_GROUNDED_CONVENTION_MAX_BONUS
+        };
         let evidence_bonus = association
             .observations
             .saturating_mul(SITUATED_SIGNAL_REUSE_EVIDENCE_BONUS_PER_OBSERVATION)
-            .min(ACTION_GROUNDED_CONVENTION_MAX_BONUS);
-        let leader_bonus = if association.observations >= alternative_maximum {
+            .min(evidence_ceiling);
+        let is_leader = if bounded_competition {
+            association.observations > alternative_maximum
+        } else {
+            association.observations >= alternative_maximum
+        };
+        let leader_bonus = if is_leader {
             SITUATED_SIGNAL_REUSE_LEADER_BONUS
         } else {
             0
@@ -3661,6 +3675,7 @@ impl EngineState {
                     signal_form,
                     grounded_action.kind,
                     grounded_action.movement_direction,
+                    self.plans_bounded_signal_competition_driver(),
                 )
             } else {
                 organism.signal_convention_strength(
@@ -5943,6 +5958,14 @@ impl EngineState {
         )
     }
 
+    fn uses_bounded_private_memory_driver(&self) -> bool {
+        social_saturation_suppression_active(
+            self.manifest.ruleset_version,
+            self.tick,
+            self.uses_world_experiment_bootstrap(),
+        )
+    }
+
     fn plans_social_saturation_suppression_driver(&self) -> bool {
         self.tick.checked_next().is_ok_and(|tick| {
             social_saturation_suppression_active(
@@ -5958,6 +5981,14 @@ impl EngineState {
             .checked_next()
             .is_ok_and(|tick| situated_signal_reuse_active(self.manifest.ruleset_version, tick))
             && self.uses_social_language_consolidation_driver()
+    }
+
+    fn plans_bounded_signal_competition_driver(&self) -> bool {
+        self.tick
+            .checked_next()
+            .is_ok_and(|tick| ordinary_world_hardening_active(self.manifest.ruleset_version, tick))
+            && self.uses_social_language_consolidation_driver()
+            && !self.uses_world_experiment_bootstrap()
     }
 
     fn grounded_language_threshold_is_met(&self) -> bool {
@@ -6194,7 +6225,97 @@ impl EngineState {
         for event in events {
             self.apply_event(event)?;
         }
+        if self.uses_bounded_private_memory_driver() {
+            self.enforce_bounded_private_memory(events)?;
+        }
         self.open_human_life_cycle_if_ready();
+        Ok(())
+    }
+
+    fn enforce_bounded_private_memory(
+        &mut self,
+        events: &[DomainEvent],
+    ) -> Result<(), EngineError> {
+        let perception_maximum = self.maximum_perception_memory_entries();
+        let compositional_signal = self.uses_compositional_signal_driver();
+        let protected_signal_associations = events
+            .iter()
+            .filter_map(|event| match event {
+                DomainEvent::OrganismSignalActionAssociationChanged {
+                    observer_id,
+                    from: None,
+                    to,
+                    ..
+                } if to.association_schema_version
+                    == COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION =>
+                {
+                    Some((
+                        *observer_id,
+                        to.preceding_signal,
+                        to.signal_intensity,
+                        to.action_kind,
+                        to.movement_direction,
+                    ))
+                }
+                _ => None,
+            })
+            .collect::<BTreeSet<_>>();
+        for organism in self.organisms.values_mut() {
+            while organism.perception_memory.len() > perception_maximum {
+                let eviction_index = organism
+                    .perception_memory
+                    .iter()
+                    .enumerate()
+                    .map(|(index, entry)| {
+                        Ok::<_, CanonicalHashError>((
+                            index,
+                            (
+                                entry.observed_at,
+                                Digest::canonical(&(organism.organism_id, entry))?,
+                            ),
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .min_by_key(|(_, rank)| *rank)
+                    .map(|(index, _)| index)
+                    .expect("over-cap perception memory is nonempty");
+                organism.perception_memory.remove(eviction_index);
+            }
+            if compositional_signal {
+                while organism.signal_action_associations.len()
+                    > MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS
+                {
+                    let eviction_index = organism
+                        .signal_action_associations
+                        .iter()
+                        .enumerate()
+                        .map(|(index, entry)| {
+                            Ok::<_, CanonicalHashError>((
+                                index,
+                                (
+                                    protected_signal_associations.contains(&(
+                                        organism.organism_id,
+                                        entry.preceding_signal,
+                                        entry.signal_intensity,
+                                        entry.action_kind,
+                                        entry.movement_direction,
+                                    )),
+                                    entry.value,
+                                    entry.observations,
+                                    Digest::canonical(&(organism.organism_id, entry))?,
+                                ),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
+                        .into_iter()
+                        .min_by_key(|(_, rank)| *rank)
+                        .map(|(index, _)| index)
+                        .expect("over-cap signal memory is nonempty");
+                    organism.signal_action_associations.remove(eviction_index);
+                }
+            }
+        }
         Ok(())
     }
 
@@ -8263,6 +8384,7 @@ impl EngineState {
                 if self.uses_persistent_perception_driver() {
                     let maximum_perception_memory_entries =
                         self.maximum_perception_memory_entries();
+                    let bounded_private_memory = self.uses_bounded_private_memory_driver();
                     let organism = self
                         .organisms
                         .get_mut(organism_id)
@@ -8283,6 +8405,7 @@ impl EngineState {
                             Err(index) => {
                                 if organism.perception_memory.len()
                                     >= maximum_perception_memory_entries
+                                    && !bounded_private_memory
                                 {
                                     return Err(EngineError::PerceptionMemoryCapacity(
                                         *organism_id,
@@ -8537,6 +8660,7 @@ impl EngineState {
                 to.validate()
                     .map_err(|_| EngineError::InvalidSignalActionAssociation(*observer_id))?;
                 let compositional_signal = self.uses_compositional_signal_driver();
+                let bounded_private_memory = self.uses_bounded_private_memory_driver();
                 let maximum = if compositional_signal {
                     MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS
                 } else if self.uses_signal_motor_association_driver() {
@@ -8655,7 +8779,9 @@ impl EngineState {
                     }) {
                     Ok(index) => observer.signal_action_associations[index] = *to,
                     Err(index) => {
-                        if observer.signal_action_associations.len() >= maximum {
+                        if observer.signal_action_associations.len() >= maximum
+                            && !(compositional_signal && bounded_private_memory)
+                        {
                             return Err(EngineError::InvalidSignalActionAssociation(*observer_id));
                         }
                         observer.signal_action_associations.insert(index, *to);
@@ -17060,12 +17186,414 @@ mod tests {
         );
         assert!(
             organism
-                .situated_signal_reuse_strength(None, 7, PrimitiveActionKind::Rest, None)
+                .situated_signal_reuse_strength(None, 7, PrimitiveActionKind::Rest, None, false)
                 .expect("repeated situated form")
                 > organism
-                    .situated_signal_reuse_strength(None, 8, PrimitiveActionKind::Rest, None)
+                    .situated_signal_reuse_strength(
+                        None,
+                        8,
+                        PrimitiveActionKind::Rest,
+                        None,
+                        false,
+                    )
                     .expect("less frequent situated form")
         );
+    }
+
+    #[test]
+    fn bounded_situated_reuse_preserves_headroom_for_a_saturated_leader() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4500_1a6e));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 2, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
+        let organism_id = *running.organisms.keys().next().expect("fixture person");
+        let organism = running
+            .organisms
+            .get_mut(&organism_id)
+            .expect("fixture person state");
+        organism.signal_action_associations = vec![
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 64,
+                value: ACTION_VALUE_MAX,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 8,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 32,
+                value: ACTION_VALUE_MAX,
+            },
+        ];
+        let organism = running
+            .organisms
+            .get(&organism_id)
+            .expect("fixture person state");
+
+        assert_eq!(
+            organism.situated_signal_reuse_strength(
+                None,
+                7,
+                PrimitiveActionKind::Rest,
+                None,
+                false,
+            ),
+            Some(ACTION_GROUNDED_CONVENTION_MAX_BONUS),
+        );
+        assert_eq!(
+            organism.situated_signal_reuse_strength(
+                None,
+                8,
+                PrimitiveActionKind::Rest,
+                None,
+                false,
+            ),
+            Some(ACTION_GROUNDED_CONVENTION_MAX_BONUS),
+            "the pre-hardening saturated weighting remains replay-compatible",
+        );
+
+        let bounded_leader = organism
+            .situated_signal_reuse_strength(None, 7, PrimitiveActionKind::Rest, None, true)
+            .expect("bounded leader strength");
+        let bounded_follower = organism
+            .situated_signal_reuse_strength(None, 8, PrimitiveActionKind::Rest, None, true)
+            .expect("bounded follower strength");
+        assert_eq!(bounded_leader, ACTION_GROUNDED_CONVENTION_MAX_BONUS);
+        assert_eq!(
+            bounded_follower,
+            ACTION_GROUNDED_CONVENTION_MAX_BONUS - SITUATED_SIGNAL_REUSE_LEADER_BONUS,
+        );
+        assert!(bounded_leader > bounded_follower);
+    }
+
+    #[test]
+    fn bounded_situated_reuse_competes_only_within_the_same_predecessor_context() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4500_c07e));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 2, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
+        let organism_id = *running.organisms.keys().next().expect("fixture person");
+        let organism = running
+            .organisms
+            .get_mut(&organism_id)
+            .expect("fixture person state");
+        organism.signal_action_associations = vec![
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: Some(1),
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 64,
+                value: ACTION_VALUE_MAX,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: Some(2),
+                signal_intensity: 8,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 32,
+                value: ACTION_VALUE_MAX,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: Some(2),
+                signal_intensity: 9,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 16,
+                value: ACTION_VALUE_MAX,
+            },
+        ];
+        let organism = running
+            .organisms
+            .get(&organism_id)
+            .expect("fixture person state");
+
+        assert_eq!(
+            organism.situated_signal_reuse_strength(
+                Some(1),
+                7,
+                PrimitiveActionKind::Rest,
+                None,
+                true,
+            ),
+            Some(ACTION_GROUNDED_CONVENTION_MAX_BONUS),
+        );
+        assert_eq!(
+            organism.situated_signal_reuse_strength(
+                Some(2),
+                8,
+                PrimitiveActionKind::Rest,
+                None,
+                true,
+            ),
+            Some(ACTION_GROUNDED_CONVENTION_MAX_BONUS),
+            "a stronger form after another predecessor cannot suppress this context's leader",
+        );
+        assert_eq!(
+            organism.situated_signal_reuse_strength(
+                Some(2),
+                9,
+                PrimitiveActionKind::Rest,
+                None,
+                true,
+            ),
+            Some(ACTION_GROUNDED_CONVENTION_MAX_BONUS - SITUATED_SIGNAL_REUSE_LEADER_BONUS),
+        );
+    }
+
+    #[test]
+    fn bounded_private_memory_evicts_the_oldest_perception_deterministically() {
+        let fill_perception_memory = |state: &mut EngineState| {
+            let observed_at = state.tick;
+            let organism = state
+                .organisms
+                .values_mut()
+                .next()
+                .expect("fixture person state");
+            organism.perception_memory = (0..MAX_PERCEPTION_MEMORY_ENTRIES)
+                .map(|ordinal| PerceptionMemoryEntry {
+                    subject_id: None,
+                    channel: PerceptionChannel::Vision,
+                    property_code: format!("memory_{ordinal:03}"),
+                    quantized_value: i32::try_from(ordinal).expect("bounded ordinal"),
+                    uncertainty: 0,
+                    observed_at: if ordinal == 0 {
+                        SimTick::ZERO
+                    } else {
+                        observed_at
+                    },
+                })
+                .collect();
+        };
+        let new_perception = |organism_id| DomainEvent::OrganismPerceived {
+            organism_id,
+            perception: SituatedPerception {
+                subject_id: None,
+                readings: vec![PropertyReading {
+                    channel: PerceptionChannel::Vision,
+                    property_code: "memory_999".to_owned(),
+                    quantized_value: 999,
+                    uncertainty: 0,
+                }],
+            },
+        };
+
+        let active_world_id = WorldId::from_uuid(Uuid::from_u128(0x4500_0e11));
+        let (_, mut active, _) = grounded_language_fixture(
+            active_world_id,
+            2,
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+        );
+        active.tick = SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK);
+        fill_perception_memory(&mut active);
+        let active_organism_id = *active.organisms.keys().next().expect("fixture person");
+        let mut first = active.clone();
+        let mut second = active;
+        first
+            .apply_events(&[new_perception(active_organism_id)])
+            .expect("post-hardening perception insertion evicts after the event set");
+        second
+            .apply_events(&[new_perception(active_organism_id)])
+            .expect("identical post-hardening insertion succeeds");
+        assert_eq!(first, second, "eviction is canonical and deterministic");
+        let memory = &first
+            .organisms
+            .get(&active_organism_id)
+            .expect("fixture person state")
+            .perception_memory;
+        assert_eq!(memory.len(), MAX_PERCEPTION_MEMORY_ENTRIES);
+        assert!(
+            !memory
+                .iter()
+                .any(|entry| entry.property_code == "memory_000")
+        );
+        assert!(
+            memory
+                .iter()
+                .any(|entry| entry.property_code == "memory_999")
+        );
+
+        let legacy_world_id = WorldId::from_uuid(Uuid::from_u128(0x4400_0e11));
+        let (_, mut legacy, _) = grounded_language_fixture(
+            legacy_world_id,
+            2,
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+        );
+        legacy.tick = SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK - 1);
+        fill_perception_memory(&mut legacy);
+        let legacy_organism_id = *legacy.organisms.keys().next().expect("fixture person");
+        assert!(matches!(
+            legacy.apply_events(&[new_perception(legacy_organism_id)]),
+            Err(EngineError::PerceptionMemoryCapacity(id)) if id == legacy_organism_id
+        ));
+    }
+
+    #[test]
+    fn bounded_private_memory_admits_a_novel_composition_into_an_all_mature_bank() {
+        let target = (
+            Some(world_domain::SIGNAL_FORM_VARIANT_COUNT),
+            world_domain::SIGNAL_FORM_VARIANT_COUNT,
+            PrimitiveActionKind::Rest,
+            None,
+        );
+        let saturated_associations = || {
+            let mut entries = Vec::with_capacity(MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS);
+            'contexts: for preceding_signal in
+                std::iter::once(None).chain((1..=world_domain::SIGNAL_FORM_VARIANT_COUNT).map(Some))
+            {
+                for signal_intensity in 1..=world_domain::SIGNAL_FORM_VARIANT_COUNT {
+                    for action_kind in HERITABLE_ACTION_KINDS {
+                        let directions: &[Option<u8>] = if action_kind == PrimitiveActionKind::Move
+                        {
+                            &[Some(0), Some(1), Some(2), Some(3)]
+                        } else {
+                            &[None]
+                        };
+                        for movement_direction in directions {
+                            let key = (
+                                preceding_signal,
+                                signal_intensity,
+                                action_kind,
+                                *movement_direction,
+                            );
+                            if key == target {
+                                continue;
+                            }
+                            entries.push(SignalActionAssociationState {
+                                association_schema_version:
+                                    COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                                preceding_signal,
+                                signal_intensity,
+                                action_kind,
+                                movement_direction: *movement_direction,
+                                observations: 100,
+                                value: ACTION_VALUE_MAX,
+                            });
+                            if entries.len() == MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS {
+                                break 'contexts;
+                            }
+                        }
+                    }
+                }
+            }
+            assert_eq!(entries.len(), MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS);
+            entries.sort_by_key(|entry| {
+                (
+                    entry.preceding_signal,
+                    entry.signal_intensity,
+                    entry.action_kind,
+                    entry.movement_direction,
+                )
+            });
+            entries
+        };
+        let association_event =
+            |observer_id, actor_id| DomainEvent::OrganismSignalActionAssociationChanged {
+                observer_id,
+                actor_id,
+                from: None,
+                to: SignalActionAssociationState {
+                    association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                    preceding_signal: target.0,
+                    signal_intensity: target.1,
+                    action_kind: target.2,
+                    movement_direction: target.3,
+                    observations: 1,
+                    value: SIGNAL_PREDICTION_REINFORCEMENT,
+                },
+                inhibited_from: None,
+                inhibited_to: None,
+            };
+        let association_key = |entry: &SignalActionAssociationState| {
+            (
+                entry.preceding_signal,
+                entry.signal_intensity,
+                entry.action_kind,
+                entry.movement_direction,
+            )
+        };
+
+        let active_world_id = WorldId::from_uuid(Uuid::from_u128(0x4500_a550));
+        let (_, mut active, _) = grounded_language_fixture(
+            active_world_id,
+            2,
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+        );
+        active.tick = SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK);
+        let active_ids = active.organisms.keys().copied().take(2).collect::<Vec<_>>();
+        let mature_associations = saturated_associations();
+        let expected_evicted_key = mature_associations
+            .iter()
+            .min_by_key(|entry| {
+                Digest::canonical(&(active_ids[0], entry))
+                    .expect("fixture association has a canonical digest")
+            })
+            .map(&association_key)
+            .expect("mature association bank is nonempty");
+        let mature_keys = mature_associations
+            .iter()
+            .map(&association_key)
+            .collect::<BTreeSet<_>>();
+        active
+            .organisms
+            .get_mut(&active_ids[0])
+            .expect("fixture observer")
+            .signal_action_associations = mature_associations;
+        let mut first = active.clone();
+        let mut second = active;
+        first
+            .apply_events(&[association_event(active_ids[0], active_ids[1])])
+            .expect("post-hardening composition insertion evicts after the event set");
+        second
+            .apply_events(&[association_event(active_ids[0], active_ids[1])])
+            .expect("identical post-hardening composition insertion succeeds");
+        assert_eq!(first, second, "composition eviction is deterministic");
+        let associations = &first
+            .organisms
+            .get(&active_ids[0])
+            .expect("fixture observer")
+            .signal_action_associations;
+        assert_eq!(associations.len(), MAX_COMPOSITIONAL_SIGNAL_ASSOCIATIONS);
+        assert!(
+            !associations
+                .iter()
+                .any(|entry| association_key(entry) == expected_evicted_key)
+        );
+        assert!(
+            associations
+                .iter()
+                .any(|entry| association_key(entry) == target)
+        );
+        let retained_keys = associations
+            .iter()
+            .map(&association_key)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(mature_keys.difference(&retained_keys).count(), 1);
+
+        let legacy_world_id = WorldId::from_uuid(Uuid::from_u128(0x4400_a550));
+        let (_, mut legacy, _) = grounded_language_fixture(
+            legacy_world_id,
+            2,
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+        );
+        legacy.tick = SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK - 1);
+        let legacy_ids = legacy.organisms.keys().copied().take(2).collect::<Vec<_>>();
+        legacy
+            .organisms
+            .get_mut(&legacy_ids[0])
+            .expect("fixture observer")
+            .signal_action_associations = saturated_associations();
+        assert!(matches!(
+            legacy.apply_events(&[association_event(legacy_ids[0], legacy_ids[1])]),
+            Err(EngineError::InvalidSignalActionAssociation(id)) if id == legacy_ids[0]
+        ));
     }
 
     #[test]

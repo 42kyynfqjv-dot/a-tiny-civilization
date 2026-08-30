@@ -25,7 +25,7 @@ but discarded their preceding physical form.
   existing social value is already 128. Action selection reads the value, not the
   observation count, so the organism's behavior is unchanged. Unsaturated values
   continue to learn and emit their exact existing transitions.
-- The running ruleset-42 ordinary world activates this change at tick 6,000. The
+- The running ruleset-42 ordinary world activates this change at tick 5,300. The
   same rule activates for the running ruleset-38 Cancer World at tick 35,000 because
   its saturated representation has the identical state-neutral invariant. Cancer
   biology and research scheduling are otherwise untouched.
@@ -46,16 +46,26 @@ but discarded their preceding physical form.
   Historical atomic rows remain one-element sequences; compositional associations
   expose both physical forms. A database reconciliation trigger covers either
   ordering of the independently checkpointed habitat and language projections.
+- Canonical private perception memory and compositional signal memory use
+  deterministic competition at the same boundary. When a new entry exceeds a
+  fixed capacity, the oldest perception or weakest learned association is evicted;
+  a canonical digest breaks exact ties. This replaces eventual capacity errors
+  with bounded forgetting without introducing observer input.
+- Situated call reuse reserves weight for one strictly leading form instead of
+  flattening every well-observed alternative at the same maximum. Compositional
+  alternatives compete only inside the exact preceding-call context, matching the
+  context used to retrieve the association. Pre-boundary weighting remains intact.
 - Public memory views accept both the strict legacy direct-observation payload and
   the strict episodic-v2 payload, so the observer stream does not freeze when the
   new retention policy activates.
 
 ## Replay and activation
 
-Ruleset-42 history before tick 6,000 and Cancer ruleset-38 history before tick 35,000
+Ruleset-42 history before tick 5,300 and Cancer ruleset-38 history before tick 35,000
 retain their original counter-only events and hashes. New ruleset-45 ordinary worlds
-use suppression and episodic memory from genesis. The event schema and snapshot shape
-do not change; only post-boundary transition selection changes.
+use suppression, episodic memory, bounded private-memory competition, and contextual
+signal competition from genesis. The event schema and snapshot shape do not change;
+only post-boundary transition selection and deterministic forgetting change.
 
 Hindsight retention and observer projections remain one-way effects outside canonical
 state. Replaying history never contacts Hindsight and never recomputes a provider
@@ -66,7 +76,9 @@ identities and ordering.
 
 Later cognition can retrieve recent direct episodes without multiplying the outbox by
 population or sensory width. Saturated social learning stops dominating event volume
-while preserving action weights. Public observers can distinguish a historical
+while preserving action weights. Private memories remain finite without eventually
+halting a world, and heavily observed alternative calls no longer collapse to an
+indistinguishable production weight. Public observers can distinguish a historical
 language milestone from present evidence and can see inhabitant-produced ordered
 calls without the projection flattening them. Language evidence and milestones are
 sequence-bounded by the cursor returned with the same response, preventing a
