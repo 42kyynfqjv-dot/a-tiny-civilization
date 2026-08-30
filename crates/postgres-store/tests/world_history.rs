@@ -2803,8 +2803,36 @@ async fn cognition_selection_creates_one_immutable_leased_job_atomically(
             .await
             .is_err()
     );
+
+    sqlx::query(
+        "UPDATE cognition_requests SET claimed_at = NOW() - INTERVAL '2 minutes' WHERE request_id = $1",
+    )
+    .bind(first.selection.request_id)
+    .execute(&pool)
+    .await?;
+    let reclaimed = store
+        .claim_next_cognition_request("cognition-worker-a", 60)
+        .await?
+        .expect("an expired lease is reclaimable even with the same worker id");
+    assert_eq!(reclaimed.claim_count, 2);
+    assert_ne!(
+        first.claim_token, reclaimed.claim_token,
+        "each lease generation needs independent authority"
+    );
+    assert!(
+        store
+            .reschedule_cognition_request(
+                "cognition-worker-a",
+                &first,
+                "stale process must not win an ABA race",
+                1,
+            )
+            .await
+            .is_err(),
+        "a stale claim token must fail even when the worker id was reused"
+    );
     store
-        .reschedule_cognition_request("cognition-worker-a", &first, "temporary failure", 1)
+        .reschedule_cognition_request("cognition-worker-a", &reclaimed, "temporary failure", 1)
         .await?;
 
     let selection_mutation = sqlx::query(
@@ -2869,9 +2897,23 @@ async fn cognition_dispatch_survives_a_crash_before_the_next_route(pool: PgPool)
         .await?;
     let registry = CognitionRouteRegistry::production_default();
 
+    sqlx::query(
+        "UPDATE cognition_requests SET claimed_at = NOW() - INTERVAL '2 minutes' WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .execute(&pool)
+    .await?;
+
     store
         .begin_cognition_route_attempt("dispatch-worker", &entry, 0, &registry.routes[0])
         .await?;
+    let renewed_recently: bool = sqlx::query_scalar(
+        "SELECT claimed_at > NOW() - INTERVAL '5 seconds' FROM cognition_requests WHERE request_id = $1",
+    )
+    .bind(entry.selection.request_id)
+    .fetch_one(&pool)
+    .await?;
+    assert!(renewed_recently, "each bounded operation renews its lease");
     let persisted_state: (String, bool) = sqlx::query_as(
         "SELECT dispatch_state, network_dispatched FROM cognition_route_attempts WHERE request_id = $1 AND route_index = 0",
     )
@@ -3707,7 +3749,7 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
     sqlx::query(
         r#"
         UPDATE cognition_requests
-        SET claimed_by = NULL, claimed_at = NULL, available_at = NOW()
+        SET claimed_by = NULL, claimed_at = NULL, claim_token = NULL, available_at = NOW()
         WHERE request_id = $1
         "#,
     )

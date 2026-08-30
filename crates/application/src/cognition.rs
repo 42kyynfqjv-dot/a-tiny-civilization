@@ -1401,6 +1401,9 @@ pub struct CognitionJobEntry {
     pub source_sequence: EventSequence,
     pub source_event_id: EventId,
     pub source_event_index: u32,
+    /// Opaque database lease generation. A restarted worker can reuse its
+    /// human-readable ID without gaining authority from the prior process.
+    pub claim_token: Uuid,
     pub claim_count: u32,
 }
 
@@ -1605,6 +1608,7 @@ impl CognitionJobEntry {
                     self.source_sequence.get(),
                     self.source_event_index,
                 )
+            || self.claim_token.is_nil()
             || self.claim_count == 0
         {
             return Err(CognitionContractError::InvalidJob(

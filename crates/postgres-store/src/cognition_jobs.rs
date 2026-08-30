@@ -34,6 +34,7 @@ struct CognitionJobRow {
     selection_schema_version: i32,
     selection: Value,
     selection_checksum: Vec<u8>,
+    claim_token: Uuid,
     claim_count: i64,
 }
 
@@ -284,6 +285,7 @@ impl CognitionJobStore for PostgresStore {
             SET
                 claimed_by = $1,
                 claimed_at = NOW(),
+                claim_token = gen_random_uuid(),
                 claim_count = request.claim_count + 1,
                 last_error = NULL
             FROM candidate
@@ -301,6 +303,7 @@ impl CognitionJobStore for PostgresStore {
                 request.selection_schema_version,
                 request.selection,
                 request.selection_checksum,
+                request.claim_token,
                 request.claim_count
             "#,
         )
@@ -331,9 +334,11 @@ impl CognitionJobStore for PostgresStore {
                 available_at = NOW() + ($3::BIGINT * INTERVAL '1 second'),
                 claimed_by = NULL,
                 claimed_at = NULL,
+                claim_token = NULL,
                 last_error = $4
             WHERE request.request_id = $1
               AND request.claimed_by = $2
+              AND request.claim_token = $5
               AND NOT EXISTS (
                   SELECT 1
                   FROM cognition_results AS result
@@ -350,6 +355,7 @@ impl CognitionJobStore for PostgresStore {
         .bind(worker_id)
         .bind(retry_after_seconds)
         .bind(error)
+        .bind(entry.claim_token)
         .execute(self.pool())
         .await
         .map_err(operation_error)?;
@@ -401,7 +407,7 @@ impl CognitionJobStore for PostgresStore {
         let memories_checksum = Digest::canonical(&recall.admitted_memories).map_err(corrupt)?;
 
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         sqlx::query(
             r#"
             INSERT INTO cognition_recall_outcomes (
@@ -465,7 +471,7 @@ impl CognitionJobStore for PostgresStore {
         entry.validate().map_err(corrupt)?;
         route.validate().map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         require_recorded_recall(&mut transaction, entry.selection.request_id).await?;
         if route.billing_class == CognitionBillingClass::PaidApproved {
             let reserved = sqlx::query_scalar::<_, bool>(
@@ -531,7 +537,7 @@ impl CognitionJobStore for PostgresStore {
         let attempt_json = serde_json::to_value(attempt).map_err(corrupt)?;
         let attempt_checksum = Digest::canonical(attempt).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         require_recorded_recall(&mut transaction, entry.selection.request_id).await?;
         sqlx::query(
             r#"
@@ -721,7 +727,7 @@ impl CognitionJobStore for PostgresStore {
         let result_checksum = Digest::canonical(result).map_err(corrupt)?;
         let registry_checksum = registry.canonical_hash(purpose).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         sqlx::query(
             r#"
             INSERT INTO cognition_results (
@@ -768,7 +774,7 @@ impl CognitionJobStore for PostgresStore {
         let billing_scope = CognitionBillingScope::for_route(route);
         let (target_micro_usd, hard_stop_micro_usd) = billing_scope.monthly_limits_micro_usd();
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_claim(&mut transaction, worker_id, entry.selection.request_id).await?;
+        ensure_claim(&mut transaction, worker_id, entry).await?;
         require_recorded_recall(&mut transaction, entry.selection.request_id).await?;
         let billing_month: NaiveDate =
             sqlx::query_scalar("SELECT date_trunc('month', CURRENT_DATE)::DATE")
@@ -940,8 +946,7 @@ impl CognitionJobStore for PostgresStore {
         }
         let receipt_json = serde_json::to_value(receipt).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
-            .await?;
+        ensure_external_resolution_claim(&mut transaction, worker_id, entry).await?;
         let persisted_receipt = sqlx::query_scalar::<_, Value>(
             r#"
             SELECT receipt_payload
@@ -979,8 +984,7 @@ impl CognitionJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
-            .await?;
+        ensure_external_resolution_claim(&mut transaction, worker_id, entry).await?;
         let dispatched =
             paid_attempt_was_dispatched(&mut transaction, authorization.request_id).await?;
         if dispatched {
@@ -1006,8 +1010,7 @@ impl CognitionJobStore for PostgresStore {
         validate_worker_id(worker_id)?;
         authorization.validate_against(entry).map_err(corrupt)?;
         let mut transaction = self.pool().begin().await.map_err(operation_error)?;
-        ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
-            .await?;
+        ensure_external_resolution_claim(&mut transaction, worker_id, entry).await?;
         if !paid_attempt_was_dispatched(&mut transaction, authorization.request_id).await? {
             return Err(StoreError::Conflict(
                 "an undispatched paid call cannot become billing-indeterminate".to_owned(),
@@ -1328,8 +1331,7 @@ async fn finish_attempt(
         }
     };
     let mut transaction = store.pool().begin().await.map_err(operation_error)?;
-    ensure_external_resolution_claim(&mut transaction, worker_id, entry.selection.request_id)
-        .await?;
+    ensure_external_resolution_claim(&mut transaction, worker_id, entry).await?;
     let updated = sqlx::query(
         r#"
         UPDATE cognition_route_attempts
@@ -1373,25 +1375,27 @@ async fn finish_attempt(
 async fn ensure_claim(
     transaction: &mut Transaction<'_, Postgres>,
     worker_id: &str,
-    request_id: Uuid,
+    entry: &CognitionJobEntry,
 ) -> Result<(), StoreError> {
     let held = sqlx::query_scalar::<_, Uuid>(
         r#"
-        SELECT request.request_id
-        FROM cognition_requests AS request
+        UPDATE cognition_requests AS request
+        SET claimed_at = NOW()
         WHERE request.request_id = $1
           AND request.claimed_by = $2
+          AND request.claim_token = $3
           AND NOT EXISTS (
               SELECT 1 FROM cognition_results WHERE request_id = request.request_id
           )
           AND NOT EXISTS (
               SELECT 1 FROM cognition_deadline_latches WHERE request_id = request.request_id
           )
-        FOR UPDATE
+        RETURNING request.request_id
         "#,
     )
-    .bind(request_id)
+    .bind(entry.selection.request_id)
     .bind(worker_id)
+    .bind(entry.claim_token)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(operation_error)?;
@@ -1399,7 +1403,8 @@ async fn ensure_claim(
         Ok(())
     } else {
         Err(StoreError::Conflict(format!(
-            "cognition request {request_id} is not held by this worker"
+            "cognition request {} is not held by this worker",
+            entry.selection.request_id
         )))
     }
 }
@@ -1411,19 +1416,21 @@ async fn ensure_claim(
 async fn ensure_external_resolution_claim(
     transaction: &mut Transaction<'_, Postgres>,
     worker_id: &str,
-    request_id: Uuid,
+    entry: &CognitionJobEntry,
 ) -> Result<(), StoreError> {
     let held = sqlx::query_scalar::<_, Uuid>(
         r#"
-        SELECT request_id
-        FROM cognition_requests
+        UPDATE cognition_requests
+        SET claimed_at = NOW()
         WHERE request_id = $1
           AND claimed_by = $2
-        FOR UPDATE
+          AND claim_token = $3
+        RETURNING request_id
         "#,
     )
-    .bind(request_id)
+    .bind(entry.selection.request_id)
     .bind(worker_id)
+    .bind(entry.claim_token)
     .fetch_optional(&mut **transaction)
     .await
     .map_err(operation_error)?;
@@ -1431,7 +1438,8 @@ async fn ensure_external_resolution_claim(
         Ok(())
     } else {
         Err(StoreError::Conflict(format!(
-            "cognition request {request_id} is not held by this worker"
+            "cognition request {} is not held by this worker",
+            entry.selection.request_id
         )))
     }
 }
@@ -1696,6 +1704,7 @@ fn parse_job(row: CognitionJobRow) -> Result<CognitionJobEntry, StoreError> {
         source_sequence,
         source_event_id: EventId::from_uuid(row.source_event_id),
         source_event_index,
+        claim_token: row.claim_token,
         claim_count,
     };
     entry.validate().map_err(corrupt)?;

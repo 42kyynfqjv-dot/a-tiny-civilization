@@ -38,13 +38,13 @@ fi
 
 short_lease_file="${temporary_directory}/short-lease.env"
 cp "$environment_file" "$short_lease_file"
-echo 'COGNITION_CLAIM_LEASE_SECONDS=3000' >> "$short_lease_file"
+echo 'COGNITION_CLAIM_LEASE_SECONDS=240' >> "$short_lease_file"
 if "${project_root}/scripts/production-preflight.sh" --env-file "$short_lease_file" \
   >"${temporary_directory}/short-lease.txt" 2>&1; then
-  echo "production preflight accepted a lease shorter than one bounded cognition job" >&2
+  echo "production preflight accepted a lease without cognition renewal slack" >&2
   exit 1
 fi
-if ! grep -q 'must outlive bounded recall and route attempts' \
+if ! grep -q 'must outlive one bounded operation plus renewal slack' \
   "${temporary_directory}/short-lease.txt"; then
   echo "production preflight rejected the short cognition lease for the wrong reason" >&2
   exit 1

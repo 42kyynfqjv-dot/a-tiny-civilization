@@ -71,11 +71,11 @@ const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // cognition prompt on this host. The live cadence is one minute per tick, so
 // this remains comfortably inside the fixed 60-tick canonical deadline.
 const DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 180;
-const DEFAULT_COGNITION_CLAIM_LEASE_SECONDS: u32 = 3_600;
+const DEFAULT_COGNITION_CLAIM_LEASE_SECONDS: u32 = 300;
 const MAX_MEMORY_IDLE_POLL_MILLISECONDS: u64 = 5_000;
 const MAX_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 300;
 const MAX_COGNITION_CLAIM_LEASE_SECONDS: u32 = 86_400;
-const MAX_COGNITION_WALL_OPERATIONS_PER_JOB: u64 = 17;
+const COGNITION_CLAIM_RENEWAL_SLACK_SECONDS: u64 = 60;
 const MAX_QUALIFICATION_TICKS: u64 = 1_000_000;
 
 #[derive(Debug, Parser)]
@@ -3936,12 +3936,12 @@ fn validate_cognition_worker_timing(
             "cognition claim lease must be between 1 and {MAX_COGNITION_CLAIM_LEASE_SECONDS} seconds"
         );
     }
-    let worst_case_seconds = request_timeout_seconds
-        .checked_mul(MAX_COGNITION_WALL_OPERATIONS_PER_JOB)
-        .context("calculate bounded cognition worker duration")?;
-    if u64::from(claim_lease_seconds) <= worst_case_seconds {
+    let operation_lease_floor = request_timeout_seconds
+        .checked_add(COGNITION_CLAIM_RENEWAL_SLACK_SECONDS)
+        .context("calculate bounded cognition operation lease")?;
+    if u64::from(claim_lease_seconds) <= operation_lease_floor {
         anyhow::bail!(
-            "cognition claim lease must outlive one recall and every bounded route attempt"
+            "cognition claim lease must outlive one bounded operation plus renewal slack"
         );
     }
     Ok(())
@@ -5240,7 +5240,8 @@ mod tests {
         assert!(request_timeout_seconds < 60 * 60);
         validate_cognition_worker_timing(request_timeout_seconds, claim_lease_seconds)
             .expect("default cognition timing");
-        assert!(validate_cognition_worker_timing(180, 3_000).is_err());
+        assert!(validate_cognition_worker_timing(180, 240).is_err());
+        assert!(validate_cognition_worker_timing(180, 300).is_ok());
         assert!(validate_cognition_worker_timing(301, 6_000).is_err());
     }
 

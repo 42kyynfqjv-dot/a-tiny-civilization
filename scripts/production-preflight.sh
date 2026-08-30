@@ -140,7 +140,7 @@ esac
 
 runner_tick_milliseconds="${RUNNER_TICK_MILLISECONDS:-60000}"
 cognition_timeout_seconds="${COGNITION_REQUEST_TIMEOUT_SECONDS:-180}"
-cognition_claim_lease_seconds="${COGNITION_CLAIM_LEASE_SECONDS:-3600}"
+cognition_claim_lease_seconds="${COGNITION_CLAIM_LEASE_SECONDS:-300}"
 if [[ ! "$runner_tick_milliseconds" =~ ^[1-9][0-9]*$ ]] \
    || ((runner_tick_milliseconds > 60000)); then
   echo "RUNNER_TICK_MILLISECONDS must be an integer from 1 through 60000" >&2
@@ -157,16 +157,17 @@ if [[ ! "$cognition_claim_lease_seconds" =~ ^[1-9][0-9]*$ ]] \
   exit 2
 fi
 # One claimed job can perform one Hindsight recall and at most sixteen network
-# attempts. Bound the complete worst-case operation before the 60-tick canonical
-# deadline, and keep its lease alive for the whole operation so a second worker
-# cannot duplicate an in-flight request.
+# attempts. Bound the complete ladder before the 60-tick canonical deadline.
+# The database renews the generation-protected lease around every operation, so
+# the lease itself needs to cover one timeout plus explicit scheduling slack.
 cognition_worst_case_seconds=$((cognition_timeout_seconds * 17))
 if ((cognition_worst_case_seconds * 1000 >= 60 * runner_tick_milliseconds)); then
   echo "COGNITION_REQUEST_TIMEOUT_SECONDS must keep the bounded ladder before the 60-tick cognition deadline" >&2
   exit 2
 fi
-if ((cognition_claim_lease_seconds <= cognition_worst_case_seconds)); then
-  echo "COGNITION_CLAIM_LEASE_SECONDS must outlive bounded recall and route attempts" >&2
+cognition_operation_lease_floor=$((cognition_timeout_seconds + 60))
+if ((cognition_claim_lease_seconds <= cognition_operation_lease_floor)); then
+  echo "COGNITION_CLAIM_LEASE_SECONDS must outlive one bounded operation plus renewal slack" >&2
   exit 2
 fi
 
