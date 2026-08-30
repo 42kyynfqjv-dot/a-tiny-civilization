@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v23";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v24";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -702,6 +702,8 @@ fn research_api_request(
     route: &CognitionModelRoute,
     request: &CancerResearchModelRequest,
 ) -> Result<Value, CancerResearchModelError> {
+    let dynamic_openrouter_free = provider == &CognitionProviderId::openrouter_cancer()
+        && route == &CognitionModelRoute::openrouter_cancer_free();
     let request_json = serde_json::to_string(request)
         .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
     let evidence_rule = match request.selection.stage {
@@ -769,6 +771,14 @@ fn research_api_request(
         // can leave too little room for the closing portion of the JSON object.
         "Return only one compact JSON object matching the supplied strict response schema."
             .to_owned()
+    } else if dynamic_openrouter_free {
+        // OpenRouter filters its dynamic pool by the required tool capability.
+        // Do not also paste the large schema into the prompt: live free models
+        // have copied that schema back as the answer instead of contributing
+        // research. The forced call carries the grammar and the local closed
+        // parser remains authoritative.
+        "Submit exactly one contribution through the required bounded_cancer_research_contribution function."
+            .to_owned()
     } else {
         let schema_text = serde_json::to_string(&contribution_schema)
             .map_err(|error| CancerResearchModelError::Rejected(error.to_string()))?;
@@ -818,7 +828,7 @@ fn research_api_request(
             "json_schema": {
                 "name": "bounded_cancer_research_contribution",
                 "strict": true,
-                "schema": contribution_schema
+                "schema": contribution_schema.clone()
             }
         }
     });
@@ -826,13 +836,28 @@ fn research_api_request(
         && route.billing_class == CognitionBillingClass::FreeAllocation
     {
         // OpenRouter free endpoints inconsistently advertise JSON-schema
-        // support. Several return an error envelope or an empty body when
-        // response_format is supplied. Keep the exact schema in the signed
-        // prompt and enforce it with the same local closed parser instead.
+        // response-format support. Remove it for every historical free route;
+        // the current dynamic route instead requires a typed tool call below,
+        // while pinned legacy routes retain their prompt schema and closed
+        // local validation.
         payload
             .as_object_mut()
             .expect("research request payload is an object")
             .remove("response_format");
+    }
+    if dynamic_openrouter_free {
+        payload["tools"] = json!([{
+            "type": "function",
+            "function": {
+                "name": "bounded_cancer_research_contribution",
+                "description": "Submit one bounded simulated cancer-research contribution.",
+                "parameters": contribution_schema
+            }
+        }]);
+        payload["tool_choice"] = json!({
+            "type": "function",
+            "function": {"name": "bounded_cancer_research_contribution"}
+        });
     }
     if provider == &CognitionProviderId::hetzner_experiments() {
         // Qwen 3.6 otherwise spends the bounded completion entirely in its
@@ -1616,7 +1641,14 @@ fn apply_openrouter_provider_policy(
             "allow_fallbacks": true
         })
     };
-    if !cancer_research && route == &CognitionModelRoute::openrouter_free() {
+    if cancer_research && route == &CognitionModelRoute::openrouter_cancer_free() {
+        // A hidden reasoning trace can consume the dynamic free route's entire
+        // 1,536-token allowance before it emits the required research tool
+        // arguments. The downstream campaign and virtual-lab layers provide
+        // the deliberate evaluation; this first generative turn must finish a
+        // bounded contribution rather than return null content.
+        payload["reasoning"] = json!({"effort": "none", "exclude": true});
+    } else if !cancer_research && route == &CognitionModelRoute::openrouter_free() {
         // `include_reasoning=false` only hides reasoning from the response; it
         // does not stop a randomly selected reasoning model from consuming the
         // complete tiny motor-action allowance and returning null content.
@@ -2653,7 +2685,87 @@ mod tests {
         assert_eq!(payload["model"], "openrouter/free");
         assert_eq!(payload["provider"]["allow_fallbacks"], true);
         assert!(payload.get("response_format").is_none());
+        assert_eq!(
+            payload["tools"][0]["function"]["name"],
+            "bounded_cancer_research_contribution"
+        );
+        assert_eq!(
+            payload["tool_choice"]["function"]["name"],
+            "bounded_cancer_research_contribution"
+        );
+        assert_eq!(
+            payload["tools"][0]["function"]["parameters"]["additionalProperties"],
+            false
+        );
+        assert_eq!(payload["reasoning"]["effort"], "none");
+        assert_eq!(payload["reasoning"]["exclude"], true);
+        let system_prompt = payload["messages"][0]["content"]
+            .as_str()
+            .expect("system prompt");
+        assert!(system_prompt.contains("required bounded_cancer_research_contribution function"));
+        assert!(!system_prompt.contains("additionalProperties"));
         assert_eq!(payload["max_tokens"], 1_536);
+    }
+
+    #[tokio::test]
+    async fn dynamic_free_research_accepts_the_forced_tool_arguments() {
+        let arguments = serde_json::to_string(&json!({
+            "artifact_kind": "hypothesis",
+            "title": "A bounded tool-call hypothesis",
+            "abstract_text": "A supplied assay pattern motivates a mechanism that remains unverified.",
+            "claims": [{
+                "statement": "The observed pattern may depend on a reversible cell state.",
+                "testable_prediction": "Perturbing the state should change the supplied assay readout.",
+                "falsification_test": "The preregistered perturbation leaves the readout unchanged.",
+                "citation_hashes": []
+            }],
+            "molecular_targets": [],
+            "virtual_experiment_plan": null,
+            "nci60_response_prediction": null
+        }))
+        .expect("tool arguments");
+        let response = json!({
+            "id": "research-generation-tool-1",
+            "model": "nvidia/nemotron-3-super-120b-a12b:free",
+            "choices": [{"message": {
+                "content": null,
+                "tool_calls": [{
+                    "id": "research-call-1",
+                    "type": "function",
+                    "function": {
+                        "name": "bounded_cancer_research_contribution",
+                        "arguments": arguments
+                    }
+                }]
+            }}],
+            "usage": {"prompt_tokens": 300, "completion_tokens": 120, "cost": 0}
+        });
+        let (adapter, seen) = adapter_for(CognitionProviderId::openrouter_cancer(), response).await;
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            Some("assay row 1: bounded values"),
+        );
+
+        let receipt = adapter
+            .infer_research(&CognitionModelRoute::openrouter_cancer_free(), &request)
+            .await
+            .expect("valid research tool completion");
+
+        assert_eq!(
+            receipt.contribution.artifact_kind,
+            CancerResearchArtifactKind::Hypothesis
+        );
+        assert_eq!(receipt.billed_micro_usd, 0);
+        assert_eq!(
+            receipt.resolved_model,
+            "nvidia/nemotron-3-super-120b-a12b:free"
+        );
+        let seen = seen.lock().expect("test lock").clone().expect("request");
+        assert_eq!(
+            seen["tool_choice"]["function"]["name"],
+            "bounded_cancer_research_contribution"
+        );
     }
 
     #[test]
