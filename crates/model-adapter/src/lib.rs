@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v21";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v22";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -1569,7 +1569,6 @@ fn api_request(
             "type": "function",
             "function": {"name": "select_bounded_primitive_action"}
         });
-        payload["parallel_tool_calls"] = Value::Bool(false);
     }
     apply_openrouter_provider_policy(&mut payload, provider, route);
     Ok(payload)
@@ -2872,7 +2871,7 @@ mod tests {
             seen["tool_choice"]["function"]["name"],
             "select_bounded_primitive_action"
         );
-        assert_eq!(seen["parallel_tool_calls"], false);
+        assert!(seen.get("parallel_tool_calls").is_none());
         assert!(seen.get("include_reasoning").is_none());
         assert_eq!(seen["reasoning"]["effort"], "none");
         assert_eq!(seen["reasoning"]["exclude"], true);

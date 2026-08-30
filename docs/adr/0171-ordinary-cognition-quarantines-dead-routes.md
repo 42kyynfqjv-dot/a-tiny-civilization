@@ -108,3 +108,13 @@ alter canonical history.
 
 Tool-calling reference:
 <https://openrouter.ai/docs/guides/features/tool-calling>.
+
+## Live-probe amendment: omit unsupported parallel-call negotiation
+
+OpenRouter returned a capability-routing 404 for the version-21 combination. Fixed
+synthetic differential probes isolated `parallel_tool_calls: false` as the conflicting
+parameter: omitting only that field produced one zero-cost, reasoning-free typed call
+from a free endpoint. Adapter contract version 22 therefore omits the unnecessary
+parallel-call negotiation. Only one tool is advertised, exact forced tool choice is
+retained, and the local parser accepts exactly one call; zero or multiple calls still
+fail closed. No simulation rule, research route, or historical input changes.
