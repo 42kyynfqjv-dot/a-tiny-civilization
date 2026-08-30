@@ -3811,7 +3811,7 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
         "skipped_unconfigured",
         "skipped_disabled",
         "skipped_disabled",
-        "skipped_unconfigured",
+        "skipped_disabled",
         "skipped_disabled",
         "skipped_unconfigured",
         "skipped_unconfigured",
