@@ -37,7 +37,7 @@ use sim_engine::{
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
     LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION,
-    SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION, replay, replay_from_snapshot,
+    SITUATED_SIGNAL_REUSE_RULESET_VERSION, replay, replay_from_snapshot,
     run_partition_capacity_probe,
 };
 use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
@@ -66,7 +66,7 @@ use world_domain::{
 
 /// New ordinary full-Earth worlds start with productive compositional signals layered
 /// over every earlier physical driver. Older worlds retain their genesis ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = SITUATED_SIGNAL_REUSE_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model needs more than 15 seconds to prefill a full bounded
 // cognition prompt on the production-class host. Keep this below the default
@@ -4812,7 +4812,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_social_language_consolidation_ruleset() {
+    fn provisional_full_earth_defaults_to_the_situated_signal_reuse_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -4838,10 +4838,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(
-            ruleset_version,
-            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
-        );
+        assert_eq!(ruleset_version, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -4968,10 +4965,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(
-            ruleset_version,
-            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
-        );
+        assert_eq!(ruleset_version, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
     }
 
     #[test]

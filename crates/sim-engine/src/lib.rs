@@ -207,6 +207,12 @@ pub const COMPOSITIONAL_SIGNAL_RULESET_VERSION: u32 = 41;
 /// turnover begins only after three distinct grounded conventions are shared by
 /// at least four living people; no form, meaning, word, or goal is supplied.
 pub const SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION: u32 = 42;
+/// Ruleset forty-three lets an inhabitant reuse the call form it has most often
+/// heard alongside the same situated motor action before that form is already a
+/// fully distinctive convention. This closes the circular requirement that a
+/// convention had to exist before repeated production could create it. No form,
+/// meaning, goal, or vocabulary is supplied by the observer.
+pub const SITUATED_SIGNAL_REUSE_RULESET_VERSION: u32 = 43;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -226,6 +232,10 @@ pub const RULESET_39_ACTION_GROUNDED_SIGNAL_ACTIVATION_TICK: u64 = 2_845;
 /// The running ruleset-39 world activates ordered-call learning only after the
 /// versioned implementation and observer projection are deployed together.
 pub const RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK: u64 = 9_200;
+/// The running ruleset-forty-two public world receives the stateless situated
+/// reuse repair only at this disclosed boundary. Earlier ticks retain their exact
+/// production policy and replay hashes.
+pub const RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK: u64 = 5_000;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -275,6 +285,9 @@ const SIGNAL_IMITATION_WEIGHT_BONUS: u32 = 16;
 const SIGNAL_CONTEXT_REUSE_MAX_BONUS: u32 = 24;
 const ACTION_GROUNDED_IMITATION_WEIGHT_BONUS: u32 = 64;
 const ACTION_GROUNDED_CONVENTION_MAX_BONUS: u32 = 128;
+const SITUATED_SIGNAL_REUSE_MIN_OBSERVATIONS: u32 = 2;
+const SITUATED_SIGNAL_REUSE_LEADER_BONUS: u32 = 64;
+const SITUATED_SIGNAL_REUSE_EVIDENCE_BONUS_PER_OBSERVATION: u32 = 4;
 const SIGNAL_PREDICTION_REINFORCEMENT: i16 = 4;
 const SIGNAL_COORDINATION_REINFORCEMENT: i16 = 8;
 const SIGNAL_PREDICTION_INHIBITION: i16 = 2;
@@ -333,6 +346,7 @@ const SOCIAL_SIGNAL_SUPPORT_WINDOW_TICKS: u64 = 288;
 const SOCIAL_SIGNAL_SUPPORT_MAX_BONUS: i16 = 8;
 const LANGUAGE_LIFECYCLE_MIN_LEARNERS: usize = 4;
 const LANGUAGE_LIFECYCLE_MIN_MEANINGS: usize = 3;
+const SITUATED_LANGUAGE_LIFECYCLE_MIN_OBSERVATIONS: u32 = 4;
 const MAX_MATERIAL_SURFACE_TRACE_UNITS: u32 = i32::MAX.unsigned_abs();
 const MAX_PERCEPTION_MEMORY_ENTRIES: usize = 256;
 const CANCER_RESEARCH_MAX_PERCEPTION_MEMORY_ENTRIES: usize = 2_048;
@@ -809,6 +823,12 @@ fn compositional_signal_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= COMPOSITIONAL_SIGNAL_RULESET_VERSION
         || (ruleset_version == GROUNDED_LANGUAGE_REPAIR_RULESET_VERSION
             && tick.get() >= RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK)
+}
+
+fn situated_signal_reuse_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= SITUATED_SIGNAL_REUSE_RULESET_VERSION
+        || (ruleset_version == SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
+            && tick.get() >= RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK)
 }
 
 fn local_interaction_active(ruleset_version: u32, tick: SimTick) -> bool {
@@ -1301,6 +1321,57 @@ impl OrganismState {
         let form_margin = association.value.saturating_sub(alternative_form_maximum);
         (form_margin > 0).then_some(
             u32::from(meaning_margin.unsigned_abs()) + u32::from(form_margin.unsigned_abs()),
+        )
+    }
+
+    /// Returns a production bias for a call that has repeatedly accompanied the
+    /// same situated action in this inhabitant's own social evidence. Requiring an
+    /// already-exclusive form-to-meaning mapping here made cultural convergence
+    /// circular: a form could not be consistently produced until it was a
+    /// convention, while it could not become a convention without consistent
+    /// production. Frequency-biased reuse is a pre-linguistic learning mechanism,
+    /// not an observer-authored symbol table.
+    fn situated_signal_reuse_strength(
+        &self,
+        preceding_signal: Option<u8>,
+        signal_intensity: u8,
+        action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
+    ) -> Option<u32> {
+        let association = self.signal_action_association(
+            preceding_signal,
+            signal_intensity,
+            action_kind,
+            movement_direction,
+        )?;
+        if association.observations < SITUATED_SIGNAL_REUSE_MIN_OBSERVATIONS {
+            return None;
+        }
+        let alternative_maximum = self
+            .signal_action_associations
+            .iter()
+            .filter(|entry| {
+                entry.preceding_signal.is_some() == preceding_signal.is_some()
+                    && entry.signal_intensity != signal_intensity
+                    && (entry.action_kind, entry.movement_direction)
+                        == (action_kind, movement_direction)
+            })
+            .map(|entry| entry.observations)
+            .max()
+            .unwrap_or(0);
+        let evidence_bonus = association
+            .observations
+            .saturating_mul(SITUATED_SIGNAL_REUSE_EVIDENCE_BONUS_PER_OBSERVATION)
+            .min(ACTION_GROUNDED_CONVENTION_MAX_BONUS);
+        let leader_bonus = if association.observations >= alternative_maximum {
+            SITUATED_SIGNAL_REUSE_LEADER_BONUS
+        } else {
+            0
+        };
+        Some(
+            evidence_bonus
+                .saturating_add(leader_bonus)
+                .min(ACTION_GROUNDED_CONVENTION_MAX_BONUS),
         )
     }
 
@@ -3444,7 +3515,9 @@ impl EngineState {
         let total_family_weight = motor_weight
             .checked_add(normalized_signal_weight)
             .ok_or(EngineError::TooManyEvents)?;
-        let policy_version = if self.plans_compositional_signal_driver() {
+        let policy_version = if self.plans_situated_signal_reuse_driver() {
+            4
+        } else if self.plans_compositional_signal_driver() {
             3
         } else if self.uses_action_grounded_signal_selection_driver() {
             2
@@ -3505,22 +3578,27 @@ impl EngineState {
         signal_form: u8,
         grounded_action: &PrimitiveAction,
     ) -> Option<u32> {
-        let compositional = organism.signal_convention_strength(
-            preceding_signal,
-            signal_form,
-            grounded_action.kind,
-            grounded_action.movement_direction,
-        );
-        let inherited_atomic = preceding_signal
-            .filter(|_| self.uses_social_language_consolidation_driver())
-            .and_then(|_| {
-                organism.signal_convention_strength(
-                    None,
+        let strength = |preceding_signal| {
+            if self.plans_situated_signal_reuse_driver() {
+                organism.situated_signal_reuse_strength(
+                    preceding_signal,
                     signal_form,
                     grounded_action.kind,
                     grounded_action.movement_direction,
                 )
-            });
+            } else {
+                organism.signal_convention_strength(
+                    preceding_signal,
+                    signal_form,
+                    grounded_action.kind,
+                    grounded_action.movement_direction,
+                )
+            }
+        };
+        let compositional = strength(preceding_signal);
+        let inherited_atomic = preceding_signal
+            .filter(|_| self.uses_social_language_consolidation_driver())
+            .and_then(|_| strength(None));
         compositional.max(inherited_atomic)
     }
 
@@ -5667,6 +5745,13 @@ impl EngineState {
             && !self.uses_world_experiment_bootstrap()
     }
 
+    fn plans_situated_signal_reuse_driver(&self) -> bool {
+        self.tick
+            .checked_next()
+            .is_ok_and(|tick| situated_signal_reuse_active(self.manifest.ruleset_version, tick))
+            && self.uses_social_language_consolidation_driver()
+    }
+
     fn shared_grounded_language_is_present(&self) -> bool {
         if !self.uses_social_language_consolidation_driver() {
             return true;
@@ -5681,7 +5766,12 @@ impl EngineState {
             for association in organism
                 .signal_action_associations
                 .iter()
-                .filter(|association| association.preceding_signal.is_none())
+                .filter(|association| {
+                    association.preceding_signal.is_none()
+                        && (!self.plans_situated_signal_reuse_driver()
+                            || association.observations
+                                >= SITUATED_LANGUAGE_LIFECYCLE_MIN_OBSERVATIONS)
+                })
             {
                 if organism
                     .distinctive_signal_prediction(
@@ -16634,6 +16724,88 @@ mod tests {
     }
 
     #[test]
+    fn situated_reuse_breaks_the_convention_before_reuse_cycle_without_assigning_a_form() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4300_1a6e));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 12, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
+        let organism_id = *running.organisms.keys().next().expect("fixture person");
+        let organism = running
+            .organisms
+            .get_mut(&organism_id)
+            .expect("fixture person state");
+        organism.signal_action_associations = vec![
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 8,
+                value: ACTION_VALUE_MAX,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Swallow,
+                movement_direction: None,
+                observations: 12,
+                value: ACTION_VALUE_MAX,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 8,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 3,
+                value: ACTION_VALUE_MAX,
+            },
+        ];
+        organism.signal_action_associations.sort_by_key(|entry| {
+            (
+                entry.preceding_signal,
+                entry.signal_intensity,
+                entry.action_kind,
+                entry.movement_direction,
+            )
+        });
+        let organism = running
+            .organisms
+            .get(&organism_id)
+            .expect("fixture person state");
+        assert_eq!(
+            organism.signal_convention_strength(None, 7, PrimitiveActionKind::Rest, None),
+            None,
+            "the old mutually distinctive gate is circular under saturated evidence"
+        );
+        assert!(
+            organism
+                .situated_signal_reuse_strength(None, 7, PrimitiveActionKind::Rest, None)
+                .expect("repeated situated form")
+                > organism
+                    .situated_signal_reuse_strength(None, 8, PrimitiveActionKind::Rest, None)
+                    .expect("less frequent situated form")
+        );
+    }
+
+    #[test]
+    fn ruleset_forty_two_activates_situated_reuse_at_the_public_boundary() {
+        assert!(!situated_signal_reuse_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK - 1),
+        ));
+        assert!(situated_signal_reuse_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK),
+        ));
+        assert!(situated_signal_reuse_active(
+            SITUATED_SIGNAL_REUSE_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+    }
+
+    #[test]
     fn ruleset_forty_two_life_cycle_requires_shared_distinct_meanings() {
         let world_id = WorldId::from_uuid(Uuid::from_u128(0x4200_1afe));
         let (_, mut running, _) =
@@ -16718,6 +16890,45 @@ mod tests {
                 .expect("ruleset-forty-two replay")
                 .state,
             running
+        );
+    }
+
+    #[test]
+    fn situated_reuse_can_form_shared_language_without_assigned_words() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4300_1afe));
+        let (_, mut running, genesis) =
+            grounded_language_fixture(world_id, 24, SITUATED_SIGNAL_REUSE_RULESET_VERSION);
+        let mut sequence = genesis.sequence;
+        let mut previous_hash = genesis.batch_hash;
+        let mut language_tick = None;
+
+        for _ in 0..512 {
+            let next_tick = running.tick.checked_next().expect("bounded fixture tick");
+            let events = running
+                .plan_next_tick_with_celestial_and_cognition(
+                    CelestialState::new(
+                        TdbSecondsSinceJ2000::new(i128::from(next_tick.get()) * 300),
+                        CartesianMillimetres::new(i128::from(next_tick.get()), 2, 3),
+                        CartesianMillimetres::new(4, i128::from(next_tick.get()) + 5, 6),
+                    ),
+                    &[],
+                )
+                .expect("situated language tick");
+            sequence = sequence.checked_next().expect("bounded fixture history");
+            let (next, batch) = running
+                .commit(sequence, previous_hash, events)
+                .expect("situated language transition commits");
+            previous_hash = batch.batch_hash;
+            running = next;
+            if running.shared_grounded_language_is_present() {
+                language_tick = Some(running.tick);
+                break;
+            }
+        }
+
+        assert!(
+            language_tick.is_some(),
+            "an unassisted 24-person fixture must share three grounded meanings within 512 ticks"
         );
     }
 
