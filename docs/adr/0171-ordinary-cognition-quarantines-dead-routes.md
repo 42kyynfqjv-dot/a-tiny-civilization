@@ -60,3 +60,20 @@ use models that lack provider-side schema support without relaxing the local saf
 contract, and the viable CPU route has time to finish. The longer wall timeout does
 not delay canonical history: the fixed simulation deadline still admits the recorded
 result or the deterministic unavailable outcome exactly once.
+
+## Live-probe amendment: disable reasoning for the bounded free action
+
+A later fixed synthetic probe returned a successful OpenRouter envelope with null
+message content. OpenRouter documents that legacy `include_reasoning: false` only
+excludes reasoning from the returned message; it does not disable reasoning. With
+the ordinary action contract's deliberately tiny output allowance, a randomly
+selected reasoning model can therefore consume the completion without emitting a
+final motor action.
+
+Adapter contract version 19 replaces that legacy flag only for the ordinary
+`openrouter/free` route with `reasoning: { effort: "none", exclude: true }`, using
+OpenRouter's documented unified control:
+<https://openrouter.ai/docs/guides/best-practices/reasoning-tokens>.
+Cancer research keeps its separate reasoning policy. The request still omits
+provider-side schema negotiation, and the same closed local action parser, zero-cost
+check, provider identity, response hash, deadline, and replay rules remain unchanged.

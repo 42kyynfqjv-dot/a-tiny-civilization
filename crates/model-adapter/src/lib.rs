@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v18";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v19";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -1602,7 +1602,17 @@ fn apply_openrouter_provider_policy(
             "allow_fallbacks": true
         })
     };
-    payload["include_reasoning"] = Value::Bool(false);
+    if !cancer_research && route == &CognitionModelRoute::openrouter_free() {
+        // `include_reasoning=false` only hides reasoning from the response; it
+        // does not stop a randomly selected reasoning model from consuming the
+        // complete tiny motor-action allowance and returning null content.
+        // This route needs one closed primitive action, not deliberation. Use
+        // OpenRouter's current unified control to require a final answer with
+        // reasoning disabled, while the local typed parser remains authoritative.
+        payload["reasoning"] = json!({"effort": "none", "exclude": true});
+    } else {
+        payload["include_reasoning"] = Value::Bool(false);
+    }
 }
 
 fn bounded_action_schema() -> Value {
@@ -2819,7 +2829,9 @@ mod tests {
         let seen = seen.lock().expect("test lock").clone().expect("request");
         assert_eq!(seen["provider"]["require_parameters"], true);
         assert!(seen.get("response_format").is_none());
-        assert_eq!(seen["include_reasoning"], false);
+        assert!(seen.get("include_reasoning").is_none());
+        assert_eq!(seen["reasoning"]["effort"], "none");
+        assert_eq!(seen["reasoning"]["exclude"], true);
     }
 
     #[tokio::test]
