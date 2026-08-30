@@ -25,13 +25,12 @@ offline runner command. The importer:
   five security-relevant fields, requiring exactly one timestamp, usage-type,
   model, prompt-token, and completion-token field; unrelated provider metadata
   columns remain ignored and are never retained;
-- considers only `TEXT_COMPLETION_INFERENCE_USAGE` for the pinned
-  `accounts/fireworks/models/gpt-oss-20b` route;
+- considers only `TEXT_COMPLETION_INFERENCE_USAGE` for the closed, versioned
+  set of pinned Fireworks research models;
 - requires exactly one row within five seconds of every unreconciled, immutable
   paid Fireworks dispatch and refuses missing, ambiguous, or reused rows;
-- recomputes cost at the same pinned tariff as the runtime receipt adapter:
-  $0.07 per million input tokens and $0.30 per million output tokens, rounded up
-  to a micro-dollar; and
+- recomputes cost at the same model-specific pinned tariff as the runtime
+  receipt adapter, rounded up to a micro-dollar; and
 - defaults to verification without writes. A separate explicit confirmation
   flag appends evidence.
 

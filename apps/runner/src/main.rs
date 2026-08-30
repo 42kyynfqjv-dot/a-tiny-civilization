@@ -34,8 +34,8 @@ use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
     CANCER_BIOLOGY_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
     HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LIFECYCLE_CONTINUITY_RULESET_VERSION, LOCAL_WEATHER_RULESET_VERSION,
-    MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
+    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION,
+    ORDINARY_WORLD_HARDENING_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_outcome,
     replay_from_snapshot, run_partition_capacity_probe,
 };
@@ -65,12 +65,17 @@ use world_domain::{
 
 /// New ordinary full-Earth worlds start with productive compositional signals layered
 /// over every earlier physical driver. Older worlds retain their genesis ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = LIFECYCLE_CONTINUITY_RULESET_VERSION;
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = ORDINARY_WORLD_HARDENING_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
-// The pinned CPU model needs more than 15 seconds to prefill a full bounded
-// cognition prompt on the production-class host. Keep this below the default
-// 60-second request-to-simulation-deadline window.
-const DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 45;
+// The pinned CPU model can need more than 45 seconds to prefill a full bounded
+// cognition prompt on this host. The live cadence is one minute per tick, so
+// this remains comfortably inside the fixed 60-tick canonical deadline.
+const DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 180;
+const DEFAULT_COGNITION_CLAIM_LEASE_SECONDS: u32 = 3_600;
+const MAX_MEMORY_IDLE_POLL_MILLISECONDS: u64 = 5_000;
+const MAX_COGNITION_REQUEST_TIMEOUT_SECONDS: u64 = 300;
+const MAX_COGNITION_CLAIM_LEASE_SECONDS: u32 = 86_400;
+const MAX_COGNITION_WALL_OPERATIONS_PER_JOB: u64 = 17;
 const MAX_QUALIFICATION_TICKS: u64 = 1_000_000;
 
 #[derive(Debug, Parser)]
@@ -413,7 +418,11 @@ enum Command {
         #[arg(long, env = "COGNITION_POLL_MILLISECONDS", default_value_t = 250)]
         poll_milliseconds: u64,
 
-        #[arg(long, env = "COGNITION_CLAIM_LEASE_SECONDS", default_value_t = 60)]
+        #[arg(
+            long,
+            env = "COGNITION_CLAIM_LEASE_SECONDS",
+            default_value_t = DEFAULT_COGNITION_CLAIM_LEASE_SECONDS
+        )]
         claim_lease_seconds: u32,
 
         #[arg(
@@ -502,11 +511,11 @@ enum Command {
         #[arg(long, env = "CANCER_OPENROUTER_API_KEY", hide_env_values = true)]
         cancer_openrouter_api_key: String,
 
-        /// Free experimental Hetzner Inference route used first for Cancer World.
+        /// Legacy free Hetzner route retained only to resume versioned attempts.
         #[arg(long, env = "HETZNER_VLLM_API_KEY", hide_env_values = true)]
         hetzner_vllm_api_key: Option<String>,
 
-        /// Reuse the ordinary world's private local free route when configured.
+        /// Legacy local route retained only to resume versioned attempts.
         #[arg(long, env = "LOCAL_COGNITION_BASE_URL")]
         local_cognition_base_url: Option<String>,
 
@@ -941,7 +950,8 @@ async fn main() -> Result<()> {
             cancer_openrouter_api_key,
             paid_enabled,
         } => {
-            let timeout = Duration::from_secs(request_timeout_seconds.max(1));
+            validate_cognition_worker_timing(request_timeout_seconds, claim_lease_seconds)?;
+            let timeout = Duration::from_secs(request_timeout_seconds);
             let memory = HindsightMemory::new(&hindsight_base_url, hindsight_api_key, timeout)
                 .context("configure Hindsight cognition recall adapter")?;
             let adapters = cognition_adapters(
@@ -995,6 +1005,11 @@ async fn main() -> Result<()> {
                     "Cancer World research export requires CANCER_RESEARCH_EXTERNAL_EXPORT_APPROVED=true"
                 );
             }
+            validate_cancer_research_worker_timing(
+                request_timeout_seconds,
+                free_request_timeout_seconds,
+                claim_lease_seconds,
+            )?;
             let adapters = cancer_research_adapters(
                 cancer_openrouter_api_key,
                 hetzner_vllm_api_key,
@@ -3560,8 +3575,9 @@ async fn serve_memory_worker(
         }),
     };
     let effective_poll_milliseconds = if drain { 1 } else { poll_milliseconds.max(1) };
-    let mut interval = tokio::time::interval(Duration::from_millis(effective_poll_milliseconds));
-    interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+    let mut current_poll_milliseconds = effective_poll_milliseconds;
+    let poll_sleep = tokio::time::sleep(Duration::ZERO);
+    tokio::pin!(poll_sleep);
     let mut heartbeat_interval = tokio::time::interval(Duration::from_secs(10));
     heartbeat_interval.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
     tracing::info!(
@@ -3579,8 +3595,8 @@ async fn serve_memory_worker(
                     tracing::warn!(%error, "memory-worker heartbeat failed; will retry");
                 }
             }
-            _ = interval.tick() => {
-                match store.claim_next_memory(worker_id, claim_lease_seconds).await {
+            _ = &mut poll_sleep => {
+                let found_work = match store.claim_next_memory(worker_id, claim_lease_seconds).await {
                     Ok(Some(entry)) => {
                         let operation_id = entry.retain.operation_id;
                         match memory.retain(&entry.retain).await {
@@ -3629,19 +3645,34 @@ async fn serve_memory_worker(
                                 }
                             }
                         }
+                        true
                     }
                     Ok(None) if drain => {
                         tracing::info!(worker_id, "subjective-memory outbox drain complete");
                         break;
                     }
-                    Ok(None) => {}
+                    Ok(None) => false,
                     Err(error) => {
                         if drain {
                             return Err(error).context("memory outbox drain could not claim work");
                         }
                         tracing::warn!(%error, "memory outbox unavailable; will retry");
+                        false
                     }
-                }
+                };
+                current_poll_milliseconds = if drain {
+                    1
+                } else {
+                    next_memory_poll_milliseconds(
+                        effective_poll_milliseconds,
+                        current_poll_milliseconds,
+                        found_work,
+                    )
+                };
+                poll_sleep.as_mut().reset(
+                    tokio::time::Instant::now()
+                        + Duration::from_millis(current_poll_milliseconds),
+                );
             }
             _ = shutdown_signal() => {
                 tracing::info!(worker_id, "subjective-memory delivery worker stopping");
@@ -3651,6 +3682,17 @@ async fn serve_memory_worker(
     }
 
     Ok(())
+}
+
+fn next_memory_poll_milliseconds(base: u64, current: u64, found_work: bool) -> u64 {
+    let base = base.max(1);
+    if found_work {
+        return base;
+    }
+    current
+        .max(base)
+        .saturating_mul(2)
+        .min(base.max(MAX_MEMORY_IDLE_POLL_MILLISECONDS))
 }
 
 #[allow(clippy::too_many_arguments)] // One explicit option per independently configured provider.
@@ -3878,6 +3920,59 @@ fn validate_cognition_export_approval(
     Ok(())
 }
 
+fn validate_cognition_worker_timing(
+    request_timeout_seconds: u64,
+    claim_lease_seconds: u32,
+) -> Result<()> {
+    if request_timeout_seconds == 0
+        || request_timeout_seconds > MAX_COGNITION_REQUEST_TIMEOUT_SECONDS
+    {
+        anyhow::bail!(
+            "cognition request timeout must be between 1 and {MAX_COGNITION_REQUEST_TIMEOUT_SECONDS} seconds"
+        );
+    }
+    if claim_lease_seconds == 0 || claim_lease_seconds > MAX_COGNITION_CLAIM_LEASE_SECONDS {
+        anyhow::bail!(
+            "cognition claim lease must be between 1 and {MAX_COGNITION_CLAIM_LEASE_SECONDS} seconds"
+        );
+    }
+    let worst_case_seconds = request_timeout_seconds
+        .checked_mul(MAX_COGNITION_WALL_OPERATIONS_PER_JOB)
+        .context("calculate bounded cognition worker duration")?;
+    if u64::from(claim_lease_seconds) <= worst_case_seconds {
+        anyhow::bail!(
+            "cognition claim lease must outlive one recall and every bounded route attempt"
+        );
+    }
+    Ok(())
+}
+
+fn validate_cancer_research_worker_timing(
+    paid_timeout_seconds: u64,
+    free_timeout_seconds: u64,
+    claim_lease_seconds: u32,
+) -> Result<()> {
+    if paid_timeout_seconds == 0 || free_timeout_seconds == 0 {
+        anyhow::bail!("Cancer research request timeouts must be positive");
+    }
+    if free_timeout_seconds > paid_timeout_seconds {
+        anyhow::bail!("Cancer research free-route timeout cannot exceed the paid-route timeout");
+    }
+    // A closed registry admits at most sixteen network attempts and places paid
+    // routes last. Cover fifteen free attempts plus one paid attempt even though
+    // every currently admitted registry is shorter.
+    let worst_case_seconds = free_timeout_seconds
+        .checked_mul(u64::from(
+            application::MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS - 1,
+        ))
+        .and_then(|free| free.checked_add(paid_timeout_seconds))
+        .context("calculate bounded Cancer research worker duration")?;
+    if u64::from(claim_lease_seconds) <= worst_case_seconds {
+        anyhow::bail!("Cancer research claim lease must outlive every bounded route attempt");
+    }
+    Ok(())
+}
+
 async fn serve_cognition_worker(
     store: &PostgresStore,
     memory: &HindsightMemory,
@@ -3890,6 +3985,10 @@ async fn serve_cognition_worker(
     configuration
         .validate()
         .context("validate cognition worker configuration")?;
+    let route_registry_hash = configuration
+        .registry
+        .canonical_hash(configuration.purpose)
+        .context("hash cognition route registry")?;
     let heartbeat = ServiceHeartbeat {
         service_name: "cognition-worker".to_owned(),
         instance_id: Uuid::new_v4(),
@@ -3897,6 +3996,9 @@ async fn serve_cognition_worker(
             "worker_id": worker_id,
             "worker_version": env!("CARGO_PKG_VERSION"),
             "configured_providers": adapters.len(),
+            "route_policy_version": configuration.registry.policy_version,
+            "route_registry_hash": route_registry_hash.to_string(),
+            "quarantined_routes": configuration.registry.quarantined_routes.len(),
             "paid_enabled": configuration.paid_enabled,
             "mode": "replay-safe-cognition",
         }),
@@ -3909,6 +4011,9 @@ async fn serve_cognition_worker(
         worker_id,
         configured_providers = adapters.len(),
         routes = configuration.registry.routes.len(),
+        route_policy_version = configuration.registry.policy_version,
+        quarantined_routes = configuration.registry.quarantined_routes.len(),
+        %route_registry_hash,
         paid_enabled = configuration.paid_enabled,
         "replay-safe cognition worker started"
     );
@@ -4868,7 +4973,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_situated_signal_reuse_ruleset() {
+    fn provisional_full_earth_defaults_to_the_ordinary_hardening_ruleset() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -4894,7 +4999,7 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, LIFECYCLE_CONTINUITY_RULESET_VERSION);
+        assert_eq!(ruleset_version, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -5021,7 +5126,7 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, LIFECYCLE_CONTINUITY_RULESET_VERSION);
+        assert_eq!(ruleset_version, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
     }
 
     #[test]
@@ -5099,7 +5204,17 @@ mod tests {
     }
 
     #[test]
-    fn local_cognition_default_allows_cpu_prefill_before_the_simulation_deadline() {
+    fn memory_idle_poll_backs_off_but_work_and_overrides_remain_responsive() {
+        assert_eq!(next_memory_poll_milliseconds(500, 500, false), 1_000);
+        assert_eq!(next_memory_poll_milliseconds(500, 4_000, false), 5_000);
+        assert_eq!(next_memory_poll_milliseconds(500, 5_000, false), 5_000);
+        assert_eq!(next_memory_poll_milliseconds(500, 5_000, true), 500);
+        assert_eq!(next_memory_poll_milliseconds(10, 10, false), 20);
+        assert_eq!(next_memory_poll_milliseconds(10_000, 10_000, false), 10_000);
+    }
+
+    #[test]
+    fn ordinary_cognition_defaults_cover_cpu_prefill_and_precede_the_live_deadline() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -5111,6 +5226,7 @@ mod tests {
         .expect("parse cognition worker command");
         let Some(Command::CognitionWorker {
             request_timeout_seconds,
+            claim_lease_seconds,
             ..
         }) = cli.command
         else {
@@ -5120,7 +5236,12 @@ mod tests {
             request_timeout_seconds,
             DEFAULT_COGNITION_REQUEST_TIMEOUT_SECONDS
         );
-        assert!(request_timeout_seconds < 60);
+        assert_eq!(claim_lease_seconds, DEFAULT_COGNITION_CLAIM_LEASE_SECONDS);
+        assert!(request_timeout_seconds < 60 * 60);
+        validate_cognition_worker_timing(request_timeout_seconds, claim_lease_seconds)
+            .expect("default cognition timing");
+        assert!(validate_cognition_worker_timing(180, 3_000).is_err());
+        assert!(validate_cognition_worker_timing(301, 6_000).is_err());
     }
 
     #[test]
@@ -5140,6 +5261,8 @@ mod tests {
             paid_enabled,
             drain,
             request_timeout_seconds,
+            free_request_timeout_seconds,
+            claim_lease_seconds,
             paid_reservation_micro_usd,
             ..
         }) = cli.command
@@ -5149,6 +5272,16 @@ mod tests {
         assert!(!paid_enabled);
         assert!(drain);
         assert_eq!(request_timeout_seconds, 120);
+        assert_eq!(free_request_timeout_seconds, 30);
+        assert_eq!(claim_lease_seconds, 900);
+        validate_cancer_research_worker_timing(
+            request_timeout_seconds,
+            free_request_timeout_seconds,
+            claim_lease_seconds,
+        )
+        .expect("default research worker timing");
+        assert!(validate_cancer_research_worker_timing(120, 30, 570).is_err());
+        assert!(validate_cancer_research_worker_timing(30, 31, 900).is_err());
         assert_eq!(
             paid_reservation_micro_usd,
             application::DEFAULT_CANCER_RESEARCH_PAID_RESERVATION_MICRO_USD

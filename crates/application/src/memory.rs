@@ -432,6 +432,9 @@ impl MemoryRecallOutcome {
 pub struct MemoryOutboxEntry {
     pub retain: MemoryRetain,
     pub attempt_count: u32,
+    /// Opaque generation for this particular database lease. It is local
+    /// delivery state and is never exposed to the memory adapter.
+    pub claim_token: Uuid,
 }
 
 #[derive(Debug, Error)]

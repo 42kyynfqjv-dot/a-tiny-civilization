@@ -21,15 +21,46 @@ chmod 600 "$environment_file"
 
 deadline_file="${temporary_directory}/deadline.env"
 cp "$environment_file" "$deadline_file"
-echo 'COGNITION_REQUEST_TIMEOUT_SECONDS=60' >> "$deadline_file"
+{
+  echo 'RUNNER_TICK_MILLISECONDS=1000'
+  echo 'COGNITION_REQUEST_TIMEOUT_SECONDS=60'
+} >> "$deadline_file"
 if "${project_root}/scripts/production-preflight.sh" --env-file "$deadline_file" \
   >"${temporary_directory}/deadline.txt" 2>&1; then
   echo "production preflight accepted a wall timeout at the cognition deadline" >&2
   exit 1
 fi
-if ! grep -q 'must expire before the 60-tick cognition deadline' \
+if ! grep -q 'must keep the bounded ladder before the 60-tick cognition deadline' \
   "${temporary_directory}/deadline.txt"; then
   echo "production preflight rejected the cognition deadline for the wrong reason" >&2
+  exit 1
+fi
+
+short_lease_file="${temporary_directory}/short-lease.env"
+cp "$environment_file" "$short_lease_file"
+echo 'COGNITION_CLAIM_LEASE_SECONDS=3000' >> "$short_lease_file"
+if "${project_root}/scripts/production-preflight.sh" --env-file "$short_lease_file" \
+  >"${temporary_directory}/short-lease.txt" 2>&1; then
+  echo "production preflight accepted a lease shorter than one bounded cognition job" >&2
+  exit 1
+fi
+if ! grep -q 'must outlive bounded recall and route attempts' \
+  "${temporary_directory}/short-lease.txt"; then
+  echo "production preflight rejected the short cognition lease for the wrong reason" >&2
+  exit 1
+fi
+
+short_research_lease_file="${temporary_directory}/short-research-lease.env"
+cp "$environment_file" "$short_research_lease_file"
+echo 'CANCER_RESEARCH_CLAIM_LEASE_SECONDS=570' >> "$short_research_lease_file"
+if "${project_root}/scripts/production-preflight.sh" --env-file "$short_research_lease_file" \
+  >"${temporary_directory}/short-research-lease.txt" 2>&1; then
+  echo "production preflight accepted a lease shorter than one bounded research job" >&2
+  exit 1
+fi
+if ! grep -q 'must outlive every bounded route attempt' \
+  "${temporary_directory}/short-research-lease.txt"; then
+  echo "production preflight rejected the short research lease for the wrong reason" >&2
   exit 1
 fi
 

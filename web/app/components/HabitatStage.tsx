@@ -30,6 +30,7 @@ type HabitatCommunication = {
   kind: "heard_signal" | "associated_action";
   source_organism_id: string;
   observer_organism_id: string;
+  signal_sequence?: number[];
   signal_form: number;
   associated_action?: Action;
 };
@@ -474,13 +475,13 @@ export function HabitatStage({ worldId, worldTick, labels }: { worldId: string; 
 
 function languageStageLabel(stage: LanguageStage) {
   if (stage === "rudimentary_language_candidate") return "Language candidate";
-  if (stage === "proto_lexicon") return "Proto-lexicon";
+  if (stage === "proto_lexicon") return "Proto-lexicon reached";
   return "Pre-language";
 }
 
 function languageStageDescription(stage: LanguageStage) {
-  if (stage === "rudimentary_language_candidate") return "Several socially learned call conventions now qualify as a rudimentary language candidate; grammar has not been established.";
-  if (stage === "proto_lexicon") return "At least one socially learned call convention now persists across the population; this is not compositional language yet.";
+  if (stage === "rudimentary_language_candidate") return "The population has crossed the conservative threshold for several socially learned call conventions; grammar has not been established.";
+  if (stage === "proto_lexicon") return "At least one socially learned call convention has crossed the public evidence threshold. The live pattern may later strengthen or weaken.";
   return "Calls are physical signals. A connection means a directly observed pattern—not a word or meaning yet.";
 }
 
@@ -799,16 +800,20 @@ function communicationStories(moments: HabitatCommunication[], labels: Map<strin
   for (const moment of moments) {
     const source = labels.get(moment.source_organism_id) ?? "One person";
     const observer = labels.get(moment.observer_organism_id) ?? "another person";
+    const signalSequence = moment.signal_sequence ?? [moment.signal_form];
     if (moment.kind === "associated_action" && moment.associated_action) {
+      const call = signalSequence.length > 1
+        ? `two-part call ${signalSequence.map((form) => `·${form}`).join(" ")}`
+        : "call";
       learned.push({
         key: moment.source_event_id,
         tick: moment.source_tick,
         kind: "learned",
-        sentence: `${observer} connected ${possessive(source)} call with ${associationAction(moment.associated_action)}.`,
+        sentence: `${observer} connected ${possessive(source)} ${call} with ${associationAction(moment.associated_action)}.`,
       });
       continue;
     }
-    const key = `${moment.source_tick}:${moment.source_organism_id}:${moment.signal_form}`;
+    const key = `${moment.source_tick}:${moment.source_organism_id}:${signalSequence.join("-")}`;
     const group = heard.get(key) ?? { tick: moment.source_tick, source, observers: [] };
     if (!group.observers.includes(observer)) group.observers.push(observer);
     heard.set(key, group);

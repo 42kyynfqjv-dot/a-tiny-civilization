@@ -38,6 +38,10 @@ ladder.
   the paid DeepSeek route remains last and separately authorized. This order
   became active only for newly selected cognition requests; every earlier
   request retains its exact versioned registry and attempt receipts.
+- Route policy version three preserves that exact order but canonically quarantines
+  the two rejected pinned OpenRouter variants and the uninstalled local GPT-OSS
+  route. They produce durable `skipped_disabled` attempts without a network call;
+  ADR 0171 records the live evidence, compatibility boundary, and timeout correction.
 - A separate development policy may additionally admit NVIDIA's hosted Nemotron
   development endpoint. It cannot validate as production policy and creates no
   private-soak or launch-wait requirement.

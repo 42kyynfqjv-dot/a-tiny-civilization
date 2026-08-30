@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v15";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v17";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -137,7 +137,9 @@ impl CognitionRouteLadder {
         for (index, route) in self.registry.routes.iter().enumerate() {
             let route_index = u16::try_from(index)
                 .map_err(|_| CognitionModelError::Rejected("route index exceeds u16".to_owned()))?;
-            let status = if route.billing_class == CognitionBillingClass::PaidApproved
+            let status = if self.registry.route_is_quarantined(route) {
+                CognitionRouteAttemptStatus::SkippedDisabled
+            } else if route.billing_class == CognitionBillingClass::PaidApproved
                 && !execution.paid_authorized
             {
                 CognitionRouteAttemptStatus::SkippedPaidUnauthorized
@@ -838,6 +840,13 @@ fn research_api_request(
         // accepts this model-native switch and then emits the constrained JSON.
         payload["chat_template_kwargs"] = json!({"enable_thinking": false});
     }
+    if route == &CognitionModelRoute::fireworks_cancer_nemotron_lightning_3_5() {
+        // Nemotron's Fireworks template otherwise emits an unconstrained
+        // reasoning preamble before the requested JSON and can exhaust the
+        // bounded completion. The live serverless endpoint accepts this
+        // model-native switch and then honors the strict JSON schema.
+        payload["chat_template_kwargs"] = json!({"enable_thinking": false});
+    }
     if route == &CognitionModelRoute::openrouter_cancer_gpt_oss_20b_free()
         || route == &CognitionModelRoute::openrouter_cancer_gpt_oss_120b_free()
     {
@@ -1448,28 +1457,17 @@ fn research_billed_micro_usd(
     prompt_tokens: u32,
     completion_tokens: u32,
 ) -> Result<u64, CancerResearchModelError> {
-    if route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b() {
+    if route.provider == CognitionProviderId::fireworks_cancer() {
         // Fireworks' OpenAI-compatible response reports token usage but not a
-        // dollar-cost field. Price the receipt conservatively from its public
-        // serverless tariff: $0.07/M input and $0.30/M output tokens. Cached
-        // input is intentionally charged here at the full input rate.
-        let numerator = u64::from(prompt_tokens)
-            .checked_mul(
-                application::CANCER_FIREWORKS_GPT_OSS_20B_INPUT_MICRO_USD_PER_MILLION_TOKENS,
-            )
-            .and_then(|input| {
-                u64::from(completion_tokens)
-                    .checked_mul(
-                        application::CANCER_FIREWORKS_GPT_OSS_20B_OUTPUT_MICRO_USD_PER_MILLION_TOKENS,
-                    )
-                    .and_then(|output| input.checked_add(output))
-            })
-            .ok_or_else(|| {
-                CancerResearchModelError::InvalidResponse(
-                    "Fireworks usage price overflowed its bounded receipt".to_owned(),
-                )
-            })?;
-        return Ok(numerator.div_ceil(1_000_000));
+        // dollar-cost field. Derive the receipt from the exact pinned model's
+        // public serverless tariff; cached input is conservatively charged at
+        // the full input rate.
+        return application::fireworks_research_billed_micro_usd(
+            &route.requested_model,
+            prompt_tokens,
+            completion_tokens,
+        )
+        .map_err(|error| CancerResearchModelError::InvalidResponse(error.to_string()));
     }
     let billed = match (route.billing_class, reported_cost) {
         (CognitionBillingClass::PaidApproved, None) => {
@@ -1511,6 +1509,8 @@ fn api_request(
     let request_json = serde_json::to_string(request)
         .map_err(|error| CognitionModelError::Rejected(error.to_string()))?;
     let local_unconstrained = provider.as_str() == "local_openai";
+    let dynamic_openrouter_free = provider == &CognitionProviderId::openrouter()
+        && route == &CognitionModelRoute::openrouter_free();
     let system_prompt = if local_unconstrained {
         "You are one bounded decision process inside a simple organism. You receive numeric bodily pressures, direct property readings, learned action-outcome values, and recalled direct observations. Compare learned action values and bodily pressures; do not default to the first action listed. Choose exactly one use-neutral primitive motor action. Return exactly one lowercase token from: move, orient, reach, grasp, release, apply_force, bite, chew, swallow, rest, emit_signal. Never return reasoning, punctuation, JSON, identities, technologies, language, writing, social roles, goals, or named uses."
     } else {
@@ -1535,8 +1535,10 @@ fn api_request(
     // Ollama 0.11's JSON-schema grammar biases Qwen 2.5 1.5B toward the
     // first oneOf branch regardless of the prompt. A closed bare-token parser
     // retains the same safety boundary while allowing the local model to make
-    // the choice. Hosted routes keep strict provider-side structured output.
-    if !local_unconstrained {
+    // the choice. OpenRouter's dynamic free pool spans models with inconsistent
+    // provider-side schema support, so that one route relies on the same strict
+    // local object parser used for every hosted response.
+    if !local_unconstrained && !dynamic_openrouter_free {
         payload["response_format"] = json!({
             "type": "json_schema",
             "json_schema": {
@@ -1803,13 +1805,17 @@ fn provider_resolved_model(
     if let Some(resolved_model) = resolved_model.filter(|value| !value.trim().is_empty()) {
         return Ok(resolved_model.to_owned());
     }
-    if route == &CognitionModelRoute::openrouter_cancer_free() {
+    if route == &CognitionModelRoute::openrouter_free()
+        || route == &CognitionModelRoute::openrouter_cancer_free()
+    {
         // The dynamic free router has occasionally omitted its selected model
         // even while returning a complete result. Preserve that uncertainty in
         // the receipt instead of inventing a concrete backend identity.
         return Ok("openrouter/free:provider-unreported".to_owned());
     }
-    if route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b() {
+    if route == &CognitionModelRoute::fireworks_cancer_gpt_oss_20b()
+        || route == &CognitionModelRoute::fireworks_cancer_nemotron_lightning_3_5()
+    {
         // This route is pinned to one exact model, so the route identity is the
         // resolved model even when the compatible response omits the duplicate
         // top-level field.
@@ -2424,6 +2430,25 @@ mod tests {
     }
 
     #[test]
+    fn fireworks_nemotron_disables_thinking_and_keeps_strict_output() {
+        let request = research_request(
+            CancerResearchStage::BlindDiscovery,
+            CancerResearchInferenceTier::Exploration,
+            None,
+        );
+        let payload = research_api_request(
+            &CognitionProviderId::fireworks_cancer(),
+            &CognitionModelRoute::fireworks_cancer_nemotron_lightning_3_5(),
+            &request,
+        )
+        .expect("valid Fireworks Nemotron payload");
+
+        assert_eq!(payload["chat_template_kwargs"]["enable_thinking"], false);
+        assert_eq!(payload["response_format"]["type"], "json_schema");
+        assert!(payload.get("reasoning_effort").is_none());
+    }
+
+    #[test]
     fn hetzner_grammar_omits_unsupported_uniqueness_hint_but_keeps_strict_schema() {
         let request = research_request(
             CancerResearchStage::BlindDiscovery,
@@ -2781,17 +2806,7 @@ mod tests {
         assert_eq!(receipt.billed_micro_usd, 0);
         let seen = seen.lock().expect("test lock").clone().expect("request");
         assert_eq!(seen["provider"]["require_parameters"], true);
-        assert_eq!(seen["response_format"]["json_schema"]["strict"], true);
-        let variants = seen["response_format"]["json_schema"]["schema"]["oneOf"]
-            .as_array()
-            .expect("closed action variants");
-        assert_eq!(variants.len(), 11);
-        assert_eq!(variants[0]["properties"]["action_kind"]["const"], "move");
-        assert_eq!(
-            variants[0]["properties"]["movement_direction"]["maximum"],
-            3
-        );
-        assert_eq!(variants[0]["properties"]["contact_region"]["type"], "null");
+        assert!(seen.get("response_format").is_none());
         assert_eq!(seen["include_reasoning"], false);
     }
 
@@ -3011,6 +3026,16 @@ mod tests {
             .expect("sub-micro-dollar request rounds up"),
             1
         );
+        assert_eq!(
+            research_billed_micro_usd(
+                &CognitionModelRoute::fireworks_cancer_nemotron_lightning_3_5(),
+                None,
+                4_000,
+                1_000,
+            )
+            .expect("published Fireworks Nemotron tariff"),
+            400
+        );
     }
 
     #[test]
@@ -3039,6 +3064,11 @@ mod tests {
     #[test]
     fn omitted_model_identity_is_normalized_only_when_the_route_still_identifies_it_honestly() {
         assert_eq!(
+            provider_resolved_model(&CognitionModelRoute::openrouter_free(), None)
+                .expect("ordinary dynamic uncertainty marker"),
+            "openrouter/free:provider-unreported"
+        );
+        assert_eq!(
             provider_resolved_model(&CognitionModelRoute::openrouter_cancer_free(), None)
                 .expect("dynamic uncertainty marker"),
             "openrouter/free:provider-unreported"
@@ -3047,6 +3077,11 @@ mod tests {
         assert_eq!(
             provider_resolved_model(&fireworks, None).expect("pinned Fireworks model"),
             fireworks.requested_model
+        );
+        let nemotron = CognitionModelRoute::fireworks_cancer_nemotron_lightning_3_5();
+        assert_eq!(
+            provider_resolved_model(&nemotron, None).expect("pinned Fireworks Nemotron model"),
+            nemotron.requested_model
         );
         assert!(
             provider_resolved_model(
@@ -3095,10 +3130,10 @@ mod tests {
                 .collect::<Vec<_>>(),
             vec![
                 CognitionRouteAttemptStatus::SkippedUnconfigured,
+                CognitionRouteAttemptStatus::SkippedDisabled,
+                CognitionRouteAttemptStatus::SkippedDisabled,
                 CognitionRouteAttemptStatus::SkippedUnconfigured,
-                CognitionRouteAttemptStatus::SkippedUnconfigured,
-                CognitionRouteAttemptStatus::SkippedUnconfigured,
-                CognitionRouteAttemptStatus::SkippedUnconfigured,
+                CognitionRouteAttemptStatus::SkippedDisabled,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::SkippedCooldown,
@@ -3115,12 +3150,75 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn policy_three_quarantines_dead_routes_without_rewriting_policy_two() {
+        let legacy_calls = Arc::new(AtomicUsize::new(0));
+        let mut legacy_adapters = BTreeMap::new();
+        legacy_adapters.insert(
+            CognitionProviderId::openrouter(),
+            fake_adapter(
+                FakeBehavior::Succeed(PrimitiveActionKind::Orient),
+                &legacy_calls,
+            ),
+        );
+        let legacy = CognitionRouteLadder::new(
+            CognitionRouteRegistry::production_legacy_v2(),
+            CognitionRoutePurpose::ProductionWorld,
+            legacy_adapters,
+        )
+        .expect("legacy ladder");
+        let mut execution = CognitionLadderExecution::free_only(8);
+        execution.availability.insert(
+            CognitionRouteKey::from(&CognitionModelRoute::openrouter_free()),
+            CognitionRouteAvailability::Disabled,
+        );
+        let legacy_result = legacy
+            .infer(&request(), &execution)
+            .await
+            .expect("legacy result");
+        assert_eq!(
+            legacy_result.attempts[1].status,
+            CognitionRouteAttemptStatus::Succeeded
+        );
+        assert_eq!(legacy_calls.load(Ordering::SeqCst), 1);
+
+        let current_calls = Arc::new(AtomicUsize::new(0));
+        let mut current_adapters = BTreeMap::new();
+        current_adapters.insert(
+            CognitionProviderId::openrouter(),
+            fake_adapter(
+                FakeBehavior::Succeed(PrimitiveActionKind::Orient),
+                &current_calls,
+            ),
+        );
+        let current = CognitionRouteLadder::new(
+            CognitionRouteRegistry::production_default(),
+            CognitionRoutePurpose::ProductionWorld,
+            current_adapters,
+        )
+        .expect("current ladder");
+        let current_result = current
+            .infer(&request(), &execution)
+            .await
+            .expect("current result");
+        assert_eq!(
+            current_result.attempts[1].status,
+            CognitionRouteAttemptStatus::SkippedDisabled
+        );
+        assert_eq!(
+            current_result.attempts[2].status,
+            CognitionRouteAttemptStatus::SkippedDisabled
+        );
+        assert_eq!(current_calls.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
     async fn paid_tail_requires_per_job_authorization() {
         let paid_calls = Arc::new(AtomicUsize::new(0));
         let paid_route = CognitionModelRoute::openrouter_deepseek_v4_flash();
         let registry = CognitionRouteRegistry {
-            policy_version: application::COGNITION_ROUTE_POLICY_VERSION,
+            policy_version: application::LEGACY_COGNITION_ROUTE_POLICY_VERSION,
             routes: vec![paid_route],
+            quarantined_routes: Vec::new(),
         };
         let mut adapters = BTreeMap::new();
         adapters.insert(

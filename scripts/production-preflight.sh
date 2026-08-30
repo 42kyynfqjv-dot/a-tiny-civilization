@@ -138,8 +138,9 @@ case "${COGNITION_PAID_ENABLED:-false}" in
     ;;
 esac
 
-runner_tick_milliseconds="${RUNNER_TICK_MILLISECONDS:-1000}"
-cognition_timeout_seconds="${COGNITION_REQUEST_TIMEOUT_SECONDS:-45}"
+runner_tick_milliseconds="${RUNNER_TICK_MILLISECONDS:-60000}"
+cognition_timeout_seconds="${COGNITION_REQUEST_TIMEOUT_SECONDS:-180}"
+cognition_claim_lease_seconds="${COGNITION_CLAIM_LEASE_SECONDS:-3600}"
 if [[ ! "$runner_tick_milliseconds" =~ ^[1-9][0-9]*$ ]] \
    || ((runner_tick_milliseconds > 60000)); then
   echo "RUNNER_TICK_MILLISECONDS must be an integer from 1 through 60000" >&2
@@ -150,11 +151,47 @@ if [[ ! "$cognition_timeout_seconds" =~ ^[1-9][0-9]*$ ]] \
   echo "COGNITION_REQUEST_TIMEOUT_SECONDS must be an integer from 1 through 300" >&2
   exit 2
 fi
-# Cognition-capable rulesets commit a 60-tick response window. The wall-cost circuit breaker
-# must expire before that window at the configured target tick cadence so an
-# unavailable route can still be durably latched without racing the deadline.
-if ((cognition_timeout_seconds * 1000 >= 60 * runner_tick_milliseconds)); then
-  echo "COGNITION_REQUEST_TIMEOUT_SECONDS must expire before the 60-tick cognition deadline" >&2
+if [[ ! "$cognition_claim_lease_seconds" =~ ^[1-9][0-9]*$ ]] \
+   || ((cognition_claim_lease_seconds > 86400)); then
+  echo "COGNITION_CLAIM_LEASE_SECONDS must be an integer from 1 through 86400" >&2
+  exit 2
+fi
+# One claimed job can perform one Hindsight recall and at most sixteen network
+# attempts. Bound the complete worst-case operation before the 60-tick canonical
+# deadline, and keep its lease alive for the whole operation so a second worker
+# cannot duplicate an in-flight request.
+cognition_worst_case_seconds=$((cognition_timeout_seconds * 17))
+if ((cognition_worst_case_seconds * 1000 >= 60 * runner_tick_milliseconds)); then
+  echo "COGNITION_REQUEST_TIMEOUT_SECONDS must keep the bounded ladder before the 60-tick cognition deadline" >&2
+  exit 2
+fi
+if ((cognition_claim_lease_seconds <= cognition_worst_case_seconds)); then
+  echo "COGNITION_CLAIM_LEASE_SECONDS must outlive bounded recall and route attempts" >&2
+  exit 2
+fi
+
+cancer_research_timeout_seconds="${CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS:-120}"
+cancer_research_free_timeout_seconds="${CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS:-30}"
+cancer_research_claim_lease_seconds="${CANCER_RESEARCH_CLAIM_LEASE_SECONDS:-900}"
+for value in "$cancer_research_timeout_seconds" "$cancer_research_free_timeout_seconds" \
+  "$cancer_research_claim_lease_seconds"; do
+  if [[ ! "$value" =~ ^[1-9][0-9]*$ ]] || ((value > 86400)); then
+    echo "Cancer research timeouts and claim lease must be integers from 1 through 86400" >&2
+    exit 2
+  fi
+done
+if ((cancer_research_free_timeout_seconds > cancer_research_timeout_seconds)); then
+  echo "CANCER_RESEARCH_FREE_REQUEST_TIMEOUT_SECONDS cannot exceed CANCER_RESEARCH_REQUEST_TIMEOUT_SECONDS" >&2
+  exit 2
+fi
+# The closed route contract admits at most sixteen network attempts with paid
+# routes last. Keep even fifteen free attempts plus one paid attempt inside one
+# durable claim generation.
+cancer_research_worst_case_seconds=$((
+  cancer_research_free_timeout_seconds * 15 + cancer_research_timeout_seconds
+))
+if ((cancer_research_claim_lease_seconds <= cancer_research_worst_case_seconds)); then
+  echo "CANCER_RESEARCH_CLAIM_LEASE_SECONDS must outlive every bounded route attempt" >&2
   exit 2
 fi
 

@@ -22,6 +22,7 @@ struct MemoryOutboxRow {
     payload_version: i32,
     payload: Value,
     attempt_count: i32,
+    claim_token: Uuid,
 }
 
 #[async_trait]
@@ -82,6 +83,7 @@ impl MemoryOutboxStore for PostgresStore {
             SET
                 claimed_by = $1,
                 claimed_at = NOW(),
+                claim_token = gen_random_uuid(),
                 attempt_count = delivery.attempt_count + 1,
                 last_error = NULL
             FROM candidate
@@ -95,7 +97,8 @@ impl MemoryOutboxStore for PostgresStore {
                 delivery.bank_id,
                 delivery.payload_version,
                 delivery.payload,
-                delivery.attempt_count
+                delivery.attempt_count,
+                delivery.claim_token
             "#,
         )
         .bind(worker_id)
@@ -129,16 +132,18 @@ impl MemoryOutboxStore for PostgresStore {
             UPDATE memory_outbox
             SET
                 completed_at = NOW(),
-                remote_operation_id = $3,
-                adapter_version = $4,
+                remote_operation_id = $4,
+                adapter_version = $5,
                 last_error = NULL
             WHERE operation_id = $1
               AND claimed_by = $2
+              AND claim_token = $3
               AND completed_at IS NULL
             "#,
         )
         .bind(entry.retain.operation_id)
         .bind(worker_id)
+        .bind(entry.claim_token)
         .bind(&receipt.remote_operation_id)
         .bind(&receipt.adapter_version)
         .execute(self.pool())
@@ -162,17 +167,20 @@ impl MemoryOutboxStore for PostgresStore {
             r#"
             UPDATE memory_outbox
             SET
-                available_at = NOW() + ($3::BIGINT * INTERVAL '1 second'),
+                available_at = NOW() + ($4::BIGINT * INTERVAL '1 second'),
                 claimed_by = NULL,
                 claimed_at = NULL,
-                last_error = $4
+                claim_token = NULL,
+                last_error = $5
             WHERE operation_id = $1
               AND claimed_by = $2
+              AND claim_token = $3
               AND completed_at IS NULL
             "#,
         )
         .bind(entry.retain.operation_id)
         .bind(worker_id)
+        .bind(entry.claim_token)
         .bind(retry_after_seconds)
         .bind(error)
         .execute(self.pool())
@@ -274,6 +282,7 @@ fn parse_entry(row: MemoryOutboxRow) -> Result<MemoryOutboxEntry, StoreError> {
     Ok(MemoryOutboxEntry {
         retain,
         attempt_count,
+        claim_token: row.claim_token,
     })
 }
 
@@ -292,7 +301,7 @@ fn require_single_update(rows: u64, operation_id: Uuid) -> Result<(), StoreError
         Ok(())
     } else {
         Err(StoreError::Conflict(format!(
-            "memory delivery {operation_id} is not held by this worker"
+            "memory delivery {operation_id} is not held by this worker lease generation"
         )))
     }
 }

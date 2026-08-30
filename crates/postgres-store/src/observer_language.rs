@@ -1,3 +1,5 @@
+use std::collections::BTreeSet;
+
 use async_trait::async_trait;
 use observer_projection::{
     ObserverLanguageStore, ObserverProjectionStoreError, PUBLIC_LANGUAGE_PROJECTION_NAME,
@@ -12,7 +14,7 @@ use crate::{
     PostgresStore, advance_projection_cursor, lock_projection_cursor, verify_committed_batch_range,
 };
 
-const DETECTOR_VERSION: u16 = 5;
+const DETECTOR_VERSION: u16 = 6;
 const EVIDENCE_WINDOW_TICKS: u64 = 1_152;
 const MINIMUM_EVIDENCE_EVENTS: u32 = 12;
 const MINIMUM_LEARNERS: u32 = 4;
@@ -53,6 +55,12 @@ struct ConventionRow {
     latest_tick: i64,
 }
 
+#[derive(FromRow)]
+struct QualifiedMeaningRow {
+    action: String,
+    movement_direction: Option<i16>,
+}
+
 #[async_trait]
 impl ObserverLanguageStore for PostgresStore {
     async fn apply_public_language_batches(
@@ -81,8 +89,29 @@ impl ObserverLanguageStore for PostgresStore {
             return Err(corrupt("public language batch range is not contiguous"));
         }
         verify_committed_batch_range(&mut transaction, pending).await?;
+        let mut historical_stage_rank = sqlx::query_scalar::<_, i16>(
+            r#"
+            SELECT COALESCE(MAX(stage_rank),0)::SMALLINT
+            FROM observer_language_milestones
+            WHERE projection_version=$1 AND detector_version=$2 AND world_id=$3
+            "#,
+        )
+        .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
+        .bind(i32::from(DETECTOR_VERSION))
+        .bind(first.world_id.as_uuid())
+        .fetch_one(&mut *transaction)
+        .await
+        .map_err(unavailable)?;
+        let mut detector_critical_ticks = load_detector_critical_ticks(
+            &mut transaction,
+            first.world_id,
+            first_pending.tick,
+            pending[pending.len() - 1].tick,
+        )
+        .await?;
 
         for batch in pending {
+            let mut added_evidence = false;
             for record in &batch.events {
                 let DomainEvent::OrganismSignalActionAssociationChanged {
                     observer_id,
@@ -93,6 +122,8 @@ impl ObserverLanguageStore for PostgresStore {
                 else {
                     continue;
                 };
+                added_evidence = true;
+                detector_critical_ticks.extend(language_evidence_critical_ticks(batch.tick));
                 sqlx::query(
                     r#"
                     INSERT INTO observer_language_evidence (
@@ -118,6 +149,21 @@ impl ObserverLanguageStore for PostgresStore {
                 .execute(&mut *transaction)
                 .await
                 .map_err(unavailable)?;
+            }
+            if (added_evidence || detector_critical_ticks.contains(&batch.tick.get()))
+                && historical_stage_rank < 2
+            {
+                let stage =
+                    detect_language_stage_at(&mut transaction, first.world_id, batch.tick).await?;
+                record_language_milestones(
+                    &mut transaction,
+                    first.world_id,
+                    batch.sequence,
+                    batch.tick,
+                    stage,
+                )
+                .await?;
+                historical_stage_rank = historical_stage_rank.max(i16::from(stage_rank(stage)));
             }
         }
         let last_sequence = to_i64(pending[pending.len() - 1].sequence.get(), "source sequence")?;
@@ -157,13 +203,29 @@ impl ObserverLanguageStore for PostgresStore {
             r#"
             WITH window_boundary AS (
                 SELECT
-                    COALESCE(MAX(source_tick),0)::BIGINT AS latest_tick,
+                    COALESCE(
+                        (
+                            SELECT tick
+                            FROM event_batches
+                            WHERE world_id=$2 AND sequence=$5
+                        ),
+                        MAX(source_tick),
+                        0
+                    )::BIGINT AS latest_tick,
                     GREATEST(
                         0,
-                        COALESCE(MAX(source_tick),0)::BIGINT - ($4::BIGINT / 2) + 1
+                        COALESCE(
+                            (
+                                SELECT tick
+                                FROM event_batches
+                                WHERE world_id=$2 AND sequence=$5
+                            ),
+                            MAX(source_tick),
+                            0
+                        )::BIGINT - ($4::BIGINT / 2) + 1
                     ) AS recent_half_start
                 FROM observer_language_evidence
-                WHERE projection_version=$1 AND world_id=$2
+                WHERE projection_version=$1 AND world_id=$2 AND source_sequence <= $5
             ), eligible_evidence AS (
                 SELECT evidence.*
                 FROM observer_language_evidence evidence
@@ -180,6 +242,7 @@ impl ObserverLanguageStore for PostgresStore {
                  AND source.role='person'
                 WHERE evidence.projection_version=$1
                   AND evidence.world_id=$2
+                  AND evidence.source_sequence <= $5
                   AND evidence.action NOT IN ('bite','emit_signal')
                   AND evidence.source_tick >= GREATEST(
                       0,
@@ -233,6 +296,7 @@ impl ObserverLanguageStore for PostgresStore {
         .bind(world_id.as_uuid())
         .bind(i32::from(PUBLIC_ORGANISM_PROJECTION_VERSION))
         .bind(to_i64(EVIDENCE_WINDOW_TICKS, "language evidence window")?)
+        .bind(to_i64(through_sequence.get(), "language cursor")?)
         .fetch_all(self.pool())
         .await
         .map_err(unavailable)?;
@@ -398,24 +462,236 @@ impl ObserverLanguageStore for PostgresStore {
             .map(|item| (item.associated_action, item.movement_direction))
             .collect::<std::collections::BTreeSet<_>>()
             .len();
-        let stage = if distinct_meanings >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE) {
+        let current_stage = if distinct_meanings >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE)
+        {
             PublicLanguageStage::RudimentaryLanguageCandidate
         } else if conventions.is_empty() {
             PublicLanguageStage::Undetected
         } else {
             PublicLanguageStage::ProtoLexicon
         };
+        let historical_stage =
+            load_highest_language_milestone(self, world_id, through_sequence).await?;
+        let stage = maximum_stage(current_stage, historical_stage);
         Ok(PublicLanguageArchive {
             projection_version: PUBLIC_LANGUAGE_PROJECTION_VERSION,
             detector_version: DETECTOR_VERSION,
             world_id,
             through_sequence,
             stage,
+            current_stage,
             threshold: threshold(),
             conventions,
             emerging_patterns,
         })
     }
+}
+
+async fn load_detector_critical_ticks(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    world_id: WorldId,
+    first_tick: SimTick,
+    last_tick: SimTick,
+) -> Result<BTreeSet<u64>, ObserverProjectionStoreError> {
+    if last_tick.get() < first_tick.get() {
+        return Err(corrupt("public language batch ticks are not monotonic"));
+    }
+    let half_window = EVIDENCE_WINDOW_TICKS / 2;
+    let source_ticks = sqlx::query_scalar::<_, i64>(
+        r#"
+        SELECT DISTINCT source_tick
+        FROM observer_language_evidence
+        WHERE projection_version=$1 AND world_id=$2
+          AND (
+              source_tick BETWEEN GREATEST(0,$3::BIGINT-$5::BIGINT) AND $4::BIGINT-$5::BIGINT
+              OR source_tick BETWEEN GREATEST(0,$3::BIGINT-$6::BIGINT) AND $4::BIGINT-$6::BIGINT
+          )
+        "#,
+    )
+    .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
+    .bind(world_id.as_uuid())
+    .bind(to_i64(first_tick.get(), "first language batch tick")?)
+    .bind(to_i64(last_tick.get(), "last language batch tick")?)
+    .bind(to_i64(half_window, "language half window")?)
+    .bind(to_i64(EVIDENCE_WINDOW_TICKS, "language evidence window")?)
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    let mut critical_ticks = BTreeSet::new();
+    for source_tick in source_ticks {
+        let source_tick = to_u64(source_tick, "language evidence source tick")?;
+        for critical_tick in language_evidence_critical_ticks(SimTick::new(source_tick)) {
+            if (first_tick.get()..=last_tick.get()).contains(&critical_tick) {
+                critical_ticks.insert(critical_tick);
+            }
+        }
+    }
+    Ok(critical_ticks)
+}
+
+fn language_evidence_critical_ticks(source_tick: SimTick) -> impl Iterator<Item = u64> {
+    [EVIDENCE_WINDOW_TICKS / 2, EVIDENCE_WINDOW_TICKS]
+        .into_iter()
+        .filter_map(move |offset| source_tick.get().checked_add(offset))
+}
+
+async fn detect_language_stage_at(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    world_id: WorldId,
+    anchor_tick: SimTick,
+) -> Result<PublicLanguageStage, ObserverProjectionStoreError> {
+    let meanings = sqlx::query_as::<_, QualifiedMeaningRow>(
+        r#"
+        WITH window_boundary AS (
+            SELECT $4::BIGINT AS latest_tick,
+                GREATEST(0, $4::BIGINT - ($5::BIGINT / 2) + 1) AS recent_half_start
+        ), eligible_evidence AS (
+            SELECT evidence.*
+            FROM observer_language_evidence evidence
+            CROSS JOIN window_boundary boundary
+            JOIN observer_organisms learner
+              ON learner.projection_version=$3
+             AND learner.world_id=evidence.world_id
+             AND learner.organism_id=evidence.observer_id
+             AND learner.role='person'
+            JOIN observer_organisms source
+              ON source.projection_version=$3
+             AND source.world_id=evidence.world_id
+             AND source.organism_id=evidence.actor_id
+             AND source.role='person'
+            WHERE evidence.projection_version=$1
+              AND evidence.world_id=$2
+              AND evidence.action NOT IN ('bite','emit_signal')
+              AND evidence.source_tick BETWEEN
+                  GREATEST(0, boundary.latest_tick - $5::BIGINT + 1)
+                  AND boundary.latest_tick
+        ), meanings AS (
+            SELECT preceding_signal,signal_form,action,movement_direction,
+                COUNT(*)::BIGINT AS evidence_events,
+                COUNT(*) FILTER (
+                    WHERE source_tick >= (SELECT recent_half_start FROM window_boundary)
+                )::BIGINT AS recent_evidence_events,
+                COUNT(DISTINCT observer_id)::BIGINT AS learners,
+                COUNT(DISTINCT actor_id)::BIGINT AS signal_sources,
+                MIN(source_tick)::BIGINT AS first_tick,
+                MAX(source_tick)::BIGINT AS latest_tick
+            FROM eligible_evidence
+            GROUP BY preceding_signal,signal_form,action,movement_direction
+        ), form_totals AS (
+            SELECT preceding_signal,signal_form,COUNT(*)::BIGINT AS form_events,
+                COUNT(*) FILTER (
+                    WHERE source_tick >= (SELECT recent_half_start FROM window_boundary)
+                )::BIGINT AS recent_form_events
+            FROM eligible_evidence
+            GROUP BY preceding_signal,signal_form
+        ), meaning_baselines AS (
+            SELECT action,movement_direction,COUNT(*)::BIGINT AS baseline_events
+            FROM eligible_evidence
+            GROUP BY action,movement_direction
+        ), eligible_total AS (
+            SELECT COUNT(*)::BIGINT AS eligible_events FROM eligible_evidence
+        ), qualified AS (
+            SELECT meanings.action,meanings.movement_direction
+            FROM meanings
+            JOIN form_totals
+              ON form_totals.preceding_signal IS NOT DISTINCT FROM meanings.preceding_signal
+             AND form_totals.signal_form=meanings.signal_form
+            JOIN meaning_baselines
+              ON meaning_baselines.action=meanings.action
+             AND meaning_baselines.movement_direction IS NOT DISTINCT FROM meanings.movement_direction
+            CROSS JOIN eligible_total
+            WHERE meanings.evidence_events >= $6
+              AND meanings.learners >= $7
+              AND meanings.signal_sources >= $8
+              AND meanings.latest_tick - meanings.first_tick >= $9
+              AND FLOOR(meanings.evidence_events::NUMERIC * 100 / form_totals.form_events) >= $10
+              AND FLOOR(meanings.evidence_events::NUMERIC * 100 / form_totals.form_events)
+                    >= FLOOR(meaning_baselines.baseline_events::NUMERIC * 100 / eligible_total.eligible_events) + $11
+              AND FLOOR(meanings.evidence_events::NUMERIC * eligible_total.eligible_events * 100
+                    / (form_totals.form_events * meaning_baselines.baseline_events)) >= $12
+              AND meanings.recent_evidence_events >= $13
+              AND meanings.evidence_events - meanings.recent_evidence_events >= $13
+              AND FLOOR(meanings.recent_evidence_events::NUMERIC * 100
+                    / NULLIF(form_totals.recent_form_events,0)) >= $14
+              AND FLOOR((meanings.evidence_events - meanings.recent_evidence_events)::NUMERIC * 100
+                    / NULLIF(form_totals.form_events - form_totals.recent_form_events,0)) >= $14
+        )
+        SELECT DISTINCT action,movement_direction
+        FROM qualified
+        ORDER BY action,movement_direction NULLS FIRST
+        "#,
+    )
+    .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
+    .bind(world_id.as_uuid())
+    .bind(i32::from(PUBLIC_ORGANISM_PROJECTION_VERSION))
+    .bind(to_i64(anchor_tick.get(), "language anchor tick")?)
+    .bind(to_i64(EVIDENCE_WINDOW_TICKS, "language evidence window")?)
+    .bind(i64::from(MINIMUM_EVIDENCE_EVENTS))
+    .bind(i64::from(MINIMUM_LEARNERS))
+    .bind(i64::from(MINIMUM_SIGNAL_SOURCES))
+    .bind(to_i64(MINIMUM_TICK_SPAN, "minimum language tick span")?)
+    .bind(i64::from(MINIMUM_DOMINANCE_PERCENT))
+    .bind(i64::from(MINIMUM_BASELINE_MARGIN_PERCENT))
+    .bind(i64::from(MINIMUM_BASELINE_LIFT_PERCENT))
+    .bind(i64::from(MINIMUM_HALF_EVIDENCE_EVENTS))
+    .bind(i64::from(MINIMUM_HALF_DOMINANCE_PERCENT))
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(unavailable)?;
+    for meaning in &meanings {
+        parse_action(&meaning.action)?;
+        meaning
+            .movement_direction
+            .map(|value| u8::try_from(value).map_err(|_| corrupt("movement direction")))
+            .transpose()?;
+    }
+    Ok(
+        if meanings.len() >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE) {
+            PublicLanguageStage::RudimentaryLanguageCandidate
+        } else if meanings.is_empty() {
+            PublicLanguageStage::Undetected
+        } else {
+            PublicLanguageStage::ProtoLexicon
+        },
+    )
+}
+
+async fn record_language_milestones(
+    transaction: &mut sqlx::Transaction<'_, sqlx::Postgres>,
+    world_id: WorldId,
+    sequence: EventSequence,
+    tick: SimTick,
+    stage: PublicLanguageStage,
+) -> Result<(), ObserverProjectionStoreError> {
+    let stages: &[(&str, i16)] = match stage {
+        PublicLanguageStage::Undetected => &[],
+        PublicLanguageStage::ProtoLexicon => &[("proto_lexicon", 1)],
+        PublicLanguageStage::RudimentaryLanguageCandidate => {
+            &[("proto_lexicon", 1), ("rudimentary_language_candidate", 2)]
+        }
+    };
+    for (stage, rank) in stages {
+        sqlx::query(
+            r#"
+            INSERT INTO observer_language_milestones (
+                projection_version,detector_version,world_id,stage,stage_rank,
+                attained_sequence,attained_tick
+            ) VALUES ($1,$2,$3,$4,$5,$6,$7)
+            ON CONFLICT (projection_version,detector_version,world_id,stage) DO NOTHING
+            "#,
+        )
+        .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
+        .bind(i32::from(DETECTOR_VERSION))
+        .bind(world_id.as_uuid())
+        .bind(stage)
+        .bind(*rank)
+        .bind(to_i64(sequence.get(), "language milestone sequence")?)
+        .bind(to_i64(tick.get(), "language milestone tick")?)
+        .execute(&mut **transaction)
+        .await
+        .map_err(unavailable)?;
+    }
+    Ok(())
 }
 
 const fn threshold() -> PublicLanguageThreshold {
@@ -431,6 +707,62 @@ const fn threshold() -> PublicLanguageThreshold {
         minimum_half_evidence_events: MINIMUM_HALF_EVIDENCE_EVENTS,
         minimum_half_dominance_percent: MINIMUM_HALF_DOMINANCE_PERCENT,
         conventions_for_language_candidate: CONVENTIONS_FOR_LANGUAGE_CANDIDATE,
+    }
+}
+
+const fn stage_rank(stage: PublicLanguageStage) -> u8 {
+    match stage {
+        PublicLanguageStage::Undetected => 0,
+        PublicLanguageStage::ProtoLexicon => 1,
+        PublicLanguageStage::RudimentaryLanguageCandidate => 2,
+    }
+}
+
+const fn maximum_stage(
+    current: PublicLanguageStage,
+    historical: PublicLanguageStage,
+) -> PublicLanguageStage {
+    if stage_rank(historical) > stage_rank(current) {
+        historical
+    } else {
+        current
+    }
+}
+
+async fn load_highest_language_milestone(
+    store: &PostgresStore,
+    world_id: WorldId,
+    through_sequence: EventSequence,
+) -> Result<PublicLanguageStage, ObserverProjectionStoreError> {
+    let stage = sqlx::query_scalar::<_, String>(
+        r#"
+        SELECT stage
+        FROM observer_language_milestones
+        WHERE projection_version=$1 AND detector_version=$2 AND world_id=$3
+          AND attained_sequence <= $4
+        ORDER BY stage_rank DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(i32::from(PUBLIC_LANGUAGE_PROJECTION_VERSION))
+    .bind(i32::from(DETECTOR_VERSION))
+    .bind(world_id.as_uuid())
+    .bind(to_i64(through_sequence.get(), "language milestone cursor")?)
+    .fetch_optional(store.pool())
+    .await
+    .map_err(unavailable)?;
+    stage
+        .as_deref()
+        .map(parse_stage)
+        .transpose()
+        .map(|stage| stage.unwrap_or(PublicLanguageStage::Undetected))
+}
+
+fn parse_stage(value: &str) -> Result<PublicLanguageStage, ObserverProjectionStoreError> {
+    match value {
+        "proto_lexicon" => Ok(PublicLanguageStage::ProtoLexicon),
+        "rudimentary_language_candidate" => Ok(PublicLanguageStage::RudimentaryLanguageCandidate),
+        _ => Err(corrupt("invalid language milestone stage")),
     }
 }
 
@@ -563,5 +895,42 @@ mod tests {
         assert!(threshold.minimum_half_evidence_events > 1);
         assert!(threshold.minimum_half_dominance_percent > 50);
         assert!(threshold.conventions_for_language_candidate > 1);
+    }
+
+    #[test]
+    fn historical_language_stage_never_regresses_with_current_evidence() {
+        assert_eq!(
+            maximum_stage(
+                PublicLanguageStage::Undetected,
+                PublicLanguageStage::ProtoLexicon,
+            ),
+            PublicLanguageStage::ProtoLexicon
+        );
+        assert_eq!(
+            maximum_stage(
+                PublicLanguageStage::ProtoLexicon,
+                PublicLanguageStage::RudimentaryLanguageCandidate,
+            ),
+            PublicLanguageStage::RudimentaryLanguageCandidate
+        );
+        assert_eq!(
+            maximum_stage(
+                PublicLanguageStage::RudimentaryLanguageCandidate,
+                PublicLanguageStage::ProtoLexicon,
+            ),
+            PublicLanguageStage::RudimentaryLanguageCandidate
+        );
+    }
+
+    #[test]
+    fn evidence_is_rechecked_when_it_changes_half_or_leaves_the_window() {
+        assert_eq!(
+            language_evidence_critical_ticks(SimTick::new(100)).collect::<Vec<_>>(),
+            vec![676, 1_252]
+        );
+        assert_eq!(
+            language_evidence_critical_ticks(SimTick::new(u64::MAX - 600)).collect::<Vec<_>>(),
+            vec![u64::MAX - 24]
+        );
     }
 }

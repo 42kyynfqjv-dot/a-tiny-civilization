@@ -705,8 +705,13 @@ impl ObserverCancerResearchStore for PostgresStore {
         let evidence_rows = sqlx::query_as::<_, ResearchEvidenceRow>(
             r#"
             SELECT evidence_id,source_id,title,license,published_at,content_hash,retrieved_at
-            FROM cancer_research_literature
-            WHERE world_id=$1
+            FROM (
+                SELECT DISTINCT ON (source_id)
+                       evidence_id,source_id,title,license,published_at,content_hash,retrieved_at
+                FROM cancer_research_literature
+                WHERE world_id=$1
+                ORDER BY source_id,retrieved_at DESC,evidence_id DESC
+            ) AS latest_source_snapshot
             ORDER BY published_at DESC NULLS LAST,evidence_id
             LIMIT $2
             "#,

@@ -32,13 +32,21 @@ if PATH="${temporary_directory}/bin:${PATH}" DISK_GUARD_REQUIRED_FREE_MIB=9000 \
 fi
 
 for forbidden in 'docker volume' 'docker system prune' 'source-cache' 'derived-cache' \
-  'runtime-artifacts' 'postgres'; do
+  'runtime-artifacts'; do
   if rg -Fq "$forbidden" "$guard"; then
     echo "disk guard gained forbidden cleanup scope: $forbidden" >&2
     exit 1
   fi
 done
+if rg -n '(find|delete|prune).*(postgres|hindsight)|(postgres|hindsight).*(find|delete|prune)' \
+  "$guard"; then
+  echo "disk guard may monitor but must never clean protected state volumes" >&2
+  exit 1
+fi
 rg -Fq 'docker builder prune' "$guard"
+rg -Fq "docker inspect --type volume" "$guard"
+rg -Fq 'a-tiny-civilization-postgres-ruleset33-v1' "$guard"
+rg -Fq 'a-tiny-civilization-hindsight-v1' "$guard"
 rg -Fq 'find "$development_target" -mindepth 1 -delete' "$guard"
 
 echo "Production disk guard is bounded, thresholded, and dry-run testable."

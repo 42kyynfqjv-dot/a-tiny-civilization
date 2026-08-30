@@ -1,5 +1,6 @@
 use application::WorldStore;
 use async_trait::async_trait;
+use futures_util::TryStreamExt;
 use observer_projection::{
     ObserverHistoryCommitmentStore, ObserverProjectionStoreError, PublicHistoryCommitment,
     PublicHistoryCommitmentPage,
@@ -50,6 +51,7 @@ impl ObserverHistoryCommitmentStore for PostgresStore {
         let rows = sqlx::query_as::<_, EventBatchRow>(
             r#"
             SELECT world_id,sequence,tick,event_schema_version,ruleset_version,payload,
+                   payload_encoding,compressed_payload,uncompressed_payload_bytes,
                    checksum,previous_checksum,post_state_checksum
             FROM event_batches
             WHERE world_id=$1 AND sequence>$2
@@ -60,20 +62,25 @@ impl ObserverHistoryCommitmentStore for PostgresStore {
         .bind(world_id.as_uuid())
         .bind(after)
         .bind(row_limit)
-        .fetch_all(self.pool())
-        .await
-        .map_err(|error| ObserverProjectionStoreError::Unavailable(error.to_string()))?;
-        let has_more = rows.len() > usize::from(limit);
-        let batches = rows
-            .into_iter()
-            .take(usize::from(limit))
-            .map(parse_event_batch)
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(map_store_error)?;
+        .fetch(self.pool());
+        // Cancer World stores compressed canonical payloads whose decoded batches
+        // can be large. Stream and reduce each row to its public header before
+        // fetching the next one; never retain a page of decoded canonical events.
+        let mut rows = Box::pin(rows);
         let mut expected_previous = expected_previous;
         let mut expected_sequence = after_sequence.get().saturating_add(1);
-        let mut commitments = Vec::with_capacity(batches.len());
-        for batch in batches {
+        let mut commitments = Vec::with_capacity(usize::from(limit));
+        let mut has_more = false;
+        while let Some(row) = rows
+            .try_next()
+            .await
+            .map_err(|error| ObserverProjectionStoreError::Unavailable(error.to_string()))?
+        {
+            if commitments.len() == usize::from(limit) {
+                has_more = true;
+                break;
+            }
+            let batch = parse_event_batch(row).map_err(map_store_error)?;
             batch
                 .verify_integrity()
                 .map_err(|error| ObserverProjectionStoreError::Corrupt(error.to_string()))?;

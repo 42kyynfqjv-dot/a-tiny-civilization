@@ -1,7 +1,8 @@
 use anyhow::Result;
 use application::{
-    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchFireworksCostReconciliation,
-    CancerResearchJobStore, CognitionAttemptPersistenceState, CognitionBillingScope,
+    AgentMemory, COGNITION_MODEL_CONTRACT_VERSION, CancerResearchEvidenceDocument,
+    CancerResearchFireworksCostReconciliation, CancerResearchJobStore,
+    CancerResearchLiteratureSnapshot, CognitionAttemptPersistenceState, CognitionBillingScope,
     CognitionJobEntry, CognitionJobStore, CognitionModel, CognitionModelError, CognitionModelRoute,
     CognitionProviderId, CognitionRecallRecord, CognitionRouteAttempt, CognitionRouteAttemptStatus,
     CognitionRoutePurpose, CognitionRouteRegistry, CognitionWorkerConfiguration,
@@ -23,9 +24,10 @@ use observer_auth::{
 use observer_projection::{
     CommittedBirth, ObserverArtifactStore, ObserverFindingStore, ObserverHabitatStore,
     ObserverHistoryCommitmentStore, ObserverLanguageStore, ObserverMemoryStore,
-    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore, PublicHabitatDetail,
-    PublicHabitatQuery, PublicLanguageStage, PublicWorldInputStatus, ReservationRequest,
-    ReservationState, ReservationTarget, SupporterReservationStore,
+    ObserverOrganismStore, ObserverTimelineStore, ObserverWorldStore,
+    PUBLIC_LANGUAGE_PROJECTION_NAME, PublicHabitatDetail, PublicHabitatQuery, PublicLanguageStage,
+    PublicWorldInputStatus, ReservationRequest, ReservationState, ReservationTarget,
+    SupporterReservationStore,
 };
 use postgres_store::PostgresStore;
 use sim_engine::{
@@ -47,17 +49,18 @@ use stripe_adapter::{
 };
 use uuid::Uuid;
 use world_domain::{
-    BirthCategory, CapacityExhaustionPolicy, CartesianMillimetres, CelestialState,
-    CognitionInputOutcome, CognitionUnavailableReason, DeathCause, Digest, DomainEvent,
-    EarthResolutionLevels, EntityId, EventBatch, EventId, EventSequence, FullEarthGrid,
-    HeritableDispositionProfile, MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION, MaterialIdentity,
-    MaterialReservoirCommitment, MetabolicRateCommitment, OralTransferCommitment,
-    OralTransferEvidenceBasis, OrganismRole, PartitionedExecution, PersonRepresentation,
-    PhysiologicalEvidenceBasis, PhysiologicalRegulationCommitment, PrimitiveActionKind,
-    ProvisionalLocalEnvironmentBaseline, ProvisionalWorldCompositionReference,
-    ReproductiveCategoryPair, ReproductivePhysiologyCommitment, S2CellId, S2Projection,
-    SchedulerKind, SimTick, SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId,
-    WorldManifest, WorldSeed, WorldStatus,
+    BirthCategory, CancerResearchEvidenceKind, CancerResearchEvidenceReference,
+    CapacityExhaustionPolicy, CartesianMillimetres, CelestialState, CognitionInputOutcome,
+    CognitionUnavailableReason, DeathCause, Digest, DomainEvent, EarthResolutionLevels, EntityId,
+    EventBatch, EventId, EventSequence, FullEarthGrid, HeritableDispositionProfile,
+    MATERIAL_RESERVOIR_EVENT_SCHEMA_VERSION, MaterialIdentity, MaterialReservoirCommitment,
+    MetabolicRateCommitment, OralTransferCommitment, OralTransferEvidenceBasis, OrganismRole,
+    PartitionedExecution, PerceptionChannel, PersonRepresentation, PhysiologicalEvidenceBasis,
+    PhysiologicalRegulationCommitment, PrimitiveActionKind, ProvisionalLocalEnvironmentBaseline,
+    ProvisionalWorldCompositionReference, ReproductiveCategoryPair,
+    ReproductivePhysiologyCommitment, S2CellId, S2Projection, SchedulerKind, SimTick,
+    SpeciesIdentity, TdbSecondsSinceJ2000, WorldConfiguration, WorldId, WorldManifest, WorldSeed,
+    WorldStatus,
 };
 
 #[sqlx::test(migrations = "../../db/migrations")]
@@ -1133,6 +1136,38 @@ async fn habitat_projection_tracks_motion_and_bounds_every_view(pool: PgPool) ->
 }
 
 #[sqlx::test(migrations = "../../db/migrations")]
+async fn language_projector_accepts_a_quiet_canonical_batch(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(101_102);
+    let created = store.create_world(&manifest, None).await?;
+    let (_, genesis_batch, genesis_snapshot) =
+        genesis(&manifest, vec![initial_person(manifest.world_id)])?;
+    store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects::default(),
+        )
+        .await?;
+    store
+        .apply_public_organism_batches(std::slice::from_ref(&genesis_batch))
+        .await?;
+
+    assert_eq!(
+        store
+            .apply_public_language_batches(std::slice::from_ref(&genesis_batch))
+            .await?,
+        1
+    );
+    let archive = store.public_language_archive(manifest.world_id).await?;
+    assert_eq!(archive.through_sequence, genesis_batch.sequence);
+    assert_eq!(archive.stage, PublicLanguageStage::Undetected);
+    assert_eq!(archive.current_stage, PublicLanguageStage::Undetected);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
 async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> Result<()> {
     let store = PostgresStore::from_pool(pool.clone());
     let manifest = manifest(101_103);
@@ -1156,6 +1191,45 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
         .execute(&pool)
         .await?;
     }
+    let lagging_language_event_id = Uuid::new_v4();
+    sqlx::query(
+        r#"
+        INSERT INTO observer_habitat_communication (
+            projection_version,world_id,source_event_id,source_sequence,source_tick,
+            source_event_index,kind,source_organism_id,observer_organism_id,
+            signal_form,associated_action
+        ) VALUES (1,$1,$2,600,700,0,'associated_action',$3,$4,5,'emit_signal')
+        "#,
+    )
+    .bind(manifest.world_id.as_uuid())
+    .bind(lagging_language_event_id)
+    .bind(sources[0])
+    .bind(learners[0])
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO observer_language_evidence (
+            projection_version,world_id,source_event_id,source_sequence,source_tick,
+            source_event_index,observer_id,actor_id,preceding_signal,signal_form,
+            action,movement_direction
+        ) VALUES (1,$1,$2,600,700,0,$3,$4,27,5,'emit_signal',NULL)
+        "#,
+    )
+    .bind(manifest.world_id.as_uuid())
+    .bind(lagging_language_event_id)
+    .bind(learners[0])
+    .bind(sources[0])
+    .execute(&pool)
+    .await?;
+    let reconciled_prefix: Option<i32> = sqlx::query_scalar(
+        "SELECT preceding_signal FROM observer_habitat_communication WHERE world_id=$1 AND source_event_id=$2",
+    )
+    .bind(manifest.world_id.as_uuid())
+    .bind(lagging_language_event_id)
+    .fetch_one(&pool)
+    .await?;
+    assert_eq!(reconciled_prefix, Some(27));
     for (form_offset, signal_form) in [7_i16, 8, 9].into_iter().enumerate() {
         for index in 0..12_i64 {
             let tick = if index < 6 {
@@ -1242,10 +1316,21 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
         .execute(&pool)
         .await?;
     }
+    sqlx::query(
+        r#"
+        INSERT INTO projection_offsets (projection_name,world_id,through_sequence)
+        VALUES ($1,$2,999)
+        "#,
+    )
+    .bind(PUBLIC_LANGUAGE_PROJECTION_NAME)
+    .bind(manifest.world_id.as_uuid())
+    .execute(&pool)
+    .await?;
 
     let archive = store.public_language_archive(manifest.world_id).await?;
-    assert_eq!(archive.detector_version, 5);
+    assert_eq!(archive.detector_version, 6);
     assert_eq!(archive.stage, PublicLanguageStage::ProtoLexicon);
+    assert_eq!(archive.current_stage, PublicLanguageStage::ProtoLexicon);
     assert_eq!(archive.conventions.len(), 3);
     let convention = &archive.conventions[0];
     assert_eq!(convention.signal_sequence, vec![7]);
@@ -1271,6 +1356,46 @@ async fn language_archive_requires_durable_social_convergence(pool: PgPool) -> R
             .iter()
             .all(|item| item.associated_action == PrimitiveActionKind::Rest)
     );
+
+    sqlx::query(
+        r#"
+        INSERT INTO observer_language_milestones (
+            projection_version,detector_version,world_id,stage,stage_rank,
+            attained_sequence,attained_tick
+        ) VALUES (1,6,$1,'proto_lexicon',1,60,1605)
+        "#,
+    )
+    .bind(manifest.world_id.as_uuid())
+    .execute(&pool)
+    .await?;
+    sqlx::query(
+        r#"
+        INSERT INTO observer_language_evidence (
+            projection_version,world_id,source_event_id,source_sequence,source_tick,
+            source_event_index,observer_id,actor_id,signal_form,action,movement_direction
+        ) VALUES (1,$1,$2,10000,10000,0,$3,$4,31,'orient',NULL)
+        "#,
+    )
+    .bind(manifest.world_id.as_uuid())
+    .bind(Uuid::new_v4())
+    .bind(learners[0])
+    .bind(sources[0])
+    .execute(&pool)
+    .await?;
+    let bounded = store.public_language_archive(manifest.world_id).await?;
+    assert_eq!(bounded.through_sequence, EventSequence::new(999));
+    assert_eq!(bounded.current_stage, PublicLanguageStage::ProtoLexicon);
+    assert_eq!(bounded.stage, PublicLanguageStage::ProtoLexicon);
+    sqlx::query(
+        "UPDATE projection_offsets SET through_sequence=10000 WHERE projection_name=$1 AND world_id=$2",
+    )
+    .bind(PUBLIC_LANGUAGE_PROJECTION_NAME)
+    .bind(manifest.world_id.as_uuid())
+    .execute(&pool)
+    .await?;
+    let weakened = store.public_language_archive(manifest.world_id).await?;
+    assert_eq!(weakened.current_stage, PublicLanguageStage::Undetected);
+    assert_eq!(weakened.stage, PublicLanguageStage::ProtoLexicon);
     Ok(())
 }
 
@@ -1632,6 +1757,201 @@ async fn subjective_memory_delivery_is_atomic_leased_and_immutable(pool: PgPool)
         .execute(&pool)
         .await;
     assert!(deletion.is_err());
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn public_memory_stream_includes_bounded_v2_episodes(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(181_050);
+    let person = initial_person(manifest.world_id);
+    let person_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let (_, genesis_batch, genesis_snapshot) = genesis(&manifest, vec![person])?;
+    let retain = MemoryRetain::new(
+        manifest.world_id,
+        person_id,
+        genesis_batch.sequence,
+        genesis_batch.tick,
+        0,
+        r#"{"subject_id":null,"channel":"sound","property_code":"signal_amplitude","quantized_value":12,"uncertainty":1,"prior_quantized_value":null,"prior_uncertainty":null,"prior_observed_at":null,"sampling_reason":"new_address"}"#,
+        "canonical-direct-perception-episode-v2",
+    )?;
+    store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects {
+                memory_retains: vec![retain.clone()],
+            },
+        )
+        .await?;
+    let claimed = store
+        .claim_next_memory("v2-memory-worker", 60)
+        .await?
+        .expect("v2 episode is claimable");
+    store
+        .mark_memory_accepted(
+            "v2-memory-worker",
+            &claimed,
+            &MemoryRetainReceipt {
+                operation_id: retain.operation_id,
+                remote_operation_id: retain.operation_id.to_string(),
+                adapter_version: "test-hindsight-adapter-v2".to_owned(),
+            },
+        )
+        .await?;
+
+    let public_memory = store.public_memory_stream(manifest.world_id, 10).await?;
+    assert_eq!(public_memory.observations.len(), 1);
+    assert_eq!(
+        public_memory.observations[0].document_id,
+        retain.document_id
+    );
+    assert_eq!(public_memory.observations[0].agent_id, person_id);
+    assert_eq!(
+        public_memory.observations[0].channel,
+        PerceptionChannel::Sound
+    );
+    assert_eq!(
+        public_memory.observations[0].property_code,
+        "signal_amplitude"
+    );
+    assert_eq!(public_memory.observations[0].quantized_value, 12);
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn memory_delivery_rejects_stale_same_worker_lease_generation(pool: PgPool) -> Result<()> {
+    let store = PostgresStore::from_pool(pool.clone());
+    let manifest = manifest(181_001);
+    let person = initial_person(manifest.world_id);
+    let person_id = person.organism_id;
+    let created = store.create_world(&manifest, None).await?;
+    let (_, genesis_batch, genesis_snapshot) = genesis(&manifest, vec![person])?;
+    let retain = MemoryRetain::new(
+        manifest.world_id,
+        person_id,
+        genesis_batch.sequence,
+        genesis_batch.tick,
+        0,
+        r#"{"property_code":"lease-generation"}"#,
+        "canonical-direct-perception-v1",
+    )?;
+    store
+        .commit_transition(
+            created.cursor,
+            &genesis_batch,
+            &genesis_snapshot,
+            &TransitionEffects {
+                memory_retains: vec![retain.clone()],
+            },
+        )
+        .await?;
+
+    let stale = store
+        .claim_next_memory("shared-worker-id", 1)
+        .await?
+        .expect("memory is initially claimable");
+    sqlx::query(
+        "UPDATE memory_outbox SET claimed_at = NOW() - INTERVAL '2 seconds' WHERE operation_id = $1",
+    )
+    .bind(retain.operation_id)
+    .execute(&pool)
+    .await?;
+    let current = store
+        .claim_next_memory("shared-worker-id", 1)
+        .await?
+        .expect("expired memory lease is reclaimed");
+
+    assert_eq!(stale.retain.operation_id, current.retain.operation_id);
+    assert_ne!(stale.claim_token, current.claim_token);
+    assert_eq!(current.attempt_count, 2);
+
+    let stale_reschedule = store
+        .reschedule_memory("shared-worker-id", &stale, "late failure", 1)
+        .await;
+    assert!(matches!(stale_reschedule, Err(StoreError::Conflict(_))));
+
+    let receipt = MemoryRetainReceipt {
+        operation_id: retain.operation_id,
+        remote_operation_id: retain.operation_id.to_string(),
+        adapter_version: "test-hindsight-adapter".to_owned(),
+    };
+    let stale_ack = store
+        .mark_memory_accepted("shared-worker-id", &stale, &receipt)
+        .await;
+    assert!(matches!(stale_ack, Err(StoreError::Conflict(_))));
+
+    store
+        .mark_memory_accepted("shared-worker-id", &current, &receipt)
+        .await?;
+    assert!(
+        store
+            .claim_next_memory("another-worker", 1)
+            .await?
+            .is_none()
+    );
+    Ok(())
+}
+
+#[sqlx::test(migrations = "../../db/migrations")]
+async fn cancer_literature_loads_only_latest_snapshot_per_source_before_limit(
+    pool: PgPool,
+) -> Result<()> {
+    let store = PostgresStore::from_pool(pool);
+    let manifest = manifest(181_002);
+    store.create_world(&manifest, None).await?;
+    let retrieved_at = Utc::now();
+
+    for (source_id, content, age_seconds) in [
+        ("MED/42316281", "older metadata snapshot", 20),
+        ("MED/42316281", "latest metadata snapshot", 10),
+        ("MED/other", "another paper", 0),
+    ] {
+        let content_hash = Digest::sha256(content.as_bytes());
+        let snapshot = CancerResearchLiteratureSnapshot {
+            evidence_id: Uuid::new_v4(),
+            world_id: manifest.world_id,
+            source_id: source_id.to_owned(),
+            title: source_id.to_owned(),
+            license: "cc by".to_owned(),
+            published_at: None,
+            document: CancerResearchEvidenceDocument {
+                reference: CancerResearchEvidenceReference {
+                    kind: CancerResearchEvidenceKind::Literature,
+                    source_id: source_id.to_owned(),
+                    content_hash,
+                },
+                content: content.to_owned(),
+            },
+            source_payload: serde_json::json!({"source": source_id, "content": content}),
+            retrieved_at: retrieved_at - Duration::seconds(age_seconds),
+        };
+        store.store_cancer_research_literature(&snapshot).await?;
+    }
+
+    let loaded = store
+        .load_cancer_research_literature(manifest.world_id, 2)
+        .await?;
+    assert_eq!(loaded.len(), 2);
+    assert_eq!(
+        loaded
+            .iter()
+            .filter(|snapshot| snapshot.source_id == "MED/42316281")
+            .count(),
+        1
+    );
+    assert!(loaded.iter().any(|snapshot| {
+        snapshot.source_id == "MED/42316281"
+            && snapshot.document.content == "latest metadata snapshot"
+    }));
+    assert!(
+        loaded
+            .iter()
+            .any(|snapshot| snapshot.source_id == "MED/other")
+    );
     Ok(())
 }
 
@@ -3445,7 +3765,20 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
         "cloudflare_workers_ai",
         "cloudflare_workers_ai",
     ];
-    for (index, provider) in skipped_providers.into_iter().enumerate() {
+    let skipped_statuses = [
+        "skipped_unconfigured",
+        "skipped_disabled",
+        "skipped_disabled",
+        "skipped_unconfigured",
+        "skipped_disabled",
+        "skipped_unconfigured",
+        "skipped_unconfigured",
+    ];
+    for (index, (provider, status)) in skipped_providers
+        .into_iter()
+        .zip(skipped_statuses)
+        .enumerate()
+    {
         assert_eq!(
             attempts[index],
             (
@@ -3453,7 +3786,7 @@ async fn cognition_worker_persists_free_route_success_and_retries_idempotently(
                 provider.to_owned(),
                 "skipped".to_owned(),
                 false,
-                Some("skipped_unconfigured".to_owned()),
+                Some(status.to_owned()),
             )
         );
     }

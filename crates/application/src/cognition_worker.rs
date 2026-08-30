@@ -187,6 +187,20 @@ where
         let route_index =
             u16::try_from(records.len()).map_err(|_| CognitionWorkerError::InvalidAttemptPrefix)?;
         let route = &configuration.registry.routes[records.len()];
+        if configuration.registry.route_is_quarantined(route) {
+            store
+                .record_cognition_route_skip(
+                    worker_id,
+                    entry,
+                    &attempt(
+                        route_index,
+                        route,
+                        CognitionRouteAttemptStatus::SkippedDisabled,
+                    ),
+                )
+                .await?;
+            continue;
+        }
         let network_attempts = records
             .iter()
             .filter(|record| record.persistence_state != CognitionAttemptPersistenceState::Skipped)

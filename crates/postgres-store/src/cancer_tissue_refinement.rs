@@ -944,7 +944,7 @@ mod tests {
             CancerResearchCampaignOutcome::Inconclusive,
             2,
             0,
-            3,
+            8,
             true,
         )
         .await;
@@ -1299,7 +1299,7 @@ mod tests {
             INSERT INTO worlds (
                 id,seed,status,ruleset_version,manifest,manifest_checksum,
                 last_event_checksum,current_state_checksum
-            ) VALUES ($1,$2,'running',39,'{}'::JSONB,$3,$3,$3)
+            ) VALUES ($1,$2,'retired',39,'{}'::JSONB,$3,$3,$3)
             "#,
         )
         .bind(world_id.as_uuid())

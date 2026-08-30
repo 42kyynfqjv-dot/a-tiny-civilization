@@ -2,7 +2,7 @@
 
 Date: 2026-08-08
 
-Status: Accepted
+Status: Accepted; amended by ADR 0171 on 2026-08-30
 
 ## Context
 
@@ -13,10 +13,12 @@ from contributing even when ample deterministic response-window time remains.
 
 ## Decision
 
-The default local/remote cognition request timeout is 45 seconds. The ruleset-26 response window
-remains exactly 60 simulation ticks and the default runner target remains one tick per wall second.
-Production preflight requires the configured wall timeout to be strictly shorter than the 60-tick
-window at the configured target cadence. Invalid combinations fail before services start.
+The original default local/remote cognition request timeout was 45 seconds. ADR 0171 raises it to
+180 seconds after the public world moved to one tick per wall minute and live CPU prefill exceeded
+the old circuit breaker. The response window remains exactly 60 simulation ticks. Production
+preflight now requires one recall plus all sixteen permitted network attempts to fit strictly
+inside that window and requires the claim lease to outlive the same worst-case bound. Invalid
+combinations fail before services start.
 
 The timeout is an infrastructure circuit breaker, not canonical world state. Request selection,
 the simulation deadline, route ordering, every route attempt, the prepared result or absence, and

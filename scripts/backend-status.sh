@@ -66,10 +66,26 @@ fi
 compose_args=(--env-file "$environment_file" -f compose.yaml -f compose.hindsight.yaml)
 
 check_once() {
-  read -r available_kib used_percent < <(df -Pk -- "$project_root" | awk 'NR == 2 { print $4, $5 }')
-  [[ "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+%$ ]] || return 1
-  ((available_kib >= minimum_free_mib * 1024)) || return 1
-  ((10#${used_percent%%%} < 95)) || return 1
+  capacity_paths=("$project_root")
+  for volume in a-tiny-civilization-postgres-ruleset33-v1 a-tiny-civilization-hindsight-v1; do
+    mountpoint="$(docker inspect --type volume --format '{{.Mountpoint}}' "$volume" 2>/dev/null || true)"
+    if [[ -n "$mountpoint" && -d "$mountpoint" ]]; then
+      capacity_paths+=("$mountpoint")
+    fi
+  done
+  declare -A seen_filesystems=()
+  for capacity_path in "${capacity_paths[@]}"; do
+    read -r filesystem available_kib used_percent < <(
+      df -Pk -- "$capacity_path" | awk 'NR == 2 { print $1, $4, $5 }'
+    )
+    [[ -n "$filesystem" && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+%$ ]] || return 1
+    if [[ -n "${seen_filesystems[$filesystem]:-}" ]]; then
+      continue
+    fi
+    seen_filesystems[$filesystem]=1
+    ((available_kib >= minimum_free_mib * 1024)) || return 1
+    ((10#${used_percent%%%} < 95)) || return 1
+  done
   "${compose_command[@]}" "${compose_args[@]}" exec -T api \
     curl --fail --silent http://localhost:8080/health/ready >/dev/null || return 1
   "${compose_command[@]}" "${compose_args[@]}" exec -T web \

@@ -29,11 +29,43 @@ done
   exit 2
 }
 
+readonly -a protected_state_volumes=(
+  a-tiny-civilization-postgres-ruleset33-v1
+  a-tiny-civilization-hindsight-v1
+)
+
+capacity_paths=("$project_root")
+for volume in "${protected_state_volumes[@]}"; do
+  mountpoint="$(docker inspect --type volume --format '{{.Mountpoint}}' "$volume" 2>/dev/null || true)"
+  if [[ -n "$mountpoint" && -d "$mountpoint" ]]; then
+    capacity_paths+=("$mountpoint")
+  fi
+done
+
 read_capacity() {
-  read -r available_kib used_percent < <(df -Pk -- "$project_root" | awk 'NR == 2 { print $4, $5 }')
-  [[ "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+%$ ]]
-  available_mib=$((available_kib / 1024))
-  used_percent_number=$((10#${used_percent%%%}))
+  available_mib=9223372036854775807
+  used_percent_number=0
+  limiting_capacity_path="$project_root"
+  declare -A seen_filesystems=()
+  for capacity_path in "${capacity_paths[@]}"; do
+    read -r filesystem available_kib used_percent < <(
+      df -Pk -- "$capacity_path" | awk 'NR == 2 { print $1, $4, $5 }'
+    )
+    [[ -n "$filesystem" && "$available_kib" =~ ^[0-9]+$ && "$used_percent" =~ ^[0-9]+%$ ]]
+    if [[ -n "${seen_filesystems[$filesystem]:-}" ]]; then
+      continue
+    fi
+    seen_filesystems[$filesystem]=1
+    path_available_mib=$((available_kib / 1024))
+    path_used_percent=$((10#${used_percent%%%}))
+    if ((path_available_mib < available_mib)); then
+      available_mib=$path_available_mib
+      limiting_capacity_path="$capacity_path"
+    fi
+    if ((path_used_percent > used_percent_number)); then
+      used_percent_number=$path_used_percent
+    fi
+  done
 }
 
 needs_cleanup() {
@@ -46,11 +78,11 @@ reserve_is_safe() {
 
 read_capacity
 if ! needs_cleanup; then
-  echo "Disk guard healthy: ${available_mib} MiB free and ${used_percent_number}% used."
+  echo "Disk guard healthy: lowest reserve ${available_mib} MiB at ${limiting_capacity_path}; maximum ${used_percent_number}% used."
   exit 0
 fi
 
-echo "Disk guard triggered: ${available_mib} MiB free and ${used_percent_number}% used."
+echo "Disk guard triggered: lowest reserve ${available_mib} MiB at ${limiting_capacity_path}; maximum ${used_percent_number}% used."
 if ((dry_run == 1)); then
   echo "Dry run: would prune unused Docker build cache and clear ${project_root}/target/debug when no build is active."
   exit 0
@@ -86,8 +118,8 @@ fi
 read_capacity
 
 if ! reserve_is_safe; then
-  echo "disk reserve remains unsafe after bounded cleanup: ${available_mib} MiB free and ${used_percent_number}% used" >&2
+  echo "disk reserve remains unsafe after bounded cleanup: lowest reserve ${available_mib} MiB at ${limiting_capacity_path}; maximum ${used_percent_number}% used" >&2
   exit 1
 fi
 
-echo "Disk guard restored reserve: ${available_mib} MiB free and ${used_percent_number}% used."
+echo "Disk guard restored reserve: lowest reserve ${available_mib} MiB at ${limiting_capacity_path}; maximum ${used_percent_number}% used."

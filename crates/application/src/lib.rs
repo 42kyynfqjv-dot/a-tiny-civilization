@@ -36,7 +36,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use sim_engine::{
     EngineError, EngineState, InitialMaterialInstance, InitialOrganism,
-    PERSISTENT_PERCEPTION_RULESET_VERSION, ReplayOutcome, Snapshot, replay, replay_from_snapshot,
+    PERSISTENT_PERCEPTION_RULESET_VERSION, ReplayOutcome, Snapshot,
+    ordinary_world_hardening_active, replay, replay_from_snapshot,
 };
 use thiserror::Error;
 use uuid::Uuid;
@@ -630,6 +631,61 @@ struct RetainedDirectObservation<'a> {
     uncertainty: u16,
 }
 
+const MAX_EPISODIC_MEMORY_RETAINS_PER_TRANSITION: usize = 8;
+const MAX_EPISODIC_MEMORY_RETAINS_PER_AGENT: usize = 1;
+const CHANGED_PERCEPTION_SAMPLE_CADENCE_TICKS: u64 = 64;
+const STABLE_PERCEPTION_REFRESH_CADENCE_TICKS: u64 = 1_152;
+
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+enum EpisodicSamplingReason {
+    NewAddress,
+    AcousticChange,
+    MeaningfulChange,
+    PeriodicRefresh,
+}
+
+impl EpisodicSamplingReason {
+    const fn priority(self) -> u8 {
+        match self {
+            Self::NewAddress => 0,
+            Self::AcousticChange => 1,
+            Self::MeaningfulChange => 2,
+            Self::PeriodicRefresh => 3,
+        }
+    }
+}
+
+#[derive(Serialize)]
+struct RetainedDirectObservationEpisode<'a> {
+    subject_id: Option<EntityId>,
+    channel: PerceptionChannel,
+    property_code: &'a str,
+    quantized_value: i32,
+    uncertainty: u16,
+    prior_quantized_value: Option<i32>,
+    prior_uncertainty: Option<u16>,
+    prior_observed_at: Option<SimTick>,
+    sampling_reason: EpisodicSamplingReason,
+}
+
+#[derive(Serialize)]
+struct EpisodicMemoryRankMaterial<'a> {
+    world_id: WorldId,
+    tick: SimTick,
+    organism_id: EntityId,
+    subject_id: Option<EntityId>,
+    channel: PerceptionChannel,
+    property_code: &'a str,
+}
+
+struct EpisodicMemoryCandidate {
+    agent_id: EntityId,
+    priority: u8,
+    rank: Digest,
+    content: String,
+}
+
 /// Select a bounded, deterministic subset of canonical experiences for the
 /// external subjective-memory adapter. This is an application-side projection:
 /// it never affects the batch, state hash, or the next action.
@@ -640,6 +696,18 @@ fn derive_transition_effects(
     if prior_state.manifest().ruleset_version < PERSISTENT_PERCEPTION_RULESET_VERSION {
         return Ok(TransitionEffects::default());
     }
+    if prior_state.manifest().experiment.is_none()
+        && ordinary_world_hardening_active(prior_state.manifest().ruleset_version, batch.tick)
+    {
+        return derive_bounded_episodic_memory_effects(prior_state, batch);
+    }
+    derive_legacy_first_address_memory_effects(prior_state, batch)
+}
+
+fn derive_legacy_first_address_memory_effects(
+    prior_state: &EngineState,
+    batch: &EventBatch,
+) -> Result<TransitionEffects, WorldRuntimeError> {
     let mut effects = TransitionEffects::default();
     let mut next_ordinal = BTreeMap::<EntityId, u32>::new();
     let mut selected = BTreeSet::<(EntityId, Option<EntityId>, PerceptionChannel, String)>::new();
@@ -701,6 +769,200 @@ fn derive_transition_effects(
         }
     }
     Ok(effects)
+}
+
+fn derive_bounded_episodic_memory_effects(
+    prior_state: &EngineState,
+    batch: &EventBatch,
+) -> Result<TransitionEffects, WorldRuntimeError> {
+    let mut candidates = Vec::new();
+    let mut selected_addresses =
+        BTreeSet::<(EntityId, Option<EntityId>, PerceptionChannel, String)>::new();
+    for record in &batch.events {
+        let DomainEvent::OrganismPerceived {
+            organism_id,
+            perception,
+        } = &record.event
+        else {
+            continue;
+        };
+        let organism = prior_state
+            .organisms()
+            .find(|organism| organism.organism_id() == *organism_id)
+            .ok_or_else(|| {
+                WorldRuntimeError::Integrity(format!(
+                    "perception event references unknown organism {organism_id}"
+                ))
+            })?;
+        if organism.role() != world_domain::OrganismRole::Person {
+            continue;
+        }
+        for reading in &perception.readings {
+            let address = (
+                *organism_id,
+                perception.subject_id,
+                reading.channel,
+                reading.property_code.clone(),
+            );
+            if !selected_addresses.insert(address) {
+                continue;
+            }
+            let previous = organism.perception_memory_reading_at(
+                perception.subject_id,
+                reading.channel,
+                &reading.property_code,
+            );
+            let address_slot = episodic_address_slot(
+                batch.world_id,
+                *organism_id,
+                perception.subject_id,
+                reading.channel,
+                &reading.property_code,
+            )?;
+            let sampling_reason = match previous {
+                None => Some(EpisodicSamplingReason::NewAddress),
+                Some((prior_value, _, _))
+                    if reading.channel == PerceptionChannel::Sound
+                        && reading.property_code == "signal_amplitude"
+                        && prior_value != reading.quantized_value =>
+                {
+                    Some(EpisodicSamplingReason::AcousticChange)
+                }
+                Some((prior_value, prior_uncertainty, _))
+                    if is_meaningful_perception_change(
+                        prior_value,
+                        prior_uncertainty,
+                        reading.quantized_value,
+                        reading.uncertainty,
+                    ) && cadence_matches(
+                        batch.tick,
+                        address_slot,
+                        CHANGED_PERCEPTION_SAMPLE_CADENCE_TICKS,
+                    ) =>
+                {
+                    Some(EpisodicSamplingReason::MeaningfulChange)
+                }
+                Some(_)
+                    if cadence_matches(
+                        batch.tick,
+                        address_slot,
+                        STABLE_PERCEPTION_REFRESH_CADENCE_TICKS,
+                    ) =>
+                {
+                    Some(EpisodicSamplingReason::PeriodicRefresh)
+                }
+                Some(_) => None,
+            };
+            let Some(sampling_reason) = sampling_reason else {
+                continue;
+            };
+            let content = serde_json::to_string(&RetainedDirectObservationEpisode {
+                subject_id: perception.subject_id,
+                channel: reading.channel,
+                property_code: &reading.property_code,
+                quantized_value: reading.quantized_value,
+                uncertainty: reading.uncertainty,
+                prior_quantized_value: previous.map(|prior| prior.0),
+                prior_uncertainty: previous.map(|prior| prior.1),
+                prior_observed_at: previous.map(|prior| prior.2),
+                sampling_reason,
+            })
+            .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+            let rank = Digest::canonical(&EpisodicMemoryRankMaterial {
+                world_id: batch.world_id,
+                tick: batch.tick,
+                organism_id: *organism_id,
+                subject_id: perception.subject_id,
+                channel: reading.channel,
+                property_code: &reading.property_code,
+            })
+            .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+            candidates.push(EpisodicMemoryCandidate {
+                agent_id: *organism_id,
+                priority: sampling_reason.priority(),
+                rank,
+                content,
+            });
+        }
+    }
+    candidates.sort_by_key(|candidate| (candidate.priority, candidate.rank, candidate.agent_id));
+
+    let mut effects = TransitionEffects::default();
+    let mut retained_per_agent = BTreeMap::<EntityId, usize>::new();
+    let mut next_ordinal = BTreeMap::<EntityId, u32>::new();
+    for candidate in candidates {
+        if effects.memory_retains.len() >= MAX_EPISODIC_MEMORY_RETAINS_PER_TRANSITION {
+            break;
+        }
+        let retained = retained_per_agent.entry(candidate.agent_id).or_default();
+        if *retained >= MAX_EPISODIC_MEMORY_RETAINS_PER_AGENT {
+            continue;
+        }
+        let ordinal = next_ordinal.entry(candidate.agent_id).or_default();
+        effects.memory_retains.push(
+            MemoryRetain::new(
+                batch.world_id,
+                candidate.agent_id,
+                batch.sequence,
+                batch.tick,
+                *ordinal,
+                candidate.content,
+                "canonical-direct-perception-episode-v2",
+            )
+            .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?,
+        );
+        *ordinal = ordinal.checked_add(1).ok_or_else(|| {
+            WorldRuntimeError::Integrity("per-agent memory ordinal overflowed".to_owned())
+        })?;
+        *retained += 1;
+    }
+    Ok(effects)
+}
+
+fn episodic_address_slot(
+    world_id: WorldId,
+    organism_id: EntityId,
+    subject_id: Option<EntityId>,
+    channel: PerceptionChannel,
+    property_code: &str,
+) -> Result<u64, WorldRuntimeError> {
+    #[derive(Serialize)]
+    struct Address<'a> {
+        world_id: WorldId,
+        organism_id: EntityId,
+        subject_id: Option<EntityId>,
+        channel: PerceptionChannel,
+        property_code: &'a str,
+    }
+    let digest = Digest::canonical(&Address {
+        world_id,
+        organism_id,
+        subject_id,
+        channel,
+        property_code,
+    })
+    .map_err(|error| WorldRuntimeError::Integrity(error.to_string()))?;
+    Ok(u64::from_be_bytes(
+        digest.as_bytes()[..8]
+            .try_into()
+            .expect("SHA-256 has at least eight bytes"),
+    ))
+}
+
+const fn cadence_matches(tick: SimTick, address_slot: u64, cadence: u64) -> bool {
+    tick.get() % cadence == address_slot % cadence
+}
+
+fn is_meaningful_perception_change(
+    prior_value: i32,
+    prior_uncertainty: u16,
+    value: i32,
+    uncertainty: u16,
+) -> bool {
+    let delta = i64::from(value).abs_diff(i64::from(prior_value));
+    let magnitude_threshold = i64::from(prior_value).unsigned_abs().div_ceil(8).max(8);
+    let uncertainty_threshold = u64::from(prior_uncertainty.max(uncertainty)).saturating_mul(2);
+    delta >= magnitude_threshold.max(uncertainty_threshold)
 }
 
 #[cfg(test)]
@@ -793,6 +1055,169 @@ mod tests {
                 .expect("repeat effects")
                 .memory_retains
                 .is_empty()
+        );
+    }
+
+    #[test]
+    fn episodic_memory_retains_changed_calls_but_not_unchanged_repeats() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xA79));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(19),
+            PERSISTENT_PERCEPTION_RULESET_VERSION,
+        );
+        let initial = EngineState::new(manifest);
+        let organism = organism(world_id);
+        let organism_id = organism.organism_id;
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial.plan_genesis(vec![organism]).expect("genesis plan"),
+            )
+            .expect("genesis");
+        let signal = |value| SituatedPerception {
+            subject_id: Some(organism_id),
+            readings: vec![PropertyReading {
+                channel: PerceptionChannel::Sound,
+                property_code: "signal_amplitude".to_owned(),
+                quantized_value: value,
+                uncertainty: 0,
+            }],
+        };
+        assert_ne!(
+            episodic_address_slot(
+                world_id,
+                organism_id,
+                Some(organism_id),
+                PerceptionChannel::Sound,
+                "signal_amplitude",
+            )
+            .expect("address slot")
+                % STABLE_PERCEPTION_REFRESH_CADENCE_TICKS,
+            0,
+            "fixture must not land on the periodic-refresh slot"
+        );
+        let (after_first, first_batch) = running
+            .commit(
+                EventSequence::new(2),
+                genesis.batch_hash,
+                running
+                    .plan_perception(organism_id, signal(7))
+                    .expect("first signal"),
+            )
+            .expect("first signal batch");
+        let first =
+            derive_bounded_episodic_memory_effects(&running, &first_batch).expect("first episode");
+        assert_eq!(first.memory_retains.len(), 1);
+        assert_eq!(
+            first.memory_retains[0].context,
+            "canonical-direct-perception-episode-v2"
+        );
+
+        let (_, repeat_batch) = after_first
+            .commit(
+                EventSequence::new(3),
+                first_batch.batch_hash,
+                after_first
+                    .plan_perception(organism_id, signal(7))
+                    .expect("repeat signal"),
+            )
+            .expect("repeat signal batch");
+        assert!(
+            derive_bounded_episodic_memory_effects(&after_first, &repeat_batch)
+                .expect("repeat episode")
+                .memory_retains
+                .is_empty()
+        );
+
+        let (_, changed_batch) = after_first
+            .commit(
+                EventSequence::new(3),
+                first_batch.batch_hash,
+                after_first
+                    .plan_perception(organism_id, signal(19))
+                    .expect("changed signal"),
+            )
+            .expect("changed signal batch");
+        let changed = derive_bounded_episodic_memory_effects(&after_first, &changed_batch)
+            .expect("changed episode");
+        assert_eq!(changed.memory_retains.len(), 1);
+        assert!(
+            changed.memory_retains[0]
+                .content
+                .contains("acoustic_change")
+        );
+        assert!(
+            changed.memory_retains[0]
+                .content
+                .contains("prior_quantized_value\":7")
+        );
+    }
+
+    #[test]
+    fn episodic_memory_has_population_independent_transition_cap() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0xA7A));
+        let manifest = WorldManifest::new(
+            world_id,
+            WorldSeed::new(20),
+            PERSISTENT_PERCEPTION_RULESET_VERSION,
+        );
+        let initial = EngineState::new(manifest);
+        let organisms = (0..32_u128)
+            .map(|ordinal| {
+                let mut person = organism(world_id);
+                person.organism_id = EntityId::from_uuid(Uuid::from_u128(0xA7A_0000 + ordinal));
+                person
+            })
+            .collect::<Vec<_>>();
+        let (running, genesis) = initial
+            .commit(
+                EventSequence::new(1),
+                Digest::ZERO,
+                initial.plan_genesis(organisms).expect("genesis plan"),
+            )
+            .expect("genesis");
+        let mut perception_events = Vec::new();
+        for person in running.organisms() {
+            perception_events.extend(
+                running
+                    .plan_perception(
+                        person.organism_id(),
+                        SituatedPerception {
+                            subject_id: None,
+                            readings: vec![PropertyReading {
+                                channel: PerceptionChannel::Touch,
+                                property_code: "temperature".to_owned(),
+                                quantized_value: 7,
+                                uncertainty: 0,
+                            }],
+                        },
+                    )
+                    .expect("direct perception"),
+            );
+        }
+        let (_, batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, perception_events)
+            .expect("perception batch");
+        let first =
+            derive_bounded_episodic_memory_effects(&running, &batch).expect("bounded episodes");
+        let second = derive_bounded_episodic_memory_effects(&running, &batch)
+            .expect("deterministic bounded episodes");
+        assert_eq!(first, second);
+        assert_eq!(
+            first.memory_retains.len(),
+            MAX_EPISODIC_MEMORY_RETAINS_PER_TRANSITION
+        );
+        assert_eq!(
+            first
+                .memory_retains
+                .iter()
+                .map(|memory| memory.agent_id)
+                .collect::<BTreeSet<_>>()
+                .len(),
+            first.memory_retains.len(),
+            "the per-agent cap prevents one life from monopolizing a transition"
         );
     }
 

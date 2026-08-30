@@ -667,6 +667,10 @@ pub struct PublicHabitatCommunication {
     pub kind: PublicHabitatCommunicationKind,
     pub source_organism_id: EntityId,
     pub observer_organism_id: EntityId,
+    /// Original ordered physical elements. A one-element vector is an atomic
+    /// call; two elements preserve the compositional prefix recorded in the
+    /// canonical association event.
+    pub signal_sequence: Vec<u8>,
     pub signal_form: u8,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub associated_action: Option<PrimitiveActionKind>,
@@ -784,7 +788,11 @@ pub struct PublicLanguageArchive {
     pub detector_version: u16,
     pub world_id: WorldId,
     pub through_sequence: EventSequence,
+    /// Highest conservative detector stage ever durably attained. This field is
+    /// historical and therefore monotonic even if the rolling evidence weakens.
     pub stage: PublicLanguageStage,
+    /// Stage supported by the current rolling evidence window.
+    pub current_stage: PublicLanguageStage,
     pub threshold: PublicLanguageThreshold,
     pub conventions: Vec<PublicLanguageConvention>,
     pub emerging_patterns: Vec<PublicLanguageEmergingPattern>,

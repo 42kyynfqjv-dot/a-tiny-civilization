@@ -126,18 +126,17 @@ world history.
 
 The evidence worker retrieves at most 24 current, CC BY/CC0 glioblastoma
 records from Europe PMC every six hours. The model worker uses a dedicated Cancer World
-OpenRouter key, reuses any configured local, Cloudflare, Groq, and Cerebras free
-adapters from the ordinary-world ladder, and retains optional Fireworks overflow.
-Exploration tries pinned free GPT-OSS first, then the bounded OpenRouter dynamic-free
-route and pinned 120B route, then each configured shared free provider, and only then
-the metered Fireworks GPT-OSS overflow; promoted work retains its separate DeepSeek
-ladder. Missing credentials produce a durable skip and never truncate the remaining
-ladder. The small loopback model is capped at ten seconds because Cancer World's
-research context can exceed its practical CPU capacity. Each remote free attempt is
-bounded to 30 seconds while the treasury-capped Fireworks
-attempt retains the normal 120-second timeout, so one congested shared pool does not
-consume the whole research window. All paid calls share the independent durable $2.85
-monthly circuit breaker. Their Compose
+OpenRouter key, reuses configured Cloudflare, Groq, and Cerebras free adapters,
+and retains optional Fireworks overflow. Exploration starts with OpenRouter's
+maintained dynamic-free route, then the deterministic systematic screen and
+configured external free providers, and only then the metered pinned Fireworks
+Nemotron overflow; promoted work retains its separate DeepSeek ladder. Missing
+credentials produce a durable skip and never truncate the remaining ladder.
+Each remote free attempt is bounded to 30 seconds while the treasury-capped
+Fireworks attempt retains the normal 120-second timeout, so one congested shared
+pool does not consume the whole research window. All paid calls share the
+independent durable USD 8 monthly circuit breaker with a USD 7.50 operating
+target. Their Compose
 equivalents are behind the `container-research` profile for development hosts whose
 Docker bridges already have outbound HTTPS; do not run both copies concurrently.
 
@@ -524,7 +523,9 @@ cost must be exactly zero; the wrapper never enables the paid tail.
 `memory-worker --drain` forces a one-millisecond work cadence, exits successfully only after no
 ready outbox entry remains, and treats a delivery or store failure as fatal. It is for an isolated
 qualification database after bounded advancement; the normal production worker remains continuous
-and retains its configured idle poll interval. The status command is read-only apart from the
+and starts at its configured poll interval, exponentially backs off while the outbox is empty to a
+bounded five-second interval, then immediately resets to the configured interval whenever it finds
+work. Explicit poll overrides and drain behavior are preserved. The status command is read-only apart from the
 runner's replay verification reads. It exits nonzero
 unless canonical replay, snapshots, projections, memory delivery, cognition deadlines, one actual
 Hindsight-backed cognition result, and observer content all pass; its single JSON object is suitable
@@ -597,7 +598,9 @@ Verify locally that `http://127.0.0.1:3000/` and `http://127.0.0.1:8080/health/r
 work, then verify only the intended hostname through Cloudflare. Confirm that direct
 public connections to PostgreSQL and the observer API fail.
 
-`backend-status.sh` defaults to at most 100 sequences of observer-projection lag and five minutes
+`backend-status.sh` checks free space on both the checkout filesystem and the
+filesystems backing the protected PostgreSQL and Hindsight volumes. It defaults
+to at most 100 sequences of observer-projection lag and five minutes
 for incomplete memory delivery or a stuck cognition dispatch. Override those only with bounded
 `BACKEND_PROJECTION_MAX_LAG_SEQUENCES` and `BACKEND_ASYNC_MAX_AGE_SECONDS` values in the monitor
 environment; changing them does not alter canonical history.

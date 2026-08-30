@@ -136,4 +136,8 @@ if PATH="${temporary_directory}/bin:${PATH}" FAKE_DISK_STATUS='1024 99%' \
   exit 1
 fi
 
+rg -Fq 'docker inspect --type volume' "${project_root}/scripts/backend-status.sh"
+rg -Fq 'a-tiny-civilization-postgres-ruleset33-v1' "${project_root}/scripts/backend-status.sh"
+rg -Fq 'a-tiny-civilization-hindsight-v1' "${project_root}/scripts/backend-status.sh"
+
 echo "Complete backend status monitoring fails closed."

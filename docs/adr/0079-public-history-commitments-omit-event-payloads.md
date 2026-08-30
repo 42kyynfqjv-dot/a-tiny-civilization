@@ -19,7 +19,8 @@ for checking that published history heads and commitment pages form one continuo
 
 The PostgreSQL adapter validates every selected batch before deriving a commitment. Nonzero cursors
 must identify an existing batch, the first returned header must link to that cursor's stored hash,
-and every later header must be contiguous. Limits are bounded to 256 batches.
+and every later header must be contiguous. Limits are bounded to 256 batches. Rows are streamed and
+reduced to headers one at a time so a page never retains multiple decoded canonical payloads.
 
 ## Consequences
 

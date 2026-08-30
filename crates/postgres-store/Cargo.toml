@@ -13,6 +13,7 @@ observer-auth = { path = "../observer-auth" }
 async-trait.workspace = true
 chrono.workspace = true
 flate2.workspace = true
+futures-util.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sim-engine = { path = "../sim-engine" }

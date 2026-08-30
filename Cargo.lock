@@ -2026,6 +2026,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "flate2",
+ "futures-util",
  "observer-auth",
  "observer-projection",
  "serde",

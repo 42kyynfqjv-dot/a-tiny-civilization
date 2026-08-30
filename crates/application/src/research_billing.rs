@@ -6,13 +6,19 @@ use thiserror::Error;
 use uuid::Uuid;
 use world_domain::Digest;
 
-pub const CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION: u16 = 1;
+pub const LEGACY_CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION: u16 = 1;
+pub const CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION: u16 = 2;
 pub const CANCER_FIREWORKS_BILLING_EXPORT_FORMAT: &str =
     "fireworks_firectl_billing_export_metrics_csv_v1";
 pub const CANCER_FIREWORKS_GPT_OSS_20B_MODEL: &str = "accounts/fireworks/models/gpt-oss-20b";
+pub const CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_MODEL: &str =
+    "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b";
 pub const CANCER_FIREWORKS_DISPATCH_MATCH_TOLERANCE_SECONDS: i64 = 5;
 pub const CANCER_FIREWORKS_GPT_OSS_20B_INPUT_MICRO_USD_PER_MILLION_TOKENS: u64 = 70_000;
 pub const CANCER_FIREWORKS_GPT_OSS_20B_OUTPUT_MICRO_USD_PER_MILLION_TOKENS: u64 = 300_000;
+pub const CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_INPUT_MICRO_USD_PER_MILLION_TOKENS: u64 = 50_000;
+pub const CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_OUTPUT_MICRO_USD_PER_MILLION_TOKENS: u64 =
+    200_000;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -27,7 +33,7 @@ pub struct CancerResearchFireworksDispatchCandidate {
 
 impl CancerResearchFireworksDispatchCandidate {
     pub fn validate(&self) -> Result<(), CancerResearchBillingReconciliationError> {
-        if self.requested_model != CANCER_FIREWORKS_GPT_OSS_20B_MODEL
+        if !is_supported_fireworks_research_model(&self.requested_model)
             || self.route_index >= super::MAX_CANCER_RESEARCH_NETWORK_ATTEMPTS
             || self.billing_month.day() != 1
             || self.reserved_micro_usd == 0
@@ -77,8 +83,11 @@ impl CancerResearchFireworksCostReconciliation {
         completion_tokens: u32,
     ) -> Result<Self, CancerResearchBillingReconciliationError> {
         candidate.validate()?;
-        let actual_micro_usd =
-            fireworks_gpt_oss_20b_billed_micro_usd(prompt_tokens, completion_tokens)?;
+        let actual_micro_usd = fireworks_research_billed_micro_usd(
+            &candidate.requested_model,
+            prompt_tokens,
+            completion_tokens,
+        )?;
         let released_micro_usd = candidate
             .reserved_micro_usd
             .checked_sub(actual_micro_usd)
@@ -122,13 +131,20 @@ impl CancerResearchFireworksCostReconciliation {
         let max_delta = u64::try_from(CANCER_FIREWORKS_DISPATCH_MATCH_TOLERANCE_SECONDS)
             .unwrap_or_default()
             .saturating_mul(1_000);
-        let expected_actual =
-            fireworks_gpt_oss_20b_billed_micro_usd(self.prompt_tokens, self.completion_tokens)?;
+        let expected_actual = fireworks_research_billed_micro_usd(
+            &candidate.requested_model,
+            self.prompt_tokens,
+            self.completion_tokens,
+        )?;
         let expected_released = candidate
             .reserved_micro_usd
             .checked_sub(expected_actual)
             .ok_or(CancerResearchBillingReconciliationError::CostExceedsReservation)?;
-        if self.schema_version != CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION
+        let supported_schema = self.schema_version
+            == CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION
+            || (self.schema_version == LEGACY_CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION
+                && self.requested_model == CANCER_FIREWORKS_GPT_OSS_20B_MODEL);
+        if !supported_schema
             || self.reconciliation_id != Uuid::new_v5(&self.request_id, self.row_hash.as_bytes())
             || self.request_id != candidate.request_id
             || self.route_index != candidate.route_index
@@ -144,7 +160,6 @@ impl CancerResearchFireworksCostReconciliation {
                 .checked_add(self.row_byte_length)
                 .is_none_or(|end| end > self.export_byte_length)
             || self.matched_dispatch_at != candidate.dispatched_at
-            || self.requested_model != CANCER_FIREWORKS_GPT_OSS_20B_MODEL
             || self.requested_model != candidate.requested_model
             || timestamp_delta > max_delta
             || self.actual_micro_usd != expected_actual
@@ -207,7 +222,7 @@ pub fn reconcile_fireworks_billing_export(
             ));
         }
         if fields[columns.usage_type] != "TEXT_COMPLETION_INFERENCE_USAGE"
-            || fields[columns.model] != CANCER_FIREWORKS_GPT_OSS_20B_MODEL
+            || !is_supported_fireworks_research_model(&fields[columns.model])
         {
             continue;
         }
@@ -219,6 +234,7 @@ pub fn reconcile_fireworks_billing_export(
             return Err(CancerResearchBillingReconciliationError::EmptyUsage);
         }
         provider_rows.push(ParsedBillingRow {
+            requested_model: fields[columns.model].clone(),
             row_hash: Digest::sha256(raw_record),
             row_start_offset: u64::try_from(start).map_err(|_| {
                 CancerResearchBillingReconciliationError::InvalidCsv(
@@ -249,13 +265,15 @@ pub fn reconcile_fireworks_billing_export(
         let matches = provider_rows
             .iter()
             .filter(|row| {
-                row.provider_started_at
-                    .signed_duration_since(candidate.dispatched_at)
-                    .num_milliseconds()
-                    .unsigned_abs()
-                    <= u64::try_from(CANCER_FIREWORKS_DISPATCH_MATCH_TOLERANCE_SECONDS)
-                        .unwrap_or_default()
-                        .saturating_mul(1_000)
+                row.requested_model == candidate.requested_model
+                    && row
+                        .provider_started_at
+                        .signed_duration_since(candidate.dispatched_at)
+                        .num_milliseconds()
+                        .unsigned_abs()
+                        <= u64::try_from(CANCER_FIREWORKS_DISPATCH_MATCH_TOLERANCE_SECONDS)
+                            .unwrap_or_default()
+                            .saturating_mul(1_000)
             })
             .collect::<Vec<_>>();
         let [provider_row] = matches.as_slice() else {
@@ -287,14 +305,15 @@ pub fn reconcile_fireworks_billing_export(
         let matching_candidates = candidates
             .iter()
             .filter(|candidate| {
-                provider_row
-                    .provider_started_at
-                    .signed_duration_since(candidate.dispatched_at)
-                    .num_milliseconds()
-                    .unsigned_abs()
-                    <= u64::try_from(CANCER_FIREWORKS_DISPATCH_MATCH_TOLERANCE_SECONDS)
-                        .unwrap_or_default()
-                        .saturating_mul(1_000)
+                provider_row.requested_model == candidate.requested_model
+                    && provider_row
+                        .provider_started_at
+                        .signed_duration_since(candidate.dispatched_at)
+                        .num_milliseconds()
+                        .unsigned_abs()
+                        <= u64::try_from(CANCER_FIREWORKS_DISPATCH_MATCH_TOLERANCE_SECONDS)
+                            .unwrap_or_default()
+                            .saturating_mul(1_000)
             })
             .count();
         if matching_candidates > 1 {
@@ -310,6 +329,7 @@ pub fn reconcile_fireworks_billing_export(
 }
 
 struct ParsedBillingRow {
+    requested_model: String,
     row_hash: Digest,
     row_start_offset: u64,
     row_byte_length: u64,
@@ -509,15 +529,27 @@ fn parse_csv_record(
     Ok(fields)
 }
 
-pub fn fireworks_gpt_oss_20b_billed_micro_usd(
+pub fn fireworks_research_billed_micro_usd(
+    requested_model: &str,
     prompt_tokens: u32,
     completion_tokens: u32,
 ) -> Result<u64, CancerResearchBillingReconciliationError> {
+    let (input_price, output_price) = match requested_model {
+        CANCER_FIREWORKS_GPT_OSS_20B_MODEL => (
+            CANCER_FIREWORKS_GPT_OSS_20B_INPUT_MICRO_USD_PER_MILLION_TOKENS,
+            CANCER_FIREWORKS_GPT_OSS_20B_OUTPUT_MICRO_USD_PER_MILLION_TOKENS,
+        ),
+        CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_MODEL => (
+            CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_INPUT_MICRO_USD_PER_MILLION_TOKENS,
+            CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_OUTPUT_MICRO_USD_PER_MILLION_TOKENS,
+        ),
+        _ => return Err(CancerResearchBillingReconciliationError::InvalidDispatchCandidate),
+    };
     let numerator = u64::from(prompt_tokens)
-        .checked_mul(CANCER_FIREWORKS_GPT_OSS_20B_INPUT_MICRO_USD_PER_MILLION_TOKENS)
+        .checked_mul(input_price)
         .and_then(|input| {
             u64::from(completion_tokens)
-                .checked_mul(CANCER_FIREWORKS_GPT_OSS_20B_OUTPUT_MICRO_USD_PER_MILLION_TOKENS)
+                .checked_mul(output_price)
                 .and_then(|output| input.checked_add(output))
         })
         .ok_or(CancerResearchBillingReconciliationError::CostOverflow)?;
@@ -525,6 +557,24 @@ pub fn fireworks_gpt_oss_20b_billed_micro_usd(
         return Err(CancerResearchBillingReconciliationError::EmptyUsage);
     }
     Ok(numerator.div_ceil(1_000_000))
+}
+
+pub fn fireworks_gpt_oss_20b_billed_micro_usd(
+    prompt_tokens: u32,
+    completion_tokens: u32,
+) -> Result<u64, CancerResearchBillingReconciliationError> {
+    fireworks_research_billed_micro_usd(
+        CANCER_FIREWORKS_GPT_OSS_20B_MODEL,
+        prompt_tokens,
+        completion_tokens,
+    )
+}
+
+fn is_supported_fireworks_research_model(model: &str) -> bool {
+    matches!(
+        model,
+        CANCER_FIREWORKS_GPT_OSS_20B_MODEL | CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_MODEL
+    )
 }
 
 #[derive(Debug, Error)]
@@ -570,6 +620,21 @@ mod tests {
         }
     }
 
+    fn nemotron_candidate() -> CancerResearchFireworksDispatchCandidate {
+        CancerResearchFireworksDispatchCandidate {
+            request_id: Uuid::parse_str("a16a8ccb-6cbf-4c5f-8579-8dac2f1ec626")
+                .expect("request UUID"),
+            route_index: 8,
+            requested_model: CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_MODEL.to_owned(),
+            dispatched_at: Utc
+                .with_ymd_and_hms(2026, 8, 13, 2, 13, 1)
+                .single()
+                .expect("dispatch time"),
+            billing_month: NaiveDate::from_ymd_opt(2026, 8, 1).expect("billing month"),
+            reserved_micro_usd: 250_000,
+        }
+    }
+
     #[test]
     fn pricing_is_the_full_input_fireworks_tariff_rounded_up() {
         assert!(matches!(
@@ -585,6 +650,49 @@ mod tests {
             Ok(5_289)
         ));
         assert!(fireworks_gpt_oss_20b_billed_micro_usd(0, 0).is_err());
+        assert!(matches!(
+            fireworks_research_billed_micro_usd(
+                CANCER_FIREWORKS_NEMOTRON_LIGHTNING_3_5_MODEL,
+                58_026,
+                4_089,
+            ),
+            Ok(3_720)
+        ));
+    }
+
+    #[test]
+    fn legacy_schema_only_accepts_the_historical_gpt_oss_tariff() {
+        let old_candidate = candidate();
+        let mut old = CancerResearchFireworksCostReconciliation::from_export_row(
+            &old_candidate,
+            Digest::sha256(b"whole export"),
+            114,
+            Digest::sha256(b"exact old CSV row\n"),
+            90,
+            20,
+            old_candidate.dispatched_at,
+            10,
+            10,
+        )
+        .expect("current old-model evidence");
+        old.schema_version = LEGACY_CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION;
+        assert!(old.validate_against(&old_candidate).is_ok());
+
+        let new_candidate = nemotron_candidate();
+        let mut new = CancerResearchFireworksCostReconciliation::from_export_row(
+            &new_candidate,
+            Digest::sha256(b"whole export"),
+            114,
+            Digest::sha256(b"exact new CSV row\n"),
+            90,
+            20,
+            new_candidate.dispatched_at,
+            10,
+            10,
+        )
+        .expect("current new-model evidence");
+        new.schema_version = LEGACY_CANCER_FIREWORKS_RECONCILIATION_SCHEMA_VERSION;
+        assert!(new.validate_against(&new_candidate).is_err());
     }
 
     #[test]
@@ -757,5 +865,23 @@ mod tests {
             reconcile_fireworks_billing_export(csv.as_bytes(), &[first, second]).is_err(),
             "a single row inside both windows is ambiguous, not first-match wins"
         );
+    }
+
+    #[test]
+    fn simultaneous_rows_for_distinct_models_match_their_exact_dispatches() {
+        let old = candidate();
+        let new = nemotron_candidate();
+        let csv = concat!(
+            "start_time,usage_type,base_model_name,prompt_tokens,completion_tokens\n",
+            "2026-08-13 02:13:02 UTC,TEXT_COMPLETION_INFERENCE_USAGE,",
+            "accounts/fireworks/models/gpt-oss-20b,58026,4089\n",
+            "2026-08-13 02:13:02 UTC,TEXT_COMPLETION_INFERENCE_USAGE,",
+            "accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b,58026,4089\n",
+        );
+        let reconciliations = reconcile_fireworks_billing_export(csv.as_bytes(), &[old, new])
+            .expect("model identity disambiguates simultaneous provider rows");
+        assert_eq!(reconciliations.len(), 2);
+        assert_eq!(reconciliations[0].actual_micro_usd, 5_289);
+        assert_eq!(reconciliations[1].actual_micro_usd, 3_720);
     }
 }

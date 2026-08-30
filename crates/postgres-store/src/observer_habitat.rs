@@ -73,6 +73,7 @@ struct Communication {
     kind: PublicHabitatCommunicationKind,
     source_organism_id: EntityId,
     observer_organism_id: EntityId,
+    preceding_signal: Option<u8>,
     signal_form: u8,
     associated_action: Option<PrimitiveActionKind>,
 }
@@ -127,6 +128,7 @@ struct CommunicationRow {
     kind: String,
     source_organism_id: uuid::Uuid,
     observer_organism_id: uuid::Uuid,
+    preceding_signal: Option<i32>,
     signal_form: i32,
     associated_action: Option<String>,
 }
@@ -285,6 +287,7 @@ impl PostgresStore {
                                     kind: PublicHabitatCommunicationKind::HeardSignal,
                                     source_organism_id,
                                     observer_organism_id: *organism_id,
+                                    preceding_signal: None,
                                     signal_form,
                                     associated_action: None,
                                 },
@@ -307,6 +310,7 @@ impl PostgresStore {
                                 kind: PublicHabitatCommunicationKind::AssociatedAction,
                                 source_organism_id: *actor_id,
                                 observer_organism_id: *observer_id,
+                                preceding_signal: to.preceding_signal,
                                 signal_form: to.signal_intensity,
                                 associated_action: Some(to.action_kind),
                             },
@@ -699,8 +703,8 @@ async fn insert_communication(
         INSERT INTO observer_habitat_communication (
             projection_version,world_id,source_event_id,source_sequence,source_tick,
             source_event_index,kind,source_organism_id,observer_organism_id,signal_form,
-            associated_action
-        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)
+            preceding_signal,associated_action
+        ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
         ON CONFLICT (projection_version,world_id,source_event_id) DO NOTHING
         "#,
     )
@@ -720,6 +724,7 @@ async fn insert_communication(
     .bind(communication.source_organism_id.as_uuid())
     .bind(communication.observer_organism_id.as_uuid())
     .bind(i32::from(communication.signal_form))
+    .bind(communication.preceding_signal.map(i32::from))
     .bind(communication.associated_action.map(action_code))
     .execute(&mut **transaction)
     .await
@@ -780,7 +785,8 @@ async fn load_communication(
         SELECT communication.source_event_id,communication.source_sequence,
             communication.source_tick,communication.source_event_index,communication.kind,
             communication.source_organism_id,communication.observer_organism_id,
-            communication.signal_form,communication.associated_action
+            communication.preceding_signal,communication.signal_form,
+            communication.associated_action
         FROM observer_habitat_communication communication
         JOIN observer_habitat_entities source
           ON source.projection_version=communication.projection_version
@@ -816,6 +822,10 @@ async fn load_communication(
                 kind: parse_communication_kind(&row.kind)?,
                 source_organism_id: EntityId::from_uuid(row.source_organism_id),
                 observer_organism_id: EntityId::from_uuid(row.observer_organism_id),
+                signal_sequence: communication_signal_sequence(
+                    row.preceding_signal,
+                    row.signal_form,
+                )?,
                 signal_form: u8::try_from(row.signal_form)
                     .map_err(|_| corrupt("communication signal form"))?,
                 associated_action: row
@@ -825,6 +835,21 @@ async fn load_communication(
             })
         })
         .collect()
+}
+
+fn communication_signal_sequence(
+    preceding_signal: Option<i32>,
+    signal_form: i32,
+) -> Result<Vec<u8>, ObserverProjectionStoreError> {
+    let preceding_signal = preceding_signal
+        .map(|value| u8::try_from(value).map_err(|_| corrupt("communication preceding signal")))
+        .transpose()?;
+    let signal_form =
+        u8::try_from(signal_form).map_err(|_| corrupt("communication signal form"))?;
+    Ok(preceding_signal
+        .into_iter()
+        .chain(std::iter::once(signal_form))
+        .collect())
 }
 
 fn parse_entity(row: EntityRow) -> Result<PublicHabitatEntity, ObserverProjectionStoreError> {
@@ -961,7 +986,7 @@ fn corrupt(message: &str) -> ObserverProjectionStoreError {
 
 #[cfg(test)]
 mod tests {
-    use super::public_habitat_action;
+    use super::{communication_signal_sequence, public_habitat_action};
     use world_domain::PrimitiveActionKind;
 
     #[test]
@@ -969,5 +994,18 @@ mod tests {
         assert!(!public_habitat_action(PrimitiveActionKind::Bite));
         assert!(public_habitat_action(PrimitiveActionKind::Move));
         assert!(public_habitat_action(PrimitiveActionKind::EmitSignal));
+    }
+
+    #[test]
+    fn habitat_communication_preserves_compositional_prefixes() {
+        assert_eq!(
+            communication_signal_sequence(None, 5).expect("atomic signal"),
+            vec![5]
+        );
+        assert_eq!(
+            communication_signal_sequence(Some(27), 5).expect("compositional signal"),
+            vec![27, 5]
+        );
+        assert!(communication_signal_sequence(Some(300), 5).is_err());
     }
 }

@@ -72,6 +72,18 @@ struct PriorResearchResultRow {
 }
 
 #[derive(FromRow)]
+struct ResearchMemoryMirrorRow {
+    operation_id: Uuid,
+    document_id: Uuid,
+    world_id: Uuid,
+    agent_id: Uuid,
+    source_sequence: i64,
+    bank_id: String,
+    payload_version: i32,
+    payload: Value,
+}
+
+#[derive(FromRow)]
 struct CampaignRootRow {
     request_payload: Value,
     request_checksum: Vec<u8>,
@@ -207,8 +219,14 @@ impl CancerResearchJobStore for PostgresStore {
             r#"
             SELECT evidence_id, world_id, source_id, title, license, published_at,
                    content, content_hash, source_payload, retrieved_at
-            FROM cancer_research_literature
-            WHERE world_id=$1
+            FROM (
+                SELECT DISTINCT ON (source_id)
+                       evidence_id, world_id, source_id, title, license, published_at,
+                       content, content_hash, source_payload, retrieved_at
+                FROM cancer_research_literature
+                WHERE world_id=$1
+                ORDER BY source_id, retrieved_at DESC, evidence_id DESC
+            ) AS latest_source_snapshot
             ORDER BY published_at DESC NULLS LAST, evidence_id
             LIMIT $2
             "#,
@@ -2218,7 +2236,10 @@ impl CancerResearchJobStore for PostgresStore {
               AND reservation.actual_micro_usd IS NULL
               AND dispatch.provider_slug='fireworks_cancer'
               AND dispatch.billing_class='paid_approved'
-              AND dispatch.requested_model='accounts/fireworks/models/gpt-oss-20b'
+              AND dispatch.requested_model IN (
+                    'accounts/fireworks/models/gpt-oss-20b',
+                    'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b'
+              )
               AND reconciliation.request_id IS NULL
             ORDER BY dispatch.dispatched_at,dispatch.request_id,dispatch.route_index
             "#,
@@ -2481,6 +2502,20 @@ impl PostgresStore {
     /// transaction that stores them; this closes the gap for results created
     /// before that invariant existed.
     pub async fn backfill_cancer_research_memories(&self) -> Result<u64, StoreError> {
+        // Multiple memory-worker replicas start together. Only one may scan and
+        // repair historical gaps; current research completion already mirrors
+        // new receipts atomically and does not depend on this operational lock.
+        const CANCER_RESEARCH_MEMORY_BACKFILL_LOCK: i64 = 0x4154_4352_4D45_4D31;
+        let mut transaction = self.pool().begin().await.map_err(operation_error)?;
+        let owns_backfill: bool = sqlx::query_scalar("SELECT pg_try_advisory_xact_lock($1)")
+            .bind(CANCER_RESEARCH_MEMORY_BACKFILL_LOCK)
+            .fetch_one(&mut *transaction)
+            .await
+            .map_err(operation_error)?;
+        if !owns_backfill {
+            transaction.commit().await.map_err(operation_error)?;
+            return Ok(0);
+        }
         let rows = sqlx::query_as::<_, PriorResearchResultRow>(
             r#"
             SELECT request.request_payload, request.request_checksum,
@@ -2488,10 +2523,17 @@ impl PostgresStore {
             FROM cancer_research_requests AS request
             JOIN cancer_research_results AS result USING (request_id)
             WHERE result.result_payload->'receipt' <> 'null'::JSONB
+              AND NOT EXISTS (
+                  SELECT 1
+                  FROM memory_outbox AS memory
+                  WHERE memory.world_id=request.world_id
+                    AND memory.payload->>'context'='Cancer World research artifact'
+                    AND (memory.payload->>'ordinal')::BIGINT=request.ordinal
+              )
             ORDER BY request.world_id,request.ordinal,request.request_id
             "#,
         )
-        .fetch_all(self.pool())
+        .fetch_all(&mut *transaction)
         .await
         .map_err(operation_error)?;
         let mut inserted = 0_u64;
@@ -2527,12 +2569,11 @@ impl PostgresStore {
                 .contribution
                 .validate_against(&request.selection)
                 .map_err(corrupt)?;
-            let mut transaction = self.pool().begin().await.map_err(operation_error)?;
             inserted += u64::from(
                 enqueue_cancer_research_memory(&mut transaction, &request, receipt).await?,
             );
-            transaction.commit().await.map_err(operation_error)?;
         }
+        transaction.commit().await.map_err(operation_error)?;
         Ok(inserted)
     }
 }
@@ -2587,7 +2628,7 @@ async fn enqueue_cancer_research_memory(
         -- stream. The existing available-at index provides bounded priority
         -- without a per-claim sort across the entire general-memory backlog.
         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,'epoch'::TIMESTAMPTZ)
-        ON CONFLICT (operation_id) DO NOTHING
+        ON CONFLICT DO NOTHING
         "#,
     )
     .bind(retain.operation_id)
@@ -2597,11 +2638,58 @@ async fn enqueue_cancer_research_memory(
     .bind(source_sequence)
     .bind(&retain.bank_id)
     .bind(i32::from(retain.payload_version))
-    .bind(payload)
+    .bind(&payload)
     .execute(&mut **transaction)
     .await
     .map_err(operation_error)?;
-    Ok(inserted.rows_affected() == 1)
+    if inserted.rows_affected() == 1 {
+        return Ok(true);
+    }
+
+    // `memory_outbox` has both an operation primary key and a document identity
+    // uniqueness boundary. A concurrent speculative insert may meet either one
+    // first, so catch both and then prove that the winner stored identical
+    // immutable provenance rather than silently accepting a collision.
+    let conflicts = sqlx::query_as::<_, ResearchMemoryMirrorRow>(
+        r#"
+        SELECT operation_id,document_id,world_id,agent_id,source_sequence,
+               bank_id,payload_version,payload
+        FROM memory_outbox
+        WHERE operation_id=$1
+           OR (bank_id=$2 AND document_id=$3 AND payload_version=$4)
+        ORDER BY operation_id
+        LIMIT 2
+        "#,
+    )
+    .bind(retain.operation_id)
+    .bind(&retain.bank_id)
+    .bind(retain.document_id)
+    .bind(i32::from(retain.payload_version))
+    .fetch_all(&mut **transaction)
+    .await
+    .map_err(operation_error)?;
+    if conflicts.len() != 1 {
+        return Err(StoreError::Corrupt(format!(
+            "research memory {} conflicts with multiple durable identities",
+            retain.operation_id
+        )));
+    }
+    let existing = &conflicts[0];
+    if existing.operation_id != retain.operation_id
+        || existing.document_id != retain.document_id
+        || existing.world_id != retain.world_id.as_uuid()
+        || existing.agent_id != retain.agent_id.as_uuid()
+        || existing.source_sequence != source_sequence
+        || existing.bank_id != retain.bank_id
+        || existing.payload_version != i32::from(retain.payload_version)
+        || existing.payload != payload
+    {
+        return Err(StoreError::Corrupt(format!(
+            "research memory {} conflicts with its immutable mirror",
+            retain.operation_id
+        )));
+    }
+    Ok(false)
 }
 
 async fn fetch_research_reservation_from_pool(
@@ -2662,7 +2750,10 @@ async fn fetch_indeterminate_fireworks_candidate(
           AND reservation.actual_micro_usd IS NULL
           AND dispatch.provider_slug='fireworks_cancer'
           AND dispatch.billing_class='paid_approved'
-          AND dispatch.requested_model='accounts/fireworks/models/gpt-oss-20b'
+          AND dispatch.requested_model IN (
+                'accounts/fireworks/models/gpt-oss-20b',
+                'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b'
+          )
           AND reconciliation.request_id IS NULL
         FOR UPDATE OF reservation,dispatch
         "#
@@ -2680,7 +2771,10 @@ async fn fetch_indeterminate_fireworks_candidate(
           AND reservation.actual_micro_usd IS NULL
           AND dispatch.provider_slug='fireworks_cancer'
           AND dispatch.billing_class='paid_approved'
-          AND dispatch.requested_model='accounts/fireworks/models/gpt-oss-20b'
+          AND dispatch.requested_model IN (
+                'accounts/fireworks/models/gpt-oss-20b',
+                'accounts/fireworks/models/nemotron-lightning-3p5-30b-a3b'
+          )
           AND reconciliation.request_id IS NULL
         "#
     };
@@ -3282,6 +3376,25 @@ mod tests {
             )
             .await
             .expect("record outcome");
+        let insert_mirror = |store: PostgresStore,
+                             request: CancerResearchModelRequest,
+                             receipt: CancerResearchModelReceipt| async move {
+            let mut transaction = store.pool().begin().await.map_err(operation_error)?;
+            let inserted =
+                enqueue_cancer_research_memory(&mut transaction, &request, &receipt).await?;
+            transaction.commit().await.map_err(operation_error)?;
+            Ok::<bool, StoreError>(inserted)
+        };
+        let (first_mirror, second_mirror) = tokio::join!(
+            insert_mirror(store.clone(), request.clone(), receipt.clone()),
+            insert_mirror(store.clone(), request.clone(), receipt.clone()),
+        );
+        let mut concurrent_outcomes = [
+            first_mirror.expect("first concurrent research-memory mirror"),
+            second_mirror.expect("second concurrent research-memory mirror"),
+        ];
+        concurrent_outcomes.sort_unstable();
+        assert_eq!(concurrent_outcomes, [false, true]);
         let result = CancerResearchLadderResult {
             contract_version: CANCER_RESEARCH_MODEL_CONTRACT_VERSION,
             request_id: request.request_id,
@@ -3385,7 +3498,18 @@ mod tests {
             .expect("claim paid")
             .expect("paid job");
         let paid_registry = CognitionRouteRegistry::cancer_research_escalation();
-        let paid_route = paid_registry.routes[0].clone();
+        let (paid_route_index, paid_route) = paid_registry
+            .routes
+            .iter()
+            .enumerate()
+            .find(|(_, route)| route.billing_class == CognitionBillingClass::PaidApproved)
+            .map(|(index, route)| {
+                (
+                    u16::try_from(index).expect("paid route index"),
+                    route.clone(),
+                )
+            })
+            .expect("escalation registry contains a paid route");
         let authorization = match store
             .reserve_paid_cancer_research(
                 "research-test-worker",
@@ -3405,7 +3529,7 @@ mod tests {
             .begin_cancer_research_route_attempt(
                 "research-test-worker",
                 &paid_entry,
-                0,
+                paid_route_index,
                 &paid_route,
             )
             .await
@@ -3443,7 +3567,7 @@ mod tests {
             adapter_version: "test-adapter-v1".to_owned(),
         };
         let paid_attempt = CognitionRouteAttempt {
-            route_index: 0,
+            route_index: paid_route_index,
             provider: paid_route.provider.clone(),
             requested_model: paid_route.requested_model.clone(),
             billing_class: paid_route.billing_class,
@@ -3483,7 +3607,20 @@ mod tests {
             route_registry_hash: paid_registry
                 .canonical_hash(paid_request.route_purpose())
                 .expect("paid registry hash"),
-            attempts: vec![paid_attempt],
+            attempts: paid_registry
+                .routes
+                .iter()
+                .enumerate()
+                .take(usize::from(paid_route_index))
+                .map(|(route_index, route)| CognitionRouteAttempt {
+                    route_index: u16::try_from(route_index).expect("route index"),
+                    provider: route.provider.clone(),
+                    requested_model: route.requested_model.clone(),
+                    billing_class: route.billing_class,
+                    status: CognitionRouteAttemptStatus::SkippedUnconfigured,
+                })
+                .chain(std::iter::once(paid_attempt))
+                .collect(),
             receipt: Some(paid_receipt),
         };
         store

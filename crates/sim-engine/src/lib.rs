@@ -219,6 +219,12 @@ pub const SITUATED_SIGNAL_REUSE_RULESET_VERSION: u32 = 43;
 /// for hearing and social attention, while retaining deterministic pairing and
 /// close-kin exclusion.
 pub const LIFECYCLE_CONTINUITY_RULESET_VERSION: u32 = 44;
+/// Ruleset forty-five suppresses social-learning bookkeeping once an observed
+/// action's bounded value is already saturated. The observation can no longer
+/// affect action selection at that point, so retaining another counter-only
+/// transition adds event volume without changing behavior. The same version is
+/// the application-side activation boundary for bounded episodic memory.
+pub const ORDINARY_WORLD_HARDENING_RULESET_VERSION: u32 = 45;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -242,6 +248,15 @@ pub const RULESET_39_COMPOSITIONAL_SIGNAL_ACTIVATION_TICK: u64 = 9_200;
 /// reuse repair only at this disclosed boundary. Earlier ticks retain their exact
 /// production policy and replay hashes.
 pub const RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK: u64 = 5_000;
+/// The running ruleset-forty-two public world receives the ordinary-world
+/// saturation and episodic-memory hardening only at this disclosed boundary.
+/// Earlier transitions retain their exact bookkeeping events and memory effects.
+pub const RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK: u64 = 6_000;
+/// Cancer World uses the same bounded social-value representation. Once a value
+/// is saturated, its observation count likewise cannot affect action selection;
+/// suppress those counter-only events after this future replay boundary without
+/// changing research scheduling, biology, or any earlier transition.
+pub const CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK: u64 = 35_000;
 pub const LEGACY_SNAPSHOT_SCHEMA_VERSION: u16 = 1;
 pub const SNAPSHOT_SCHEMA_VERSION: u16 = 2;
 pub const EMBODIED_POSITION_SNAPSHOT_SCHEMA_VERSION: u16 = 3;
@@ -845,6 +860,29 @@ fn lifecycle_continuity_active(ruleset_version: u32, tick: SimTick) -> bool {
             && tick.get() >= RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK)
 }
 
+/// Whether observer-neutral ordinary-world hardening is active for a transition.
+/// Callers must additionally exclude explicitly bootstrapped experiment worlds.
+#[must_use]
+pub const fn ordinary_world_hardening_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= ORDINARY_WORLD_HARDENING_RULESET_VERSION
+        || (ruleset_version == SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
+            && tick.get() >= RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK)
+}
+
+const fn social_saturation_suppression_active(
+    ruleset_version: u32,
+    tick: SimTick,
+    experiment_world: bool,
+) -> bool {
+    if experiment_world {
+        ruleset_version >= ORDINARY_WORLD_HARDENING_RULESET_VERSION
+            || (ruleset_version == CANCER_BIOLOGY_RULESET_VERSION
+                && tick.get() >= CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK)
+    } else {
+        ordinary_world_hardening_active(ruleset_version, tick)
+    }
+}
+
 fn local_interaction_active(ruleset_version: u32, tick: SimTick) -> bool {
     ruleset_version >= LOCAL_INTERACTION_RULESET_VERSION
         || (ruleset_version == CLOSE_KIN_EXCLUSION_RULESET_VERSION
@@ -1179,6 +1217,27 @@ impl OrganismState {
                 perception_memory_key(entry).cmp(&(subject_id, channel, property_code))
             })
             .is_ok()
+    }
+
+    /// Latest canonical reading at one direct-perception address. This bounded
+    /// accessor exists for the one-way subjective-memory projection; callers
+    /// cannot mutate it or feed external memory back into canonical state.
+    #[must_use]
+    pub fn perception_memory_reading_at(
+        &self,
+        subject_id: Option<EntityId>,
+        channel: PerceptionChannel,
+        property_code: &str,
+    ) -> Option<(i32, u16, SimTick)> {
+        self.perception_memory
+            .binary_search_by(|entry| {
+                perception_memory_key(entry).cmp(&(subject_id, channel, property_code))
+            })
+            .ok()
+            .map(|index| {
+                let entry = &self.perception_memory[index];
+                (entry.quantized_value, entry.uncertainty, entry.observed_at)
+            })
     }
 
     #[must_use]
@@ -5573,13 +5632,18 @@ impl EngineState {
                     let action = actions
                         .get(&actor_id)
                         .expect("selected social actor has a scheduled action");
-                    let (from, to) = self.next_social_action_value(observer, action.kind)?;
-                    events.push(DomainEvent::OrganismSocialActionValueChanged {
-                        observer_id,
-                        actor_id,
-                        from,
-                        to,
-                    });
+                    let saturated = observer
+                        .social_action_value(action.kind)
+                        .is_some_and(|value| value.value == ACTION_VALUE_MAX);
+                    if !(self.plans_social_saturation_suppression_driver() && saturated) {
+                        let (from, to) = self.next_social_action_value(observer, action.kind)?;
+                        events.push(DomainEvent::OrganismSocialActionValueChanged {
+                            observer_id,
+                            actor_id,
+                            from,
+                            to,
+                        });
+                    }
                     if self.uses_signal_action_association_driver()
                         && !self.uses_contemporaneous_signal_driver()
                         && let Some(signal_intensity) =
@@ -5869,6 +5933,24 @@ impl EngineState {
     fn uses_lifecycle_continuity_driver(&self) -> bool {
         lifecycle_continuity_active(self.manifest.ruleset_version, self.tick)
             && self.uses_social_language_consolidation_driver()
+    }
+
+    fn uses_social_saturation_suppression_driver(&self) -> bool {
+        social_saturation_suppression_active(
+            self.manifest.ruleset_version,
+            self.tick,
+            self.uses_world_experiment_bootstrap(),
+        )
+    }
+
+    fn plans_social_saturation_suppression_driver(&self) -> bool {
+        self.tick.checked_next().is_ok_and(|tick| {
+            social_saturation_suppression_active(
+                self.manifest.ruleset_version,
+                tick,
+                self.uses_world_experiment_bootstrap(),
+            )
+        })
     }
 
     fn plans_situated_signal_reuse_driver(&self) -> bool {
@@ -6761,7 +6843,18 @@ impl EngineState {
                 .values()
                 .filter(|organism| organism.is_alive())
             {
-                let expected_actor = expected_observations.get(&observer.organism_id).copied();
+                let expected_actor = expected_observations
+                    .get(&observer.organism_id)
+                    .copied()
+                    .filter(|actor_id| {
+                        let action = actions
+                            .get(actor_id)
+                            .expect("selected social actor has a scheduled action");
+                        !(self.plans_social_saturation_suppression_driver()
+                            && observer
+                                .social_action_value(action.kind)
+                                .is_some_and(|value| value.value == ACTION_VALUE_MAX))
+                    });
                 let matches = events
                     .iter()
                     .enumerate()
@@ -8394,6 +8487,7 @@ impl EngineState {
                 self.require_living_organism(*actor_id)?;
                 to.validate()
                     .map_err(|error| EngineError::InvalidEmbodiedEvent(error.to_string()))?;
+                let suppresses_saturated_updates = self.uses_social_saturation_suppression_driver();
                 let observer = self
                     .organisms
                     .get_mut(observer_id)
@@ -8410,6 +8504,8 @@ impl EngineState {
                     || observer.social_action_value(to.action_kind) != *from
                     || to.observations != expected_observations
                     || to.value != expected_value
+                    || (suppresses_saturated_updates
+                        && from.is_some_and(|value| value.value == ACTION_VALUE_MAX))
                     || from.is_some_and(|from| from.action_kind != to.action_kind)
                 {
                     return Err(EngineError::InvalidSocialActionValueTransition(
@@ -17002,6 +17098,100 @@ mod tests {
             LIFECYCLE_CONTINUITY_RULESET_VERSION,
             SimTick::ZERO,
         ));
+        assert!(!ordinary_world_hardening_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK - 1),
+        ));
+        assert!(ordinary_world_hardening_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK),
+        ));
+        assert!(!ordinary_world_hardening_active(
+            LIFECYCLE_CONTINUITY_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+        assert!(ordinary_world_hardening_active(
+            ORDINARY_WORLD_HARDENING_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+        assert!(!social_saturation_suppression_active(
+            CANCER_BIOLOGY_RULESET_VERSION,
+            SimTick::new(CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK - 1),
+            true,
+        ));
+        assert!(social_saturation_suppression_active(
+            CANCER_BIOLOGY_RULESET_VERSION,
+            SimTick::new(CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK),
+            true,
+        ));
+        assert!(social_saturation_suppression_active(
+            ORDINARY_WORLD_HARDENING_RULESET_VERSION,
+            SimTick::ZERO,
+            true,
+        ));
+        assert!(!social_saturation_suppression_active(
+            CANCER_BIOLOGY_RULESET_VERSION,
+            SimTick::new(CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK),
+            false,
+        ));
+    }
+
+    #[test]
+    fn saturated_social_values_stop_emitting_counter_only_events() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4500_50c1));
+        let (_, mut running, genesis) =
+            grounded_language_fixture(world_id, 12, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
+        for organism in running.organisms.values_mut() {
+            organism.social_action_values = HERITABLE_ACTION_KINDS
+                .iter()
+                .copied()
+                .map(|action_kind| ActionValueState {
+                    value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                    action_kind,
+                    observations: u32::MAX,
+                    value: ACTION_VALUE_MAX,
+                })
+                .collect();
+            organism.social_action_values_updated_at = None;
+        }
+        let before = running
+            .organisms
+            .values()
+            .map(|organism| (organism.organism_id, organism.social_action_values.clone()))
+            .collect::<BTreeMap<_, _>>();
+        let saturated_snapshot =
+            Snapshot::new(running.clone(), EventSequence::new(1), genesis.batch_hash)
+                .expect("saturated-state checkpoint");
+        let events = running
+            .plan_next_tick_with_celestial_and_cognition(
+                CelestialState::new(
+                    TdbSecondsSinceJ2000::new(300),
+                    CartesianMillimetres::new(1, 2, 3),
+                    CartesianMillimetres::new(4, 5, 6),
+                ),
+                &[],
+            )
+            .expect("saturated social tick");
+        assert!(
+            !events
+                .iter()
+                .any(|event| matches!(event, DomainEvent::OrganismSocialActionValueChanged { .. }))
+        );
+        let (after, batch) = running
+            .commit(EventSequence::new(2), genesis.batch_hash, events)
+            .expect("counter-only social transitions are optional after saturation");
+        let after_values = after
+            .organisms
+            .values()
+            .map(|organism| (organism.organism_id, organism.social_action_values.clone()))
+            .collect::<BTreeMap<_, _>>();
+        assert_eq!(after_values, before);
+        assert_eq!(
+            replay_from_snapshot(&saturated_snapshot, &[batch])
+                .expect("saturation-suppressed tail replays")
+                .state,
+            after
+        );
     }
 
     #[test]
