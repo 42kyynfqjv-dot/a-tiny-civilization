@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v19";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v20";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -1544,8 +1544,10 @@ fn api_request(
     // first oneOf branch regardless of the prompt. A closed bare-token parser
     // retains the same safety boundary while allowing the local model to make
     // the choice. OpenRouter's dynamic free pool spans models with inconsistent
-    // provider-side schema support, so that one route relies on the same strict
-    // local object parser used for every hosted response.
+    // provider-side JSON-Schema support. Its router does, however, advertise
+    // feature filtering for plain JSON mode, so the ordinary route requests a
+    // JSON object and leaves exact schema enforcement to the same strict local
+    // parser used for every hosted response.
     if !local_unconstrained && !dynamic_openrouter_free {
         payload["response_format"] = json!({
             "type": "json_schema",
@@ -1555,6 +1557,8 @@ fn api_request(
                 "schema": bounded_action_schema()
             }
         });
+    } else if dynamic_openrouter_free {
+        payload["response_format"] = json!({"type": "json_object"});
     }
     apply_openrouter_provider_policy(&mut payload, provider, route);
     Ok(payload)
@@ -2828,7 +2832,7 @@ mod tests {
         assert_eq!(receipt.billed_micro_usd, 0);
         let seen = seen.lock().expect("test lock").clone().expect("request");
         assert_eq!(seen["provider"]["require_parameters"], true);
-        assert!(seen.get("response_format").is_none());
+        assert_eq!(seen["response_format"]["type"], "json_object");
         assert!(seen.get("include_reasoning").is_none());
         assert_eq!(seen["reasoning"]["effort"], "none");
         assert_eq!(seen["reasoning"]["exclude"], true);

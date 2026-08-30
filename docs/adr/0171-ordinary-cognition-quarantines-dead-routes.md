@@ -77,3 +77,18 @@ OpenRouter's documented unified control:
 Cancer research keeps its separate reasoning policy. The request still omits
 provider-side schema negotiation, and the same closed local action parser, zero-cost
 check, provider identity, response hash, deadline, and replay rules remain unchanged.
+
+## Live-probe amendment: request router-filtered JSON mode
+
+The version-19 canary returned final message content, proving the reasoning control
+repaired the null-content failure, but the randomly selected free model answered in
+prose and the local typed parser correctly rejected it. OpenRouter now documents that
+the free router filters its candidate pool for requested capabilities, including
+structured output. Adapter contract version 20 therefore requests the broadly
+supported `response_format: { type: "json_object" }` mode for ordinary
+`openrouter/free` calls. It deliberately does not delegate the exact action schema to
+the provider: the local deny-unknown-fields parser remains the authoritative safety
+boundary. Cancer research routing and all canonical simulation rules remain
+unchanged.
+
+Provider capability reference: <https://openrouter.ai/openrouter/free>.
