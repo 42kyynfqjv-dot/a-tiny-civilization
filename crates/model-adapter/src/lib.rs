@@ -3360,7 +3360,7 @@ mod tests {
                 CognitionRouteAttemptStatus::SkippedUnconfigured,
                 CognitionRouteAttemptStatus::SkippedDisabled,
                 CognitionRouteAttemptStatus::SkippedDisabled,
-                CognitionRouteAttemptStatus::SkippedUnconfigured,
+                CognitionRouteAttemptStatus::SkippedDisabled,
                 CognitionRouteAttemptStatus::SkippedDisabled,
                 CognitionRouteAttemptStatus::Unavailable,
                 CognitionRouteAttemptStatus::Unavailable,
@@ -3378,7 +3378,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn policy_three_quarantines_dead_routes_without_rewriting_policy_two() {
+    async fn policy_four_quarantines_the_cpu_timeout_without_rewriting_prior_policies() {
         let legacy_calls = Arc::new(AtomicUsize::new(0));
         let mut legacy_adapters = BTreeMap::new();
         legacy_adapters.insert(
@@ -3409,10 +3409,43 @@ mod tests {
         );
         assert_eq!(legacy_calls.load(Ordering::SeqCst), 1);
 
+        let legacy_v3_calls = Arc::new(AtomicUsize::new(0));
+        let mut legacy_v3_adapters = BTreeMap::new();
+        legacy_v3_adapters.insert(
+            CognitionProviderId::local_openai(),
+            fake_adapter(
+                FakeBehavior::Succeed(PrimitiveActionKind::Orient),
+                &legacy_v3_calls,
+            ),
+        );
+        let legacy_v3 = CognitionRouteLadder::new(
+            CognitionRouteRegistry::production_legacy_v3(),
+            CognitionRoutePurpose::ProductionWorld,
+            legacy_v3_adapters,
+        )
+        .expect("version-three ladder");
+        let legacy_v3_result = legacy_v3
+            .infer(&request(), &execution)
+            .await
+            .expect("version-three result");
+        assert_eq!(
+            legacy_v3_result.attempts[1].status,
+            CognitionRouteAttemptStatus::SkippedDisabled
+        );
+        assert_eq!(
+            legacy_v3_result.attempts[2].status,
+            CognitionRouteAttemptStatus::SkippedDisabled
+        );
+        assert_eq!(
+            legacy_v3_result.attempts[3].status,
+            CognitionRouteAttemptStatus::Succeeded
+        );
+        assert_eq!(legacy_v3_calls.load(Ordering::SeqCst), 1);
+
         let current_calls = Arc::new(AtomicUsize::new(0));
         let mut current_adapters = BTreeMap::new();
         current_adapters.insert(
-            CognitionProviderId::openrouter(),
+            CognitionProviderId::local_openai(),
             fake_adapter(
                 FakeBehavior::Succeed(PrimitiveActionKind::Orient),
                 &current_calls,
@@ -3434,6 +3467,14 @@ mod tests {
         );
         assert_eq!(
             current_result.attempts[2].status,
+            CognitionRouteAttemptStatus::SkippedDisabled
+        );
+        assert_eq!(
+            current_result.attempts[3].status,
+            CognitionRouteAttemptStatus::SkippedDisabled
+        );
+        assert_eq!(
+            current_result.attempts[4].status,
             CognitionRouteAttemptStatus::SkippedDisabled
         );
         assert_eq!(current_calls.load(Ordering::SeqCst), 0);

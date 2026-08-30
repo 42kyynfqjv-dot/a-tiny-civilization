@@ -12,7 +12,8 @@ pub use world_domain::{CognitionReading as CognitionInputReading, cognition_requ
 
 pub const COGNITION_MODEL_CONTRACT_VERSION: u16 = 1;
 pub const LEGACY_COGNITION_ROUTE_POLICY_VERSION: u16 = 2;
-pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 3;
+pub const LEGACY_COGNITION_ROUTE_POLICY_VERSION_V3: u16 = 3;
+pub const COGNITION_ROUTE_POLICY_VERSION: u16 = 4;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION: u16 = 7;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V8: u16 = 8;
 pub const LEGACY_CANCER_RESEARCH_EXPLORATION_ROUTE_POLICY_VERSION_V9: u16 = 9;
@@ -519,6 +520,15 @@ impl CognitionRouteRegistry {
         vec![
             CognitionModelRoute::openrouter_gpt_oss_20b_free(),
             CognitionModelRoute::openrouter_gpt_oss_120b_free(),
+            CognitionModelRoute::local_qwen2_5_1_5b(),
+            CognitionModelRoute::local_gpt_oss_20b(),
+        ]
+    }
+
+    fn production_legacy_v3_quarantined_routes() -> Vec<CognitionModelRoute> {
+        vec![
+            CognitionModelRoute::openrouter_gpt_oss_20b_free(),
+            CognitionModelRoute::openrouter_gpt_oss_120b_free(),
             CognitionModelRoute::local_gpt_oss_20b(),
         ]
     }
@@ -565,9 +575,19 @@ impl CognitionRouteRegistry {
         }
     }
 
+    #[must_use]
+    pub fn production_legacy_v3() -> Self {
+        Self {
+            policy_version: LEGACY_COGNITION_ROUTE_POLICY_VERSION_V3,
+            routes: Self::production_routes(),
+            quarantined_routes: Self::production_legacy_v3_quarantined_routes(),
+        }
+    }
+
     pub fn production_for_policy(policy_version: u16) -> Result<Self, CognitionContractError> {
         match policy_version {
             LEGACY_COGNITION_ROUTE_POLICY_VERSION => Ok(Self::production_legacy_v2()),
+            LEGACY_COGNITION_ROUTE_POLICY_VERSION_V3 => Ok(Self::production_legacy_v3()),
             COGNITION_ROUTE_POLICY_VERSION => Ok(Self::production_default()),
             _ => Err(CognitionContractError::UnsupportedRoutePolicyVersion(
                 policy_version,
@@ -874,7 +894,9 @@ impl CognitionRouteRegistry {
             ),
             CognitionRoutePurpose::ProductionWorld => matches!(
                 self.policy_version,
-                LEGACY_COGNITION_ROUTE_POLICY_VERSION | COGNITION_ROUTE_POLICY_VERSION
+                LEGACY_COGNITION_ROUTE_POLICY_VERSION
+                    | LEGACY_COGNITION_ROUTE_POLICY_VERSION_V3
+                    | COGNITION_ROUTE_POLICY_VERSION
             ),
             CognitionRoutePurpose::Development => {
                 self.policy_version == COGNITION_ROUTE_POLICY_VERSION
@@ -893,6 +915,9 @@ impl CognitionRouteRegistry {
                 CognitionRoutePurpose::ProductionWorld | CognitionRoutePurpose::Development,
                 COGNITION_ROUTE_POLICY_VERSION,
             ) => Self::production_quarantined_routes(),
+            (CognitionRoutePurpose::ProductionWorld, LEGACY_COGNITION_ROUTE_POLICY_VERSION_V3) => {
+                Self::production_legacy_v3_quarantined_routes()
+            }
             _ => Vec::new(),
         };
         if self.quarantined_routes != expected_quarantined_routes
@@ -1799,6 +1824,7 @@ mod tests {
             vec![
                 CognitionModelRoute::openrouter_gpt_oss_20b_free(),
                 CognitionModelRoute::openrouter_gpt_oss_120b_free(),
+                CognitionModelRoute::local_qwen2_5_1_5b(),
                 CognitionModelRoute::local_gpt_oss_20b(),
             ]
         );
@@ -1827,6 +1853,25 @@ mod tests {
         assert_eq!(
             decoded_legacy.canonical_hash(CognitionRoutePurpose::ProductionWorld),
             legacy.canonical_hash(CognitionRoutePurpose::ProductionWorld)
+        );
+
+        let legacy_v3 = CognitionRouteRegistry::production_legacy_v3();
+        assert_eq!(legacy_v3.routes, registry.routes);
+        assert_eq!(
+            legacy_v3.quarantined_routes,
+            vec![
+                CognitionModelRoute::openrouter_gpt_oss_20b_free(),
+                CognitionModelRoute::openrouter_gpt_oss_120b_free(),
+                CognitionModelRoute::local_gpt_oss_20b(),
+            ]
+        );
+        assert_eq!(
+            legacy_v3.validate(CognitionRoutePurpose::ProductionWorld),
+            Ok(())
+        );
+        assert_eq!(
+            CognitionRouteRegistry::production_for_policy(legacy_v3.policy_version),
+            Ok(legacy_v3)
         );
 
         let mut unquarantined = registry.clone();
