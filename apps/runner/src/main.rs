@@ -33,9 +33,9 @@ use serde_json::json;
 use sim_engine::{
     ADULT_BODY_MASS_STATE_RULESET_VERSION, BODILY_REGULATION_RULESET_VERSION,
     CANCER_BIOLOGY_RULESET_VERSION, CELESTIAL_DRIVER_RULESET_VERSION, COGNITION_RULESET_VERSION,
-    HERITABLE_DISPOSITION_RULESET_VERSION, InitialMaterialInstance, InitialOrganism,
-    LOCAL_WEATHER_RULESET_VERSION, MATERIAL_RESERVOIR_RULESET_VERSION,
-    ORDINARY_WORLD_HARDENING_RULESET_VERSION, PartitionCapacityProbe,
+    CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION, HERITABLE_DISPOSITION_RULESET_VERSION,
+    InitialMaterialInstance, InitialOrganism, LOCAL_WEATHER_RULESET_VERSION,
+    MATERIAL_RESERVOIR_RULESET_VERSION, PartitionCapacityProbe,
     REPRODUCTIVE_PHYSIOLOGY_RULESET_VERSION, RULESET_VERSION, replay, replay_from_outcome,
     replay_from_snapshot, run_partition_capacity_probe,
 };
@@ -63,9 +63,10 @@ use world_domain::{
     WorldSeed, WorldStatus,
 };
 
-/// New ordinary full-Earth worlds start with productive compositional signals layered
-/// over every earlier physical driver. Older worlds retain their genesis ruleset.
-const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = ORDINARY_WORLD_HARDENING_RULESET_VERSION;
+/// New ordinary full-Earth worlds start with contextual accommodation layered over
+/// every earlier physical and learning driver. Older worlds retain their genesis
+/// ruleset and receive only explicitly scheduled replay-safe activations.
+const DEFAULT_PROVISIONAL_RULESET_VERSION: u32 = CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION;
 const PROVISIONAL_HUMAN_FOUNDER_COUNT: usize = 24;
 // The pinned CPU model can need more than 45 seconds to prefill a full bounded
 // cognition prompt on this host. The live cadence is one minute per tick, so
@@ -4971,7 +4972,7 @@ mod tests {
     }
 
     #[test]
-    fn provisional_full_earth_defaults_to_the_ordinary_hardening_ruleset() {
+    fn provisional_full_earth_defaults_to_contextual_signal_accommodation() {
         let cli = Cli::try_parse_from([
             "civilization-runner",
             "--database-url",
@@ -4997,7 +4998,10 @@ mod tests {
         else {
             panic!("expected provisional initialization command");
         };
-        assert_eq!(ruleset_version, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
+        assert_eq!(
+            ruleset_version,
+            CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION
+        );
         assert!(refuse_other_worlds);
         assert!(!cancer_research);
     }
@@ -5124,7 +5128,10 @@ mod tests {
         assert_eq!(genesis_directory, std::path::Path::new("genesis"));
         assert_eq!(tick_duration_seconds, 300);
         assert_eq!(max_events_per_partition_transition, 10_000);
-        assert_eq!(ruleset_version, ORDINARY_WORLD_HARDENING_RULESET_VERSION);
+        assert_eq!(
+            ruleset_version,
+            CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION
+        );
     }
 
     #[test]

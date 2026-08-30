@@ -225,6 +225,15 @@ pub const LIFECYCLE_CONTINUITY_RULESET_VERSION: u32 = 44;
 /// transition adds event volume without changing behavior. The same version is
 /// the application-side activation boundary for bounded episodic memory.
 pub const ORDINARY_WORLD_HARDENING_RULESET_VERSION: u32 = 45;
+/// Ruleset forty-six compares a form-to-action association with the listener's
+/// directly observed background frequency for that action and permits a recently
+/// heard call to receive the ordinary imitation bias in a second situated motor
+/// context after repeated matching evidence. Earlier rules treated raw strength
+/// as predictive, so the most common action captured every form and the new
+/// mapping had to become uniquely dominant before imitation could reinforce it.
+/// This permits learned informativeness, polysemy, and cultural accommodation;
+/// it supplies no form, meaning, goal, referent, or vocabulary.
+pub const CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION: u32 = 46;
 /// Ruleset 38's fixed 1,000-person research cohort can legitimately emit more
 /// than the older public-world partition envelope on a single local patch. This
 /// is a deterministic execution allowance, not a behavior or selection weight.
@@ -252,6 +261,11 @@ pub const RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK: u64 = 5_000;
 /// saturation and episodic-memory hardening only at this disclosed boundary.
 /// Earlier transitions retain their exact bookkeeping events and memory effects.
 pub const RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK: u64 = 5_300;
+/// The running ruleset-forty-two public world receives contextual signal
+/// accommodation only at this disclosed future boundary. Earlier transitions
+/// retain the exact filter that rejected imitation whenever a form already had
+/// another established meaning.
+pub const RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK: u64 = 5_600;
 /// Cancer World uses the same bounded social-value representation. Once a value
 /// is saturated, its observation count likewise cannot affect action selection;
 /// suppress those counter-only events after this future replay boundary without
@@ -860,6 +874,12 @@ fn lifecycle_continuity_active(ruleset_version: u32, tick: SimTick) -> bool {
             && tick.get() >= RULESET_42_SITUATED_SIGNAL_REUSE_ACTIVATION_TICK)
 }
 
+fn contextual_signal_accommodation_active(ruleset_version: u32, tick: SimTick) -> bool {
+    ruleset_version >= CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION
+        || (ruleset_version == SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION
+            && tick.get() >= RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK)
+}
+
 /// Whether observer-neutral ordinary-world hardening is active for a transition.
 /// Callers must additionally exclude explicitly bootstrapped experiment worlds.
 #[must_use]
@@ -1348,6 +1368,48 @@ impl OrganismState {
         (association.value > competing_maximum).then_some(association)
     }
 
+    /// Returns the uniquely most informative meaning for a form after discounting
+    /// how often the listener observes each action without regard to that form.
+    /// For a fixed form this compares P(form | action), which is proportional to
+    /// the form's lift over the action base rate. Integer cross-products keep the
+    /// comparison exact and deterministic.
+    fn base_rate_corrected_signal_prediction(
+        &self,
+        preceding_signal: Option<u8>,
+        signal_intensity: u8,
+        action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
+    ) -> Option<SignalActionAssociationState> {
+        let association = self.signal_action_association(
+            preceding_signal,
+            signal_intensity,
+            action_kind,
+            movement_direction,
+        )?;
+        let action_observations = u64::from(
+            self.social_action_value(action_kind)
+                .map_or(1, |value| value.observations.max(1)),
+        );
+        let association_strength = u64::from(association.value.unsigned_abs());
+        self.signal_action_associations
+            .iter()
+            .filter(|entry| {
+                entry.preceding_signal == preceding_signal
+                    && entry.signal_intensity == signal_intensity
+                    && (entry.action_kind, entry.movement_direction)
+                        != (action_kind, movement_direction)
+            })
+            .all(|competitor| {
+                let competitor_observations = u64::from(
+                    self.social_action_value(competitor.action_kind)
+                        .map_or(1, |value| value.observations.max(1)),
+                );
+                association_strength.saturating_mul(competitor_observations)
+                    > u64::from(competitor.value.unsigned_abs()).saturating_mul(action_observations)
+            })
+            .then_some(association)
+    }
+
     /// Measures how distinct one form is both from alternative meanings for that
     /// form and from alternative forms for the same situated motor prediction.
     /// This soft two-way competition leaves room for change but prevents every
@@ -1544,6 +1606,22 @@ impl OrganismState {
                 && (entry.action_kind, entry.movement_direction)
                     != (action_kind, movement_direction)
         })
+    }
+
+    /// Whether direct social evidence has repeatedly paired this form with this
+    /// situated motor outcome. Associations are learned only from heard actors;
+    /// this is therefore evidence for contextual imitation, not an assigned
+    /// symbol or a privileged action label supplied to the organism.
+    fn has_repeated_current_meaning(
+        &self,
+        signal_form: u8,
+        action_kind: PrimitiveActionKind,
+        movement_direction: Option<u8>,
+    ) -> bool {
+        self.signal_action_association(None, signal_form, action_kind, movement_direction)
+            .is_some_and(|association| {
+                association.observations >= SITUATED_SIGNAL_REUSE_MIN_OBSERVATIONS
+            })
     }
 
     fn age_ticks(&self) -> Option<u64> {
@@ -3358,12 +3436,21 @@ impl EngineState {
         {
             for candidate in &mut candidates {
                 let association = if self.uses_competitive_signal_learning_driver() {
-                    organism.distinctive_signal_prediction(
-                        None,
-                        signal_intensity,
-                        candidate.action.kind,
-                        candidate.action.movement_direction,
-                    )
+                    if self.plans_contextual_signal_accommodation_driver() {
+                        organism.base_rate_corrected_signal_prediction(
+                            None,
+                            signal_intensity,
+                            candidate.action.kind,
+                            candidate.action.movement_direction,
+                        )
+                    } else {
+                        organism.distinctive_signal_prediction(
+                            None,
+                            signal_intensity,
+                            candidate.action.kind,
+                            candidate.action.movement_direction,
+                        )
+                    }
                 } else {
                     organism.signal_action_association(
                         None,
@@ -3565,22 +3652,7 @@ impl EngineState {
             .filter(|candidate| candidate.action.kind == PrimitiveActionKind::EmitSignal)
             .collect::<Vec<_>>();
         if self.uses_action_grounded_signal_selection_driver() {
-            let recent_signal = organism.recent_signal(self.tick).filter(|signal_form| {
-                !self.uses_social_language_consolidation_driver()
-                    || organism
-                        .distinctive_signal_prediction(
-                            None,
-                            *signal_form,
-                            grounded_action.kind,
-                            grounded_action.movement_direction,
-                        )
-                        .is_some()
-                    || !organism.has_established_other_meaning(
-                        *signal_form,
-                        grounded_action.kind,
-                        grounded_action.movement_direction,
-                    )
-            });
+            let recent_signal = self.action_grounded_recent_signal(organism, grounded_action);
             let preceding_signal = self
                 .plans_compositional_signal_driver()
                 .then(|| organism.preceding_produced_signal(self.tick.checked_next().ok()?))
@@ -3605,7 +3677,9 @@ impl EngineState {
         let total_family_weight = motor_weight
             .checked_add(normalized_signal_weight)
             .ok_or(EngineError::TooManyEvents)?;
-        let policy_version = if self.plans_situated_signal_reuse_driver() {
+        let policy_version = if self.plans_contextual_signal_accommodation_driver() {
+            5
+        } else if self.plans_situated_signal_reuse_driver() {
             4
         } else if self.plans_compositional_signal_driver() {
             3
@@ -3659,6 +3733,43 @@ impl EngineState {
         Ok(Some(u8::try_from(selected.action.intensity).expect(
             "signal-form domain is bounded to an unsigned byte",
         )))
+    }
+
+    fn action_grounded_recent_signal(
+        &self,
+        organism: &OrganismState,
+        grounded_action: &PrimitiveAction,
+    ) -> Option<u8> {
+        organism.recent_signal(self.tick).filter(|signal_form| {
+            !self.uses_social_language_consolidation_driver()
+                || (if self.plans_contextual_signal_accommodation_driver() {
+                    organism.base_rate_corrected_signal_prediction(
+                        None,
+                        *signal_form,
+                        grounded_action.kind,
+                        grounded_action.movement_direction,
+                    )
+                } else {
+                    organism.distinctive_signal_prediction(
+                        None,
+                        *signal_form,
+                        grounded_action.kind,
+                        grounded_action.movement_direction,
+                    )
+                })
+                .is_some()
+                || !organism.has_established_other_meaning(
+                    *signal_form,
+                    grounded_action.kind,
+                    grounded_action.movement_direction,
+                )
+                || (self.plans_contextual_signal_accommodation_driver()
+                    && organism.has_repeated_current_meaning(
+                        *signal_form,
+                        grounded_action.kind,
+                        grounded_action.movement_direction,
+                    ))
+        })
     }
 
     fn production_signal_convention_strength(
@@ -5996,6 +6107,19 @@ impl EngineState {
             && !self.uses_world_experiment_bootstrap()
     }
 
+    fn plans_contextual_signal_accommodation_driver(&self) -> bool {
+        self.tick.checked_next().is_ok_and(|tick| {
+            contextual_signal_accommodation_active(self.manifest.ruleset_version, tick)
+        }) && self.uses_social_language_consolidation_driver()
+            && !self.uses_world_experiment_bootstrap()
+    }
+
+    fn uses_contextual_signal_accommodation_driver(&self) -> bool {
+        contextual_signal_accommodation_active(self.manifest.ruleset_version, self.tick)
+            && self.uses_social_language_consolidation_driver()
+            && !self.uses_world_experiment_bootstrap()
+    }
+
     fn grounded_language_threshold_is_met(&self) -> bool {
         if !self.uses_social_language_consolidation_driver() {
             return true;
@@ -6017,15 +6141,22 @@ impl EngineState {
                                 >= SITUATED_LANGUAGE_LIFECYCLE_MIN_OBSERVATIONS)
                 })
             {
-                if organism
-                    .distinctive_signal_prediction(
+                let prediction = if self.uses_contextual_signal_accommodation_driver() {
+                    organism.base_rate_corrected_signal_prediction(
                         None,
                         association.signal_intensity,
                         association.action_kind,
                         association.movement_direction,
                     )
-                    .is_some()
-                {
+                } else {
+                    organism.distinctive_signal_prediction(
+                        None,
+                        association.signal_intensity,
+                        association.action_kind,
+                        association.movement_direction,
+                    )
+                };
+                if prediction.is_some() {
                     learners
                         .entry((
                             association.signal_intensity,
@@ -17783,6 +17914,22 @@ mod tests {
             ORDINARY_WORLD_HARDENING_RULESET_VERSION,
             SimTick::ZERO,
         ));
+        assert!(!contextual_signal_accommodation_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK - 1),
+        ));
+        assert!(contextual_signal_accommodation_active(
+            SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION,
+            SimTick::new(RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK),
+        ));
+        assert!(!contextual_signal_accommodation_active(
+            ORDINARY_WORLD_HARDENING_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
+        assert!(contextual_signal_accommodation_active(
+            CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION,
+            SimTick::ZERO,
+        ));
         assert!(!social_saturation_suppression_active(
             CANCER_BIOLOGY_RULESET_VERSION,
             SimTick::new(CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK - 1),
@@ -17803,6 +17950,203 @@ mod tests {
             SimTick::new(CANCER_RESEARCH_SOCIAL_SATURATION_ACTIVATION_TICK),
             false,
         ));
+    }
+
+    #[test]
+    fn contextual_accommodation_allows_only_repeatedly_evidenced_polysemy() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4600_acce));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 2, SOCIAL_LANGUAGE_CONSOLIDATION_RULESET_VERSION);
+        let ids = running
+            .organisms
+            .keys()
+            .copied()
+            .take(2)
+            .collect::<Vec<_>>();
+        let listener_id = ids[0];
+        let source_id = ids[1];
+        let grounded_action = PrimitiveAction {
+            kind: PrimitiveActionKind::Swallow,
+            target_id: None,
+            intensity: 1,
+            contact_region: None,
+            movement_direction: None,
+        };
+        let incumbent = SignalActionAssociationState {
+            association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
+            signal_intensity: 7,
+            action_kind: PrimitiveActionKind::Rest,
+            movement_direction: None,
+            observations: 64,
+            value: ACTION_VALUE_MAX,
+        };
+        let emerging = SignalActionAssociationState {
+            association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+            preceding_signal: None,
+            signal_intensity: 7,
+            action_kind: PrimitiveActionKind::Swallow,
+            movement_direction: None,
+            observations: 1,
+            value: SIGNAL_PREDICTION_REINFORCEMENT,
+        };
+        {
+            let listener = running
+                .organisms
+                .get_mut(&listener_id)
+                .expect("fixture listener");
+            listener.signal_action_associations = vec![incumbent, emerging];
+            listener.signal_action_associations.sort_by_key(|entry| {
+                (
+                    entry.preceding_signal,
+                    entry.signal_intensity,
+                    entry.action_kind,
+                    entry.movement_direction,
+                )
+            });
+        }
+
+        let set_recent_signal = |state: &mut EngineState| {
+            state
+                .organisms
+                .get_mut(&listener_id)
+                .expect("fixture listener")
+                .perception_memory = vec![PerceptionMemoryEntry {
+                subject_id: Some(source_id),
+                channel: PerceptionChannel::Sound,
+                property_code: "signal_amplitude".to_owned(),
+                quantized_value: 7,
+                uncertainty: 0,
+                observed_at: state.tick,
+            }];
+        };
+
+        running.tick = SimTick::new(RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK - 1);
+        set_recent_signal(&mut running);
+        assert_eq!(
+            running.action_grounded_recent_signal(
+                running
+                    .organisms
+                    .get(&listener_id)
+                    .expect("fixture listener"),
+                &grounded_action,
+            ),
+            None,
+            "one observation cannot dislodge an established meaning",
+        );
+
+        let listener = running
+            .organisms
+            .get_mut(&listener_id)
+            .expect("fixture listener");
+        let emerging = listener
+            .signal_action_associations
+            .iter_mut()
+            .find(|entry| entry.action_kind == PrimitiveActionKind::Swallow)
+            .expect("emerging association");
+        emerging.observations = SITUATED_SIGNAL_REUSE_MIN_OBSERVATIONS;
+        assert_eq!(
+            running.action_grounded_recent_signal(
+                running
+                    .organisms
+                    .get(&listener_id)
+                    .expect("fixture listener"),
+                &grounded_action,
+            ),
+            Some(7),
+            "repeated direct evidence permits contextual imitation at the boundary",
+        );
+
+        let mut historical = running.clone();
+        historical.tick =
+            SimTick::new(RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK - 2);
+        set_recent_signal(&mut historical);
+        assert_eq!(
+            historical.action_grounded_recent_signal(
+                historical
+                    .organisms
+                    .get(&listener_id)
+                    .expect("fixture listener"),
+                &grounded_action,
+            ),
+            None,
+            "the pre-boundary filter remains replay-compatible",
+        );
+    }
+
+    #[test]
+    fn base_rate_correction_selects_informative_calls_over_common_actions() {
+        let world_id = WorldId::from_uuid(Uuid::from_u128(0x4600_ba5e));
+        let (_, mut running, _) =
+            grounded_language_fixture(world_id, 1, CONTEXTUAL_SIGNAL_ACCOMMODATION_RULESET_VERSION);
+        let organism = running
+            .organisms
+            .values_mut()
+            .next()
+            .expect("fixture person");
+        organism.social_action_values = vec![
+            ActionValueState {
+                value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind: PrimitiveActionKind::Rest,
+                observations: 2_000,
+                value: ACTION_VALUE_MAX,
+            },
+            ActionValueState {
+                value_schema_version: ACTION_VALUE_STATE_SCHEMA_VERSION,
+                action_kind: PrimitiveActionKind::Swallow,
+                observations: 400,
+                value: ACTION_VALUE_MAX,
+            },
+        ];
+        organism
+            .social_action_values
+            .sort_by_key(|entry| entry.action_kind);
+        organism.signal_action_associations = vec![
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Rest,
+                movement_direction: None,
+                observations: 64,
+                value: ACTION_VALUE_MAX,
+            },
+            SignalActionAssociationState {
+                association_schema_version: COMPOSITIONAL_SIGNAL_ASSOCIATION_SCHEMA_VERSION,
+                preceding_signal: None,
+                signal_intensity: 7,
+                action_kind: PrimitiveActionKind::Swallow,
+                movement_direction: None,
+                observations: 8,
+                value: 32,
+            },
+        ];
+        organism.signal_action_associations.sort_by_key(|entry| {
+            (
+                entry.preceding_signal,
+                entry.signal_intensity,
+                entry.action_kind,
+                entry.movement_direction,
+            )
+        });
+
+        assert!(
+            organism
+                .distinctive_signal_prediction(None, 7, PrimitiveActionKind::Rest, None)
+                .is_some(),
+            "raw strength incorrectly treats the common action as informative",
+        );
+        assert!(
+            organism
+                .base_rate_corrected_signal_prediction(None, 7, PrimitiveActionKind::Swallow, None,)
+                .is_some(),
+            "the rarer action has greater form lift after exact base-rate correction",
+        );
+        assert!(
+            organism
+                .base_rate_corrected_signal_prediction(None, 7, PrimitiveActionKind::Rest, None,)
+                .is_none(),
+        );
     }
 
     #[test]
