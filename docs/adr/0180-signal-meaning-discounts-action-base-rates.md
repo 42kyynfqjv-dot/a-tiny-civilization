@@ -55,9 +55,13 @@ default to ruleset 46. Cancer World remains excluded because its experiment
 bootstrap does not use the ordinary-world language process.
 
 The running ruleset-42 world activates the policy only for the transition into tick
-5,600. All earlier transitions retain their historical raw-strength filter and
-policy draws. The change adds no canonical state field, event kind, event schema, or
-snapshot schema.
+6,200. The initially published tick-5,600 boundary passed while the production host
+runner was still on the preceding binary because deployment control was unavailable;
+that boundary therefore never activated in canonical history. Moving the
+not-yet-deployed boundary forward avoids applying new semantics retroactively when
+the runner replays its existing tail. All earlier transitions retain their historical
+raw-strength filter and policy draws. The change adds no canonical state field,
+event kind, event schema, or snapshot schema.
 
 ## Verification evidence
 
@@ -83,4 +87,4 @@ that any particular vocabulary or later cultural outcome will emerge.
 - Multiple meanings may compete for one form; exact ties remain unresolved.
 - The lifecycle gate still requires three distinct grounded motor meanings shared by
   at least four living people with the existing minimum evidence.
-- Replay remains bit-for-bit scoped by ruleset and the disclosed tick-5,600 boundary.
+- Replay remains bit-for-bit scoped by ruleset and the disclosed tick-6,200 boundary.

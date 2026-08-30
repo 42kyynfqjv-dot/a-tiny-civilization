@@ -265,7 +265,7 @@ pub const RULESET_42_ORDINARY_WORLD_HARDENING_ACTIVATION_TICK: u64 = 5_300;
 /// accommodation only at this disclosed future boundary. Earlier transitions
 /// retain the exact filter that rejected imitation whenever a form already had
 /// another established meaning.
-pub const RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK: u64 = 5_600;
+pub const RULESET_42_CONTEXTUAL_SIGNAL_ACCOMMODATION_ACTIVATION_TICK: u64 = 6_200;
 /// Cancer World uses the same bounded social-value representation. Once a value
 /// is saturated, its observation count likewise cannot affect action selection;
 /// suppress those counter-only events after this future replay boundary without
