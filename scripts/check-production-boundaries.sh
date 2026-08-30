@@ -13,7 +13,7 @@ service_has_network() {
   awk -v service="$service" -v network="$network" '
     $0 == "  " service ":" { inside = 1; next }
     inside && /^  [[:alnum:]_-]+:$/ { inside = 0 }
-    inside && $0 == "      - " network { found = 1 }
+    inside && ($0 == "      - " network || $0 ~ "^      " network ":[[:space:]]*([^#]*)?$") { found = 1 }
     END { exit(found ? 0 : 1) }
   ' "$file"
 }
@@ -43,6 +43,23 @@ fi
 
 if ! rg --multiline --context 4 '^  web-api:$' compose.yaml | rg --line-number '^    internal: true$' >/dev/null; then
   echo "Production boundary violation: web-api must remain an internal network." >&2
+  exit 1
+fi
+
+for required in \
+  'cancer-research-worker backend' \
+  'cancer-research-worker research-egress' \
+  'cancer-evidence-worker backend' \
+  'cancer-evidence-worker research-egress'; do
+  read -r service network <<<"$required"
+  if ! service_has_network compose.hindsight.yaml "$service" "$network"; then
+    echo "Production boundary violation: ${service} must join ${network}." >&2
+    exit 1
+  fi
+done
+
+if service_has_network compose.hindsight.yaml cancer-evidence-worker cognition-egress; then
+  echo "Production boundary violation: the evidence worker must not join cognition-egress." >&2
   exit 1
 fi
 

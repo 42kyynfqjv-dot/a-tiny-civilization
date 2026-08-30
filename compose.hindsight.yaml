@@ -265,7 +265,12 @@ services:
       migrate:
         condition: service_healthy
     networks:
-      - backend
+      backend: {}
+      research-egress:
+        # Literature refreshes use the same HTTPS-only bridge as the research
+        # worker. Qualification labels remain confined to this observer-side
+        # process and are never exported in model prompts.
+        gw_priority: 1
     init: true
     restart: unless-stopped
     logging: *local-logging
