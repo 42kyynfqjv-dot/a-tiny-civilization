@@ -215,7 +215,7 @@ fi
 running_world_rows="$(
   "${compose_command[@]}" "${compose_args[@]}" exec -T db sh -c \
     "psql -U \"\$POSTGRES_USER\" -d \"\$POSTGRES_DB\" -F '|' -Atc \
-      \"SELECT id::text,current_sequence::text FROM worlds
+      \"SELECT id::text FROM worlds
         WHERE status='running' AND id='${expected_world_id}'::uuid ORDER BY id\""
 )"
 running_worlds=()
@@ -226,7 +226,7 @@ if ((${#running_worlds[@]} != 1)); then
   echo "deployment lost its expected running ordinary world after service startup" >&2
   exit 1
 fi
-IFS='|' read -r running_world_id running_world_sequence <<<"${running_worlds[0]}"
+running_world_id="${running_worlds[0]}"
 if [[ "$running_world_id" != "$expected_world_id" ]]; then
   echo "deployment world identity changed after service startup" >&2
   exit 1
@@ -236,8 +236,26 @@ if [[ ! "$api_origin" =~ ^127\.0\.0\.1:[0-9]{1,5}$ ]]; then
   echo "observer API must publish exactly one IPv4 loopback port, found: ${api_origin:-none}" >&2
   exit 1
 fi
-"${project_root}/scripts/observer-candidate-smoke.sh" \
-  "http://${api_origin}" "$running_world_id" "$running_world_sequence"
+# The seven public projections advance in separate transactions. A healthy live
+# tick can therefore cross the read-only smoke's multi-request window and make
+# one view appear briefly behind another. Retry a bounded full read until all
+# advertised cursors describe one current projection boundary; persistent lag
+# or any privacy failure still fails the deployment closed.
+observer_smoke_deadline=$((SECONDS + 60))
+observer_smoke_result=""
+while ! observer_smoke_result="$(
+  "${project_root}/scripts/observer-candidate-smoke.sh" \
+    "http://${api_origin}" "$running_world_id" 2>/dev/null
+)"; do
+  if ((SECONDS >= observer_smoke_deadline)); then
+    "${project_root}/scripts/observer-candidate-smoke.sh" \
+      "http://${api_origin}" "$running_world_id"
+    echo "observer projections did not reach one current boundary" >&2
+    exit 1
+  fi
+  sleep 1
+done
+printf '%s\n' "$observer_smoke_result"
 
 "${project_root}/scripts/verify-public-edge.sh" https://atinycivilization.com
 "${project_root}/scripts/install-production-backend-monitor.sh" \
