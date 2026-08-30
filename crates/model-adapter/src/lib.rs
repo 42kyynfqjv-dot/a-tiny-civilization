@@ -25,7 +25,7 @@ use world_domain::{
     Digest, PrimitiveActionKind, SIGNAL_FORM_VARIANT_COUNT,
 };
 
-pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v22";
+pub const MODEL_ADAPTER_VERSION: &str = "openai-compatible-bounded-cognition-v23";
 pub const MAX_NETWORK_ATTEMPTS_PER_COGNITION_JOB: u16 = 16;
 const MAX_ERROR_BODY_BYTES: usize = 2_048;
 
@@ -1562,7 +1562,7 @@ fn api_request(
             "function": {
                 "name": "select_bounded_primitive_action",
                 "description": "Select exactly one bounded primitive motor action.",
-                "parameters": bounded_action_schema()
+                "parameters": bounded_action_tool_schema()
             }
         }]);
         payload["tool_choice"] = json!({
@@ -1665,6 +1665,47 @@ fn bounded_action_schema() -> Value {
         null(),
     ));
     json!({"oneOf": variants})
+}
+
+fn bounded_action_tool_schema() -> Value {
+    // Repeating the complete object under eleven `oneOf` branches makes some
+    // free tool-capable models serialize the schema itself into a very large
+    // prompt and exhaust the tiny action allowance before emitting arguments.
+    // Keep the provider-facing tool grammar flat. The deny-unknown-fields
+    // deserializer and receipt validation below remain authoritative for the
+    // action/coordinate relationship.
+    json!({
+        "type": "object",
+        "properties": {
+            "action_kind": {
+                "type": "string",
+                "enum": [
+                    "move", "orient", "reach", "grasp", "release", "apply_force",
+                    "bite", "chew", "swallow", "rest", "emit_signal"
+                ]
+            },
+            "contact_region": {
+                "anyOf": [
+                    {"type": "integer", "minimum": 0, "maximum": 7},
+                    {"type": "null"}
+                ]
+            },
+            "signal_intensity": {
+                "anyOf": [
+                    {"type": "integer", "minimum": 1, "maximum": SIGNAL_FORM_VARIANT_COUNT},
+                    {"type": "null"}
+                ]
+            },
+            "movement_direction": {
+                "anyOf": [
+                    {"type": "integer", "minimum": 0, "maximum": 3},
+                    {"type": "null"}
+                ]
+            }
+        },
+        "required": ["action_kind"],
+        "additionalProperties": false
+    })
 }
 
 fn request_seed(request: &ModelCognitionRequest) -> u32 {
@@ -2867,6 +2908,11 @@ mod tests {
             seen["tools"][0]["function"]["name"],
             "select_bounded_primitive_action"
         );
+        let parameters = &seen["tools"][0]["function"]["parameters"];
+        assert_eq!(parameters["type"], "object");
+        assert!(parameters.get("oneOf").is_none());
+        assert_eq!(parameters["required"], json!(["action_kind"]));
+        assert_eq!(parameters["additionalProperties"], false);
         assert_eq!(
             seen["tool_choice"]["function"]["name"],
             "select_bounded_primitive_action"

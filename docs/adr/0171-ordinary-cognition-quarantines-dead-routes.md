@@ -118,3 +118,17 @@ from a free endpoint. Adapter contract version 22 therefore omits the unnecessar
 parallel-call negotiation. Only one tool is advertised, exact forced tool choice is
 retained, and the local parser accepts exactly one call; zero or multiple calls still
 fail closed. No simulation rule, research route, or historical input changes.
+
+## Live-probe amendment: flatten only the provider-facing tool grammar
+
+The first full version-22 canary selected a free endpoint that expanded the repeated
+eleven-branch `oneOf` grammar to a 1,316-token prompt, then exhausted the 32-token
+action allowance on a truncated pseudo-tool call. A fixed synthetic probe with the
+same action domain expressed as one flat object completed in 11 output tokens.
+Adapter contract version 23 uses that flat grammar for the ordinary dynamic-free
+tool only: `action_kind` is required and enumerated, bounded coordinates are optional,
+and extra fields are forbidden. This does not weaken admission. The exact local
+`BoundedAction` deserializer rejects unknown fields and types, and receipt validation
+still rejects a coordinate attached to the wrong action or outside its range. Other
+providers retain the strict eleven-variant JSON Schema, and Cancer research is
+unchanged.
