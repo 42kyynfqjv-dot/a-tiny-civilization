@@ -134,7 +134,7 @@ async fn canonical_runner_writer_lock_is_exclusive_and_crash_released(pool: PgPo
 
 #[sqlx::test(migrations = "../../db/migrations")]
 async fn populated_world_retirement_frees_one_auditable_successor_slot(pool: PgPool) -> Result<()> {
-    let store = PostgresStore::from_pool(pool);
+    let store = PostgresStore::from_pool(pool.clone());
     let world_id = WorldId::from_uuid(Uuid::new_v4());
     let successor_world_id = WorldId::from_uuid(Uuid::new_v4());
     let manifest = WorldManifest::new(world_id, WorldSeed::new(71), RULESET_VERSION);
@@ -1137,7 +1137,7 @@ async fn habitat_projection_tracks_motion_and_bounds_every_view(pool: PgPool) ->
 
 #[sqlx::test(migrations = "../../db/migrations")]
 async fn language_projector_accepts_a_quiet_canonical_batch(pool: PgPool) -> Result<()> {
-    let store = PostgresStore::from_pool(pool);
+    let store = PostgresStore::from_pool(pool.clone());
     let manifest = manifest(101_102);
     let created = store.create_world(&manifest, None).await?;
     let (_, genesis_batch, genesis_snapshot) =
@@ -1164,6 +1164,23 @@ async fn language_projector_accepts_a_quiet_canonical_batch(pool: PgPool) -> Res
     assert_eq!(archive.through_sequence, genesis_batch.sequence);
     assert_eq!(archive.stage, PublicLanguageStage::Undetected);
     assert_eq!(archive.current_stage, PublicLanguageStage::Undetected);
+    assert_eq!(archive.canonical_lifecycle_opened_at, None);
+
+    sqlx::query(
+        "UPDATE snapshots SET state=jsonb_set(state,'{state,human_life_cycle_opened_at}','42'::jsonb) WHERE world_id=$1",
+    )
+    .bind(manifest.world_id.as_uuid())
+    .execute(&pool)
+    .await?;
+    let canonical_language = store.public_language_archive(manifest.world_id).await?;
+    assert_eq!(
+        canonical_language.current_stage,
+        PublicLanguageStage::RudimentaryLanguageCandidate
+    );
+    assert_eq!(
+        canonical_language.canonical_lifecycle_opened_at,
+        Some(SimTick::new(42))
+    );
     Ok(())
 }
 

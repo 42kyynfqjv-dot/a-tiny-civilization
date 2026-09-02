@@ -793,6 +793,11 @@ pub struct PublicLanguageArchive {
     pub stage: PublicLanguageStage,
     /// Stage supported by the current rolling evidence window.
     pub current_stage: PublicLanguageStage,
+    /// The canonical world's own grounded-language gate. This is observer-visible
+    /// evidence that continuity has opened, not a translation supplied to anyone
+    /// inside the world.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub canonical_lifecycle_opened_at: Option<SimTick>,
     pub threshold: PublicLanguageThreshold,
     pub conventions: Vec<PublicLanguageConvention>,
     pub emerging_patterns: Vec<PublicLanguageEmergingPattern>,

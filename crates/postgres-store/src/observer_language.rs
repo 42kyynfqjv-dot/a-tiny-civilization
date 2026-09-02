@@ -462,13 +462,25 @@ impl ObserverLanguageStore for PostgresStore {
             .map(|item| (item.associated_action, item.movement_direction))
             .collect::<std::collections::BTreeSet<_>>()
             .len();
-        let current_stage = if distinct_meanings >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE)
+        let evidence_stage = if distinct_meanings >= usize::from(CONVENTIONS_FOR_LANGUAGE_CANDIDATE)
         {
             PublicLanguageStage::RudimentaryLanguageCandidate
         } else if conventions.is_empty() {
             PublicLanguageStage::Undetected
         } else {
             PublicLanguageStage::ProtoLexicon
+        };
+        // The dictionary is a deliberately conservative rolling observer
+        // projection. The canonical runner has a separate grounded-language gate
+        // which opens lifecycle continuity only after three meanings are shared
+        // by four living people. Never call that population pre-language merely
+        // because this read-side window is still resolving individual calls.
+        let canonical_lifecycle_opened_at =
+            canonical_lifecycle_opened_at(self, world_id, through_sequence).await?;
+        let current_stage = if canonical_lifecycle_opened_at.is_some() {
+            PublicLanguageStage::RudimentaryLanguageCandidate
+        } else {
+            evidence_stage
         };
         let historical_stage =
             load_highest_language_milestone(self, world_id, through_sequence).await?;
@@ -480,11 +492,37 @@ impl ObserverLanguageStore for PostgresStore {
             through_sequence,
             stage,
             current_stage,
+            canonical_lifecycle_opened_at,
             threshold: threshold(),
             conventions,
             emerging_patterns,
         })
     }
+}
+
+async fn canonical_lifecycle_opened_at(
+    store: &PostgresStore,
+    world_id: WorldId,
+    through_sequence: EventSequence,
+) -> Result<Option<SimTick>, ObserverProjectionStoreError> {
+    let opened_at = sqlx::query_scalar::<_, Option<i64>>(
+        r#"
+        SELECT NULLIF(state->'state'->>'human_life_cycle_opened_at','null')::BIGINT
+        FROM snapshots
+        WHERE world_id=$1 AND through_sequence <= $2
+        ORDER BY through_sequence DESC
+        LIMIT 1
+        "#,
+    )
+    .bind(world_id.as_uuid())
+    .bind(to_i64(through_sequence.get(), "language lifecycle cursor")?)
+    .fetch_optional(store.pool())
+    .await
+    .map_err(unavailable)?
+    .flatten();
+    opened_at
+        .map(|tick| to_u64(tick, "canonical language lifecycle tick").map(SimTick::new))
+        .transpose()
 }
 
 async fn load_detector_critical_ticks(

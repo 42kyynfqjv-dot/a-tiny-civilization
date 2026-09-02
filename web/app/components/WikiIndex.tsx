@@ -71,6 +71,7 @@ type LanguageArchive = {
   detector_version: number;
   stage: "undetected" | "proto_lexicon" | "rudimentary_language_candidate";
   current_stage?: "undetected" | "proto_lexicon" | "rudimentary_language_candidate";
+  canonical_lifecycle_opened_at?: string;
   threshold: { evidence_window_ticks: number; minimum_evidence_events: number; minimum_learners: number; minimum_signal_sources: number; minimum_tick_span: number; minimum_dominance_percent: number; minimum_baseline_margin_percent: number; minimum_baseline_lift_percent: number; minimum_half_evidence_events: number; minimum_half_dominance_percent: number; conventions_for_language_candidate: number };
   conventions: LanguageConvention[];
   emerging_patterns: EmergingLanguagePattern[];
@@ -164,9 +165,9 @@ export function WikiIndex() {
         </article>
         <article id="language-archive">
           <h3>Language archive and translation</h3>
-          <p>{languageStage(wiki.language.stage, wiki.language.current_stage ?? wiki.language.stage)}</p>
+          <p>{languageStage(wiki.language.stage, wiki.language.current_stage ?? wiki.language.stage, wiki.language.canonical_lifecycle_opened_at)}</p>
           {wiki.language.conventions.length === 0 ? <p>Signal emissions alone do not qualify. Detector v{wiki.language.detector_version} examines the latest {wiki.language.threshold.evidence_window_ticks} ticks, so early babbling cannot dilute a later convention forever. A convention needs repeated person-to-person grounding, social spread, distinctiveness from background behavior, and persistence across both halves of that window.</p> : <ol>{wiki.language.conventions.map((convention) => <li key={`${convention.signal_sequence.join("-")}:${convention.tentative_gloss}`}><strong>Call {formatSignalSequence(convention.signal_sequence)} · “{convention.tentative_gloss}”</strong><span>{convention.signal_sequence.length > 1 ? "Inhabitant-composed sequence" : "Atomic call"} · tentative observer gloss · {convention.dominance_percent}% after this form versus {convention.baseline_percent}% ordinarily · {convention.baseline_lift_percent}% lift</span><small>{convention.evidence_events} events · {convention.learners} learners · {convention.signal_sources} sources</small><small>First evidence event {convention.first_sequence}, tick {convention.first_tick} · latest event {convention.latest_sequence}, tick {convention.latest_tick}</small></li>)}</ol>}
-          {wiki.language.emerging_patterns.length > 0 ? <div className="language-emerging"><h4>Patterns taking shape</h4><p>These are repeated learned mappings, not words. The meter shows how many conservative gates they currently pass.</p><ol>{wiki.language.emerging_patterns.map(({ pattern, thresholds_met, thresholds_required, earlier_half_dominance_percent, recent_half_dominance_percent, trend }) => <li key={`${pattern.signal_sequence.join("-")}:${pattern.tentative_gloss}`}><strong>Call {formatSignalSequence(pattern.signal_sequence)} may precede {pattern.tentative_gloss}</strong><span>{thresholds_met}/{thresholds_required} evidence gates · {trend}</span><small>{pattern.evidence_events} observations · {pattern.learners} learners · {pattern.signal_sources} sources</small><small>Earlier / recent consistency: {earlier_half_dominance_percent}% / {recent_half_dominance_percent}%</small></li>)}</ol></div> : null}
+          {!wiki.language.canonical_lifecycle_opened_at && wiki.language.emerging_patterns.length > 0 ? <div className="language-emerging"><h4>Patterns taking shape</h4><p>These are repeated learned mappings, not words. The meter shows how many conservative gates they currently pass.</p><ol>{wiki.language.emerging_patterns.map(({ pattern, thresholds_met, thresholds_required, earlier_half_dominance_percent, recent_half_dominance_percent, trend }) => <li key={`${pattern.signal_sequence.join("-")}:${pattern.tentative_gloss}`}><strong>Call {formatSignalSequence(pattern.signal_sequence)} may precede {pattern.tentative_gloss}</strong><span>{thresholds_met}/{thresholds_required} evidence gates · {trend}</span><small>{pattern.evidence_events} observations · {pattern.learners} learners · {pattern.signal_sources} sources</small><small>Earlier / recent consistency: {earlier_half_dominance_percent}% / {recent_half_dominance_percent}%</small></li>)}</ol></div> : null}
           <p>Dictionary entries are observer research over committed evidence. They never teach, steer, or reveal a translation to the inhabitants.</p>
         </article>
       </div>
@@ -178,7 +179,8 @@ function formatSignalSequence(sequence: number[]) {
   return sequence.map((form) => `·${form}`).join(" ");
 }
 
-function languageStage(stage: LanguageArchive["stage"], currentStage: LanguageArchive["stage"]) {
+function languageStage(stage: LanguageArchive["stage"], currentStage: LanguageArchive["stage"], canonicalLifecycleOpenedAt?: string) {
+  if (canonicalLifecycleOpenedAt) return `The population crossed the world's grounded-language continuity gate at tick ${canonicalLifecycleOpenedAt}. The observer dictionary below is still conservative and may take longer to resolve individual calls; this is not evidence of grammar or human-like language.`;
   const current = currentStage === stage ? " The current rolling evidence still supports that stage." : " The historical milestone remains visible even though the current rolling evidence has weakened.";
   if (stage === "rudimentary_language_candidate") return `Several stable, socially learned conventions have supported a rudimentary language candidate. This is not evidence of grammar or human-like language.${current}`;
   if (stage === "proto_lexicon") return `At least one stable, socially learned signal convention has supported a proto-lexicon; it is not yet classified as a language.${current}`;
